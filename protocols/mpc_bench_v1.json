@@ -1,0 +1,93 @@
+{
+  "alpha": 0.05,
+  "bearer_nodes": {},
+  "channels": {
+    "IIM": [
+      "default"
+    ],
+    "NAS": [
+      "default"
+    ],
+    "PDI": [
+      "default"
+    ],
+    "RAM": [
+      "default"
+    ],
+    "SRPI": [
+      "default"
+    ]
+  },
+  "cutoffs": {
+    "IIM": [
+      0.25,
+      0.1
+    ],
+    "NAS": [
+      0.25,
+      0.1
+    ],
+    "PDI": [
+      0.25,
+      0.1
+    ],
+    "RAM": [
+      0.25,
+      0.1
+    ],
+    "SRPI": [
+      0.25,
+      0.1
+    ]
+  },
+  "estimators": {
+    "NAS": {
+      "mode": "capacity"
+    },
+    "PDI": {
+      "mode": "repertoire"
+    },
+    "RAM": {
+      "update": "prediction_error"
+    },
+    "SRPI": {
+      "mode": "agency"
+    }
+  },
+  "name": "mpc-bench-v1 (provisional: placeholder cutoffs; reference from development seeds 900-907; to be finalised in CALIBRATE)",
+  "necessity_set": [
+    "RAM",
+    "PDI",
+    "NAS",
+    "IIM",
+    "SRPI"
+  ],
+  "null_families": {
+    "IIM": "circular_shift",
+    "NAS": "block_circular_shift",
+    "PDI": "circular_shift",
+    "RAM": "onset_jitter",
+    "SRPI": "yoked_label_permutation"
+  },
+  "reference": {
+    "kind": "external",
+    "scale": "excess",
+    "se": {
+      "IIM": 0.002519171812680299,
+      "NAS": 0.0039309878308099065,
+      "PDI": 0.0,
+      "RAM": 0.004997008508279535,
+      "SRPI": 0.007075094979518924
+    },
+    "source": "MPC-Bench PC_nominal, family A, development seeds 900-907 (n=8), null_surrogates=19, se_groups=0, scale excess, bench 2.0.0, generators mpc-bench-generators/1.1.0, code b027c83f3ab957f1ed8252925d7478c443f5389f; RAM n=8, PDI n=8, NAS n=8, IIM n=8, SRPI n=8",
+    "values": {
+      "IIM": 0.009964834769798925,
+      "NAS": 0.06930563338774284,
+      "PDI": 0.0,
+      "RAM": 0.004070956231083789,
+      "SRPI": 0.1727803622179402
+    }
+  },
+  "schema": "impact-mpc-protocol/2",
+  "source_rule": "single_source"
+}
