@@ -716,3 +716,56 @@ def test_constant_metrics_are_reported(gen):
         {"metric_values": {"NAS": 0.0, "IIM": np.nan, "SRPI": np.nan}},
     ]
     assert gen._constant_metrics(rows, ("NAS", "IIM", "SRPI", "RAM")) == {"NAS": 0.0}
+
+
+def test_ram_parameters_are_the_pipeline_presets(gen):
+    """The smoke test computes RAM with run_pipeline's own presets (no stale copy)."""
+    from impact_pipeline.run_synergy_ci import RAM_PARAM_PRESETS
+
+    assert gen.EEG_RAM_PARAMS == RAM_PARAM_PRESETS["eeg"]
+    assert gen.FMRI_RAM_PARAMS == RAM_PARAM_PRESETS["fmri"]
+    # quality_ridge is relative to the covariance scale since the RAM fix;
+    # the old private 1e-4 left the cross-validated CCA almost unregularised.
+    assert gen.EEG_RAM_PARAMS["quality_ridge"] == 1.0
+
+
+@pytest.mark.parametrize("seconds,n_trials", [(24.0, 3), (60.0, 9)])
+def test_eeg_events_never_overlap_and_short_runs_are_not_compressed(
+    gen, seconds, n_trials
+):
+    dt = 1.0 / EEG_SFREQ
+    mid = pd.DataFrame(
+        {
+            "onset": [10.0, 23.0, 36.0, 49.0],
+            "duration": 4.3,
+            "trial_type": ["Win Small", "Loss Big", "Win Big", "Loss Small"],
+            "feedback_value": [1.05, 0.25, 1.55, 0.55],
+        }
+    )
+    empty = pd.DataFrame({"onset": []})
+    ev = gen._build_events(
+        rng=np.random.default_rng(0),
+        n_time=int(round(seconds / dt)),
+        tr=dt,
+        modality="eeg",
+        mid_events=mid,
+        self_template=empty,
+        other_template=empty,
+        session="awake",
+    )
+    sep, support = gen._eeg_event_separation(dt)
+    assert support == pytest.approx(0.8) and sep == pytest.approx(1.0)
+    onsets = np.sort(ev["onset"].to_numpy(dtype=float))
+    # Onset jitter has SD 0.015 s; the planted responses never superimpose.
+    assert np.diff(onsets).min() > sep - 0.1
+    assert onsets.max() + support <= seconds
+    counts = ev["trial_type"].value_counts().to_dict()
+    # Six-second trial grid kept: a 24 s run holds 3 trials (the old fallback
+    # packed 8 trials 1.4 s apart, with each goal cue on the previous feedback).
+    assert counts["goal_cue"] == counts["stimulus_target"] == n_trials
+    assert counts["feedback_reward"] == n_trials
+    assert counts["self"] >= 3 and counts["nonself"] >= 3
+    stim = ev.loc[ev["trial_type"].eq("stimulus_target"), "onset"].to_numpy()
+    fb = ev.loc[ev["trial_type"].eq("feedback_reward"), "onset"].to_numpy()
+    # Feedback responses start after the stimulus FIR latency search window.
+    assert np.all(fb - stim > gen.EEG_RAM_PARAMS["fir_window"])

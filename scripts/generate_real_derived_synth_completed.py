@@ -71,7 +71,7 @@ from impact_pipeline.synergy_ci import compute_synergy_ci  # noqa: E402
 
 load_onsets = _run_synergy_ci.load_onsets
 
-GENERATOR_VERSION = "2.0.0"
+GENERATOR_VERSION = "2.1.0"
 MANIFEST_VERSION = 2
 OBJECT_KIND = "software_smoke_test_objects"
 OBJECT_DISCLAIMER = (
@@ -149,35 +149,13 @@ PDI_PARAMS = {
     "multiscale_max_scale": 5,
     "eps": 1e-12,
 }
-FMRI_RAM_PARAMS = {
-    "epsilon": None,
-    "magnitude_scale": 0.5,
-    "response_model": "hrf",
-    "response_boxcar_width_sec": None,
-    "latency_method": "hrf_peak",
-    "fir_window": 20.0,
-    "xcorr_maxlag": 10,
-    "quality_weights": (1.0, 1.0, 1.0),
-    "goal_pre_window_sec": 2.0,
-    "response_window_sec": 3.0,
-    "goal_objective_window_sec": 2.0,
-    "feedback_window_sec": 2.0,
-    "quality_ridge": 1e-4,
-    "require_explicit_feedback": True,
-}
-EEG_RAM_PARAMS = dict(FMRI_RAM_PARAMS)
-EEG_RAM_PARAMS.update(
-    {
-        "response_model": "boxcar",
-        "response_boxcar_width_sec": 0.30,
-        "latency_method": "fir",
-        "fir_window": 0.80,
-        "goal_pre_window_sec": 0.20,
-        "response_window_sec": 0.40,
-        "goal_objective_window_sec": 0.20,
-        "feedback_window_sec": 0.20,
-    }
-)
+# RAM hyperparameters are the pipeline's own modality presets (the values
+# run_s_ci uses), so the smoke test computes RAM exactly as run_pipeline does.
+# A private copy went stale: it kept quality_ridge=1e-4, which after the RAM
+# fix means an almost unregularised cross-validated CCA (the ridge is now
+# relative to the mean covariance eigenvalue; pipeline default 1.0).
+FMRI_RAM_PARAMS = dict(_run_synergy_ci.RAM_PARAM_PRESETS["fmri"])
+EEG_RAM_PARAMS = dict(_run_synergy_ci.RAM_PARAM_PRESETS["eeg"])
 FMRI_NAS_PARAMS = {
     "zthr": 1.0,
     "eps": 0.2,
@@ -351,6 +329,12 @@ PLANTED_DESIGN_DESCRIPTION = [
     "Events (RAM target): goal, stimulus, feedback (value-scaled) and feedback-"
     "driven update responses convolved with a canonical kernel (double-gamma "
     "HRF for fMRI, alpha function for EEG), amplitude proportional to g.",
+    "EEG event timing: no two events are closer than the response-kernel "
+    "support plus the longest pre-event analysis window (1.0 s), because the "
+    "EEG RAM/SRPI windows cannot separate overlapping responses: goal cue 1.0 s "
+    "before and feedback 1.0 s after each stimulus (outside the 0.8 s FIR "
+    "latency window), two self/non-self events in each inter-trial gap, and "
+    "short runs get fewer trials instead of compressed ones.",
     "Self/non-self (SRPI target): pre-event internal state s ~ N(0,1) planted "
     "in [onset - pre_window, onset); self responses on a fixed pattern with "
     "amplitude self_peak g max(0, 1 + coupling s); non-self responses on a fresh "
@@ -1159,6 +1143,64 @@ def _add_kernel(
     ).astype(ts.dtype)
 
 
+def _eeg_event_separation(dt: float) -> tuple[float, float]:
+    """
+    Minimum onset separation between any two EEG events, and the support of
+    the planted EEG response.
+
+    EEG RAM and SRPI are estimated from event-locked windows, which cannot
+    separate overlapping responses (the surrogate nulls do not remove
+    carry-over). So an event starts only after the previous event's planted
+    response has ended (kernel support, which also covers the FIR latency
+    search window after a stimulus) plus the longest pre-event analysis
+    window (SRPI pre-state window, RAM feedback baseline and goal window).
+    Derived from the analysis windows, not from metric outcomes.
+    """
+    support = float(len(_response_kernel("eeg", dt))) * float(dt)
+    pre = max(
+        float(EEG_SRPI_PARAMS["pre_window_sec"]),
+        float(EEG_RAM_PARAMS["feedback_window_sec"]),
+        float(EEG_RAM_PARAMS["goal_pre_window_sec"]),
+    )
+    return max(support, float(EEG_RAM_PARAMS["fir_window"])) + pre, support
+
+
+def _eeg_self_other_onsets(
+    trial_onsets: np.ndarray,
+    *,
+    sep: float,
+    support: float,
+    run_stop: float,
+    per_gap: int = 2,
+    max_per_class: int = 10,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Self/non-self events in the gaps after each goal-stimulus-feedback trial,
+    never overlapping a trial event: the first starts ``sep`` after the
+    feedback, events are ``sep`` apart, and the last ends ``sep`` before the
+    next trial's goal cue (or its response ends before the run does). The
+    self/non-self order alternates from gap to gap so neither class sits at a
+    fixed position after the feedback.
+    """
+    trial_onsets = np.sort(np.asarray(trial_onsets, dtype=float))
+    self_on: list[float] = []
+    non_on: list[float] = []
+    for k, stim in enumerate(trial_onsets):
+        limit = (
+            trial_onsets[k + 1] - 2.0 * sep
+            if k + 1 < trial_onsets.size
+            else run_stop - support
+        )
+        slots = [stim + (2 + j) * sep for j in range(int(per_gap))]
+        slots = [t for t in slots if t <= limit + 1e-9]
+        order = ("self", "nonself") if k % 2 == 0 else ("nonself", "self")
+        for t, kind in zip(slots, order):
+            target = self_on if kind == "self" else non_on
+            if len(target) < int(max_per_class):
+                target.append(float(t))
+    return np.asarray(self_on, dtype=float), np.asarray(non_on, dtype=float)
+
+
 def _build_events(
     *,
     rng: np.random.Generator,
@@ -1173,14 +1215,19 @@ def _build_events(
     run_stop = (int(n_time) - 1) * float(tr)
     rows: list[dict[str, Any]] = []
     if modality == "eeg":
-        trial_onsets = np.arange(4.0, min(run_stop - 3.0, 54.0), 6.0)
+        sep, support = _eeg_event_separation(float(tr))
+        grid = np.arange(4.0, min(run_stop - 3.0, 54.0), 6.0)
+        # A short run gets fewer trials, never compressed ones: packing trials
+        # closer than `sep` superimposes goal/stimulus/feedback responses (RAM
+        # is then honestly undefined below its event-count minimum).
+        trial_onsets = grid[(grid - sep >= 0.0) & (grid + sep + support <= run_stop)]
     else:
         raw = mid_events.loc[mid_events["onset"].astype(float) + 8.0 < run_stop].head(
             18
         )
         trial_onsets = raw["onset"].astype(float).to_numpy()
-    if trial_onsets.size < 6:
-        trial_onsets = np.linspace(8.0, max(18.0, run_stop - 16.0), 8)
+        if trial_onsets.size < 6:
+            trial_onsets = np.linspace(8.0, max(18.0, run_stop - 16.0), 8)
 
     reward_template = mid_events["feedback_value"].astype(float).to_numpy()
     reward_template = reward_template[np.isfinite(reward_template)]
@@ -1197,10 +1244,10 @@ def _build_events(
             if modality == "eeg"
             else float(mid_events["duration"].astype(float).median())
         )
-        feedback_onset = onset + (0.8 if modality == "eeg" else dur + 1.0)
+        feedback_onset = onset + (sep if modality == "eeg" else dur + 1.0)
         rows.append(
             {
-                "onset": max(0.0, onset - (0.6 if modality == "eeg" else 2.0)),
+                "onset": max(0.0, onset - (sep if modality == "eeg" else 2.0)),
                 "duration": 0.20 if modality == "eeg" else 1.0,
                 "trial_type": "goal_cue",
                 "reward": np.nan,
@@ -1228,8 +1275,9 @@ def _build_events(
         )
 
     if modality == "eeg":
-        base_self = np.arange(3.0, min(run_stop - 1.0, 58.0), 5.0)
-        base_non = base_self + 2.4
+        base_self, base_non = _eeg_self_other_onsets(
+            trial_onsets, sep=sep, support=support, run_stop=run_stop
+        )
     else:
         self_on = (
             pd.to_numeric(self_template["onset"], errors="coerce")
@@ -1285,7 +1333,14 @@ def _build_events(
                 "source_event_family": "ds002547_task-other",
             }
         )
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(
+        rows,
+        columns=(
+            None
+            if rows
+            else ["onset", "duration", "trial_type", "reward", "source_event_family"]
+        ),
+    )
     df = df.sort_values(["onset", "trial_type"]).reset_index(drop=True)
     df["synthetic_derivation"] = "real_data_derived_synthetic_smoke_test"
     jitter = rng.normal(0.0, 0.015 if modality == "eeg" else 0.08, size=len(df))
@@ -2132,6 +2187,9 @@ def _make_dataset(
             "Events are a template from one ds005479 MID file and one ds002547 "
             "self/other layout, "
             "identical across subjects apart from jitter.",
+            "fMRI MID trials and self/other slots come from two templates and are "
+            "not de-collided; some fMRI events fall within one TR of each other "
+            "(EEG events never overlap).",
             "ds002547 has no state design; awake/deep are pseudo-states defined only "
             "by the planted level.",
             "Source payload reuse and state fallbacks are flagged per run "

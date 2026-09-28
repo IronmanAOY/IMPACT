@@ -47,7 +47,7 @@ Notes:
   defined only by the planted level. Its rest baselines are ds003171 rest runs
   from other subjects, because ds002547 has no rest runs.
 
-## What Is Planted (Generator 2.0.0)
+## What Is Planted (Generator 2.1.0)
 
 For node payload `x` (the real recording, z-scored per node):
 
@@ -66,6 +66,18 @@ For node payload `x` (the real recording, z-scored per node):
   a canonical kernel (a double-gamma HRF with a ~5 s peak for fMRI, a 0.15 s
   alpha function for EEG). Amplitude is proportional to `g`, in node-SD units,
   in 10% of nodes.
+- **EEG event timing.** EEG RAM and SRPI use event-locked windows, which cannot
+  separate overlapping responses. So no two EEG events are closer than the
+  response-kernel support (0.8 s) plus the longest pre-event analysis window
+  (0.2 s). The goal cue comes 1.0 s before and the feedback 1.0 s after each
+  stimulus, so the feedback response lies outside the 0.8 s FIR latency search
+  window. Trials stay on a 6 s grid, and two self/non-self events (alternating
+  order) sit in each inter-trial gap. A run too short for six trials gets fewer
+  trials, not compressed ones, and RAM is then undefined
+  (`insufficient_goal_response_pairs`). Generator 2.0.0 compressed short EEG
+  runs to 1.4 s trial spacing and scheduled self/non-self events independently
+  of the trials, so goal cues coincided with the previous feedback and self
+  events with stimuli.
 - **Self/non-self (SRPI target).** A pre-event internal state `s ~ N(0,1)` is
   planted in `[onset - pre_window, onset)`. Self responses use a fixed pattern
   with amplitude `g * max(0, 1 + 0.5 s)`. Non-self responses use a fresh random
@@ -166,8 +178,11 @@ This is not the `run_pipeline.py` default. As of this writing, that default uses
 all mechanism and purview sizes over up to 10 nodes at 2 bins. Use `--iim-bins`, `--iim-max-nodes`,
 `--iim-max-timepoints`, `--iim-max-mechanism-size` and `--iim-max-purview-size`
 to validate with another configuration; the configuration used is recorded. The
-RAM, PDI, NAS and SRPI parameters for fMRI and EEG are the `*_PARAMS`
-dictionaries in the generator.
+RAM parameters are the pipeline's own modality presets
+(`run_synergy_ci.RAM_PARAM_PRESETS`, the values `run_pipeline.py` uses); up to
+generator 2.0.0 a private copy kept the obsolete `quality_ridge=1e-4`. The PDI,
+NAS and SRPI parameters for fMRI and EEG are the `*_PARAMS` dictionaries in the
+generator.
 
 ## Using The Published Archive
 
@@ -301,6 +316,9 @@ Manifests store paths relative to `IMPACT_SYNTH_ROOT`, and source paths as
   image.
 - The event timing is one template, from one ds005479 MID file and one ds002547
   self/other layout. It is identical across subjects apart from jitter.
+- fMRI MID trials and self/other slots come from two templates and are not
+  de-collided, so some fMRI events fall within one TR of each other. EEG events
+  never overlap (see EEG event timing above).
 - ds002547 donor rest runs are shared across subjects, because there are fewer
   ds003171 donors than ds002547 subjects. This is flagged per run
   (`donor_payload_shared_with_other_subjects`).
