@@ -63,8 +63,9 @@ Reason codes (stable strings, ``;``-joined in tables):
 - ``BEARER_MISMATCH`` / ``PROTOCOL_MISMATCH`` / ``SOURCE_INCOHERENT``: the
   evidence does not come from one declared bearer / protocol / source
   (``SOURCE_INCOHERENT:UNTESTED`` when components come from different node
-  sets and no joint-dependence test covers exactly those sets). These force
-  UNDETERMINED.
+  sets and no joint-dependence test covers exactly those sets;
+  ``SOURCE_INCOHERENT:INSUFFICIENT_SURROGATES`` when the test had too few
+  surrogates to reach its level). These force UNDETERMINED.
 
 The verdict is recoverable from the reasons alone (see
 :func:`verdict_from_reasons`): no reasons <=> MPC_CONSISTENT; a global code =>
@@ -74,7 +75,6 @@ reasons over ``P in N`` plus the global codes.
 """
 from __future__ import annotations
 
-import copy
 import dataclasses
 import fnmatch
 import functools
@@ -138,6 +138,9 @@ REASON_BEARER_MISMATCH = "BEARER_MISMATCH"
 REASON_PROTOCOL_MISMATCH = "PROTOCOL_MISMATCH"
 REASON_SOURCE_INCOHERENT = "SOURCE_INCOHERENT"
 SOURCE_UNTESTED = "UNTESTED"
+# joint_dependence with too few surrogates to reach its level (reported as
+# SOURCE_INCOHERENT:INSUFFICIENT_SURROGATES in a verdict).
+REASON_INSUFFICIENT_SURROGATES = "INSUFFICIENT_SURROGATES"
 GLOBAL_REASON_KINDS = (
     REASON_BEARER_MISMATCH,
     REASON_PROTOCOL_MISMATCH,
@@ -251,6 +254,15 @@ def _json_value(obj):
     if obj is None or isinstance(obj, (bool, int, float, str)):
         return obj
     raise TypeError(f"not JSON-serialisable: {type(obj)!r}")
+
+
+def _freeze_json(obj):
+    """Read-only copy of a JSON value (dicts -> mappingproxy, lists -> tuples)."""
+    if isinstance(obj, Mapping):
+        return MappingProxyType({str(k): _freeze_json(v) for k, v in obj.items()})
+    if isinstance(obj, (list, tuple)):
+        return tuple(_freeze_json(v) for v in obj)
+    return obj
 
 
 def _canonical_json(payload) -> str:
@@ -709,7 +721,9 @@ class Protocol:
     - ``reference``: the reference anchor, ``{"kind": "cohort_high_state",
       "session": ...}`` or ``{"kind": "external", "values": {P: ..},
       "se": {P: ..}, "scale": "excess"|"estimate"}`` (keys ``P`` or
-      ``P:channel``);
+      ``P:channel``). The high-state runs are part of a cohort reference
+      (their ``c`` averages 1 by construction), so their verdicts are not
+      independent tests of necessity; such tests need an external reference;
     - ``source_rule``: one of :data:`SOURCE_RULES` (single-source constraint);
     - ``estimators``: per principle estimator keyword options (modes, e.g.
       ``{"NAS": {"mode": "capacity"}, "RAM": {"update": "prediction_error"}}``);
@@ -756,16 +770,15 @@ class Protocol:
                 raise ValueError(f"null family for {k} must be a non-empty name")
             families[_principle_key(k, "null_families")] = str(v).strip()
         put("null_families", MappingProxyType(families))
-        put("reference", MappingProxyType(_normalize_reference(self.reference)))
+        # read-only all the way down: the hash must not change after creation
+        put("reference", _freeze_json(_normalize_reference(self.reference)))
         if self.source_rule not in SOURCE_RULES:
             raise ValueError(f"source_rule must be one of {SOURCE_RULES}")
         estimators = {}
         for k, v in dict(self.estimators or {}).items():
             if not isinstance(v, Mapping):
                 raise ValueError(f"estimator options for {k} must be an object")
-            estimators[_principle_key(k, "estimators")] = MappingProxyType(
-                copy.deepcopy(_json_value(v))
-            )
+            estimators[_principle_key(k, "estimators")] = _freeze_json(_json_value(v))
         put("estimators", MappingProxyType(estimators))
         bearers = {}
         for k, v in dict(self.bearer_nodes or {}).items():
@@ -784,14 +797,12 @@ class Protocol:
         return self.channels.get(str(principle))
 
     def estimator_options(self, principle) -> dict:
-        return copy.deepcopy(dict(self.estimators.get(str(principle), {})))
+        """A fresh (mutable, JSON-typed) copy of the principle's options."""
+        return _json_value(self.estimators.get(str(principle), {}))
 
     # -- serialisation -------------------------------------------------------
     def to_dict(self) -> dict:
-        ref = dict(self.reference)
-        if ref["kind"] == "external":
-            ref["values"] = dict(ref["values"])
-            ref["se"] = dict(ref["se"])
+        ref = _json_value(self.reference)
         return {
             "schema": PROTOCOL_SCHEMA,
             "necessity_set": list(self.necessity_set),
@@ -2011,7 +2022,10 @@ def joint_dependence(
     "sets", "set_names", "blocks", "per_block", "flags", "reason", ...}``;
     ``sets`` are the distinct node sets (sorted index lists) that the verdict
     checks against its evidence; ``reason`` is None when dependent, else
-    ``SOURCE_INCOHERENT``, ``OVERLAPPING_NODE_SETS``, ``NO_SURROGATES`` or
+    ``SOURCE_INCOHERENT``, ``OVERLAPPING_NODE_SETS``, ``NO_SURROGATES``,
+    ``INSUFFICIENT_SURROGATES`` (the smallest attainable p, ``1 / (K + 1)``,
+    exceeds the level the criterion needs: ``alpha``, or ``alpha / blocks``
+    for ``"each"``; ``min_surrogates`` is the K it needs) or
     ``DEGENERATE_NODE_SET:<name>``.
     """
     x = np.asarray(ts, dtype=float)
@@ -2133,10 +2147,18 @@ def joint_dependence(
     for b, rej in zip(per_block, reject):
         b["significant"] = bool(rej)
     dependent = pval <= alpha if criterion == "total" else bool(np.all(reject))
+    reason = None if dependent else REASON_SOURCE_INCOHERENT
+    # The smallest attainable p is 1 / (K + 1); below the level the criterion
+    # needs (alpha, or alpha / blocks for Holm) no data can show dependence,
+    # so the result is "not testable at this K", not "tested and absent".
+    needed = alpha if criterion == "total" else alpha / len(blocks)
+    if 1.0 / (k + 1.0) > needed + 1e-12:
+        out["flags"].append(REASON_INSUFFICIENT_SURROGATES)
+        dependent, reason = False, REASON_INSUFFICIENT_SURROGATES
     out.update(
         tc_bits=float(obs), null_mean=mean, null_sd=sd, z=float(z), p=pval,
-        per_block=per_block, dependent=bool(dependent),
-        reason=None if dependent else REASON_SOURCE_INCOHERENT,
+        per_block=per_block, dependent=bool(dependent), reason=reason,
+        min_surrogates=int(math.ceil(1.0 / needed - 1.0 - 1e-9)),
     )
     return out
 

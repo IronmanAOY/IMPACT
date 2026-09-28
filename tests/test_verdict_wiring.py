@@ -313,6 +313,8 @@ def test_ram_and_srpi_get_event_nulls_and_bootstrap_se(tmp_path, monkeypatch):
     ).set_index("session")
     assert (df["RAM_null_n"] == 40).all() and (df["SRPI_null_n"] == 40).all()
     assert (df["RAM_boot_n"] >= 38).all() and (df["SRPI_boot_n"] >= 38).all()
+    for p in ("RAM", "SRPI"):
+        assert (df[f"{p}_boot_n"] + df[f"{p}_boot_failed"] == 40).all()
     assert (df["MPC_null_families"] == "RAM:onset_jitter;SRPI:label_permutation").all()
     assert (df["MPC_bootstrap_block_len"] == 100).all()
     assert df.loc["awake", "MPC_verdict"] == "MPC_CONSISTENT"
@@ -558,6 +560,16 @@ def test_applicability_registry_is_applied(tmp_path):
                    necessity_set=("IIM",)).iloc[0]
         assert row["MPC_reason"] == (
             f"ESTIMATOR_NOT_VALIDATED:IIM:compute_IIM:bidirectional@{VERSIONS['IIM']}")
+    # Regression (review of stream E2): with iim_max_timepoints IIM scores a
+    # subsampled series (here 240 samples at 2 * TR), and that is the regime
+    # the registry checks, not the 480-sample run at TR
+    for regime, ok in (({"T_min": 400}, False), ({"T_min": 240}, True),
+                       ({"fs_or_tr": TR}, False), ({"fs_or_tr": 2 * TR}, True)):
+        reg.write_text(json.dumps({"entries": [_iim_entry(regime=regime)]}))
+        row = _run(prep, sessions=("awake",), mpc_metrics=("IIM",), compute_ci=False,
+                   applicability_registry=str(reg), modality="fmri",
+                   necessity_set=("IIM",), iim_max_timepoints=240).iloc[0]
+        assert (row["MPC_reason"] == "NO_NULL_CALIBRATION:IIM") is ok, regime
     # entries that miss the entry criteria are refused before any computation
     bad = _iim_entry(evidence={"run_id": "x", "null_false_present_rate": 0.2,
                                "recovery_slope": 1.0})
@@ -597,6 +609,121 @@ def test_precomputed_iim_without_null_fields_is_not_calibrated(tmp_path):
     ).iloc[0]
     assert row["MPC_verdict"] == "MPC_CONSISTENT" and row["IIM_c"] == 1.0
     assert row["IIM_se"] == 0.02 and row["IIM_boot_n"] == 30
+
+
+def test_precomputed_iim_with_other_options_is_not_judged(tmp_path):
+    """Regression (review of stream E2): a precomputed (Hunter) IIM result is
+    computed without the protocol's IIM options; a result whose recorded
+    cut mode or bearer differs from the declared ones is undefined
+    (iim_option_mismatch), never judged under the protocol."""
+    prep, _ = _layout(tmp_path)
+    ts_path = str(prep / "s1" / "awake" / "audio" / "s1_run-1_toy_ts.npy")
+    info = {"defined": True, "undefined_reason": None, "canonical": 0.4,
+            "raw": 0.4, "Delta_Psi": 0.4, "Delta_Psi_null_mean": 0.1,
+            "Delta_Psi_null_sd": 0.05, "IIM_null_n": 20,
+            "IIM_null_method": "circular_shift", "canonical_calibrated": 0.3,
+            "Delta_Psi_bootstrap_se": 0.02, "Delta_Psi_bootstrap_n": 30,
+            "iim_algorithm_version": VERSIONS["IIM"], "cut_mode": "bidirectional",
+            "bearer_nodes": None, "tpm_estimator": "node_shrinkage"}
+    common = dict(sessions=("awake",), tr=TR, mpc_metrics=("IIM",), compute_ci=False,
+                  null_surrogates=3, iim_precomputed_by_path={ts_path: info})
+
+    def run(proto):
+        return sc.compute_synergy_ci(str(prep), "toy", [0.5], protocol=proto,
+                                     **common).iloc[0]
+
+    ok = run(E.Protocol(necessity_set=("IIM",)))
+    assert ok["MPC_verdict"] == "MPC_CONSISTENT"
+    directional = run(E.Protocol(necessity_set=("IIM",),
+                                 estimators={"IIM": {"cut_mode": "directional"}}))
+    assert directional["MPC_verdict"] == "UNDETERMINED"
+    assert directional["MPC_reason"] == (
+        "UNDEFINED:IIM:iim_option_mismatch:cut_mode=directional/bidirectional")
+    assert directional["IIM_estimator"] == (
+        f"compute_IIM:bidirectional@{VERSIONS['IIM']}")  # what was computed
+    bearer = run(E.Protocol(necessity_set=("IIM",), bearer_nodes={"IIM": [0, 1, 2]}))
+    assert bearer["MPC_reason"] == "UNDEFINED:IIM:iim_option_mismatch:bearer_nodes"
+    # in-process results carry the declared options and are judged
+    df = _run(prep, sessions=("awake",), mpc_metrics=("IIM",), compute_ci=False,
+              protocol=E.Protocol(necessity_set=("IIM",),
+                                  estimators={"IIM": {"cut_mode": "directional"}},
+                                  bearer_nodes={"IIM": [0, 1, 2, 3]}))
+    assert "iim_option_mismatch" not in df.iloc[0]["MPC_reason"]
+    assert df.iloc[0]["MPC_reason"] == "NO_NULL_CALIBRATION:IIM"
+
+
+def test_bootstrap_se_needs_a_majority_of_valid_replicates():
+    """Regression (review of stream E2): an SE from the few replicates on
+    which the estimator is defined is withheld (NO_SAMPLING_SE) when most
+    replicates fail; the failures are reported in <P>_boot_failed."""
+    x = np.random.default_rng(0).standard_normal((2, 400))
+    rec = sc._component_record(0.3, estimator="compute_NAS:legacy@v")
+    calls = {"n": 0}
+
+    def flaky(ts, _ev, fail_every):
+        calls["n"] += 1
+        if calls["n"] % fail_every:
+            raise ValueError("undefined on this resample")
+        return float(ts[0].mean())
+
+    def attach(fail_every, n_boot=20):
+        calls["n"] = 0
+        return sc._attach_bootstrap(
+            rec, lambda t, e: flaky(t, e, fail_every), x, None, n_boot, 0, None, 1.0)
+
+    all_ok = attach(1)  # every replicate valid
+    assert all_ok["boot_n"] == 20 and all_ok["boot_failed"] == 0
+    assert np.isfinite(all_ok["se"])
+    half = attach(2)  # every second replicate fails: 10 of 20 valid -> kept
+    assert half["boot_n"] == 10 and half["boot_failed"] == 10
+    assert np.isfinite(half["se"])
+    most = attach(4)  # 5 of 20 valid -> withheld
+    assert most["boot_n"] == 5 and most["boot_failed"] == 15
+    assert np.isnan(most["se"])
+    ev = E.ComponentEvidence("NAS", 0.3, 0.0, 0.1, se=most["se"], n_null=10,
+                             reference=0.3)
+    assert E.component_status(ev)[2] == E.REASON_NO_SAMPLING_SE
+    assert np.isnan(attach(1, n_boot=1)["se"])  # a single replicate has no SD
+    # precomputed IIM: the same rule on its bootstrap counts
+    info = {"defined": True, "Delta_Psi": 0.4, "Delta_Psi_bootstrap_se": 0.02,
+            "Delta_Psi_bootstrap_n": 4, "Delta_Psi_bootstrap_failed": 16}
+    iim = sc._iim_record(info, "circular_shift")
+    assert np.isnan(iim["se"]) and iim["boot_n"] == 4 and iim["boot_failed"] == 16
+    info.update(Delta_Psi_bootstrap_n=16, Delta_Psi_bootstrap_failed=4)
+    assert sc._iim_record(info, "circular_shift")["se"] == 0.02
+
+
+def test_margin_column_describes_the_deciding_channel():
+    """Regression (review of stream E2): <P>_margin is the presence margin of
+    the channel that decides the principle (the channel <P>_c and
+    <P>_c_lower describe), not the largest margin over the channels."""
+    proto = E.Protocol(necessity_set=("RAM",),
+                       channels={"RAM": ("behavioural_feedback", "covert_neural")})
+
+    def rec(estimate, se, channel):
+        r = sc._component_record(estimate, estimator="compute_RAM:x@v",
+                                 null_mean=0.0, null_sd=0.1, null_n=50,
+                                 null_family="onset_jitter", channel=channel)
+        r["se"] = se
+        return r
+
+    # behavioural: inconclusive (c = 0.5, se_c = 0.5: margin -0.57);
+    # covert: absent (c = 0.0, se_c = 0.01: margin -0.27, the larger one)
+    run = {"records": {"RAM": [rec(0.5, 0.5, "behavioural_feedback"),
+                               rec(0.0, 0.01, "covert_neural")]},
+           "bearer_id": "b", "substrate": None, "grain": None, "regime": {},
+           "joint": None, "n_node_sets": 1}
+    refs = {("RAM", ch): {"reference": 1.0, "reference_se": float("nan"),
+                          "scale": "excess"}
+            for ch in ("behavioural_feedback", "covert_neural")}
+    cols = sc._mpc_run_columns(run, proto, None, refs, 50, 0, 20, None)
+    assert cols["RAM_status"] == "UNDEFINED" and cols["MPC_reason"] == (
+        "INCONCLUSIVE:RAM")
+    assert cols["RAM_c"] == pytest.approx(0.5)
+    assert cols["RAM_margin"] == pytest.approx(cols["RAM_c_lower"] - 0.25)
+    assert cols["RAM_margin"] < -0.5
+    assert cols["RAM_channels"] == (
+        "behavioural_feedback:UNDEFINED,covert_neural:ABSENT")
 
 
 def test_evidence_options_are_validated(tmp_path):

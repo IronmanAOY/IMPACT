@@ -374,6 +374,47 @@ def test_block_bootstrap_keeps_bundle_lists_aligned():
                                        "feedback_values": [1.0]}, 20, 1, tr=tr))
 
 
+@pytest.mark.parametrize(
+    "tr,offset",
+    [
+        (0.1, 0.3),  # fractional onsets, nearest sample below
+        (0.1, 0.7),  # fractional onsets, nearest sample above (next block)
+        (2.0, 0.5),  # fMRI, TR 2 s, events on odd seconds: half-sample onsets
+        (0.004, -0.5),  # EEG-like grid, onsets half a sample before a sample
+    ],
+)
+def test_block_bootstrap_keeps_the_sample_of_off_grid_onsets(tr, offset):
+    """Regression (review of stream E2): events are assigned to blocks by
+    their nearest sample ``rint(onset / tr)``, the mapping of the estimators,
+    and keep it. With a continuous-time assignment an onset in the last half
+    sample of a block (or, with round-half-to-even, any half-sample onset
+    after an odd shift) was read from another source location: 3% of the
+    events at offset 0.7 and 52% of the odd-second events at TR 2 s."""
+    n_time = 600
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal((2, n_time))
+    samples = np.sort(rng.choice(np.arange(2, n_time - 2), size=120, replace=False))
+    onsets = (samples + offset) * tr
+    source = np.rint(onsets / tr).astype(int)
+    events = pd.DataFrame({"onset": onsets, "source": source,
+                           "offset": onsets / tr - source, "yoked_to": onsets})
+    n_total = 0
+    for ts_b, on_b in nulls.block_bootstrap(x, list(onsets), 17, 40, seed=2, tr=tr):
+        new_idx = np.rint(np.asarray(on_b) / tr).astype(int)
+        assert np.all((new_idx >= 0) & (new_idx < n_time))
+        assert set(np.round(ts_b[0, new_idx], 12)) <= set(np.round(x[0, source], 12))
+        n_total += new_idx.size
+    assert n_total > 0.8 * 120 * 40
+    # tables: the onset keeps its sample and its sub-sample offset, and an
+    # onset-valued yoked_to moves exactly like the onset it refers to
+    for ts_b, ev_b in nulls.block_bootstrap(x, events, 17, 10, seed=3, tr=tr):
+        new = ev_b["onset"].to_numpy()
+        new_idx = np.rint(new / tr).astype(int)
+        np.testing.assert_array_equal(ts_b[:, new_idx], x[:, ev_b["source"]])
+        np.testing.assert_allclose(new / tr - new_idx, ev_b["offset"], atol=1e-5)
+        np.testing.assert_array_equal(ev_b["yoked_to"].to_numpy(), new)
+
+
 def test_onset_valued_yoking_moves_with_its_block():
     x = np.zeros((1, 100))
     ev = pd.DataFrame({"onset": [10.0, 11.0, 50.0],

@@ -164,6 +164,16 @@ def test_impact_rule_never_attributes_from_missing_components():
     assert np.all(miss[det] == base[det])
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "spec v2 (V2-2) replaced the v1 null-SD/TOST status rule of "
+        "evidence.component_status by the construct-scale rule (reference "
+        "anchor and sampling SE required); bench.rules.component_status_z "
+        "still mirrors v1 and must be ported by the bench stream (remove this "
+        "marker then: strict, so the port makes it fail loudly)"
+    ),
+)
 def test_status_matches_evidence_layer_when_available():
     ev = pytest.importorskip("impact_pipeline.evidence")
     rng = np.random.default_rng(3)

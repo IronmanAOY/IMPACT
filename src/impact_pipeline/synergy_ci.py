@@ -175,6 +175,12 @@ MPC_BOOTSTRAP_NULL_OVERRIDES = {
     ("NAS", "capacity"): {"null_surrogates": 3},
     ("SRPI", "agency"): {"agency_null_permutations": 5},
 }
+# A bootstrap SE needs at least two valid replicates and at least this
+# fraction of the replicates valid: when the estimator is undefined on most
+# resamples, the SD of the few survivors is neither stable nor unbiased (the
+# failures are not random), so the component has no sampling SE
+# (NO_SAMPLING_SE). ``<P>_boot_failed`` reports the failed replicates.
+MPC_BOOTSTRAP_MIN_VALID_FRACTION = 0.5
 # MPC degree: capped power mean (p=0: geometric) of construct-scale components.
 MPC_DEGREE_P = 0.0
 MPC_DEGREE_CAP = 1.0
@@ -187,6 +193,7 @@ MPC_EVIDENCE_FIELDS = (
     "null_n",
     "se",
     "boot_n",
+    "boot_failed",
     "c",
     "c_se",
     "c_lower",
@@ -590,6 +597,13 @@ def _component_null_record(
     return rec
 
 
+def _bootstrap_se_usable(n_valid, n_failed):
+    """At least two valid replicates and MPC_BOOTSTRAP_MIN_VALID_FRACTION."""
+    n_valid, n_failed = int(n_valid), int(n_failed)
+    total = n_valid + n_failed
+    return n_valid >= 2 and n_valid >= MPC_BOOTSTRAP_MIN_VALID_FRACTION * total
+
+
 def _attach_bootstrap(rec, fn, ts, events, n_boot, seed, block_len, tr,
                       statistic=None):
     """Block-bootstrap sampling SE of a defined record's statistic."""
@@ -600,8 +614,14 @@ def _attach_bootstrap(rec, fn, ts, events, n_boot, seed, block_len, tr,
         tr=float(tr), statistic=statistic,
     )
     rec = dict(rec)
-    rec.update(se=float(res.se), boot_n=int(res.samples.size),
-               boot_failed=int(res.n_failed))
+    se = float(res.se)
+    if not _bootstrap_se_usable(res.samples.size, res.n_failed):
+        log.warning(
+            "bootstrap SE of %s withheld: %d of %d replicates failed "
+            "(NO_SAMPLING_SE)", rec["estimator"], int(res.n_failed), int(n_boot),
+        )
+        se = float("nan")
+    rec.update(se=se, boot_n=int(res.samples.size), boot_failed=int(res.n_failed))
     log.debug(
         "bootstrap SE (%s, n=%d, failed=%d, block=%d): se=%.6g",
         rec["estimator"], int(n_boot), int(res.n_failed), int(res.block_len),
@@ -633,15 +653,52 @@ def _iim_delta_psi(info):
 _NULL_NOT_RUN = "not_run"
 
 
-def _iim_record(iim_info, null_kind, cut_mode="bidirectional", nodes=None):
-    """IIM evidence on the integration-mass scale Delta_Psi (bits)."""
+# Declared IIM options (protocol / params) and the details field that records
+# the setting actually used; checked for every IIM result (a precomputed Hunter
+# reduction is computed without the protocol's options).
+_IIM_OPTION_FIELDS = {
+    "cut_mode": "cut_mode",
+    "tpm_estimator": "tpm_estimator",
+    "node_selection": "node_selection_rule",
+    "state_budget_policy": "state_budget_policy",
+}
+
+
+def _iim_option_mismatch(iim_info, declared, bearer):
+    """First declared IIM option that the result was not computed with."""
+    for key, field_name in _IIM_OPTION_FIELDS.items():
+        want = dict(declared or {}).get(key)
+        got = iim_info.get(field_name)
+        if want is not None and got is not None and str(got) != str(want):
+            return f"{key}={want}/{got}"
+    if "bearer_nodes" in iim_info:
+        got = iim_info.get("bearer_nodes")
+        got = None if got is None else tuple(sorted(int(i) for i in got))
+        want = None if bearer is None else tuple(sorted(int(i) for i in bearer))
+        if got != want:
+            return "bearer_nodes"
+    return None
+
+
+def _iim_record(iim_info, null_kind, cut_mode="bidirectional", nodes=None,
+                declared=None, bearer=None, tr=None):
+    """
+    IIM evidence on the integration-mass scale Delta_Psi (bits). A result
+    computed with other options than the declared ones (``declared``: IIM
+    mode options, ``bearer``: IIM bearer nodes) is undefined
+    (``iim_option_mismatch:<option>``), never judged under the protocol.
+    """
     defined = bool(iim_info.get("defined", False))
     null_n = int(iim_info.get("IIM_null_n", 0) or 0)
     version = iim_info.get("iim_algorithm_version") or ESTIMATOR_VERSIONS["IIM"]
     cut = iim_info.get("cut_mode") or cut_mode
+    reason = iim_info.get("undefined_reason")
+    mismatch = _iim_option_mismatch(iim_info, declared, bearer) if defined else None
+    if mismatch is not None:
+        defined, reason = False, f"iim_option_mismatch:{mismatch}"
     rec = _component_record(
         _iim_delta_psi(iim_info) if defined else np.nan,
-        reason=iim_info.get("undefined_reason"),
+        reason=reason,
         estimator=mpc_evidence.estimator_id("IIM", cut, version),
         null_mean=iim_info.get("Delta_Psi_null_mean") if null_n else np.nan,
         null_sd=iim_info.get("Delta_Psi_null_sd") if null_n else np.nan,
@@ -656,22 +713,35 @@ def _iim_record(iim_info, null_kind, cut_mode="bidirectional", nodes=None):
         ),
         nodes=nodes,
     )
-    # The registry regime of IIM is the subsystem actually scored.
+    # The registry regime of IIM is the subsystem and the series actually
+    # scored: after a time subsampling of the IIM input (iim_max_timepoints)
+    # its length is n_transitions + lag and its sample interval step * tr.
     selected = iim_info.get("selected_nodes")
+    n_time = iim_info.get("n_time_used")
+    if n_time is None and iim_info.get("n_transitions") is not None:
+        n_time = int(iim_info["n_transitions"]) + int(iim_info.get("lag_trs") or 1)
+    step = iim_info.get("iim_time_step")
     rec["regime"] = {
         k: v for k, v in (
             ("n_nodes", None if selected is None else len(selected)),
             ("bins", iim_info.get("bins_used")),
+            ("n_time", n_time),
+            ("tr", None if (tr is None or not step) else float(tr) * int(step)),
         ) if v is not None
     }
     rec["null_attempted"] = rec["null_reason"] != _NULL_NOT_RUN and bool(
         iim_info.get("IIM_null_undefined_reason") or null_n
     )
     se = _as_float(iim_info.get("Delta_Psi_bootstrap_se"))
-    if np.isfinite(se):
+    boot_n = int(iim_info.get("Delta_Psi_bootstrap_n", 0) or 0)
+    boot_failed = int(iim_info.get("Delta_Psi_bootstrap_failed", 0) or 0)
+    if boot_n or boot_failed:
+        rec["boot_n"], rec["boot_failed"] = boot_n, boot_failed
+    if np.isfinite(se) and (
+        "Delta_Psi_bootstrap_n" not in iim_info
+        or _bootstrap_se_usable(boot_n, boot_failed)
+    ):
         rec["se"] = se
-        rec["boot_n"] = int(iim_info.get("Delta_Psi_bootstrap_n", 0) or 0)
-        rec["boot_failed"] = int(iim_info.get("Delta_Psi_bootstrap_failed", 0) or 0)
     return rec
 
 
@@ -853,7 +923,8 @@ def _joint_dependence_label(jd, n_sets):
 def _item_regime(rec):
     """
     Per-component regime for the registry: the size of the component's bearer
-    node set, or for IIM the subsystem actually scored (nodes and bins).
+    node set, or for IIM the subsystem and series actually scored (nodes,
+    bins and, after time subsampling, n_time and tr).
     """
     regime = {} if rec["nodes"] is None else {"n_nodes": len(rec["nodes"])}
     regime.update(rec.get("regime") or {})
@@ -940,13 +1011,16 @@ def _mpc_run_columns(run, proto, registry, refs, null_k, null_seed, boot_k,
         rec = next((r for r in recs if r["channel"] == ch), recs[0] if recs else None)
         ref = refs.get((k, ch), {}) if ch is not None else {}
         cols[f"{k}_status"] = verdict.component_status.get(k, undefined).value
-        cols[f"{k}_margin"] = float(verdict.margins.get(k, nan))
+        # presence margin of the deciding channel (the one c, c_lower, ...
+        # describe), not the largest margin over the channels
+        cols[f"{k}_margin"] = nan if a is None else float(a.margin_present)
         cols[f"{k}_estimate"] = nan if rec is None else rec["estimate"]
         cols[f"{k}_null_mean"] = nan if rec is None else rec["null_mean"]
         cols[f"{k}_null_sd"] = nan if rec is None else rec["null_sd"]
         cols[f"{k}_null_n"] = 0 if rec is None else int(rec["null_n"])
         cols[f"{k}_se"] = nan if rec is None else rec["se"]
         cols[f"{k}_boot_n"] = 0 if rec is None else int(rec["boot_n"])
+        cols[f"{k}_boot_failed"] = 0 if rec is None else int(rec["boot_failed"])
         cols[f"{k}_c"] = nan if a is None else float(a.c)
         cols[f"{k}_c_se"] = nan if a is None else float(a.se)
         cols[f"{k}_c_lower"] = nan if a is None else float(a.lower)
@@ -1178,6 +1252,9 @@ def _iim_worker_from_path(
             **common,
             **null_kwargs,
         )
+        # the series IIM actually scored (for the registry regime)
+        iim_info = dict(iim_info, iim_time_step=int(step),
+                        n_time_used=int(ts_iim.shape[1]))
         if int(iim_bootstrap_n) > 0 and bool(iim_info.get("defined", False)):
             iim_info = _iim_bootstrap(
                 iim_info, ts_iim, common, int(iim_bootstrap_n),
@@ -1528,22 +1605,34 @@ def compute_synergy_ci(
       (``nulls.component_bootstrap_se``; ``bootstrap_block_len`` samples,
       default ``ceil(sqrt(n_time))``). With ``K_b = 0`` every empirical
       component is UNDEFINED (``NO_SAMPLING_SE:<P>``) and the verdict is
-      UNDETERMINED (the honest default). Precomputed IIM results carry an SE
-      only with ``Delta_Psi_bootstrap_se``.
+      UNDETERMINED (the honest default). The SE also stays undefined when
+      fewer than two replicates, or fewer than
+      :data:`MPC_BOOTSTRAP_MIN_VALID_FRACTION` of them, are valid (the
+      estimator is undefined on most resamples). Precomputed IIM results
+      carry an SE only with ``Delta_Psi_bootstrap_se``.
     - Reference anchors come from the protocol only (``ci_reference`` is used
       for the legacy CI): by default the cohort high-state mean excess
       ``estimate - null_mean`` per component and channel (subject means
-      first; its SE enters ``se_c`` with >= 2 subjects).
+      first; its SE enters ``se_c`` with >= 2 subjects). The high-state runs
+      are part of their own reference (their ``c`` averages 1 by
+      construction, and a component that is not above its null in the high
+      state has no construct scale, ``INVALID_ANCHORS``), so their verdicts
+      are not independent tests of necessity: tests among report-positive
+      (high-state) episodes need an external reference (``{"kind":
+      "external", ...}``, e.g. from MPC-Bench).
     - Single-source constraint: when the components of the necessity set come
       from different node sets (``bearer_nodes``), ``evidence.joint_dependence``
       is run per run with ``null_surrogates`` circular-shift surrogates;
-      without dependence above null (or with ``K = 0``) the verdict is
-      UNDETERMINED (``SOURCE_INCOHERENT``).
+      without dependence above null the verdict is UNDETERMINED
+      (``SOURCE_INCOHERENT``; ``:UNTESTED`` with ``K = 0``,
+      ``:INSUFFICIENT_SURROGATES`` when ``1 / (K + 1)`` exceeds alpha).
     - ``applicability_registry`` (ApplicabilityRegistry, dict or JSON path):
       evidence from estimator versions not validated for the substrate
       (``modality``), grain (``atlas``) and regime (``modality``, ``n_time``,
-      ``n_nodes`` of the component's bearer, ``tr``, ``bins``) is UNDEFINED
-      (``ESTIMATOR_NOT_VALIDATED``).
+      ``n_nodes`` of the component's bearer, ``tr``, ``bins``; for IIM the
+      scored subsystem and series: selected nodes, bins used and, after
+      ``iim_max_timepoints`` subsampling, its length and sample interval) is
+      UNDEFINED (``ESTIMATOR_NOT_VALIDATED``).
 
     Columns: ``MPC_verdict``, ``MPC_reason`` (``;``-joined reason codes),
     ``MPC_degree`` (MPC_CONSISTENT rows only, see :func:`assemble_mpc_degree`),
@@ -1553,7 +1642,8 @@ def compute_synergy_ci(
     ``<P>`` (for the channel that decides its status), ``<P>_status``,
     ``<P>_margin`` (``c_lower - z``), ``<P>_margin_absent`` (``delta -
     c_upper``), ``<P>_estimate``, ``<P>_null_mean``, ``<P>_null_sd``,
-    ``<P>_null_n``, ``<P>_se``, ``<P>_boot_n``, ``<P>_c``, ``<P>_c_se``,
+    ``<P>_null_n``, ``<P>_se``, ``<P>_boot_n``, ``<P>_boot_failed``,
+    ``<P>_c``, ``<P>_c_se``,
     ``<P>_c_lower``, ``<P>_c_upper``, ``<P>_reference`` (reference excess),
     ``<P>_reference_se``, ``<P>_estimator`` (``compute_<P>:<mode>@<version>``)
     and ``<P>_channels``. IIM evidence is on the integration-mass scale
@@ -2429,6 +2519,7 @@ def compute_synergy_ci(
                     iim_info, mpc_null_kinds["IIM"],
                     cut_mode=_mode_of("IIM", mpc_modes["IIM"]),
                     nodes=_nodes("IIM", n_nodes_run),
+                    declared=mpc_modes["IIM"], bearer=mpc_bearers["IIM"], tr=tr,
                 )]
                 if null_k > 0 and iim_defined:
                     # Calibrated canonical IIM (bits); never the raw ratio.

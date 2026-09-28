@@ -55,8 +55,9 @@ Sampling uncertainty (the ``se`` of the evidence layer) comes from a
 moving-block bootstrap over time (:func:`block_bootstrap`): blocks of
 ``block_len`` samples are drawn with replacement and concatenated, and the
 events are re-indexed with their blocks (an event moves with the block that
-contains its onset; events of undrawn blocks are dropped, events of blocks
-drawn twice are duplicated). :func:`component_bootstrap_se` turns any
+contains its nearest sample, ``rint(onset / tr)`` as in the estimators;
+events of undrawn blocks are dropped, events of blocks drawn twice are
+duplicated). :func:`component_bootstrap_se` turns any
 estimator into a bootstrap SE ``(se, samples, n_failed, block_len)``.
 """
 from __future__ import annotations
@@ -530,19 +531,43 @@ def _block_plan(n_time, block_len, rng):
     return plan
 
 
+# The sub-sample offset of a moved onset is shrunk by this factor, so that an
+# onset exactly half a sample from the grid keeps its nearest sample under the
+# estimators' round-half-to-even mapping (``np.rint``) after an odd shift.
+_SUBSAMPLE_SHRINK = 1.0 - 1e-6
+
+
+def _onset_samples(values, tr):
+    """Nearest sample index of onsets in seconds (as the estimators map them)."""
+    with np.errstate(invalid="ignore"):
+        return np.rint(np.asarray(values, dtype=float) / tr)
+
+
+def _move_onsets(values, samples, shift, tr):
+    """
+    Onsets moved by ``shift`` samples: the nearest sample moves exactly (also
+    for half-sample offsets), the sub-sample offset is kept.
+    """
+    return (samples + shift) * tr + (values - samples * tr) * _SUBSAMPLE_SHRINK
+
+
 def _reindex_onsets(onsets, plan, tr):
     """
-    Onsets (seconds) moved with their blocks: an onset in
-    ``[s*tr, (s+length)*tr)`` of a drawn block maps to ``onset - s*tr +
-    target*tr``. Returns ``(new_onsets, source_index, block_index)`` sorted by
-    the new onset (stable).
+    Onsets (seconds) moved with their blocks. An onset belongs to the drawn
+    block that contains its nearest sample ``k = rint(onset / tr)`` (the
+    estimators' mapping), i.e. ``s <= k < s + length``, and moves by
+    ``target - s`` samples, so the resampled series at its new nearest sample
+    equals the original series at ``k`` (also for fractional and half-sample
+    onsets). Returns ``(new_onsets, source_index, block_index)`` sorted by the
+    new onset (stable).
     """
     arr = np.asarray(onsets, dtype=float).reshape(-1)
+    k = _onset_samples(arr, tr)
+    finite = np.isfinite(arr) & np.isfinite(k)
     new, src, blk = [], [], []
     for b, (s, d, length) in enumerate(plan):
-        lo, hi = s * tr, (s + length) * tr
-        idx = np.flatnonzero(np.isfinite(arr) & (arr >= lo) & (arr < hi))
-        new.append(arr[idx] - lo + d * tr)
+        idx = np.flatnonzero(finite & (k >= s) & (k < s + length))
+        new.append(_move_onsets(arr[idx], k[idx], d - s, tr))
         src.append(idx)
         blk.append(np.full(idx.size, b, dtype=int))
     new = np.concatenate(new) if new else np.empty(0)
@@ -602,7 +627,8 @@ def _bootstrap_table(df, plan, tr, onset_col):
         out["event_id"] = new_ids
     elif "yoked_to" in out.columns:
         # yoked_to holds the onset (s) of the self-caused event: it moves with
-        # the replay's block when it lies in the same source block.
+        # the replay's block when its nearest sample lies in the same source
+        # block (moved exactly like the self-caused event's onset).
         moved = []
         for i, (y, b) in enumerate(zip(out["yoked_to"], blk)):
             yv = pd.to_numeric(pd.Series([y]), errors="coerce").iloc[0]
@@ -610,8 +636,9 @@ def _bootstrap_table(df, plan, tr, onset_col):
                 moved.append(y)
                 continue
             s, d, length = plan[int(b)]
-            if s * tr <= yv < (s + length) * tr:
-                moved.append(float(yv - s * tr + d * tr))
+            ky = float(_onset_samples(yv, tr))
+            if s <= ky < s + length:
+                moved.append(float(_move_onsets(float(yv), ky, d - s, tr)))
             else:
                 moved.append(np.nan)
                 keep[i] = False
@@ -672,10 +699,12 @@ def block_bootstrap(
     range of the statistic and than its event windows.
 
     ``events`` (onsets in seconds, sample interval ``tr``) are re-indexed
-    consistently: an event moves with the block that contains its onset, so
-    events of undrawn blocks are dropped and events of blocks drawn twice are
-    duplicated. DataFrames keep all columns (``event_id`` values get a
-    ``@b<k>`` block-copy suffix and ``yoked_to`` follows the copy of its
+    consistently: an event moves with the block that contains its nearest
+    sample ``rint(onset / tr)`` (the estimators' mapping) and keeps that
+    sample, also for fractional and half-sample onsets, so events of undrawn
+    blocks are dropped and events of blocks drawn twice are duplicated.
+    DataFrames keep all columns (``event_id`` values get a ``@b<k>``
+    block-copy suffix and ``yoked_to`` follows the copy of its
     self-caused event in the same block copy; an onset-valued ``yoked_to``
     moves with its block); a replay whose self-caused event was not drawn in
     the same block copy is dropped, so yoked pairs stay intact (the SRPI-agency

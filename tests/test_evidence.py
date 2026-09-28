@@ -516,6 +516,15 @@ def test_protocol_json_round_trip_and_hash(tmp_path):
     assert proto.estimator_options("NAS")["mode"] == "capacity"
     with pytest.raises(Exception):
         proto.alpha = 0.5
+    # read-only all the way down (review of stream E2): nested reference and
+    # estimator values cannot be changed, so the hash cannot drift
+    h = proto.hash
+    with pytest.raises(TypeError):
+        proto.reference["values"]["NAS"] = 9.0
+    with pytest.raises((TypeError, AttributeError)):
+        proto.estimators["NAS"]["workspace_nodes"].append(9)
+    assert proto.hash == h
+    assert proto.estimator_options("NAS")["workspace_nodes"] == [0, 1, 2]
 
 
 @pytest.mark.parametrize(
@@ -846,6 +855,32 @@ def test_joint_dependence_each_criterion_rejects_a_partial_patchwork():
     assert total["dependent"]
     assert not each["dependent"] and each["reason"] == "SOURCE_INCOHERENT"
     assert [b["significant"] for b in each["per_block"]] == [True, True, False]
+
+
+def test_joint_dependence_with_too_few_surrogates_is_not_a_finding():
+    """Regression (review of stream E2): with K surrogates the smallest p is
+    1 / (K + 1); for K < 19 (alpha 0.05) a strongly coupled system (z ~ 40)
+    was reported as SOURCE_INCOHERENT as if tested. It is now
+    INSUFFICIENT_SURROGATES (still not dependent: the verdict stays
+    UNDETERMINED, with an honest reason)."""
+    x = _modules()
+    few = E.joint_dependence(x, SETS, n_surrogates=10)
+    assert few["p"] == pytest.approx(1 / 11) and few["z"] > 5
+    assert not few["dependent"] and few["reason"] == "INSUFFICIENT_SURROGATES"
+    assert "INSUFFICIENT_SURROGATES" in few["flags"] and few["min_surrogates"] == 19
+    ev = {p: [_ev(p, 1.0, nodes=SETS[p])] for p in SETS}
+    v = E.mpc_verdict(ev, necessity_set=list(SETS), joint_dependence=few)
+    assert v.reasons == ["SOURCE_INCOHERENT:INSUFFICIENT_SURROGATES"]
+    # K = 19 reaches alpha = 0.05 exactly
+    ok = E.joint_dependence(x, SETS, n_surrogates=19)
+    assert ok["dependent"] and ok["p"] == pytest.approx(0.05) and ok["reason"] is None
+    # Holm over 3 blocks ("each") needs 1 / (K + 1) <= alpha / 3: K >= 59
+    each = E.joint_dependence(x, SETS, n_surrogates=40, criterion="each")
+    assert each["reason"] == "INSUFFICIENT_SURROGATES" and each["min_surrogates"] == 59
+    assert E.joint_dependence(x, SETS, n_surrogates=59, criterion="each")["dependent"]
+    # an independent system with enough surrogates is still a finding
+    indep = E.joint_dependence(_modules(couplings=(0, 0)), SETS, n_surrogates=19)
+    assert indep["reason"] == "SOURCE_INCOHERENT"
 
 
 def test_joint_dependence_overlapping_and_degenerate_sets():
