@@ -19,15 +19,20 @@ in ``RULE_PROPERTIES``:
 ``impute``     missing components are mean-imputed (learned classifier)
 ``kleene``     three-valued: missing is UNDEFINED under strong Kleene AND
 
-The IMPaCT rule has two forms. :func:`rule_impact` (v1 status rule) works
-on null-standardised margins ``z = (estimate - null_mean) / null_sd``:
-PRESENT if ``z - z_{1-alpha} se > z_present``, ABSENT if
+The IMPaCT rule has two forms. :func:`rule_impact` (legacy v1 status rule,
+a comparator only) works on null-standardised margins
+``z = (estimate - null_mean) / null_sd``: PRESENT if
+``z - z_{1-alpha} se > z_present``, ABSENT if
 ``|z| + z_{1-alpha} se <= delta_equiv`` (TOST), else UNDEFINED.
 :func:`rule_impact_c` (v2, spec V2-2) works on the two-anchor construct scale
 ``c = (m - nu) / (rho - nu)`` with a genuine sampling SE of ``c``: PRESENT if
 the one-sided ``1 - alpha`` lower bound of ``c`` exceeds ``z_j`` (default
 0.25), ABSENT if the upper bound is below ``delta_j`` (default 0.10), else
-UNDEFINED; a missing or zero SE, or invalid anchors, is UNDEFINED. Both
+UNDEFINED; a missing or zero SE, or invalid anchors, is UNDEFINED. An SE
+from few replicates (delete-a-group jackknife with ``G`` groups) declares its
+degrees of freedom (``G - 1``); the bounds then use the Student ``t`` quantile
+with the Welch-Satterthwaite degrees of freedom of ``se_c``, exactly as
+``impact_pipeline.evidence.component_assessment`` with ``se_df``. Both
 verdicts are the strong-Kleene AND over the necessity set.
 """
 
@@ -38,6 +43,7 @@ from typing import Callable, Dict, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+from scipy.special import stdtrit
 from scipy.stats import norm
 
 MPC_CONSISTENT = "MPC_CONSISTENT"
@@ -420,10 +426,12 @@ def component_status_z(
     """
     Three-valued component status from null-standardised margins ``z`` (and
     SEs in null-SD units): PRESENT / ABSENT (TOST) / UNDEFINED, with NaN
-    undefined. Mirrors ``evidence.component_status`` with null_mean = 0,
-    null_sd = 1, including its parameter checks (finite thresholds,
-    ``0 <= delta_equiv <= z_present`` so PRESENT and ABSENT cannot overlap,
-    ``0 < alpha <= 0.5``) and an UNDEFINED status for a negative SE.
+    undefined. This is the superseded v1 status rule (null-SD units, no
+    reference anchor), kept only for the legacy ``impact`` comparator of the
+    rule audit; the evidence layer uses the v2 construct-scale rule, mirrored
+    by :func:`component_status_c`. Parameter checks: finite thresholds,
+    ``0 <= delta_equiv <= z_present`` (PRESENT and ABSENT cannot overlap),
+    ``0 < alpha <= 0.5``; a negative SE is UNDEFINED.
     """
     z_present, delta_equiv, alpha = float(z_present), float(delta_equiv), float(alpha)
     if not (np.isfinite(z_present) and np.isfinite(delta_equiv)):
@@ -485,6 +493,8 @@ def construct_scale(
     null_sd=None,
     n_null=None,
     se_reference=None,
+    se_df=None,
+    return_df=False,
 ):
     """
     Two-anchor construct scale ``c = (m - nu) / (rho - nu)`` and its SE
@@ -497,7 +507,11 @@ def construct_scale(
     ``se_estimate`` is missing, non-finite, zero or negative (spec V2-2:
     ``NO_SAMPLING_SE``; the Monte-Carlo error of the anchors never stands in
     for it; exact known-TPM values use ``exact=True`` in
-    :func:`component_status_c`). Returns ``(c, se_c)``.
+    :func:`component_status_c`). Returns ``(c, se_c)``, or ``(c, se_c, df)``
+    with ``return_df``: the Welch-Satterthwaite degrees of freedom
+    ``se_df (se_c^2 / s_m^2)^2`` of ``se_c`` (``s_m = se_m / (rho - nu)``;
+    ``se_df`` = degrees of freedom of the sampling SE, e.g. jackknife groups
+    - 1), infinite where ``se_df`` is missing (normal quantile).
     """
     m, nu, rho = np.broadcast_arrays(
         *(np.asarray(v, dtype=float) for v in (estimate, null_mean, reference))
@@ -517,12 +531,35 @@ def construct_scale(
         se_m = np.where(np.isfinite(se_m) & (se_m > 0), se_m, np.nan)
     sd0 = _arr(null_sd, 0.0)
     k = _arr(n_null, np.inf)
-    with np.errstate(invalid="ignore", divide="ignore"):
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
         se_nu = np.where(np.isfinite(k) & (k > 0), sd0 / np.sqrt(k), 0.0)
         se_rho = _arr(se_reference, 0.0)
         var = (se_m**2 + (1.0 - c) ** 2 * se_nu**2 + c**2 * se_rho**2) / span**2
         se_c = np.where(ok, np.sqrt(var), np.nan)
-    return c, se_c
+        if not return_df:
+            return c, se_c
+        dfs = _arr(se_df, np.nan)
+        s_m2 = se_m**2 / span**2
+        ratio = var / s_m2
+        df = np.where(
+            np.isfinite(dfs) & (dfs > 0) & np.isfinite(s_m2) & (s_m2 > 0),
+            dfs * ratio * ratio,
+            np.inf,
+        )
+    return c, se_c, df
+
+
+def one_sided_quantile(alpha: float, df=None):
+    """``1 - alpha`` quantile: Student ``t`` with ``df`` degrees of freedom
+    (element-wise), the normal quantile where ``df`` is None or infinite."""
+    zc = float(norm.ppf(1.0 - float(alpha)))
+    if df is None:
+        return zc
+    d = np.asarray(df, dtype=float)
+    q = np.full(d.shape, zc)
+    fin = np.isfinite(d) & (d > 0)
+    q[fin] = stdtrit(d[fin], 1.0 - float(alpha))
+    return q
 
 
 def component_status_c(
@@ -532,14 +569,17 @@ def component_status_c(
     delta_absent=C_ABSENT_DEFAULT,
     alpha: float = 0.05,
     exact=False,
+    df=None,
 ) -> np.ndarray:
     """
     v2 component status on the construct scale (spec V2-2): PRESENT if
-    ``c - z_{1-alpha} se > z_present``, ABSENT if ``c + z_{1-alpha} se <
-    delta_absent`` (this includes estimates credibly *below* the null), else
-    UNDEFINED. A missing, non-finite or zero SE is UNDEFINED (no sampling SE)
-    unless ``exact`` (known-TPM computations: the value is exact, SE 0).
-    ``z_present`` / ``delta_absent`` may be per-column arrays (principles);
+    ``c - q se > z_present``, ABSENT if ``c + q se < delta_absent`` (this
+    includes estimates credibly *below* the null), else UNDEFINED, with
+    ``q = z_{1-alpha}`` or, where ``df`` (degrees of freedom of ``se``, see
+    :func:`construct_scale`) is finite, ``q = t_{1-alpha, df}``. A missing,
+    non-finite or zero SE is UNDEFINED (no sampling SE) unless ``exact``
+    (known-TPM computations: the value is exact, SE 0). ``z_present`` /
+    ``delta_absent`` may be per-column arrays (principles);
     ``delta_absent <= z_present`` is required (exclusivity). A scalar ``c``
     gives a scalar status.
     """
@@ -556,7 +596,9 @@ def component_status_c(
     ex = np.broadcast_to(np.asarray(exact, dtype=bool), c.shape)
     se = np.where(ex & np.isfinite(c), 0.0, se)
     valid = np.isfinite(c) & np.isfinite(se) & ((se > 0) | ex)
-    zc = norm.ppf(1.0 - float(alpha))
+    zc = one_sided_quantile(
+        alpha, None if df is None else np.broadcast_to(np.asarray(df, float), c.shape)
+    )
     with np.errstate(invalid="ignore"):
         present = valid & ((c - zc * se) > zp)
         absent = valid & ~present & ((c + zc * se) < da)
@@ -574,21 +616,25 @@ def rule_impact_c(
     delta_absent=C_ABSENT_DEFAULT,
     alpha: float = 0.05,
     exact=False,
+    df=None,
 ) -> RuleOutput:
     """
     IMPaCT rule, v2 (construct scale): statuses by
-    :func:`component_status_c`, strong-Kleene AND over ``necessity_set``.
-    Score = the smallest one-sided lower bound ``c - z_{1-alpha} se`` over
-    the necessity set (NaN when any is undefined), a confidence for
-    risk-coverage curves.
+    :func:`component_status_c` (``df``: degrees of freedom of ``se``),
+    strong-Kleene AND over ``necessity_set``. Score = the smallest one-sided
+    lower bound ``c - q se`` over the necessity set (NaN when any is
+    undefined), a confidence for risk-coverage curves.
     """
     c = as_component_matrix(C)
     se_arr = np.broadcast_to(np.asarray(se, dtype=float), c.shape)
+    df_arr = None if df is None else np.broadcast_to(np.asarray(df, float), c.shape)
     idx = [PRINCIPLE_INDEX[p] for p in necessity_set]
-    status = component_status_c(c, se_arr, z_present, delta_absent, alpha, exact)
+    status = component_status_c(
+        c, se_arr, z_present, delta_absent, alpha, exact, df=df_arr
+    )
     status = status[:, idx]
     dec = kleene_and_rows(status)
-    zc = norm.ppf(1.0 - float(alpha))
+    zc = one_sided_quantile(alpha, df_arr)
     with np.errstate(invalid="ignore"):
         lower = (c - zc * se_arr)[:, idx]
     score = np.where(np.all(np.isfinite(lower), axis=1), lower.min(axis=1), np.nan)

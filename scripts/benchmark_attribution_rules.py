@@ -145,6 +145,11 @@ def build_parser():
     ap.add_argument("--metrics", default=",".join(A.PRINCIPLES))
     ap.add_argument("--null-surrogates", type=int, default=19)
     ap.add_argument("--se-groups", type=int, default=5)
+    ap.add_argument(
+        "--protocol",
+        default=None,
+        help="protocol of the per-system verdicts (as run_bench --protocol)",
+    )
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--confirmatory", action="store_true")
     ap.add_argument("--freeze-tag", default=None)
@@ -187,6 +192,7 @@ def _main(args) -> int:
             provenance=prov,
             confirmatory=args.confirmatory,
             se_groups=args.se_groups,
+            protocol=RB.resolve_protocol_arg(args.protocol),
         )
         records = read_records(est_dir)
     else:

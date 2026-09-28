@@ -26,6 +26,15 @@ run on development seeds for every family before the freeze.
 
 The estimators are imported lazily; ``impact_pipeline.evidence`` (verdicts)
 and optional estimator modes are used when available and recorded.
+
+Verdicts are judged under the bench protocol (``--protocol``; default: the
+repository's ``protocols/mpc_bench_v1.json`` when present, ``none`` to use
+the evidence layer's default protocol without a reference anchor): its
+external reference (the nominal positive control's excess over its null on
+development seeds, :mod:`impact_pipeline.bench.reference`) anchors the
+construct scale, and the jackknife SEs (``--se-groups G``, ``G - 1`` degrees
+of freedom) are the sampling SEs. Without ``--null-surrogates``,
+``--se-groups`` or a reference every verdict is UNDETERMINED.
 """
 
 from __future__ import annotations
@@ -93,6 +102,7 @@ BOLD_MIN_DURATION_SEC = 600.0
 RESULTS_JSONL = "results.jsonl"
 RESULTS_CSV = "results.csv"
 MANIFEST = "run_manifest.json"
+DEFAULT_PROTOCOL = REPO_ROOT / "protocols" / "mpc_bench_v1.json"
 LZC_SEGMENT_SAMPLES = 1000
 
 
@@ -480,9 +490,12 @@ def run_task(
     markers: bool = True,
     with_verdict: bool = True,
     se_groups: int = 0,
+    protocol: Optional[dict] = None,
 ) -> dict:
     """Simulate and score one task; errors are recorded, not raised. Verdict
-    names are the v2 names (MPC_CONSISTENT / EXCLUDED / UNDETERMINED)."""
+    names are the v2 names (MPC_CONSISTENT / EXCLUDED / UNDETERMINED);
+    ``protocol`` (an ``evidence.Protocol`` dict) is the protocol of the
+    verdict (see :func:`impact_pipeline.bench.export.evidence_verdict`)."""
     from impact_pipeline.bench.export import evidence_verdict, run_in_memory
 
     rec = {
@@ -533,10 +546,12 @@ def run_task(
         if markers:
             rec["markers"] = _markers(system)
         if with_verdict:
-            protocol = (
+            label = (
                 f"{BENCH_VERSION}:{GENERATOR_VERSION}:nulls{int(null_surrogates)}"
             )
-            rec["verdict"] = evidence_verdict(res, system.meta, protocol_id=protocol)
+            rec["verdict"] = evidence_verdict(
+                res, system.meta, protocol_id=label, protocol=protocol
+            )
     except Exception as exc:
         rec["status"] = "error"
         rec["error"] = f"{type(exc).__name__}: {exc}"
@@ -599,6 +614,13 @@ def flatten_record(rec: dict) -> dict:
     verdict = rec.get("verdict") or {}
     row["verdict"] = verdict.get("verdict")
     row["verdict_reasons"] = ";".join(verdict.get("reasons") or [])
+    row["protocol_hash"] = verdict.get("protocol_hash")
+    for p, st in (verdict.get("component_status") or {}).items():
+        row[f"{p}_status"] = st
+    for p, c in (verdict.get("c") or {}).items():
+        row[f"{p}_c"] = c
+        row[f"{p}_c_lower"] = (verdict.get("c_lower") or {}).get(p)
+        row[f"{p}_c_upper"] = (verdict.get("c_upper") or {}).get(p)
     timing = rec.get("timing") or {}
     row["simulate_s"] = timing.get("simulate_s")
     row["total_s"] = timing.get("total_s")
@@ -722,14 +744,23 @@ def run_tasks(
     markers: bool = True,
     confirmatory: bool = False,
     se_groups: int = 0,
+    protocol=None,
 ) -> List[dict]:
     """
     Run tasks (skipping task ids already completed in ``out_dir``) and append
     records to ``results.jsonl``; ``results.csv`` and ``run_manifest.json`` are
     rewritten at the end. Returns the records produced by this call.
     ``confirmatory=True`` requires provenance whose ``code_version`` came from
-    :func:`confirmatory_guard` (frozen, clean code).
+    :func:`confirmatory_guard` (frozen, clean code). ``protocol``
+    (``evidence.Protocol``, dict or JSON path) is the verdict protocol; its
+    hash is recorded in the manifest and in every verdict.
     """
+    proto_dict = proto_hash = None
+    if protocol is not None:
+        from impact_pipeline.evidence import resolve_protocol
+
+        proto = resolve_protocol(protocol)
+        proto_dict, proto_hash = proto.to_dict(), proto.hash
     check_seed_policy(tasks, confirmatory)
     prov = provenance if provenance is not None else collect_provenance()
     if confirmatory and not (prov.get("code_version") or {}).get("confirmatory"):
@@ -774,6 +805,7 @@ def run_tasks(
                             small_prov,
                             markers,
                             se_groups=se_groups,
+                            protocol=proto_dict,
                         )
                     )
         else:
@@ -799,6 +831,7 @@ def run_tasks(
                         markers,
                         True,
                         se_groups,
+                        proto_dict,
                     )
                     for t in todo
                 ]
@@ -816,6 +849,8 @@ def run_tasks(
             "confirmatory": bool(confirmatory),
             "splits": sorted({split_of(t) for t in tasks}),
             "se_groups": int(se_groups),
+            "protocol": proto_dict,
+            "protocol_hash": proto_hash,
         }
     )
     (out / MANIFEST).write_text(
@@ -1004,6 +1039,19 @@ def timing_report(
 # ---------------------------------------------------------------------------
 
 
+def resolve_protocol_arg(text):
+    """``--protocol``: a JSON path, ``none``, or (None) the repository's
+    ``protocols/mpc_bench_v1.json`` when it exists."""
+    if text is None:
+        return str(DEFAULT_PROTOCOL) if DEFAULT_PROTOCOL.is_file() else None
+    if str(text).strip().lower() == "none":
+        return None
+    path = Path(text).expanduser()
+    if not path.is_file():
+        raise ValueError(f"protocol not found: {path}")
+    return str(path.resolve())
+
+
 def parse_seeds(text: str) -> List[int]:
     """'0-19' or '0,3,7' or '10000-10019'."""
     out = []
@@ -1066,6 +1114,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="jackknife groups for component SEs (0 = off, else >= 2)",
+    )
+    ap.add_argument(
+        "--protocol",
+        default=None,
+        help=(
+            "verdict protocol JSON (evidence.Protocol with the bench reference "
+            "anchor); default protocols/mpc_bench_v1.json of the checkout when "
+            "present; 'none' = the evidence layer's default protocol (no anchor)"
+        ),
     )
     ap.add_argument(
         "--no-markers", action="store_true", help="skip LZc / Phi_R markers"
@@ -1275,6 +1332,12 @@ def _main(args, argv: List[str]) -> int:
     code = confirmatory_guard(REPO_ROOT, args.freeze_tag) if args.confirmatory else None
     prov = collect_provenance(vars(args), code_version=code)
     metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
+    protocol = resolve_protocol_arg(args.protocol)
+    if protocol is not None and not args.se_groups:
+        log.warning(
+            "no --se-groups: components have no sampling SE (NO_SAMPLING_SE), "
+            "so every verdict is UNDETERMINED"
+        )
     recs = run_tasks(
         tasks,
         args.out,
@@ -1287,6 +1350,7 @@ def _main(args, argv: List[str]) -> int:
         markers=not args.no_markers,
         confirmatory=args.confirmatory,
         se_groups=args.se_groups,
+        protocol=protocol,
     )
     n_err = sum(r["status"] != "ok" for r in recs)
     print(

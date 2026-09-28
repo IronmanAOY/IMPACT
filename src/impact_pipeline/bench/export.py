@@ -87,12 +87,22 @@ BENCH_ESTIMATOR_PARAMS = {
 }
 
 # Optional construct revisions (added by other streams). They are used when the
-# installed estimator accepts them and recorded in ``estimator_modes``.
+# installed estimator accepts them and recorded in ``estimator_modes``. PDI is
+# the repertoire of distinguishable states (``mode='repertoire'``, unlabelled:
+# the generators' context states are hidden oracle channels, never labels);
+# ``surrogate_excess`` is a documented negative result and not used.
 OPTIONAL_MODES = {
     "RAM": {"update": "prediction_error"},
-    "PDI": {"mode": "surrogate_excess"},
+    "PDI": {"mode": "repertoire"},
     "NAS": {"mode": "capacity"},
     "SRPI": {"mode": "agency"},
+}
+# Self-calibrating modes whose evidence statistic (``raw``) does not depend on
+# the null draws: jackknife replicates run them with this (minimum) null size.
+SELF_CALIBRATING_REPLICATE_NULL = {
+    ("PDI", "surrogate_excess"): 2,
+    ("PDI", "repertoire"): 2,
+    ("NAS", "capacity"): 2,
 }
 # Event-level null families of RAM and SRPI (the pipeline's declared defaults,
 # see ``synergy_ci.MPC_NULL_KINDS_DEFAULT`` of the evidence layer): RAM shifts
@@ -684,10 +694,10 @@ def run_in_memory(
     of RAM (rigid event-train shift) and SRPI (self/other label permutation
     within phase bins); see ``EVENT_NULL_KINDS``.
 
-    Optional estimator modes that calibrate themselves (PDI
-    ``surrogate_excess``, NAS ``capacity``, SRPI ``agency``) always return
-    their own null (``<P>_null_*`` details; SRPI-agency: labels permuted
-    within yoked clusters). That null is recorded whatever
+    Optional estimator modes that calibrate themselves (PDI ``repertoire``,
+    NAS ``capacity``, SRPI ``agency``) always return their own null
+    (``<P>_null_*`` details; SRPI-agency: labels permuted within yoked
+    clusters). That null is recorded whatever
     ``null_surrogates`` is (``null_impl='estimator'``), and for SRPI-agency it
     replaces the event-table label permutation, which would break the
     yoking of the replays. PDI/NAS use ``null_surrogates`` draws when it is
@@ -915,7 +925,7 @@ def run_in_memory(
             null_impl="estimator" if nn else None,
         )
         if n_groups and _defined("PDI"):
-            k_rep = 2 if kw.get("mode") == "surrogate_excess" else 0
+            k_rep = SELF_CALIBRATING_REPLICATE_NULL.get(("PDI", kw.get("mode")), 0)
 
             def pdi_stat(x):
                 r = mm.compute_PDI(
@@ -965,7 +975,7 @@ def run_in_memory(
             null_impl="estimator" if nn else None,
         )
         if n_groups and _defined("NAS"):
-            k_rep = 2 if kw.get("mode") == "capacity" else 0
+            k_rep = SELF_CALIBRATING_REPLICATE_NULL.get(("NAS", kw.get("mode")), 0)
             # NAS capacity: ``raw`` is the transfer entropy of the direction
             # with the smaller null z, and that choice depends on the
             # surrogates. The replicates must measure the direction of the
@@ -1135,58 +1145,156 @@ def events_without_group(
     raise ValueError("event groups are defined for RAM and SRPI")
 
 
+def _component_mode(principle: str, modes: Optional[dict]) -> str:
+    """Estimator mode of a component (``evidence.estimator_id`` naming)."""
+    m = dict(modes or {})
+    if principle == "RAM":
+        return str(m.get("update") or "feedback_magnitude")
+    if principle == "IIM":
+        return str(m.get("cut_mode") or "bidirectional")
+    return str(m.get("mode") or "legacy")
+
+
+def _protocol_reference(proto, principle: str, channel: str) -> dict:
+    """Anchor of ``principle`` from an ``external`` protocol reference (key
+    ``P:channel`` first, then ``P``); empty for a cohort reference, which the
+    bench cannot form (no sessions)."""
+    ref = proto.reference if proto is not None else None
+    if not ref or ref.get("kind") != "external":
+        return {}
+    values, ses = ref.get("values") or {}, ref.get("se") or {}
+    for key in (f"{principle}:{channel}", principle):
+        if key in values:
+            return {
+                "reference": float(values[key]),
+                "reference_se": (float(ses[key]) if key in ses else None),
+                "reference_scale": str(ref.get("scale", "excess")),
+            }
+    return {}
+
+
+def _se_df_of(c: dict) -> Optional[float]:
+    """Degrees of freedom of a component's sampling SE: its own ``se_df``, or
+    ``se_n - 1`` for the delete-a-group jackknife (``se_n`` valid groups)."""
+    if c.get("se_df") is not None:
+        return float(c["se_df"])
+    n = c.get("se_n")
+    if n is not None and np.isfinite(float(n)) and int(n) >= 2:
+        return float(int(n) - 1)
+    return None
+
+
 def evidence_verdict(
     result: dict,
     meta: dict,
     protocol_id: Optional[str] = None,
-    necessity_set: Sequence[str] = PRINCIPLES,
+    necessity_set: Optional[Sequence[str]] = None,
+    protocol=None,
 ) -> dict:
     """
-    MPC verdict from an in-memory result through ``impact_pipeline.evidence``
-    when that module is available; otherwise
-    ``{'verdict': None, 'reasons': ['evidence_layer_unavailable']}``.
+    MPC verdict (evidence layer v2) of an in-memory result.
 
-    Verdict names are the v2 names (``MPC_CONSISTENT`` / ``EXCLUDED`` /
-    ``UNDETERMINED``) whichever naming the installed layer uses
-    (:mod:`impact_pipeline.bench.compat`). A component's ``se``, ``reference``
-    and ``exact`` entries are passed when present and accepted by the
-    installed ``ComponentEvidence`` (a v1 layer ignores them).
+    Every component becomes a ``ComponentEvidence`` with its estimate, its
+    null family (``null_mean``, ``null_sd``, ``n_null``, ``null_family``),
+    its sampling SE ``se`` with ``se_df`` degrees of freedom (the
+    delete-a-group jackknife of :func:`run_in_memory` with ``se_groups = G``
+    gives ``se_df = G - 1``, so the bounds use the Student-``t`` quantile), the
+    estimator id ``compute_<P>:<mode>@<version>``, ``exact`` for exact
+    known-TPM values, and the reference anchor declared by ``protocol``: an
+    ``external`` reference (``values`` / ``se`` per ``P`` or ``P:channel`` on
+    its ``scale``, e.g. the positive-control reference of
+    :mod:`impact_pipeline.bench.reference`). A component's own ``reference``
+    entry is used only when the protocol declares none for it. The bench has
+    no cohort, so a ``cohort_high_state`` reference gives no anchor.
+    Components without an anchor are UNDEFINED (``INVALID_ANCHORS``) and
+    components without a sampling SE UNDEFINED (``NO_SAMPLING_SE``): the
+    verdict is then UNDETERMINED, never determinate on unanchored or
+    SE-less evidence.
+
+    ``protocol`` (``evidence.Protocol``, dict or JSON path) sets the necessity
+    set, cutoffs, alpha, declared null families and source rule; the evidence
+    then carries the protocol's ``protocol_id`` and ``protocol_id`` (a run
+    label) is only recorded (``run_label``). Without a protocol the layer's
+    default protocol over ``necessity_set`` (default all five) is used.
+
+    Returns ``{'verdict', 'reasons', 'component_status', 'margins', 'c',
+    'c_lower', 'c_upper', 'c_se', 'c_df', 'protocol_hash', 'protocol_name',
+    'run_label'}`` with v2 verdict names, or ``{'verdict': None, 'reasons':
+    ['evidence_layer_unavailable']}`` when the evidence layer cannot be
+    imported.
     """
-    from impact_pipeline.bench import compat
-
     try:
         from impact_pipeline import evidence as ev
     except Exception:
         return {"verdict": None, "reasons": ["evidence_layer_unavailable"]}
-    try:
-        items = {}
-        for principle, c in result["components"].items():
-            fields = dict(
+    from impact_pipeline.mpc_metrics import ESTIMATOR_VERSIONS
+
+    proto = ev.resolve_protocol(protocol)
+    if proto is not None and necessity_set is not None:
+        if ev.normalize_necessity_set(necessity_set) != proto.necessity_set:
+            raise ValueError("necessity_set differs from the protocol's necessity set")
+    modes = result.get("estimator_modes") or {}
+    items = {}
+    for principle, c in result["components"].items():
+        channel = str(c.get("channel") or "default")
+        ref = _protocol_reference(proto, principle, channel)
+        if not ref and c.get("reference") is not None:
+            ref = {
+                "reference": float(c["reference"]),
+                "reference_se": c.get("reference_se"),
+                "reference_scale": str(c.get("reference_scale") or "estimate"),
+            }
+        se = c.get("se")
+        items[principle] = [
+            ev.ComponentEvidence(
                 principle=principle,
                 estimate=float(c["estimate"]),
                 null_mean=float(c["null_mean"]),
                 null_sd=float(c["null_sd"]),
-                se=float(c.get("se", 0.0) or 0.0),
-                channel=str(c.get("channel") or "default"),
+                se=0.0 if se is None else float(se),
+                se_df=_se_df_of(c),
+                channel=channel,
                 defined=bool(c["defined"]),
                 reason=c.get("reason"),
                 bearer_id=str(c.get("bearer_id", "system")),
-                protocol_id=protocol_id,
+                protocol_id=(proto.protocol_id if proto is not None else protocol_id),
                 substrate=meta.get("substrate"),
                 grain=meta.get("iim_grain") if principle == "IIM" else None,
-                estimator=str(c.get("statistic")),
+                estimator=ev.estimator_id(
+                    principle,
+                    _component_mode(principle, modes.get(principle)),
+                    ESTIMATOR_VERSIONS.get(principle, "unversioned"),
+                ),
                 null_family=c.get("null_family"),
-                n_null=int(c.get("n_null", 0)),
+                n_null=int(c.get("n_null", 0) or 0),
+                exact=bool(c.get("exact", False)),
+                **ref,
             )
-            if c.get("reference") is not None:
-                fields["reference"] = float(c["reference"])
-            if c.get("exact") is not None:
-                fields["exact"] = bool(c["exact"])
-            items[principle] = [compat.make_component_evidence(ev, **fields)]
-        v = compat.call_mpc_verdict(ev, items, necessity_set=necessity_set)
-        return compat.verdict_record(v)
-    except Exception as exc:  # pragma: no cover - depends on the other stream's API
-        return {
-            "verdict": None,
-            "reasons": [f"evidence_layer_error:{type(exc).__name__}:{exc}"],
-        }
+        ]
+    if proto is not None:
+        v = ev.mpc_verdict(items, proto)
+    else:
+        v = ev.mpc_verdict(
+            items, necessity_set=ev.normalize_necessity_set(necessity_set)
+        )
+
+    def _num(x):
+        x = float(x)
+        return x if np.isfinite(x) else None
+
+    deciding = {p: a for p, a in v.principle_assessment.items() if a is not None}
+    return {
+        "verdict": v.verdict.value,
+        "reasons": list(v.reasons),
+        "component_status": {k: s.value for k, s in v.component_status.items()},
+        "margins": {k: _num(m) for k, m in v.margins.items()},
+        "c": {p: _num(a.c) for p, a in deciding.items()},
+        "c_lower": {p: _num(a.lower) for p, a in deciding.items()},
+        "c_upper": {p: _num(a.upper) for p, a in deciding.items()},
+        "c_se": {p: _num(a.se) for p, a in deciding.items()},
+        "c_df": {p: _num(a.df) for p, a in deciding.items()},
+        "necessity_set": list(v.necessity_set),
+        "protocol_hash": None if proto is None else proto.hash,
+        "protocol_name": None if proto is None else proto.name,
+        "run_label": protocol_id,
+    }

@@ -13,7 +13,10 @@ Pipeline (:func:`audit`)
    system's own null mean and ``rho`` the reference anchor (mean estimate of
    the reference systems: design positive controls of the *training* fold),
    ``se_c`` from the jackknife SE of ``m``, the Monte-Carlo error of ``nu``
-   and the SE of ``rho`` (:func:`impact_pipeline.bench.rules.construct_scale`).
+   and the SE of ``rho`` (:func:`impact_pipeline.bench.rules.construct_scale`);
+   the jackknife SE has ``G - 1`` degrees of freedom (``G`` = valid groups),
+   so the bounds use the Student ``t`` quantile (Welch-Satterthwaite degrees
+   of freedom of ``se_c``), as the evidence layer does with ``se_df``.
 2. Missingness scenarios: ``none``; ``RAM+SRPI missing``; ``SRPI missing``;
    ``random20`` (every component undefined independently with probability
    0.2, fixed seed). Missing components are NaN for every rule.
@@ -53,7 +56,6 @@ from typing import Dict, Iterable, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
 
 from impact_pipeline.bench import rules as R
 from impact_pipeline.bench.compat import verdict_name
@@ -123,6 +125,7 @@ def records_to_arrays(
     sd0 = np.full(shape, np.nan)
     k = np.zeros(shape)
     se = np.full(shape, np.nan)
+    se_df = np.full(shape, np.nan)
     markers = {m: np.full(n, np.nan) for m in MARKERS}
     for i, r in enumerate(rows):
         comps = r.get("components") or {}
@@ -135,6 +138,10 @@ def records_to_arrays(
             sd0[i, j] = _f(c.get("null_sd"))
             k[i, j] = float(c.get("n_null") or 0)
             se[i, j] = _f(c.get("se"))
+            # delete-a-group jackknife over se_n valid groups: se_n - 1 df
+            n_groups = _f(c.get("se_n"))
+            if np.isfinite(n_groups) and n_groups >= 2:
+                se_df[i, j] = n_groups - 1.0
         mk = r.get("markers") or {}
         markers["LZc"][i] = _f(mk.get("LZc"))
         markers["PhiR_bits"][i] = _f(mk.get("PhiR_bits"))
@@ -151,6 +158,7 @@ def records_to_arrays(
         "null_sd": sd0,
         "n_null": k,
         "se": se,
+        "se_df": se_df,
         "markers": markers,
     }
 
@@ -235,15 +243,22 @@ def impact_c_confidence(
     alpha=0.05,
     z_present=R.C_PRESENT_DEFAULT,
     delta_absent=R.C_ABSENT_DEFAULT,
+    df=None,
 ) -> tuple:
     """
     Decision margins of the v2 rule: ``(consistent, excluded)`` with
     ``consistent = min_j (lower_j - z_present)`` (finite when every principle
     has a finite bound) and ``excluded = max_j (delta_absent - upper_j)`` over
-    components credibly below ``delta_absent`` (NaN when none).
+    components credibly below ``delta_absent`` (NaN when none); ``df``: the
+    degrees of freedom of ``se`` (Student-``t`` bounds where finite).
     """
-    zc = norm.ppf(1.0 - alpha)
-    c = np.asarray(c, dtype=float)[:, necessity_idx]
+    c = np.asarray(c, dtype=float)
+    zc = R.one_sided_quantile(
+        alpha, None if df is None else np.broadcast_to(np.asarray(df, float), c.shape)
+    )
+    if np.ndim(zc):
+        zc = zc[:, necessity_idx]
+    c = c[:, necessity_idx]
     s = np.asarray(se, dtype=float)[:, necessity_idx]
     with np.errstate(invalid="ignore"):
         lower = c - zc * s - z_present
@@ -284,6 +299,7 @@ def _evidence_layer_verdicts(arrs, c_missing, rho, se_rho, necessity_set):
             if c_missing[i, j] or not np.isfinite(m):
                 continue
             se_m = arrs["se"][i, j]
+            df_m = arrs["se_df"][i, j] if "se_df" in arrs else np.nan
             items[p] = [
                 compat.make_component_evidence(
                     ev,
@@ -292,6 +308,7 @@ def _evidence_layer_verdicts(arrs, c_missing, rho, se_rho, necessity_set):
                     null_mean=float(arrs["null_mean"][i, j]),
                     null_sd=float(arrs["null_sd"][i, j]),
                     se=float(se_m) if np.isfinite(se_m) else 0.0,
+                    se_df=float(df_m) if np.isfinite(df_m) else None,
                     reference=None if not np.isfinite(rho[j]) else float(rho[j]),
                     reference_se=(float(se_rho[j]) if np.isfinite(se_rho[j]) else None),
                     n_null=int(arrs["n_null"][i, j]),
@@ -324,7 +341,7 @@ def apply_audit_rules(
     est = arrs["estimate"]
     y_fit = train_labels[fit_rows]
     rho, se_rho = reference_anchors(est[fit_rows], y_fit)
-    c, se_c = R.construct_scale(
+    c, se_c, df_c = R.construct_scale(
         est,
         arrs["null_mean"],
         rho[None, :],
@@ -332,6 +349,8 @@ def apply_audit_rules(
         null_sd=arrs["null_sd"],
         n_null=np.where(arrs["n_null"] > 0, arrs["n_null"], np.inf),
         se_reference=se_rho[None, :],
+        se_df=arrs.get("se_df"),
+        return_df=True,
     )
     c = np.where(c_missing, np.nan, c)
     se_c = np.where(c_missing, np.nan, se_c)
@@ -339,8 +358,12 @@ def apply_audit_rules(
     out = {}
 
     ce = c[eval_rows]
-    imp = R.rule_impact_c(ce, se_c[eval_rows], necessity_set=necessity_set, alpha=alpha)
-    cons, excl = impact_c_confidence(ce, se_c[eval_rows], idx, alpha)
+    imp = R.rule_impact_c(
+        ce, se_c[eval_rows], necessity_set=necessity_set, alpha=alpha,
+        df=df_c[eval_rows],
+    )
+    cons, excl = impact_c_confidence(ce, se_c[eval_rows], idx, alpha,
+                                     df=df_c[eval_rows])
     conf = np.where(
         imp.decision == R.MPC_CONSISTENT,
         cons,
@@ -352,7 +375,7 @@ def apply_audit_rules(
         {
             k: (v[eval_rows] if isinstance(v, np.ndarray) and v.ndim == 2 else v)
             for k, v in arrs.items()
-            if k in ("estimate", "null_mean", "null_sd", "n_null", "se")
+            if k in ("estimate", "null_mean", "null_sd", "n_null", "se", "se_df")
         },
         c_missing[eval_rows],
         rho,

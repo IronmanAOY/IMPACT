@@ -215,23 +215,27 @@ def test_run_in_memory_components_and_nulls():
 
 
 def test_self_calibrating_modes_record_their_own_null():
-    """PDI surrogate_excess, NAS capacity and SRPI agency return their own
-    null family even without ``null_surrogates``; SRPI-agency receives the
-    agency events (yoked replays) and is defined on the nominal agent."""
+    """PDI repertoire, NAS capacity and SRPI agency return their own null
+    family even without ``null_surrogates``; SRPI-agency receives the agency
+    events (yoked replays) and is defined on the nominal agent."""
     s = g.simulate_family_a(None, SMALL, seed=3)
     res = export.run_in_memory(s, metrics=("PDI", "NAS", "SRPI"), null_surrogates=0)
     modes = res["estimator_modes"]
     if modes["SRPI"].get("mode") != "agency":
         pytest.skip("installed compute_SRPI has no agency mode")
     assert modes["SRPI"]["agency_events"] == "bundle"
+    assert modes["PDI"] == {"mode": "repertoire"}
     comps = res["components"]
     for p in ("PDI", "NAS", "SRPI"):
         c = comps[p]
         assert set(c) >= COMPONENT_FIELDS
         assert c["defined"], (p, c["reason"])
-        assert c["n_null"] >= 2 and np.isfinite(c["null_sd"]) and c["null_sd"] > 0
+        # the repertoire null counts states (integers): its SD can be 0
+        assert c["n_null"] >= 2 and np.isfinite(c["null_sd"]) and c["null_sd"] >= 0
         assert c["null_impl"] == "estimator" and c["null_family"]
         assert c["statistic"] == "raw"
+    assert comps["NAS"]["null_sd"] > 0 and comps["SRPI"]["null_sd"] > 0
+    assert comps["PDI"]["null_family"] == "circular_shift"
     assert comps["SRPI"]["null_family"] == "yoked_label_permutation"
     # The returned value of SRPI-agency is the excess over its own null.
     srpi = comps["SRPI"]

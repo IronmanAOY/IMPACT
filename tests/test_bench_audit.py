@@ -368,3 +368,33 @@ def test_truth_follows_the_declared_necessity_set():
     cov = res["coverage"].set_index("rule")
     assert cov.loc["impact_c", "selective_risk"] == pytest.approx(0.0)
     assert res["settings"]["necessity_set"] == list(nset)
+
+
+def test_jackknife_degrees_of_freedom_reach_the_rule_and_the_evidence_layer():
+    """A jackknife SE over G groups has G - 1 degrees of freedom: the audit
+    reads se_n from the records, and impact_c and the evidence layer both use
+    the Student-t quantile (fewer determinate decisions than with the normal
+    quantile at an SE where the difference matters)."""
+    recs = _records(se=0.3)
+    arrs = A.records_to_arrays(recs)
+    assert np.all(np.isnan(arrs["se_df"]))
+    for r in recs:
+        for c in r["components"].values():
+            c["se_n"] = 3
+    arrs_df = A.records_to_arrays(recs)
+    assert np.all(arrs_df["se_df"] == 2.0)
+    res_z = A.audit(_records(se=0.3), scenarios=("none",), label_noise=(0.0,))
+    res_t = A.audit(recs, scenarios=("none",), label_noise=(0.0,))
+
+    def _cov(res, rule):
+        d = res["decisions"]
+        d = d[d.rule == rule]
+        return float((d["decision"] != R.UNDETERMINED).mean())
+
+    assert _cov(res_t, "impact_c") < _cov(res_z, "impact_c")
+    ev = pytest.importorskip("impact_pipeline.evidence")
+    if hasattr(ev, "component_assessment"):
+        dec = res_t["decisions"].set_index(["task_id", "scenario", "label_noise"])
+        a = dec.loc[dec.rule == "impact_c", "decision"].sort_index()
+        b = dec.loc[dec.rule == "evidence_layer", "decision"].sort_index()
+        assert (a == b).all()

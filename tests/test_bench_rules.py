@@ -164,25 +164,43 @@ def test_impact_rule_never_attributes_from_missing_components():
     assert np.all(miss[det] == base[det])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "spec v2 (V2-2) replaced the v1 null-SD/TOST status rule of "
-        "evidence.component_status by the construct-scale rule (reference "
-        "anchor and sampling SE required); bench.rules.component_status_z "
-        "still mirrors v1 and must be ported by the bench stream (remove this "
-        "marker then: strict, so the port makes it fail loudly)"
-    ),
-)
 def test_status_matches_evidence_layer_when_available():
+    """The bench's v2 construct-scale rule (construct_scale +
+    component_status_c) equals evidence.component_status on v2 evidence
+    (reference anchor, sampling SE, null Monte-Carlo error), also for SEs from
+    few replicates (jackknife degrees of freedom -> Student-t quantile)."""
     ev = pytest.importorskip("impact_pipeline.evidence")
     rng = np.random.default_rng(3)
-    for z, se in zip(rng.normal(1.0, 2.0, 200), rng.uniform(0, 1, 200)):
+    n = 4000
+    nu = rng.normal(0.0, 0.3, n)
+    rho = nu + rng.uniform(0.05, 2.0, n)
+    m = nu + (rho - nu) * rng.uniform(-0.6, 1.6, n)
+    se = rng.uniform(0.0, 0.4, n) * (rng.random(n) > 0.05)
+    sd0 = rng.uniform(0.01, 0.3, n)
+    k = rng.integers(0, 40, n)
+    se_df = rng.choice(np.array([nan, 1.0, 2.0, 4.0, 9.0]), size=n)
+    c, se_c, df = R.construct_scale(
+        m, nu, rho, se_estimate=se, null_sd=sd0,
+        n_null=np.where(k > 0, k, np.inf), se_df=se_df, return_df=True,
+    )
+    ours = R.component_status_c(c, se_c, df=df)
+    n_t = n_changed = 0
+    for i in range(n):
         e = ev.ComponentEvidence(
-            principle="RAM", estimate=float(z), null_mean=0.0, null_sd=1.0, se=float(se)
+            principle="RAM", estimate=float(m[i]), null_mean=float(nu[i]),
+            null_sd=float(sd0[i]), se=float(se[i]), n_null=int(k[i]),
+            reference=float(rho[i]), se_df=float(se_df[i]),
         )
-        status = ev.component_status(e)[0]
-        assert getattr(status, "value", status) == R.component_status_z(z, se)
+        a = ev.component_assessment(e)
+        assert getattr(a.status, "value", a.status) == ours[i], i
+        if np.isfinite(se_c[i]) and se[i] > 0:
+            assert a.df == pytest.approx(df[i], rel=1e-9)
+        if np.isfinite(se_df[i]) and se[i] > 0:
+            n_t += 1
+            z = R.component_status_c(c[i], se_c[i])
+            n_changed += z != ours[i]
+    # the t quantile is in use and changes some statuses (never more liberal)
+    assert n_t > 2000 and n_changed > 50
 
 
 def test_logistic_classifier_cross_validated():

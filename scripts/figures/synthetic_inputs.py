@@ -91,12 +91,17 @@ def witness_results(rng):
             row = {"witness_id": w, "seed": seed, "intended_bits": "b" + bits}
             st = []
             for j, p in enumerate(PRINCIPLES):
-                z = (4.0 if bits[j] == "1" else 0.0) + rng.standard_normal()
-                row[f"{p}_z"] = z
-                st.append("PRESENT" if z > 1.645 else ("ABSENT" if abs(z) <= 1
+                # construct scale (v2): c ~ 1 with the mechanism, ~ 0 without;
+                # PRESENT if c - 1.645 se > 0.25, ABSENT if c + 1.645 se < 0.10
+                se = 0.1
+                c = (1.0 if bits[j] == "1" else 0.0) + se * rng.standard_normal()
+                row[f"{p}_c"] = c
+                lo, hi = c - 1.645 * se, c + 1.645 * se
+                st.append("PRESENT" if lo > 0.25 else ("ABSENT" if hi < 0.10
                                                        else "UNDEFINED"))
-            row["verdict"] = ("NOT_ATTRIBUTED" if "ABSENT" in st else
-                              "ATTRIBUTED" if all(s == "PRESENT" for s in st)
+                row[f"{p}_status"] = st[-1]
+            row["verdict"] = ("EXCLUDED" if "ABSENT" in st else
+                              "MPC_CONSISTENT" if all(s == "PRESENT" for s in st)
                               else "UNDETERMINED")
             rows.append(row)
     return pd.DataFrame(rows)

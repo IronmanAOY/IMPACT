@@ -3,10 +3,7 @@ sets (family C, whole-brain, adversarial), new designs, exact-TPM IIM,
 jackknife SEs, graded patchworks and the evidence-layer compatibility shim
 (v1 and v2 verdict names)."""
 
-import dataclasses
 import json
-import sys
-import types
 from enum import Enum
 
 import numpy as np
@@ -296,104 +293,129 @@ def test_verdict_names_accept_either_naming():
     }
 
 
-def _fake_v2_layer():
-    """A v2-style evidence module: Protocol object, v2 names, extra fields."""
-    mod = types.ModuleType("impact_pipeline.evidence")
-
-    class Verdict(str, Enum):
-        EXCLUDED = "EXCLUDED"
-        MPC_CONSISTENT = "MPC_CONSISTENT"
-        UNDETERMINED = "UNDETERMINED"
-
-    @dataclasses.dataclass(frozen=True)
-    class ComponentEvidence:
-        principle: str
-        estimate: float
-        null_mean: float = float("nan")
-        null_sd: float = float("nan")
-        se: float = 0.0
-        reference: float = None
-        exact: bool = False
-        channel: str = "default"
-        defined: bool = True
-        reason: str = None
-        bearer_id: str = None
-
-    @dataclasses.dataclass(frozen=True)
-    class Protocol:
-        necessity_set: tuple
-        channels: dict
-        alpha: float = 0.05
-
-    calls = []
-
-    def mpc_verdict(evidence, protocol):
-        calls.append((evidence, protocol))
-        assert isinstance(protocol, Protocol)
-        ok = all(ev.se > 0 for items in evidence.values() for ev in items)
-        v = Verdict.MPC_CONSISTENT if ok else Verdict.UNDETERMINED
-        return types.SimpleNamespace(
-            verdict=v, reasons=[], component_status={}, margins={}
-        )
-
-    mod.Verdict, mod.ComponentEvidence, mod.Protocol = (
-        Verdict,
-        ComponentEvidence,
-        Protocol,
-    )
-    mod.mpc_verdict, mod.calls = mpc_verdict, calls
-    return mod
+BENCH_FAMILIES = {
+    "RAM": "onset_jitter",
+    "PDI": "circular_shift",
+    "NAS": "block_circular_shift",
+    "IIM": "circular_shift",
+    "SRPI": "yoked_label_permutation",
+}
 
 
-def test_evidence_verdict_drives_a_v2_layer(monkeypatch):
-    import impact_pipeline
+def _bench_protocol(values=None, **kw):
+    from impact_pipeline.evidence import Protocol
 
-    fake = _fake_v2_layer()
-    monkeypatch.setitem(sys.modules, "impact_pipeline.evidence", fake)
-    monkeypatch.setattr(impact_pipeline, "evidence", fake, raising=False)
-    result = {
+    ref = {
+        "kind": "external",
+        "scale": "excess",
+        "values": values or {p: 1.0 for p in g.PRINCIPLES},
+        "se": {p: 0.02 for p in g.PRINCIPLES},
+        "source": "test",
+    }
+    return Protocol(null_families=BENCH_FAMILIES, reference=ref, name="bench-test",
+                    **kw)
+
+
+def _bench_result(excess=None, se=0.05, se_n=5):
+    """An in-memory result: null N(0.1, 0.05^2) of 19 draws, jackknife SE."""
+    excess = excess or {p: 1.0 for p in g.PRINCIPLES}
+    return {
         "components": {
             p: {
-                "estimate": 1.0,
-                "null_mean": 0.0,
-                "null_sd": 0.1,
-                "se": 0.05,
+                "estimate": 0.1 + excess[p],
+                "null_mean": 0.1,
+                "null_sd": 0.05,
+                "n_null": 19,
+                "null_family": BENCH_FAMILIES[p],
+                "se": se,
+                "se_n": se_n,
                 "defined": True,
                 "reason": None,
                 "bearer_id": "system",
                 "statistic": "raw",
-                "null_family": "x",
-                "n_null": 10,
-                "reference": 1.2,
             }
-            for p in ("NAS", "SRPI")
-        }
+            for p in g.PRINCIPLES
+        },
+        "estimator_modes": dict(export.OPTIONAL_MODES),
     }
-    out = export.evidence_verdict(result, {"substrate": "synthetic_rate"})
-    assert out["verdict"] == "MPC_CONSISTENT"
-    ev, proto = fake.calls[-1]
-    assert proto.necessity_set == tuple(g.PRINCIPLES)
-    assert proto.channels == {"NAS": ("default",), "SRPI": ("default",)}
-    assert ev["NAS"][0].reference == 1.2 and ev["NAS"][0].se == 0.05
-    # Fields the installed dataclass lacks (null_family, n_null, ...) are
-    # dropped instead of raising.
-    assert not hasattr(ev["NAS"][0], "null_family")
 
 
-def test_evidence_verdict_on_the_installed_v1_layer_uses_v2_names():
-    pytest.importorskip("impact_pipeline.evidence")
-    result = {
-        "components": {
-            "NAS": {
-                "estimate": 5.0,
-                "null_mean": 0.0,
-                "null_sd": 1.0,
-                "defined": True,
-                "statistic": "raw",
-                "n_null": 10,
-            }
-        }
-    }
-    out = export.evidence_verdict(result, {}, necessity_set=("NAS",))
-    assert out["verdict"] in ("MPC_CONSISTENT", "UNDETERMINED")
+def test_evidence_verdict_under_the_bench_protocol_is_determinate():
+    proto = _bench_protocol()
+    out = export.evidence_verdict(
+        _bench_result(), {"substrate": "synthetic_rate"}, protocol_id="run-label",
+        protocol=proto.to_dict(),
+    )
+    assert out["verdict"] == "MPC_CONSISTENT" and out["reasons"] == []
+    assert out["protocol_hash"] == proto.hash and out["run_label"] == "run-label"
+    # excess scale: c = (m - nu) / rho_excess; jackknife over 5 groups -> 4 df
+    # for the sampling part, Welch-Satterthwaite df of se_c above 4
+    assert out["c"]["NAS"] == pytest.approx(1.0)
+    assert 4.0 < out["c_df"]["NAS"] < 100
+    # one principle credibly below the null -> excluded (veto)
+    low = _bench_result({**{p: 1.0 for p in g.PRINCIPLES}, "IIM": -0.2})
+    out = export.evidence_verdict(low, {}, protocol=proto)
+    assert out["verdict"] == "EXCLUDED" and "ABSENT:IIM" in out["reasons"]
+    # the same evidence judged with the normal quantile would be PRESENT for a
+    # borderline component; with 1 jackknife df (2 groups) it is not
+    edge = {**{p: 1.0 for p in g.PRINCIPLES}, "PDI": 0.45}
+    z = export.evidence_verdict(_bench_result(edge, se=0.1, se_n=None), {},
+                                protocol=proto)
+    t = export.evidence_verdict(_bench_result(edge, se=0.1, se_n=2), {},
+                                protocol=proto)
+    assert z["component_status"]["PDI"] == "PRESENT"
+    assert t["component_status"]["PDI"] == "UNDEFINED"
+
+
+def test_evidence_verdict_without_anchor_or_se_is_undetermined():
+    res = _bench_result()
+    # no protocol: no reference anchor -> INVALID_ANCHORS, never determinate
+    out = export.evidence_verdict(res, {}, necessity_set=("NAS",))
+    assert out["verdict"] == "UNDETERMINED"
+    assert out["reasons"] == ["INVALID_ANCHORS:NAS"]
+    assert out["protocol_hash"] is None
+    # a cohort reference cannot be formed in the bench
+    from impact_pipeline.evidence import Protocol
+
+    cohort = Protocol(necessity_set=("NAS",))
+    out = export.evidence_verdict(res, {}, protocol=cohort)
+    assert out["reasons"] == ["INVALID_ANCHORS:NAS"]
+    # no sampling SE -> NO_SAMPLING_SE
+    no_se = _bench_result(se=None, se_n=None)
+    out = export.evidence_verdict(no_se, {}, protocol=_bench_protocol())
+    assert out["verdict"] == "UNDETERMINED"
+    assert set(out["reasons"]) == {f"NO_SAMPLING_SE:{p}" for p in g.PRINCIPLES}
+    # a null family other than the declared one is not judged
+    bad = _bench_result()
+    bad["components"]["PDI"]["null_family"] = "fourier"
+    out = export.evidence_verdict(bad, {}, protocol=_bench_protocol())
+    assert out["verdict"] == "UNDETERMINED"
+    assert out["reasons"] == [
+        "UNDEFINED:PDI:NULL_FAMILY_MISMATCH:circular_shift/fourier"]
+    with pytest.raises(ValueError, match="necessity"):
+        export.evidence_verdict(res, {}, protocol=_bench_protocol(),
+                                necessity_set=("NAS",))
+
+
+def test_evidence_verdict_records_estimator_ids_and_v2_names():
+    from impact_pipeline.mpc_metrics import ESTIMATOR_VERSIONS
+
+    captured = {}
+    import impact_pipeline.evidence as ev
+
+    real = ev.mpc_verdict
+
+    def spy(items, *a, **kw):
+        captured.update(items)
+        return real(items, *a, **kw)
+
+    try:
+        ev.mpc_verdict = spy
+        out = export.evidence_verdict(_bench_result(), {}, protocol=_bench_protocol())
+    finally:
+        ev.mpc_verdict = real
+    assert captured["PDI"][0].estimator == (
+        f"compute_PDI:repertoire@{ESTIMATOR_VERSIONS['PDI']}")
+    assert captured["RAM"][0].estimator.startswith("compute_RAM:prediction_error@")
+    assert captured["NAS"][0].se_df == 4.0
     assert out["verdict"] not in ("ATTRIBUTED", "NOT_ATTRIBUTED")
