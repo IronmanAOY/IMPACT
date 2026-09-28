@@ -1,6 +1,5 @@
 import argparse
 import json
-import math
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -10,15 +9,19 @@ import pandas as pd
 from impact_pipeline.event_parsing import (
     FEEDBACK_RE,
     GOAL_RE,
+    IMPACT_CHANNELS,
+    IMPLEMENTED_RAM_CHANNELS,
     NONSELF_RE,
     RAM_MIN_FEEDBACK_EVENTS,
     RAM_MIN_GOAL_RESPONSE_PAIRS,
     SELF_RE,
+    SRPI_MIN_EVENTS_PER_CLASS,
     STIM_RE,
     events_table_to_bundle,
     extract_run_id_from_name,
     read_events_table,
     resolve_events_file,
+    validate_srpi_agency_contract,
 )
 
 
@@ -190,6 +193,59 @@ def _assess_iim(
     return True, "ok", int(n_sel), int(eff_bins)
 
 
+def _assess_ram_channels(
+    bundle: Dict[str, object],
+    require_explicit_feedback: bool,
+    require_explicit_goals: bool = True,
+) -> Dict[str, Tuple[bool, str]]:
+    """
+    Per-``impact_channel`` RAM readiness: implemented channels use the same
+    event contract as ``_assess_ram`` on the channel's events; declared but
+    unimplemented channels report ``NOT_IMPLEMENTED``; labels outside
+    ``IMPACT_CHANNELS`` report ``unknown_impact_channel``.
+    """
+    out: Dict[str, Tuple[bool, str]] = {}
+    sub_bundles = bundle.get("channel_bundles") or {}
+    for ch in bundle.get("impact_channels") or []:
+        if ch not in IMPACT_CHANNELS:
+            out[ch] = (False, "unknown_impact_channel")
+        elif ch not in IMPLEMENTED_RAM_CHANNELS:
+            out[ch] = (False, "NOT_IMPLEMENTED")
+        else:
+            ok, reason, *_ = _assess_ram(
+                sub_bundles.get(ch) or {},
+                require_explicit_feedback=require_explicit_feedback,
+                require_explicit_goals=require_explicit_goals,
+            )
+            out[ch] = (bool(ok), reason)
+    return out
+
+
+def _assess_srpi_agency(
+    bundle: Dict[str, object],
+    min_events_per_class: int,
+) -> Tuple[bool, str, int, int, int]:
+    """
+    SRPI-agency readiness from the events contract (raw counts, before
+    windowing): ``(ready, reason, n_self_caused, n_other_caused, n_pairs)``.
+    """
+    events = bundle.get("agency_events")
+    if events is None:
+        return False, "missing_agency_events", 0, 0, 0
+    report = validate_srpi_agency_contract(events)
+    n_self = int(report["n_self_caused"])
+    n_other = int(report["n_other_caused"])
+    n_pairs = int(report["n_pairs"])
+    if not report["valid"]:
+        code = report["violations"][0] if report["violations"] else "no_yoked_pairs"
+        return False, f"agency_contract_violation:{code}", n_self, n_other, n_pairs
+    m = max(SRPI_MIN_EVENTS_PER_CLASS, int(min_events_per_class))
+    n_self_paired = len({s for s, _ in report["pairs"]})
+    if n_self_paired < m or n_pairs < m:
+        return False, "insufficient_yoked_events", n_self, n_other, n_pairs
+    return True, "ok", n_self, n_other, n_pairs
+
+
 def _assess_srpi(
     self_onsets: List[float],
     nonself_onsets: List[float],
@@ -197,7 +253,7 @@ def _assess_srpi(
 ) -> Tuple[bool, str, int, int]:
     n_self = int(len(self_onsets))
     n_non = int(len(nonself_onsets))
-    m = max(2, int(min_events_per_class))
+    m = max(SRPI_MIN_EVENTS_PER_CLASS, int(min_events_per_class))
     if n_self == 0 and n_non == 0:
         return False, "missing_self_and_nonself_events", n_self, n_non
     if n_self == 0:
@@ -242,8 +298,11 @@ def check_mpc_readiness(
 ) -> Tuple[pd.DataFrame, Dict[str, object]]:
     if not bool(require_explicit_srpi):
         raise ValueError("Neutral SRPI mode is disabled; explicit SRPI evidence is required.")
-    if int(srpi_min_events_per_class) < 2:
-        raise ValueError("srpi_min_events_per_class must be >= 2")
+    if int(srpi_min_events_per_class) < SRPI_MIN_EVENTS_PER_CLASS:
+        # Mirrors compute_SRPI: cross-validated separability needs >= 3 per class.
+        raise ValueError(
+            f"srpi_min_events_per_class must be >= {SRPI_MIN_EVENTS_PER_CLASS}"
+        )
     prep = Path(prep_root)
     bids = Path(bids_root) if bids_root is not None else None
     if not prep.exists():
@@ -270,6 +329,37 @@ def check_mpc_readiness(
             df_events = _read_events_table(events_file)
             ram_bundle = _events_to_ram_bundle(df_events)
             self_onsets, nonself_onsets = _events_to_srpi_onsets(df_events)
+            full_bundle = events_table_to_bundle(df_events)
+            channel_status = _assess_ram_channels(
+                full_bundle,
+                require_explicit_feedback=require_explicit_feedback,
+                require_explicit_goals=require_explicit_goals,
+            )
+            agency_ok, agency_reason, n_sc, n_oc, n_pairs = _assess_srpi_agency(
+                full_bundle, int(srpi_min_events_per_class)
+            )
+
+            def _typed_cols(ts_reason=None):
+                # Typed-event readiness (additive columns): RAM channels and
+                # SRPI-agency. Without a usable time series nothing is ready.
+                return {
+                    "RAM_channels": ";".join(full_bundle["impact_channels"]),
+                    "RAM_channel_status": ";".join(
+                        f"{ch}:{ts_reason or reason}"
+                        for ch, (_ok, reason) in channel_status.items()
+                    ),
+                    "RAM_channels_ready": ";".join(
+                        ch
+                        for ch, (ok, _r) in channel_status.items()
+                        if ok and ts_reason is None
+                    ),
+                    "n_choice_trials": int(len(full_bundle["choices"])),
+                    "SRPI_agency_ready": bool(agency_ok and ts_reason is None),
+                    "SRPI_agency_reason": ts_reason or agency_reason,
+                    "n_self_caused": int(n_sc),
+                    "n_other_caused": int(n_oc),
+                    "n_yoked_pairs": int(n_pairs),
+                }
             ts_paths = _pick_session_ts_paths(
                 prep_root=prep,
                 subject=subj,
@@ -315,6 +405,7 @@ def check_mpc_readiness(
                         "n_self_onsets": int(len(self_onsets)),
                         "n_nonself_onsets": int(len(nonself_onsets)),
                         "CI_ready": False,
+                        **_typed_cols("missing_timeseries"),
                     }
                 )
                 continue
@@ -359,6 +450,7 @@ def check_mpc_readiness(
                             "n_self_onsets": int(len(self_onsets)),
                             "n_nonself_onsets": int(len(nonself_onsets)),
                             "CI_ready": False,
+                            **_typed_cols(ts_err),
                         }
                     )
                     continue
@@ -436,6 +528,7 @@ def check_mpc_readiness(
                         "n_self_onsets": int(n_self),
                         "n_nonself_onsets": int(n_non),
                         "CI_ready": bool(ci_ok),
+                        **_typed_cols(),
                     }
                 )
 
@@ -454,7 +547,17 @@ def check_mpc_readiness(
         }
         return df, summary
 
-    metrics = ["RAM", "PDI", "PDI_anchor", "PDI_task", "NAS", "IIM", "SRPI", "CI"]
+    metrics = [
+        "RAM",
+        "PDI",
+        "PDI_anchor",
+        "PDI_task",
+        "NAS",
+        "IIM",
+        "SRPI",
+        "SRPI_agency",
+        "CI",
+    ]
     metric_summary = {}
     for m in metrics:
         col = f"{m}_ready"
@@ -463,11 +566,20 @@ def check_mpc_readiness(
             "not_ready": int((~df[col]).sum()),
             "ready_fraction": float(df[col].mean()),
         }
+    # Rows per RAM impact_channel label and rows where that channel is ready.
+    channel_summary: Dict[str, Dict[str, int]] = {}
+    for labels, ready in zip(df["RAM_channels"], df["RAM_channels_ready"]):
+        ready_set = set(filter(None, str(ready).split(";")))
+        for ch in filter(None, str(labels).split(";")):
+            entry = channel_summary.setdefault(ch, {"rows": 0, "ready": 0})
+            entry["rows"] += 1
+            entry["ready"] += int(ch in ready_set)
     summary = {
         "n_rows": int(df.shape[0]),
         "n_subjects": int(df["subject"].nunique()),
         "sessions": sorted(df["session"].dropna().unique().tolist()),
         "metrics": metric_summary,
+        "ram_channels": channel_summary,
         "settings": {
             "require_explicit_feedback": bool(require_explicit_feedback),
             "require_explicit_goals": bool(require_explicit_goals),

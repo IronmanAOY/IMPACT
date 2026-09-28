@@ -1,6 +1,4 @@
 import numpy as np
-from nilearn.glm.first_level import make_first_level_design_matrix, run_glm
-import pandas as pd
 import warnings
 import itertools
 import json
@@ -19,8 +17,6 @@ from multiprocessing import shared_memory
 from scipy.stats import entropy
 from scipy.stats import median_abs_deviation
 from scipy.signal import butter, sosfiltfilt, hilbert
-from sklearn.metrics import mutual_info_score
-from sklearn.feature_selection import mutual_info_regression
 import logging
 
 from impact_pipeline.hardware_backend import (
@@ -1441,21 +1437,6 @@ def _iim_phase_worker_run_chunk_for_tpm(
     return float(psi_chunk), int(len(mechanisms))
 
 
-def _safe_mutual_info_score(labels_a, labels_b):
-    """
-    Compute MI while suppressing sklearn's high-cardinality class warning.
-    For discretized continuous time-series this warning is expected and not
-    informative for our use case.
-    """
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="The number of unique classes is greater than 50% of the number of samples.*",
-            category=UserWarning,
-        )
-        return mutual_info_score(labels_a, labels_b)
-
-
 def _coerce_ram_event_bundle(stimulus_onsets):
     """
     Normalize RAM event input into a structured bundle.
@@ -1467,12 +1448,17 @@ def _coerce_ram_event_bundle(stimulus_onsets):
           goal_onsets
           feedback_onsets
           feedback_values
+          choice_onsets, choices, rewards (logged choice/outcome per trial,
+            aligned 1:1; used by ``update='prediction_error'``)
     """
     bundle = {
         "onsets": [],
         "goal_onsets": [],
         "feedback_onsets": [],
         "feedback_values": None,
+        "choice_onsets": [],
+        "choices": [],
+        "rewards": [],
     }
     if stimulus_onsets is None:
         return bundle
@@ -1487,6 +1473,9 @@ def _coerce_ram_event_bundle(stimulus_onsets):
         bundle["goal_onsets"] = stimulus_onsets.get("goal_onsets", [])
         bundle["feedback_onsets"] = stimulus_onsets.get("feedback_onsets", [])
         bundle["feedback_values"] = stimulus_onsets.get("feedback_values")
+        for key in ("choice_onsets", "choices", "rewards"):
+            val = stimulus_onsets.get(key)
+            bundle[key] = [] if val is None else val
         return bundle
 
     bundle["onsets"] = stimulus_onsets
@@ -2204,6 +2193,271 @@ def _adaptive_update_component(
     return float(np.clip(score * rel, 0.0, 1.0)), n, None
 
 
+def _resolve_bearer_nodes(bearer_nodes, n_regions):
+    """
+    Validated, sorted node indices of a declared bearer (``None`` = all nodes).
+
+    ``bearer_nodes`` is a sequence of distinct integer node indices into the
+    rows of ``ts`` (or a boolean mask of length ``n_regions``). Estimators
+    given a bearer see only these rows. An invalid declaration (empty,
+    duplicated, non-integer or out-of-range indices) is an error; it is never
+    repaired silently.
+    """
+    if bearer_nodes is None:
+        return None
+    n_regions = int(n_regions)
+    arr = np.asarray(bearer_nodes)
+    if arr.dtype == bool:
+        if arr.shape != (n_regions,):
+            raise ValueError(
+                f"boolean bearer_nodes mask must have length {n_regions}, "
+                f"got shape {arr.shape}"
+            )
+        idx = np.flatnonzero(arr).astype(np.int64)
+    else:
+        arr = arr.reshape(-1)
+        if arr.size and not np.issubdtype(arr.dtype, np.integer):
+            try:
+                val = arr.astype(float)
+            except (TypeError, ValueError):
+                raise ValueError("bearer_nodes must be integer node indices")
+            if (not np.all(np.isfinite(val))) or np.any(val != np.round(val)):
+                raise ValueError("bearer_nodes must be integer node indices")
+            arr = val
+        idx = arr.astype(np.int64)
+    if idx.size == 0:
+        raise ValueError("bearer_nodes must contain at least one node")
+    if np.any(idx < 0) or np.any(idx >= n_regions):
+        raise ValueError(
+            f"bearer_nodes out of range for {n_regions} nodes: "
+            f"{idx[(idx < 0) | (idx >= n_regions)].tolist()}"
+        )
+    if np.unique(idx).size != idx.size:
+        raise ValueError("bearer_nodes contains duplicate node indices")
+    return np.sort(idx)
+
+
+# Typed RAM evidence channels (``impact_channel`` events column, mirrored by
+# ``event_parsing.IMPACT_CHANNELS``). Perturbational and endogenous channels
+# are declared but have no estimator yet: they are undefined with the reason
+# ``RAM_NOT_IMPLEMENTED_REASON``.
+RAM_IMPACT_CHANNELS = (
+    "behavioural_feedback",
+    "covert_neural",
+    "perturbational",
+    "endogenous",
+)
+RAM_IMPLEMENTED_CHANNELS = ("behavioural_feedback", "covert_neural")
+RAM_NOT_IMPLEMENTED_REASON = "NOT_IMPLEMENTED"
+RAM_UPDATE_MODES = ("feedback_magnitude", "prediction_error")
+RAM_ADAPTATION_LOCI = ("state", "weights", "undeclared")
+
+
+def _select_ram_channel_events(stimulus_onsets, channel):
+    """
+    Event bundle of one ``impact_channel`` and an undefined reason (or None).
+
+    Typed bundles (``event_parsing.events_table_to_bundle`` with an
+    ``impact_channel`` column) carry one sub-bundle per channel in
+    ``channel_bundles``. A bundle without channel labels cannot be assigned to
+    a channel (``untyped_events``); a channel without events yields an empty
+    bundle, so the usual event reasons apply.
+    """
+    if channel not in RAM_IMPLEMENTED_CHANNELS:
+        return None, RAM_NOT_IMPLEMENTED_REASON
+    if not isinstance(stimulus_onsets, dict) or not isinstance(
+        stimulus_onsets.get("channel_bundles"), dict
+    ):
+        return None, "untyped_events"
+    return stimulus_onsets["channel_bundles"].get(channel) or {}, None
+
+
+def _fit_rescorla_wagner(choices, rewards):
+    """
+    Maximum-likelihood Rescorla-Wagner / Q-learning fit to logged choices.
+
+    Rewards are rescaled to [0, 1] by their observed range; the value of every
+    option starts at 0.5 and the chosen option is updated as
+    ``Q <- Q + alpha * delta`` with ``delta = r - Q(choice)``. Choices follow a
+    softmax with inverse temperature ``beta``. ``alpha`` (21 values in [0, 1])
+    and ``beta`` (0 and 15 log-spaced values in [0.25, 32]) are fitted on a
+    fixed grid; ties go to the smallest values, so the fit is deterministic.
+    ``choice_informative`` is a likelihood-ratio test of the fit against
+    random choice (``beta = 0``; chi-square, 2 df, 5%). When choices carry no
+    information the fit usually lands at ``alpha = 0`` and the prediction
+    error reduces to the reward relative to the prior value 0.5.
+
+    Returns ``None`` when the log cannot be fitted (fewer than 3 trials,
+    fewer than 2 chosen options or constant rewards); otherwise a dict with
+    ``alpha``, ``beta``, ``log_likelihood``, ``likelihood_ratio_vs_random``,
+    ``n_trials``, ``n_options``, ``choice_informative`` and
+    ``prediction_errors`` (reward units, one per trial in log order).
+    """
+    labels = np.asarray([str(c) for c in choices], dtype=object)
+    r = np.asarray(rewards, dtype=float).reshape(-1)
+    n = int(r.size)
+    if n != labels.size or n < 3:
+        return None
+    options, codes = np.unique(labels, return_inverse=True)
+    n_opt = int(options.size)
+    r_lo, r_hi = float(np.min(r)), float(np.max(r))
+    if n_opt < 2 or (r_hi - r_lo) <= 1e-12:
+        return None
+    r01 = (r - r_lo) / (r_hi - r_lo)
+    alphas = np.linspace(0.0, 1.0, 21)
+    betas = np.concatenate([[0.0], np.geomspace(0.25, 32.0, 15)])
+    q = np.full((alphas.size, n_opt), 0.5)
+    q_before = np.empty((alphas.size, n, n_opt))
+    pe = np.empty((alphas.size, n))
+    rows = np.arange(alphas.size)
+    for k in range(n):
+        q_before[:, k, :] = q
+        d = r01[k] - q[:, codes[k]]
+        pe[:, k] = d
+        q[rows, codes[k]] += alphas * d
+    # log-likelihood for every (alpha, beta): sum_k beta*Q(c_k) - logsumexp(beta*Q)
+    scaled = betas[None, :, None, None] * q_before[:, None, :, :]
+    top = scaled.max(axis=3, keepdims=True)
+    lse = (top + np.log(np.sum(np.exp(scaled - top), axis=3, keepdims=True)))[..., 0]
+    chosen = np.take_along_axis(
+        scaled, np.broadcast_to(codes[None, None, :, None], scaled.shape[:3] + (1,)), 3
+    )[..., 0]
+    ll = np.sum(chosen - lse, axis=2)
+    # Deterministic tie-break: smallest alpha, then smallest beta, among the
+    # grid points within rounding of the maximum.
+    ia, ib = np.argwhere(ll >= float(np.max(ll)) - 1e-9)[0]
+    ll_null = float(n * -np.log(n_opt))  # beta = 0: uniform choices
+    lr = float(2.0 * (ll[ia, ib] - ll_null))
+    return {
+        "alpha": float(alphas[ia]),
+        "beta": float(betas[ib]),
+        "log_likelihood": float(ll[ia, ib]),
+        "likelihood_ratio_vs_random": lr,
+        "n_trials": n,
+        "n_options": n_opt,
+        # LR test against random choice (2 fitted parameters, 5% level).
+        "choice_informative": bool(lr > 5.991),
+        "prediction_errors": pe[ia] * (r_hi - r_lo),
+    }
+
+
+def _prediction_error_update_component(
+    stim_response_vecs,
+    stim_used_idx,
+    pe_idx,
+    pe_values,
+    n_null,
+    rng,
+):
+    """
+    Adaptive-update component U, prediction-error form, in [0, 1].
+
+    The change of the stimulus-response mapping between consecutive stimulus
+    responses, ``d_k = r_{k+1} - r_k``, is regressed on the model prediction
+    error of the outcomes logged in ``[s_k, s_{k+1})`` (mean if several;
+    updates without a logged outcome are skipped): ``d_k = delta_k b + e_k``.
+    The statistic is the pooled
+    ``R2 = ||D' delta||^2 / (||delta||^2 ||D||_F^2)`` (both centred), i.e.
+    the share of pattern-change variance explained by the signed prediction
+    error. The null permutes ``delta`` across updates; the score is
+    ``[(R2 - m0) / (1 - m0)]_+`` times event-count reliability. Returns
+    ``(score, n_updates, reason, info)``.
+    """
+    info = {
+        "adaptive_update_r2": float("nan"),
+        "adaptive_update_null_mean": float("nan"),
+        "adaptive_update_p_null": float("nan"),
+    }
+    x = np.asarray(stim_response_vecs, dtype=float)
+    if x.ndim != 2 or x.shape[0] < 2:
+        return float("nan"), 0, "insufficient_adaptive_updates", info
+    d = np.diff(x, axis=0)
+    stim_used_idx = np.asarray(stim_used_idx, dtype=np.int64).reshape(-1)
+    pe_idx = np.asarray(pe_idx, dtype=np.int64).reshape(-1)
+    pe_values = np.asarray(pe_values, dtype=float).reshape(-1)
+    left = np.searchsorted(pe_idx, stim_used_idx[:-1], side="left")
+    right = np.searchsorted(pe_idx, stim_used_idx[1:], side="left")
+    counts = right - left
+    has = counts > 0
+    n = int(has.sum())
+    if n < _RAM_MIN_ADAPTIVE_UPDATES:
+        return float("nan"), n, "insufficient_adaptive_updates", info
+    csum = np.concatenate([[0.0], np.cumsum(pe_values)])
+    delta = (csum[right[has]] - csum[left[has]]) / counts[has]
+    dm = d[has] - d[has].mean(axis=0, keepdims=True)
+    delta = delta - delta.mean()
+    dd = float(np.dot(delta, delta))
+    total = float(np.sum(dm * dm))
+    if dd <= 1e-24 or total <= 1e-24:
+        return float("nan"), n, "adaptive_update_undefined", info
+    r2 = float(np.sum((dm.T @ delta) ** 2) / (dd * total))
+    info["adaptive_update_r2"] = r2
+    if int(n_null) <= 0:
+        score, m0 = r2, 0.0
+    else:
+        perms = np.argsort(rng.random_sample((int(n_null), n)), axis=1)
+        null = np.sum((delta[perms] @ dm) ** 2, axis=1) / (dd * total)
+        m0 = float(np.mean(null))
+        info["adaptive_update_null_mean"] = m0
+        info["adaptive_update_p_null"] = float(
+            (1.0 + np.sum(null >= r2)) / (1.0 + null.size)
+        )
+        if m0 >= 1.0 - 1e-12:
+            return float("nan"), n, "adaptive_update_undefined", info
+        score = (r2 - m0) / (1.0 - m0)
+    rel = _sample_reliability(n, tau=4.0)
+    return float(np.clip(score * rel, 0.0, 1.0)), n, None, info
+
+
+def _is_missing_label(v):
+    if v is None:
+        return True
+    if isinstance(v, (float, np.floating)) and not np.isfinite(v):
+        return True
+    return str(v).strip().lower() in {"", "nan", "n/a", "none"}
+
+
+def _ram_prediction_error_update(
+    event_bundle, stim_response_vecs, stim_used, tr, n_tp, n_null, rng, details
+):
+    """
+    U for ``update='prediction_error'``: fit the choice model to the logged
+    trials (chronological order of ``choice_onsets``), align each trial's
+    prediction error to its outcome time and score it with
+    :func:`_prediction_error_update_component`. Diagnostics go into
+    ``details``. Returns ``(score, n_updates, reason)``.
+    """
+    def _seq(key):
+        val = event_bundle.get(key)
+        return [] if val is None else val
+
+    on = np.asarray(_seq("choice_onsets"), dtype=float).reshape(-1)
+    ch = list(_seq("choices"))
+    rw = _coerce_numeric_feedback(_seq("rewards"))
+    if on.size == 0 and len(ch) == 0 and rw.size == 0:
+        return float("nan"), 0, "missing_choice_reward_log"
+    if not (on.size == len(ch) == rw.size):
+        return float("nan"), 0, "choice_reward_log_misaligned"
+    keep = np.isfinite(on) & np.isfinite(rw)
+    keep &= np.asarray([not _is_missing_label(c) for c in ch], dtype=bool)
+    order = np.argsort(on[keep], kind="mergesort")
+    on = on[keep][order]
+    rw = rw[keep][order]
+    ch = [c for c, k in zip(ch, keep) if k]
+    ch = [ch[i] for i in order]
+    fit = _fit_rescorla_wagner(ch, rw)
+    if fit is None:
+        return float("nan"), 0, "prediction_error_model_unidentifiable"
+    pe = fit.pop("prediction_errors")
+    details["prediction_error_model"] = dict(fit, model="rescorla_wagner_softmax")
+    _, pe_idx, pe_vals = _sanitize_onsets_with_values(on, pe, tr=tr, n_tp=n_tp)
+    score, n, reason, info = _prediction_error_update_component(
+        stim_response_vecs, stim_used, pe_idx, pe_vals, n_null, rng
+    )
+    details.update(info)
+    return score, n, reason
+
+
 def compute_RAM(
     ts: np.ndarray,
     tr: float = 1.0,
@@ -2230,6 +2484,10 @@ def compute_RAM(
     quality_cv_folds: int = 5,
     quality_null_samples: int = 200,
     quality_random_state: int = 0,
+    update: str = "feedback_magnitude",
+    impact_channel: str = None,
+    adaptation_locus: str = None,
+    bearer_nodes=None,
 ):
     """
     Responsiveness–Adaptation Metric (RAM).
@@ -2336,6 +2594,34 @@ def compute_RAM(
         correction; the chance level is then taken as 0).
     quality_random_state : int, optional
         Seed for the null draws.
+    update : {'feedback_magnitude', 'prediction_error'}, optional
+        Form of the adaptive-update component U. ``'feedback_magnitude'``
+        (default, unchanged): chance-corrected |corr| between the size of the
+        stimulus-response change and the mean |feedback| in between.
+        ``'prediction_error'``: the change of the stimulus-response mapping is
+        regressed on the signed prediction error of a Rescorla-Wagner /
+        Q-learning model fitted (maximum likelihood) to the logged
+        ``choices``/``rewards`` of the event bundle (``choice_onsets`` give
+        the outcome times), with a permutation null (see
+        ``_prediction_error_update_component``). U is undefined
+        (``missing_choice_reward_log`` / ``prediction_error_model_unidentifiable``)
+        without a usable log.
+    impact_channel : str or None, optional
+        Typed evidence channel (``RAM_IMPACT_CHANNELS``). ``None`` (default)
+        uses all events of the bundle regardless of channel labels (legacy
+        behaviour). A channel name restricts RAM to that channel's events
+        (``stimulus_onsets['channel_bundles'][channel]`` as produced by
+        ``event_parsing.events_table_to_bundle``); declared but unimplemented
+        channels (perturbational, endogenous) return NaN with
+        ``undefined_reason == 'NOT_IMPLEMENTED'``. See
+        :func:`compute_RAM_by_channel`.
+    adaptation_locus : {'state', 'weights', 'undeclared'} or None, optional
+        Declared locus of the adaptation (fast state change vs. weight
+        plasticity); recorded in the details (``None`` -> ``'undeclared'``).
+        It does not change the estimate.
+    bearer_nodes : sequence of int or None, optional
+        Declared bearer: RAM is computed on these rows of ``ts`` only
+        (default: all nodes).
 
     Returns
     -------
@@ -2406,10 +2692,31 @@ def compute_RAM(
         raise ValueError("quality_cv_folds must be >= 2")
     if int(quality_null_samples) < 0:
         raise ValueError("quality_null_samples must be >= 0")
+    update_mode = str(update).strip().lower()
+    if update_mode not in RAM_UPDATE_MODES:
+        raise ValueError(f"update must be one of {RAM_UPDATE_MODES}")
+    channel = None
+    if impact_channel is not None:
+        channel = str(impact_channel).strip().lower()
+        if channel not in RAM_IMPACT_CHANNELS:
+            raise ValueError(f"impact_channel must be one of {RAM_IMPACT_CHANNELS}")
+    locus = "undeclared" if adaptation_locus is None else str(adaptation_locus)
+    locus = locus.strip().lower()
+    if locus not in RAM_ADAPTATION_LOCI:
+        raise ValueError(f"adaptation_locus must be one of {RAM_ADAPTATION_LOCI}")
+    bearer_idx = _resolve_bearer_nodes(bearer_nodes, ts.shape[0])
+    if bearer_idx is not None:
+        ts = ts[bearer_idx]
 
     backend = resolve_hardware_backend(hardware_backend)
     n_regions, n_tp = ts.shape
-    event_bundle = _coerce_ram_event_bundle(stimulus_onsets)
+    channel_reason = None
+    event_input = stimulus_onsets
+    if channel is not None:
+        event_input, channel_reason = _select_ram_channel_events(
+            stimulus_onsets, channel
+        )
+    event_bundle = _coerce_ram_event_bundle(event_input)
     stim_onsets_s, stim_idx = _sanitize_onset_seconds(event_bundle["onsets"], tr=tr, n_tp=n_tp)
     goal_onsets_s, goal_idx = _sanitize_onset_seconds(
         event_bundle["goal_onsets"], tr=tr, n_tp=n_tp
@@ -2464,13 +2771,26 @@ def compute_RAM(
         "n_goal_response_pairs": 0,
         "n_feedback_events_used": 0,
         "n_adaptive_updates": 0,
+        "impact_channel": "untyped" if channel is None else channel,
+        "update": update_mode,
+        "adaptation_locus": locus,
+        "bearer_nodes": None if bearer_idx is None else bearer_idx.tolist(),
     }
+    if update_mode == "prediction_error":
+        details.update(
+            adaptive_update_r2=nan,
+            adaptive_update_null_mean=nan,
+            adaptive_update_p_null=nan,
+            prediction_error_model=None,
+        )
 
     def _undefined(reason):
         details["value"] = nan
         details["undefined_reason"] = str(reason)
         return details if return_details else nan
 
+    if channel_reason is not None:
+        return _undefined(channel_reason)
     if stim_idx.size == 0:
         return _undefined("missing_stimulus_events")
     if not np.all(np.isfinite(ts)):
@@ -2712,14 +3032,20 @@ def compute_RAM(
         n_null=int(quality_null_samples),
         rng=rng,
     )
-    u_score, n_updates, u_reason = _adaptive_update_component(
-        stim_response_vecs=stim_response_vecs,
-        stim_used_idx=stim_used,
-        feedback_idx=feedback_idx[fb_ok],
-        feedback_signal=feedback_signal[fb_ok],
-        n_null=int(quality_null_samples),
-        rng=rng,
-    )
+    if update_mode == "prediction_error":
+        u_score, n_updates, u_reason = _ram_prediction_error_update(
+            event_bundle, stim_response_vecs, stim_used, tr, n_tp,
+            int(quality_null_samples), rng, details,
+        )
+    else:
+        u_score, n_updates, u_reason = _adaptive_update_component(
+            stim_response_vecs=stim_response_vecs,
+            stim_used_idx=stim_used,
+            feedback_idx=feedback_idx[fb_ok],
+            feedback_signal=feedback_signal[fb_ok],
+            n_null=int(quality_null_samples),
+            rng=rng,
+        )
     details["n_feedback_events_used"] = int(n_fb_used)
     details["n_adaptive_updates"] = int(n_updates)
 
@@ -2762,6 +3088,266 @@ def compute_RAM(
         return ram_value
     return details
 
+
+def compute_RAM_by_channel(ts, tr=1.0, stimulus_onsets=None, channels=None, **kwargs):
+    """
+    RAM computed separately for each typed ``impact_channel``.
+
+    ``channels`` defaults to the channels labelled in the event bundle
+    (``stimulus_onsets['impact_channels']``). Every channel gets the details
+    dict of :func:`compute_RAM` with ``impact_channel`` set; declared but
+    unimplemented channels are NaN with ``undefined_reason ==
+    'NOT_IMPLEMENTED'``, labels outside ``RAM_IMPACT_CHANNELS`` are NaN with
+    ``'unknown_impact_channel'``. Per-channel values are meant to be combined
+    downstream (e.g. Kleene OR across channels), not averaged here.
+    """
+    kwargs = dict(kwargs)
+    kwargs.pop("return_details", None)
+    kwargs.pop("impact_channel", None)
+    if channels is None:
+        channels = []
+        if isinstance(stimulus_onsets, dict):
+            channels = list(stimulus_onsets.get("impact_channels") or [])
+    out = {}
+    for ch in channels:
+        key = str(ch).strip().lower()
+        if key not in RAM_IMPACT_CHANNELS:
+            out[key] = {
+                "value": float("nan"),
+                "undefined_reason": "unknown_impact_channel",
+                "impact_channel": key,
+            }
+            continue
+        out[key] = compute_RAM(
+            ts,
+            tr=tr,
+            stimulus_onsets=stimulus_onsets,
+            impact_channel=key,
+            return_details=True,
+            **kwargs,
+        )
+    return out
+
+
+@njit(cache=_NUMBA_DISK_CACHE)
+def _lz76_complexity_numba(s):
+    # Kaspar & Schuster (1987) exhaustive-history LZ76 phrase count.
+    n = s.shape[0]
+    if n <= 1:
+        return n
+    c = 1
+    l_pos = 1
+    i = 0
+    k = 1
+    k_max = 1
+    while True:
+        if s[i + k - 1] == s[l_pos + k - 1]:
+            k += 1
+            if l_pos + k > n:
+                c += 1
+                break
+        else:
+            if k > k_max:
+                k_max = k
+            i += 1
+            if i == l_pos:
+                c += 1
+                l_pos += k_max
+                if l_pos + 1 > n:
+                    break
+                i = 0
+                k = 1
+                k_max = 1
+            else:
+                k = 1
+    return c
+
+
+def lz76_complexity(symbols):
+    """
+    Lempel-Ziv (1976) complexity of a 1D symbol sequence: the number of
+    phrases of the exhaustive-history parsing (Kaspar & Schuster 1987), e.g.
+    6 for ``0001101001000101``.
+    """
+    s = np.ascontiguousarray(np.asarray(symbols).reshape(-1))
+    if s.size == 0:
+        return 0
+    _, codes = np.unique(s, return_inverse=True)
+    return int(_lz76_complexity_numba(codes.astype(np.int64)))
+
+
+def _subset_baseline_nodes(baseline_ts, idx, n_full):
+    """Restrict every baseline run (2D, 3D or list of 2D) to bearer rows ``idx``."""
+    if baseline_ts is None:
+        return None
+
+    def _one(run):
+        run = np.asarray(run)
+        if run.ndim != 2 or run.shape[0] != int(n_full):
+            raise ValueError(
+                "with bearer_nodes, every baseline run must be 2D with the same "
+                f"number of nodes as ts ({n_full}); got shape {run.shape}"
+            )
+        return run[idx]
+
+    if isinstance(baseline_ts, (list, tuple)):
+        return [_one(run) for run in baseline_ts]
+    arr = np.asarray(baseline_ts)
+    if arr.ndim == 3:
+        return [_one(arr[i]) for i in range(arr.shape[0])]
+    return _one(arr)
+
+
+PDI_MODES = ("legacy", "surrogate_excess")
+PDI_EXCESS_COMPONENTS = (
+    "repertoire_entropy",
+    "lz_diversity",
+    "effective_dimensionality",
+)
+PDI_EXCESS_SURROGATES = ("fourier", "iaaft")
+PDI_EXCESS_DEFAULT_SURROGATES = 19
+
+
+def _pdi_global_state_features(x, n_components):
+    """
+    Global-state differentiation features of a finite node x time run.
+
+    Nodes are z-scored and reduced to their ``k`` leading principal
+    components; each component is binarised at its median, so a time point
+    is a ``k``-bit global-state word. Returns ``(features, k)`` with
+      - repertoire entropy: Shannon entropy of the word distribution in bits
+        per component (in [0, 1]);
+      - LZ diversity: LZ76 complexity of the binarised component matrix read
+        time-major, normalised by ``n / log2(n)`` (about 1 for a random
+        binary sequence);
+      - effective dimensionality of the median-binarised nodes: participation
+        ratio of their covariance, ``(PR - 1) / (N - 1)`` in [0, 1] (the
+        covariance of the continuous data is preserved exactly by
+        multivariate Fourier surrogates, the binarised one is not).
+    ``k`` is 0 (features NaN) when the run has no variance.
+    """
+    n_nodes, n_time = x.shape
+    sd = x.std(axis=1, keepdims=True)
+    z = (x - x.mean(axis=1, keepdims=True)) / np.maximum(sd, 1e-12)
+    z = np.where(sd > 1e-12, z, 0.0)
+    _, s, vt = np.linalg.svd(z, full_matrices=False)
+    if s.size == 0 or not np.isfinite(s).all() or s[0] <= 1e-12:
+        return np.full(3, np.nan), 0
+    rank = int(np.sum(s > max(z.shape) * np.finfo(float).eps * s[0]))
+    k = int(max(1, min(int(n_components), rank, 30)))
+    comps = s[:k, None] * vt[:k]
+    bits = comps > np.median(comps, axis=1, keepdims=True)
+    place = np.arange(k, dtype=np.int64)[:, None]
+    words = np.sum(bits.astype(np.int64) << place, axis=0)
+    _, counts = np.unique(words, return_counts=True)
+    p = counts / float(counts.sum())
+    rep = float(-np.sum(p * np.log2(p)) / float(k))
+    seq = bits.T.reshape(-1)
+    n_sym = int(seq.size)
+    lz = float(lz76_complexity(seq) * np.log2(n_sym) / n_sym) if n_sym > 1 else np.nan
+    bn = (z > np.median(z, axis=1, keepdims=True)).astype(float)
+    bn = bn - bn.mean(axis=1, keepdims=True)
+    ev = np.linalg.svd(bn, compute_uv=False) ** 2
+    tot = float(np.sum(ev))
+    if tot <= 1e-12 or n_nodes < 2:
+        deff = np.nan
+    else:
+        pr = tot * tot / float(np.sum(ev * ev))
+        deff = float((pr - 1.0) / (float(n_nodes) - 1.0))
+    return np.asarray([rep, lz, deff], dtype=float), k
+
+
+def _pdi_surrogate_excess(
+    ts,
+    n_components,
+    weights,
+    surrogate,
+    n_surrogates,
+    seed,
+    return_details,
+    extra,
+):
+    """
+    PDI ``mode='surrogate_excess'``: global-state differentiation beyond the
+    linear (spectral) structure.
+
+    Each feature of :func:`_pdi_global_state_features` is compared with the
+    same feature of multivariate spectrum-preserving surrogates (shared random
+    phases across nodes: auto- and cross-spectra kept, i.e. a linear Gaussian
+    process with the run's second-order structure; ``'iaaft'`` also keeps each
+    node's marginal). The aggregate is the weighted arithmetic mean of the
+    features; PDI is its signed excess over the surrogate mean (no clipping
+    anywhere), with per-feature excess/z in the details.
+    """
+    nan = float("nan")
+    w = np.asarray(weights, dtype=float)
+
+    def _undefined(reason):
+        if not return_details:
+            return nan
+        out = {"value": nan, "raw": nan, "defined": False, "undefined_reason": reason}
+        out.update(extra)
+        out.update(_metric_null_fields("PDI", None, surrogate, seed, False))
+        return out
+
+    x = np.asarray(ts, dtype=float)
+    n_nodes, n_time = x.shape
+    if n_nodes < 2:
+        return _undefined("insufficient_regions")
+    if n_time < 16:
+        return _undefined("insufficient_timepoints")
+    if not np.all(np.isfinite(x)):
+        return _undefined("non_finite_timeseries")
+    obs, k = _pdi_global_state_features(x, n_components)
+    if k == 0 or not np.all(np.isfinite(obs[w > 0])):
+        return _undefined("no_variance")
+    rng = np.random.RandomState(seed)
+    null = []
+    for _ in range(int(n_surrogates)):
+        if surrogate == "fourier":
+            surr = _phase_randomized_surrogate(x, rng)
+        else:
+            surr = _surrogate_timeseries(x, "phase_randomize", rng)
+        feat, _ = _pdi_global_state_features(surr, n_components)
+        null.append(feat)
+    null = np.asarray(null, dtype=float)
+    wpos = w > 0
+    wn = w / float(np.sum(w))
+    raw = float(np.sum(wn[wpos] * obs[wpos]))
+    null_agg = np.sum(wn[wpos] * null[:, wpos], axis=1)
+    stats = _null_calibration_stats(raw, null_agg[np.isfinite(null_agg)])
+    if stats["null_n"] < 2:
+        return _undefined("insufficient_surrogates")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        comp_mean = np.nanmean(null, axis=0)
+        comp_sd = np.nanstd(null, axis=0, ddof=1)
+    excess = obs - comp_mean
+    with np.errstate(divide="ignore", invalid="ignore"):
+        comp_z = np.where(comp_sd > 0, excess / comp_sd, np.nan)
+    null_fields = _metric_null_fields("PDI", stats, surrogate, seed, False)
+    value = float(null_fields["PDI_excess"])
+    if not return_details:
+        return value
+    names = PDI_EXCESS_COMPONENTS
+    out = {
+        "value": value,
+        "raw": float(raw),
+        "defined": True,
+        "undefined_reason": None,
+        "components": {n: float(v) for n, v in zip(names, excess)},
+        "components_raw": {n: float(v) for n, v in zip(names, obs)},
+        "components_null_mean": {n: float(v) for n, v in zip(names, comp_mean)},
+        "components_null_sd": {n: float(v) for n, v in zip(names, comp_sd)},
+        "components_z": {n: float(v) for n, v in zip(names, comp_z)},
+        "weights": {n: float(v) for n, v in zip(names, wn)},
+        "n_state_components": int(k),
+    }
+    out.update(extra)
+    out.update(null_fields)
+    return out
+
+
 def compute_PDI(
     ts: np.ndarray,
     bins: int = 10,
@@ -2781,6 +3367,11 @@ def compute_PDI(
     null_method: str = "phase_randomize",
     null_seed: int | None = None,
     null_min_shift: int | None = None,
+    mode: str = "legacy",
+    bearer_nodes=None,
+    excess_components: int = 5,
+    excess_weights: tuple = (1.0, 1.0, 1.0),
+    excess_surrogate: str = "fourier",
 ) -> float:
     """
     Composite measurable Phenomenal Differentiation Index (PDI).
@@ -2852,6 +3443,32 @@ def compute_PDI(
         Seed of the surrogate generator (default 0).
     null_min_shift : int or None, optional
         Minimum shift for ``null_method='circular_shift'``.
+    mode : {'legacy', 'surrogate_excess'}, optional
+        ``'legacy'`` (default): the baseline-referenced composite above.
+        ``'surrogate_excess'``: global-state differentiation beyond the
+        spectrum (see ``_pdi_global_state_features``): repertoire entropy of
+        median-binarised global states (leading ``excess_components``
+        principal components), their LZ76 diversity and the effective
+        dimensionality of the binarised nodes, each measured as excess over
+        multivariate spectrum-preserving surrogates of the same run (shared
+        phases across nodes). PDI is the signed excess of the weighted mean of
+        the three features over its surrogate mean; nothing is clipped and no
+        rest baseline is used (``baseline_ts`` is ignored and recorded as
+        such). The number of surrogates is ``null_surrogates`` (0 selects
+        ``PDI_EXCESS_DEFAULT_SURROGATES`` = 19; 1 is rejected) and the seed
+        ``null_seed``.
+    bearer_nodes : sequence of int or None, optional
+        Declared bearer: PDI uses only these rows of ``ts`` (and of every
+        baseline run, which must have the same number of nodes as ``ts``).
+    excess_components : int, optional
+        Number of leading principal components forming the global-state words
+        (``mode='surrogate_excess'``).
+    excess_weights : tuple(float, float, float), optional
+        Non-negative weights of (repertoire entropy, LZ diversity, effective
+        dimensionality) in the ``'surrogate_excess'`` aggregate.
+    excess_surrogate : {'fourier', 'iaaft'}, optional
+        ``'fourier'`` (default): multivariate phase randomisation;
+        ``'iaaft'``: additionally amplitude-adjusted to each node's marginal.
 
     Returns
     -------
@@ -2860,6 +3477,17 @@ def compute_PDI(
 
     Notes
     -----
+    ``mode='surrogate_excess'`` inherits the maximum-entropy property of the
+    Gaussian null: for fixed auto- and cross-spectra a linear Gaussian process
+    maximises entropy (rate), so entropy-type repertoire features of
+    structured (e.g. multistable, pattern-switching) dynamics typically fall
+    *below* their surrogates. In the known-answer tests the repertoire-entropy
+    excess of pattern switching is strongly negative, the LZ and binarised
+    dimensionality excesses take either sign, and the aggregate is about 0
+    for linear Gaussian data but of either sign for multistable switching
+    (tests/test_pdi_surrogate_excess.py). It is not a positive "more
+    differentiated than chance" score.
+
     With ``clip_negative=True`` (default), the output is non-negative and
     increases when observed differentiation exceeds baseline with good temporal
     stability and low differential noise. Uncalibrated PDI is positively
@@ -2892,8 +3520,44 @@ def compute_PDI(
         raise ValueError("null_surrogates must be >= 0")
     if null_method not in SURROGATE_METHODS:
         raise ValueError(f"null_method must be one of {SURROGATE_METHODS}")
-    backend = resolve_hardware_backend(hardware_backend)
+    mode_norm = str(mode).strip().lower()
+    if mode_norm not in PDI_MODES:
+        raise ValueError(f"mode must be one of {PDI_MODES}")
+    bearer_idx = _resolve_bearer_nodes(bearer_nodes, ts.shape[0])
+    if bearer_idx is not None:
+        baseline_ts = _subset_baseline_nodes(baseline_ts, bearer_idx, ts.shape[0])
+        ts = ts[bearer_idx]
     null_seed_eff = _resolve_null_seed(null_seed, 0)
+    if mode_norm == "surrogate_excess":
+        ex_w = np.asarray(excess_weights, dtype=float).reshape(-1)
+        if ex_w.shape != (3,) or np.any(ex_w < 0) or float(np.sum(ex_w)) <= 0:
+            raise ValueError(
+                "excess_weights must be 3 non-negative values, not all zero"
+            )
+        if int(excess_components) < 1:
+            raise ValueError("excess_components must be >= 1")
+        if excess_surrogate not in PDI_EXCESS_SURROGATES:
+            raise ValueError(f"excess_surrogate must be one of {PDI_EXCESS_SURROGATES}")
+        n_surr = int(null_surrogates) or PDI_EXCESS_DEFAULT_SURROGATES
+        if n_surr < 2:
+            raise ValueError("mode='surrogate_excess' needs null_surrogates >= 2")
+        return _pdi_surrogate_excess(
+            ts,
+            n_components=int(excess_components),
+            weights=ex_w,
+            surrogate=excess_surrogate,
+            n_surrogates=n_surr,
+            seed=null_seed_eff,
+            return_details=return_details,
+            extra={
+                "mode": mode_norm,
+                "surrogate_method": excess_surrogate,
+                "n_surrogates_requested": n_surr,
+                "baseline_ignored": baseline_ts is not None,
+                "bearer_nodes": None if bearer_idx is None else bearer_idx.tolist(),
+            },
+        )
+    backend = resolve_hardware_backend(hardware_backend)
 
     def _undefined(reason):
         if return_details:
@@ -2902,6 +3566,8 @@ def compute_PDI(
                 "raw": np.nan,
                 "defined": False,
                 "undefined_reason": str(reason),
+                "mode": mode_norm,
+                "bearer_nodes": None if bearer_idx is None else bearer_idx.tolist(),
             }
             out.update(
                 _metric_null_fields(
@@ -3316,9 +3982,348 @@ def compute_PDI(
         "n_baseline_runs": int(len(baseline_ts_use)),
         "defined": True,
         "undefined_reason": None,
+        "mode": mode_norm,
+        "bearer_nodes": None if bearer_idx is None else bearer_idx.tolist(),
     }
     out.update(null_fields)
     return out
+
+
+NAS_MODES = ("legacy", "capacity")
+NAS_CAPACITY_DEFAULT_SURROGATES = 19
+
+
+def _map_nodes_into_bearer(nodes, bearer_idx):
+    """Positions of full-space node indices within the bearer (must be a subset)."""
+    arr = np.unique(np.asarray(nodes, dtype=np.int64).reshape(-1))
+    missing = arr[~np.isin(arr, bearer_idx)]
+    if missing.size:
+        raise ValueError(
+            f"workspace_nodes {missing.tolist()} are not part of bearer_nodes"
+        )
+    return np.searchsorted(bearer_idx, arr)
+
+
+def _block_components(xb, n_components):
+    """Leading principal-component time series (k x T) of z-scored rows ``xb``."""
+    sd = xb.std(axis=1, keepdims=True)
+    z = (xb - xb.mean(axis=1, keepdims=True)) / np.maximum(sd, 1e-12)
+    z = np.where(sd > 1e-12, z, 0.0)
+    _, s, vt = np.linalg.svd(z, full_matrices=False)
+    if s.size == 0 or s[0] <= 1e-12:
+        return None
+    rank = int(np.sum(s > max(z.shape) * np.finfo(float).eps * s[0]))
+    k = int(max(1, min(int(n_components), rank)))
+    return s[:k, None] * vt[:k]
+
+
+def _lagged_rows(x, lags):
+    lmax = max(lags)
+    n_time = x.shape[1]
+    return np.vstack([x[:, lmax - lag:n_time - lag] for lag in lags])
+
+
+def _gaussian_transfer_entropy(src, tgt, lags, cond=None):
+    """
+    Gaussian transfer entropy src -> tgt in nats (half the Geweke multivariate
+    Granger causality): ``0.5 * (log det S_r - log det S_f)``, where ``S_r``
+    is the residual covariance of ``tgt`` regressed on its own lags (and the
+    lags of ``cond``) and ``S_f`` adds the lags of ``src``. Exact for jointly
+    Gaussian (linear) processes; NaN for a degenerate fit.
+    """
+    lmax = max(lags)
+    n = tgt.shape[1] - lmax
+    y = tgt[:, lmax:].T
+    base = [np.ones((1, n)), _lagged_rows(tgt, lags)]
+    if cond is not None:
+        base.append(_lagged_rows(cond, lags))
+    x_r = np.vstack(base).T
+    x_f = np.vstack(base + [_lagged_rows(src, lags)]).T
+    if x_f.shape[1] >= n:
+        return float("nan")
+
+    def _logdet(design):
+        beta, *_ = np.linalg.lstsq(design, y, rcond=None)
+        r = y - design @ beta
+        sign, logdet = np.linalg.slogdet((r.T @ r) / float(n))
+        return float(logdet) if sign > 0 else float("nan")
+
+    return 0.5 * (_logdet(x_r) - _logdet(x_f))
+
+
+def _kuramoto_metastability(x, lo, hi, fs):
+    """SD and mean over time of the Kuramoto order parameter in band [lo, hi] Hz."""
+    nyq = 0.5 * float(fs)
+    if lo <= 0 or hi <= lo or hi >= nyq:
+        raise ValueError(f"compute_NAS invalid band ({lo}, {hi}) for Nyquist {nyq}")
+    sos = butter(2, [lo / nyq, hi / nyq], btype="band", output="sos")
+    phase = np.angle(hilbert(sosfiltfilt(sos, x, axis=1), axis=1))
+    order = np.abs(np.mean(np.exp(1j * phase), axis=0))
+    return float(np.std(order)), float(np.mean(order))
+
+
+def _nas_capacity(
+    x,
+    hub,
+    tr,
+    lags,
+    n_components,
+    confounds,
+    n_surrogates,
+    seed,
+    min_shift,
+    bands,
+    band_weights,
+    profile_kwargs,
+    return_details,
+    extra,
+):
+    """
+    NAS ``mode='capacity'`` (broadcast capacity) on bearer data ``x``.
+
+    Hub (declared workspace) and periphery (all other bearer nodes) are each
+    reduced to their leading principal components. Receive (periphery -> hub)
+    and return (hub -> periphery) are Gaussian transfer entropies with the
+    given lags, each compared with block circular-shift surrogates (the hub
+    block is shifted rigidly against the periphery: within-block structure
+    and autocorrelation are kept, hub-periphery alignment is destroyed).
+    Broadcast needs both directions, so the gated value is the excess of the
+    direction with the smaller z (intersection-union: the value's z exceeds a
+    cutoff only if both directions do). Metastability (SD of the Kuramoto
+    order parameter, per-node circular-shift null) and the legacy L, B, H
+    synchrony terms are profile descriptors outside the gated value.
+    """
+    nan = float("nan")
+    n_nodes, n_time = x.shape
+    periphery = np.setdiff1d(np.arange(n_nodes), hub)
+    info = dict(extra)
+    info.update(
+        mode="capacity",
+        periphery_size=int(periphery.size),
+        hub_size=int(hub.size),
+    )
+
+    def _undefined(reason):
+        if not return_details:
+            return nan
+        out = {"value": nan, "raw": nan, "defined": False, "undefined_reason": reason}
+        out.update(info)
+        out.update(
+            _metric_null_fields("NAS", None, "block_circular_shift", seed, False)
+        )
+        return out
+
+    if hub.size < 1 or periphery.size < 1:
+        return _undefined("hub_or_periphery_empty")
+    if not np.all(np.isfinite(x)):
+        return _undefined("non_finite_timeseries")
+    lo_shift = int(math.ceil(0.1 * n_time)) if min_shift is None else int(min_shift)
+    lo_shift = max(1, lo_shift)
+    if n_time - lo_shift < lo_shift:
+        return _undefined("run_too_short_for_circular_shift")
+    comp_h = _block_components(x[hub], n_components)
+    comp_p = _block_components(x[periphery], n_components)
+    if comp_h is None or comp_p is None:
+        return _undefined("no_variance")
+    k_h, k_p = comp_h.shape[0], comp_p.shape[0]
+    n_conf = 0 if confounds is None else int(confounds.shape[0])
+    n_par = 1 + (k_h + k_p + n_conf) * len(lags)
+    if n_time - max(lags) <= 3 * n_par:
+        return _undefined("insufficient_timepoints_for_transfer_model")
+    te_in = _gaussian_transfer_entropy(comp_p, comp_h, lags, confounds)
+    te_out = _gaussian_transfer_entropy(comp_h, comp_p, lags, confounds)
+    rng = np.random.RandomState(seed)
+    null_in, null_out = [], []
+    for _ in range(int(n_surrogates)):
+        shift = int(rng.randint(lo_shift, n_time - lo_shift + 1))
+        h_s = np.roll(comp_h, shift, axis=1)
+        null_in.append(_gaussian_transfer_entropy(comp_p, h_s, lags, confounds))
+        null_out.append(_gaussian_transfer_entropy(h_s, comp_p, lags, confounds))
+    st_in = _null_calibration_stats(te_in, null_in)
+    st_out = _null_calibration_stats(te_out, null_out)
+    transfer = {
+        "lags": [int(v) for v in lags],
+        "components_hub": int(k_h),
+        "components_periphery": int(k_p),
+        "n_confounds": 0 if confounds is None else int(confounds.shape[0]),
+        "units": "nats (Gaussian transfer entropy = Granger causality / 2)",
+    }
+    for name, obs, st in (("in", te_in, st_in), ("out", te_out, st_out)):
+        transfer.update(
+            {
+                f"te_{name}": float(obs),
+                f"te_{name}_null_mean": float(st["null_mean"]),
+                f"te_{name}_null_sd": float(st["null_sd"]),
+                f"te_{name}_excess": float(st["excess"]),
+                f"te_{name}_z": float(st["z"]),
+                f"te_{name}_p": float(st["p"]),
+            }
+        )
+    info["transfer"] = transfer
+
+    fs = 1.0 / float(tr)
+    meta = {"value": nan, "null_mean": nan, "null_sd": nan, "z": nan,
+            "excess": nan, "mean_order_parameter": nan, "reason": None}
+    if bands is None:
+        meta["reason"] = "no_bands_declared"
+    else:
+        bw = np.asarray(band_weights, dtype=float)
+        obs_m = []
+        mean_r = []
+        for lo, hi in bands:
+            m, r = _kuramoto_metastability(x, float(lo), float(hi), fs)
+            obs_m.append(m)
+            mean_r.append(r)
+        null_m = []
+        for _ in range(int(n_surrogates)):
+            surr = _surrogate_timeseries(x, "circular_shift", rng, min_shift=lo_shift)
+            null_m.append(
+                float(np.dot(bw, [
+                    _kuramoto_metastability(surr, float(lo), float(hi), fs)[0]
+                    for lo, hi in bands
+                ]))
+            )
+        st_m = _null_calibration_stats(float(np.dot(bw, obs_m)), null_m)
+        meta.update(
+            value=float(np.dot(bw, obs_m)),
+            null_mean=float(st_m["null_mean"]),
+            null_sd=float(st_m["null_sd"]),
+            z=float(st_m["z"]),
+            excess=float(st_m["excess"]),
+            mean_order_parameter=float(np.dot(bw, mean_r)),
+        )
+    info["metastability"] = meta
+
+    descriptors = {"L": nan, "B": nan, "H": nan, "reason": None}
+    if profile_kwargs is None:
+        descriptors["reason"] = "profile_parameters_missing"
+    else:
+        legacy = compute_NAS(
+            x,
+            tr=tr,
+            workspace_nodes=hub,
+            return_details=True,
+            normalize=False,
+            **profile_kwargs,
+        )
+        bw_p = np.asarray(profile_kwargs["band_weights"], dtype=float)
+        bw_p = bw_p / float(bw_p.sum())
+        for key in ("L", "B", "H"):
+            vals = [c.get(key, nan) for c in legacy["band_components"]]
+            descriptors[key] = float(np.dot(bw_p, np.asarray(vals, dtype=float)))
+    info["profile_descriptors"] = descriptors
+
+    z_pair = np.asarray([st_in["z"], st_out["z"]], dtype=float)
+    if not np.all(np.isfinite(z_pair)):
+        return _undefined("transfer_null_degenerate")
+    lim = int(np.argmin(z_pair))
+    st_lim = (st_in, st_out)[lim]
+    info["limiting_direction"] = ("in", "out")[lim]
+    null_fields = _metric_null_fields(
+        "NAS", st_lim, "block_circular_shift", seed, False
+    )
+    value = float(null_fields["NAS_excess"])
+    if not return_details:
+        return value
+    out = {
+        "value": value,
+        "raw": float((te_in, te_out)[lim]),
+        "defined": True,
+        "undefined_reason": None,
+    }
+    out.update(info)
+    out.update(null_fields)
+    return out
+
+
+def _compute_nas_capacity_entry(
+    ts,
+    tr,
+    workspace_nodes,
+    bearer_idx,
+    transfer_lags,
+    transfer_components,
+    confounds,
+    null_surrogates,
+    null_seed,
+    null_min_shift,
+    bands,
+    band_weights,
+    profile_kwargs,
+    return_details,
+    extra,
+):
+    """Validate the ``mode='capacity'`` contract and run :func:`_nas_capacity`."""
+    if tr is None or (not np.isfinite(tr)) or float(tr) <= 0:
+        raise ValueError("compute_NAS requires explicit positive tr")
+    if workspace_nodes is None:
+        raise ValueError(
+            "compute_NAS mode='capacity' requires declared workspace_nodes"
+        )
+    n_regions, n_time = ts.shape
+    hub = np.unique(np.asarray(workspace_nodes, dtype=np.int64).reshape(-1))
+    if hub.size == 0 or hub.min() < 0 or hub.max() >= n_regions:
+        raise ValueError("workspace_nodes must be valid node indices")
+    lags = tuple(sorted({int(v) for v in np.asarray(transfer_lags).reshape(-1)}))
+    if not lags or lags[0] < 1:
+        raise ValueError("transfer_lags must be positive integers")
+    if int(transfer_components) < 1:
+        raise ValueError("transfer_components must be >= 1")
+    conf = None
+    if confounds is not None:
+        conf = np.asarray(confounds, dtype=float)
+        if conf.ndim == 1:
+            conf = conf[None, :]
+        if conf.ndim != 2 or conf.shape[1] != n_time:
+            raise ValueError(
+                f"confounds must have shape (n_confounds, {n_time}), got {conf.shape}"
+            )
+        if not np.all(np.isfinite(conf)):
+            raise ValueError("confounds must be finite")
+    n_surr = int(null_surrogates) or NAS_CAPACITY_DEFAULT_SURROGATES
+    if n_surr < 2:
+        raise ValueError("mode='capacity' needs null_surrogates >= 2")
+    band_list = None
+    bw = None
+    if bands is not None:
+        band_list = []
+        for b in bands:
+            if (not isinstance(b, (tuple, list))) or len(b) != 2 or any(
+                v is None for v in b
+            ):
+                raise ValueError("bands must be a list of (low, high) tuples")
+            band_list.append((float(b[0]), float(b[1])))
+        if not band_list:
+            raise ValueError("bands must not be empty")
+        bw = np.ones(len(band_list)) if band_weights is None else np.asarray(
+            band_weights, dtype=float
+        )
+        if bw.shape != (len(band_list),) or np.any(bw < 0) or float(bw.sum()) <= 0:
+            raise ValueError("band_weights must be non-negative, one per band")
+        bw = bw / float(bw.sum())
+    hub_full = hub if bearer_idx is None else bearer_idx[hub]
+    info = dict(
+        extra,
+        workspace_nodes=[int(v) for v in hub_full.tolist()],
+        n_surrogates_requested=n_surr,
+        metastability_bands=band_list,
+    )
+    return _nas_capacity(
+        np.asarray(ts, dtype=float),
+        hub,
+        tr=float(tr),
+        lags=lags,
+        n_components=int(transfer_components),
+        confounds=conf,
+        n_surrogates=n_surr,
+        seed=int(null_seed),
+        min_shift=null_min_shift,
+        bands=band_list,
+        band_weights=bw,
+        profile_kwargs=profile_kwargs,
+        return_details=return_details,
+        extra=info,
+    )
 
 
 def compute_NAS(
@@ -3355,6 +4360,11 @@ def compute_NAS(
     null_method: str = "circular_shift",
     null_seed: int | None = None,
     null_min_shift: int | None = None,
+    mode: str = "legacy",
+    bearer_nodes=None,
+    transfer_lags: tuple = (1, 2),
+    transfer_components: int = 5,
+    confounds: np.ndarray = None,
 ) -> float:
     """
     Theory-aligned Network Activation Synchrony (NAS).
@@ -3437,22 +4447,75 @@ def compute_NAS(
         Seed of the surrogate generator (default ``random_state``).
     null_min_shift : int or None, optional
         Minimum circular shift in samples (default 10% of the run).
+    mode : {'legacy', 'capacity'}, optional
+        ``'legacy'`` (default): the synchrony composite above.
+        ``'capacity'`` (Network Availability Score, broadcast capacity):
+        requires declared ``workspace_nodes`` (the hub; every other bearer node
+        is periphery). Receive (periphery -> hub) and return (hub ->
+        periphery) are lagged Gaussian transfer entropies between the leading
+        principal components of the two blocks, each as excess over block
+        circular-shift surrogates (``null_surrogates``; 0 selects
+        ``NAS_CAPACITY_DEFAULT_SURROGATES`` = 19). The gated value is the
+        signed excess (nats) of the weaker direction (smaller z), so it is
+        credibly above its null only if both directions are. Metastability
+        (SD of the Kuramoto order parameter in ``bands``, per-node
+        circular-shift null) and the legacy L, B, H synchrony terms (only when
+        ``tau``, ``bands``, ``window_len`` and ``step_len`` are given) are
+        reported as profile descriptors and do not enter the value; D is not
+        computed. ``baseline_ts``/``boost_against_baseline`` are ignored.
+    bearer_nodes : sequence of int or None, optional
+        Declared bearer: NAS uses only these rows of ``ts``. ``workspace_nodes``
+        stay in the full index space and must be a subset of the bearer.
+    transfer_lags : tuple[int], optional
+        Lags (samples) of the transfer-entropy models (``mode='capacity'``).
+    transfer_components : int, optional
+        Maximum number of principal components per block (hub, periphery).
+    confounds : ndarray, shape (n_confounds, n_time), optional
+        Measured exogenous signals (e.g. stimulus regressors) whose lags are
+        conditioned on in both transfer directions (``mode='capacity'``).
 
     Returns
     -------
     float or dict
         NAS value in [0,1] when ``normalize=True``; NaN when the input has fewer
-        than 2 regions or fewer than 4 timepoints.
+        than 2 regions or fewer than 4 timepoints. ``mode='capacity'`` returns
+        the signed transfer excess (nats, not clipped).
+
+    Notes
+    -----
+    Capacity-mode known-answer behaviour (tests/test_nas_capacity.py): a hub
+    that receives from and returns to the periphery gives a positive excess;
+    feedforward-only broadcast, no hub and independent noise give about 0. A
+    common driver of hub and periphery without any hub-periphery coupling is
+    *partly* inflated: observational Gaussian transfer cannot separate it
+    from a loop when both blocks carry lagged copies of the driver, so the
+    receive direction and sometimes the return direction exceed their nulls.
+    Conditioning on the driver (``confounds``) removes this when the driver is
+    measured.
     """
     if ts.ndim != 2:
         raise ValueError(f"ts should be 2D (n_regions × n_time), got shape {ts.shape}")
     _ = (zthr, eps)  # retained only for backward compatibility
-    n_regions, n_time = ts.shape
     if int(null_surrogates) < 0:
         raise ValueError("null_surrogates must be >= 0")
     if null_method not in SURROGATE_METHODS:
         raise ValueError(f"null_method must be one of {SURROGATE_METHODS}")
+    mode_norm = str(mode).strip().lower()
+    if mode_norm not in NAS_MODES:
+        raise ValueError(f"mode must be one of {NAS_MODES}")
+    bearer_idx = _resolve_bearer_nodes(bearer_nodes, ts.shape[0])
+    if bearer_idx is not None:
+        if baseline_ts is not None:
+            baseline_ts = _subset_baseline_nodes(baseline_ts, bearer_idx, ts.shape[0])
+        ts = ts[bearer_idx]
+        if workspace_nodes is not None:
+            workspace_nodes = _map_nodes_into_bearer(workspace_nodes, bearer_idx)
+    n_regions, n_time = ts.shape
     null_seed_eff = _resolve_null_seed(null_seed, random_state)
+    mode_fields = {
+        "mode": mode_norm,
+        "bearer_nodes": None if bearer_idx is None else bearer_idx.tolist(),
+    }
     if n_regions < 2 or n_time < 4:
         # Undefined, not zero (measured inputs only).
         if return_details:
@@ -3462,9 +4525,46 @@ def compute_NAS(
                 "defined": False,
                 "undefined_reason": "insufficient_shape",
             }
+            out.update(mode_fields)
             out.update(_metric_null_fields("NAS", None, null_method, null_seed_eff))
             return out
         return np.nan
+    if mode_norm == "capacity":
+        return _compute_nas_capacity_entry(
+            ts=ts,
+            tr=tr,
+            workspace_nodes=workspace_nodes,
+            bearer_idx=bearer_idx,
+            transfer_lags=transfer_lags,
+            transfer_components=transfer_components,
+            confounds=confounds,
+            null_surrogates=null_surrogates,
+            null_seed=null_seed_eff,
+            null_min_shift=null_min_shift,
+            bands=bands,
+            band_weights=band_weights,
+            profile_kwargs=(
+                None
+                if any(v is None for v in (tau, bands, window_len, step_len))
+                else dict(
+                    tau=tau,
+                    lambda_phase=lambda_phase,
+                    bands=bands,
+                    band_weights=(
+                        [1.0] * len(bands) if band_weights is None else band_weights
+                    ),
+                    window_len=window_len,
+                    step_len=step_len,
+                    max_triads=max_triads,
+                    random_state=random_state,
+                    directed_lag=directed_lag,
+                    reverberation_lags=reverberation_lags,
+                    hardware_backend=hardware_backend,
+                )
+            ),
+            return_details=return_details,
+            extra=mode_fields,
+        )
     backend = resolve_hardware_backend(hardware_backend)
 
     if tr is None or (not np.isfinite(tr)) or float(tr) <= 0:
@@ -3901,10 +5001,13 @@ def compute_NAS(
         "nas_baseline": (None if nas_base is None else float(nas_base)),
         "band_values": [float(v) for v in nas_bands],
         "band_components": band_components,
-        "workspace_nodes": [int(v) for v in G.tolist()],
+        "workspace_nodes": [
+            int(v) for v in (G if bearer_idx is None else bearer_idx[G]).tolist()
+        ],
         "defined": True,
         "undefined_reason": None,
     }
+    out.update(mode_fields)
     out.update(null_fields)
     return out
 
@@ -6235,10 +7338,11 @@ def _srpi_undefined_result(
     modality,
     windows_sec,
     eps,
+    extra=None,
 ):
     if not return_details:
         return float("nan")
-    return {
+    out = {
         "value": float("nan"),
         "undefined_reason": str(reason),
         "components": {
@@ -6267,6 +7371,8 @@ def _srpi_undefined_result(
         "windows_sec": dict(windows_sec),
         "eps": float(eps),
     }
+    out.update(extra or {})
+    return out
 
 
 def _event_locked_state_deltas(ts_z, event_idx, lag_samples, pre_samples, post_samples):
@@ -6450,6 +7556,302 @@ def _leading_latent_axis(pre_a, pre_b, hardware_backend=None):
     return axis / nrm
 
 
+SRPI_MODES = ("legacy", "agency")
+SRPI_AGENCY_COMPONENTS = (
+    "reactivity_bias",
+    "representational_separability",
+    "self_pattern_stability",
+    "internal_state_coupling",
+)
+
+
+def _safe_signed_corr(a, b):
+    a = np.asarray(a, dtype=float).reshape(-1)
+    b = np.asarray(b, dtype=float).reshape(-1)
+    if a.size < 3 or a.size != b.size:
+        return np.nan
+    if np.std(a) < 1e-12 or np.std(b) < 1e-12:
+        return np.nan
+    r = float(np.corrcoef(a, b)[0, 1])
+    return r if np.isfinite(r) else np.nan
+
+
+def _pca_basis(x, n_components):
+    """Mean and orthonormal basis (p x k) of the leading components of rows ``x``."""
+    mu = np.mean(x, axis=0)
+    xc = x - mu
+    if int(n_components) < 1:
+        return mu, np.zeros((x.shape[1], 0))
+    _, s, vt = np.linalg.svd(xc, full_matrices=False)
+    if s.size == 0 or s[0] <= 1e-12:
+        return mu, np.zeros((x.shape[1], 0))
+    rank = int(np.sum(s > max(xc.shape) * np.finfo(float).eps * s[0]))
+    k = int(min(int(n_components), rank))
+    return mu, vt[:k].T
+
+
+def _partial_pre_state(pre_fit, delta_fit, n_pre):
+    """
+    Pre-state partialling fitted on ``(pre_fit, delta_fit)``: regression of the
+    response changes on an intercept and the ``n_pre`` leading principal
+    components of the pre-event state (label-free). Returns a function that
+    maps ``(pre, delta)`` to residual response changes.
+    """
+    mu_p, vp = _pca_basis(pre_fit, n_pre)
+    design = np.column_stack([np.ones(pre_fit.shape[0]), (pre_fit - mu_p) @ vp])
+    coef, *_ = np.linalg.lstsq(design, delta_fit, rcond=None)
+
+    def _apply(pre, delta):
+        d = np.column_stack([np.ones(pre.shape[0]), (pre - mu_p) @ vp])
+        return delta - d @ coef
+
+    return _apply
+
+
+def _agency_cv_auc(
+    pre, delta, labels, n_folds, n_pre, n_comp, shrinkage_floor, backend
+):
+    """
+    Cross-validated shrinkage-LDA AUC (self vs other) on pre-state-partialled,
+    PCA-reduced response changes. Folds are time-blocked and class-stratified;
+    the pre-state regression, the response PCA and the LDA are all fitted on
+    the training fold only and applied to the held-out events. (Partialling on
+    all events before the CV would imprint the labels on the residuals
+    whenever the pre-event state differs between classes and bias the
+    held-out AUC below chance.)
+    """
+    n_s, n_n = int(labels.sum()), int((~labels).sum())
+    k = int(min(int(n_folds), n_s, n_n))
+    if k < 2:
+        return float("nan")
+    fold = np.empty(labels.size, dtype=np.int64)
+    for cls in (True, False):
+        pos = np.flatnonzero(labels == cls)
+        for f, chunk in enumerate(np.array_split(pos, k)):
+            fold[chunk] = f
+    scores = np.full(labels.size, np.nan)
+    for f in range(k):
+        te = fold == f
+        tr = ~te
+        y_tr = labels[tr]
+        if y_tr.sum() < 2 or (~y_tr).sum() < 2:
+            return float("nan")
+        n_tr = int(tr.sum())
+        partial = _partial_pre_state(pre[tr], delta[tr], min(n_pre, n_tr // 5))
+        r_tr = partial(pre[tr], delta[tr])
+        r_te = partial(pre[te], delta[te])
+        mu_r, vr = _pca_basis(r_tr, min(n_comp, n_tr - 3))
+        if vr.shape[1] == 0:
+            return float("nan")
+        f_tr = (r_tr - mu_r) @ vr
+        f_te = (r_te - mu_r) @ vr
+        w, mid = _shrinkage_lda_direction(
+            f_tr[y_tr], f_tr[~y_tr], shrinkage_floor, hardware_backend=backend
+        )
+        if w is None:
+            return float("nan")
+        scores[te] = (f_te - mid) @ w
+    return _auc_from_scores(scores[labels], scores[~labels])
+
+
+def _srpi_agency(
+    ts,
+    tr,
+    agency_events,
+    pre_window_sec,
+    response_lag_sec,
+    response_window_sec,
+    weights,
+    shrinkage_floor,
+    n_folds,
+    min_events_per_class,
+    n_perm,
+    n_components,
+    n_pre_components,
+    seed,
+    eps,
+    modality,
+    return_details,
+    backend,
+    extra,
+):
+    """SRPI ``mode='agency'`` (see :func:`compute_SRPI`)."""
+    from impact_pipeline.event_parsing import (
+        AGENCY_SELF_LABEL,
+        validate_srpi_agency_contract,
+    )
+
+    nan = float("nan")
+    n_regions, n_tp = ts.shape
+    pre_samples = max(1, int(round(float(pre_window_sec) / tr)))
+    lag_samples = int(round(float(response_lag_sec) / tr))
+    post_samples = max(1, int(round(float(response_window_sec) / tr)))
+    windows_sec = {
+        "pre_window_sec": float(pre_window_sec),
+        "response_lag_sec": float(response_lag_sec),
+        "response_window_sec": float(response_window_sec),
+    }
+    report = validate_srpi_agency_contract(agency_events, tr=tr)
+    contract = {k: v for k, v in report.items() if k not in ("events", "pairs")}
+    counts = {
+        "n_self_events_raw": int(report["n_self_caused"]),
+        "n_nonself_events_raw": int(report["n_other_caused"]),
+        "n_self_events_used": 0,
+        "n_nonself_events_used": 0,
+        "n_pairs_used": 0,
+    }
+    info = dict(extra, contract=contract, n_permutations=int(n_perm))
+
+    def _undefined(reason):
+        out = _srpi_undefined_result(
+            reason, return_details, counts, modality, windows_sec, eps, extra=info
+        )
+        if return_details:
+            out.update(
+                _metric_null_fields(
+                    "SRPI", None, "yoked_label_permutation", seed, False
+                )
+            )
+        return out
+
+    if not report["valid"]:
+        code = report["violations"][0] if report["violations"] else "no_yoked_pairs"
+        return _undefined(f"agency_contract_violation:{code}")
+    if not np.all(np.isfinite(ts)):
+        return _undefined("non_finite_timeseries")
+
+    ev = report["events"]
+    idx = np.rint(np.asarray(ev["onset"], dtype=float) / tr).astype(np.int64)
+    ok = (idx - pre_samples >= 0) & (idx + lag_samples + post_samples <= n_tp)
+    pairs = [(s, o) for s, o in report["pairs"] if ok[s] and ok[o]]
+    rows = sorted({r for pair in pairs for r in pair}, key=lambda r: (idx[r], r))
+    y = np.asarray([ev["trial_type"][r] == AGENCY_SELF_LABEL for r in rows], dtype=bool)
+    counts["n_pairs_used"] = len(pairs)
+    counts["n_self_events_used"] = int(y.sum())
+    counts["n_nonself_events_used"] = int((~y).sum())
+    if int(y.sum()) < min_events_per_class:
+        return _undefined("insufficient_self_events_after_windowing")
+    if int((~y).sum()) < min_events_per_class:
+        return _undefined("insufficient_nonself_events_after_windowing")
+    # Exchangeability units of the null: each self-caused event with its
+    # yoked replays (same stimulus and phase bin by contract). Labels are
+    # permuted within these clusters, i.e. a paired, phase-stratified null.
+    cluster_of = {}
+    for s, o in pairs:
+        cluster_of[s] = s
+        cluster_of[o] = s
+    clusters = np.asarray([cluster_of[r] for r in rows], dtype=np.int64)
+
+    ts_z = accelerated_zscore(ts, axis=1, backend=backend, eps=1e-12)
+    pre, delta, _ = _event_locked_state_deltas(
+        ts_z, idx[rows], lag_samples, pre_samples, post_samples
+    )
+    n_ev = int(delta.shape[0])
+    # Response changes with the linear effect of the pre-event state removed
+    # (label-free regression on its leading components). Conservative: a
+    # class difference that is collinear with a class difference in the
+    # pre-event state is removed too. Inside the separability CV the
+    # partialling is refitted on the training folds.
+    k_pre = min(int(n_pre_components), n_ev // 5)
+    d_res = _partial_pre_state(pre, delta, k_pre)(pre, delta)
+    mag = np.sqrt(np.sum(d_res * d_res, axis=1))
+    axis = _leading_latent_axis(pre, pre[:0], hardware_backend=backend)
+    state = pre.dot(axis) if axis is not None else None
+
+    def _terms(lab):
+        s, o = lab, ~lab
+        auc = _agency_cv_auc(
+            pre, delta, lab, n_folds, int(n_pre_components), int(n_components),
+            shrinkage_floor, backend,
+        )
+        g_s, g_n = float(mag[s].mean()), float(mag[o].mean())
+        react = abs(g_s - g_n) / (g_s + g_n + eps)
+        rho_s = _mean_pairwise_pattern_similarity(d_res[s], hardware_backend=backend)
+        rho_n = _mean_pairwise_pattern_similarity(d_res[o], hardware_backend=backend)
+        if state is None:
+            coup = nan
+        else:
+            coup = 0.5 * abs(
+                _safe_signed_corr(state[s], mag[s])
+                - _safe_signed_corr(state[o], mag[o])
+            )
+        terms = [react, 2.0 * auc - 1.0, 0.5 * abs(rho_s - rho_n), coup]
+        return np.asarray(terms, dtype=float), float(auc), (g_s - g_n) / (
+            g_s + g_n + eps
+        )
+
+    obs, auc_obs, signed_react = _terms(y)
+    wpos = weights > 0
+    names = SRPI_AGENCY_COMPONENTS
+    reasons = (
+        "reactivity_undefined",
+        "separability_undefined",
+        "stability_undefined",
+        "internal_state_coupling_undefined",
+    )
+    for j in range(4):
+        if wpos[j] and not np.isfinite(obs[j]):
+            return _undefined(reasons[j])
+
+    rng = np.random.RandomState(seed)
+    groups = [np.flatnonzero(clusters == c) for c in np.unique(clusters)]
+    null = np.full((n_perm, 4), np.nan)
+    null_auc = np.full(n_perm, np.nan)
+    for i in range(n_perm):
+        lab = y.copy()
+        for g in groups:
+            lab[g] = y[g][rng.permutation(g.size)]
+        if lab.sum() < 2 or (~lab).sum() < 2:
+            continue
+        null[i], null_auc[i], _ = _terms(lab)
+
+    wn = weights / float(np.sum(weights))
+    raw = float(np.sum(wn[wpos] * obs[wpos]))
+    null_agg = np.sum(wn[wpos] * null[:, wpos], axis=1)
+    stats = _null_calibration_stats(raw, null_agg[np.isfinite(null_agg)])
+    if stats["null_n"] < 2:
+        return _undefined("insufficient_permutations")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        term_mean = np.nanmean(null, axis=0)
+        term_sd = np.nanstd(null, axis=0, ddof=1)
+    excess = obs - term_mean
+    null_fields = _metric_null_fields(
+        "SRPI", stats, "yoked_label_permutation", seed, False
+    )
+    value = float(null_fields["SRPI_excess"])
+    if not return_details:
+        return value
+    auc_null = null_auc[np.isfinite(null_auc)]
+    out = {
+        "value": value,
+        "raw": raw,
+        "undefined_reason": None,
+        "components": {n: float(v) for n, v in zip(names, excess)},
+        "components_raw": {n: float(v) for n, v in zip(names, obs)},
+        "components_null_mean": {n: float(v) for n, v in zip(names, term_mean)},
+        "components_null_sd": {n: float(v) for n, v in zip(names, term_sd)},
+        "signed_reactivity_bias": float(signed_react),
+        "separability_cv_auc": float(auc_obs),
+        "separability_null_auc_mean": float(np.mean(auc_null)),
+        "separability_null_auc_sd": float(np.std(auc_null, ddof=1)),
+        "separability_p_null": float(
+            (1.0 + np.sum(auc_null >= auc_obs)) / (1.0 + auc_null.size)
+        ),
+        "reliability": nan,
+        "weights": {n: float(v) for n, v in zip(names, wn)},
+        "n_state_components": int(k_pre),
+        "n_response_components_max": int(n_components),
+        "counts": dict(counts),
+        "modality": str(modality),
+        "windows_sec": dict(windows_sec),
+        "eps": float(eps),
+    }
+    out.update(info)
+    out.update(null_fields)
+    return out
+
+
 def compute_SRPI(
     ts: np.ndarray,
     tr: float = None,
@@ -6468,6 +7870,13 @@ def compute_SRPI(
     return_details: bool = False,
     hardware_backend=None,
     separability_cv_folds: int = 5,
+    mode: str = "legacy",
+    agency_events=None,
+    agency_null_permutations: int = 200,
+    agency_components: int = 10,
+    agency_pre_components: int = 5,
+    agency_random_state: int = 0,
+    bearer_nodes=None,
 ) -> float:
     """
     Self-Referential Processing Index (SRPI).
@@ -6514,7 +7923,9 @@ def compute_SRPI(
     component_weights : tuple(float, float, float, float), optional
         Weights for (reactivity, separability, stability, internal coupling).
     min_events_per_class : int, optional
-        Minimum required self and non-self events after windowing.
+        Minimum required self and non-self events after windowing (>= 3 in
+        every mode: the cross-validated separability trains on at least two
+        events per class).
     sample_reliability_tau : float, optional
         Saturation constant for event-count reliability attenuation.
     return_details : bool, optional
@@ -6522,6 +7933,50 @@ def compute_SRPI(
     separability_cv_folds : int, optional
         Number of time-blocked, class-stratified folds for the
         cross-validated separability.
+    mode : {'legacy', 'agency'}, optional
+        ``'legacy'`` (default): the self/non-self content contrast below.
+        ``'agency'`` (SRPI-agency, L1): self-caused events vs yoked,
+        stimulus-identical, phase-matched other-caused replays taken from
+        ``agency_events`` (``self_onsets``/``nonself_onsets`` are ignored).
+        The events contract is checked by
+        ``event_parsing.validate_srpi_agency_contract``; a violation makes
+        SRPI undefined (``agency_contract_violation:<code>``). Terms, each
+        chance-corrected by the mean of a label-permutation null in which the
+        labels are permuted within each yoked cluster (a self-caused event and
+        its phase-matched replays; ``agency_null_permutations`` draws, seed
+        ``agency_random_state``), all computed on response changes from which
+        the linear effect of the pre-event state (``agency_pre_components``
+        principal components, label-free regression; refitted inside every
+        CV training fold) was removed: two-sided reactivity
+        ``|G_s - G_n| / (G_s + G_n)``; separability ``2 * AUC_cv - 1`` of a
+        shrinkage-LDA on PCA-reduced (``agency_components``) changes;
+        stability ``|rho_s - rho_n| / 2``; coupling ``|corr_s - corr_n| / 2``
+        between the pre-event latent state and the response size. SRPI is
+        the ``component_weights``-weighted arithmetic mean of the
+        chance-corrected terms (signed, no hard zero, no reliability
+        attenuation); the details carry the AUC, its null mean/sd and the
+        ``SRPI_*`` null fields. The partialling is conservative: a
+        self/other difference that is collinear with a self/other difference
+        in the pre-event state (e.g. motor preparation that always precedes
+        self-caused events) is removed together with it, so SRPI-agency is
+        about 0 in that regime even when an efference effect is present;
+        ``agency_pre_components=0`` keeps such effects but then also credits
+        pre-event state differences (see tests/test_srpi_agency.py).
+    agency_events : DataFrame, mapping of columns or list of rows, optional
+        SRPI-agency events (``onset``, ``trial_type``, ``yoked_to``,
+        ``phase_bin`` and optionally ``event_id`` and a stimulus column), e.g.
+        the ``agency_events`` entry of ``events_table_to_bundle``.
+    agency_null_permutations : int, optional
+        Label permutations for the agency null (>= 2).
+    agency_components : int, optional
+        Principal components of the response changes used by the LDA.
+    agency_pre_components : int, optional
+        Principal components of the pre-event state partialled out of the
+        response changes (0 disables the partialling).
+    agency_random_state : int, optional
+        Seed of the permutation null.
+    bearer_nodes : sequence of int or None, optional
+        Declared bearer: SRPI uses only these rows of ``ts``.
 
     Notes
     -----
@@ -6549,10 +8004,23 @@ def compute_SRPI(
         raise ValueError("response_lag_sec must be >= 0")
     if covariance_ridge <= 0:
         raise ValueError("covariance_ridge must be > 0")
-    if min_events_per_class < 2:
-        raise ValueError("min_events_per_class must be >= 2")
+    if min_events_per_class < 3:
+        # Separability is cross-validated: with fewer than 3 events per class
+        # a training fold cannot hold 2 events of each class, so SRPI could
+        # never be defined.
+        raise ValueError("min_events_per_class must be >= 3")
     if sample_reliability_tau <= 0:
         raise ValueError("sample_reliability_tau must be > 0")
+    mode_norm = str(mode).strip().lower()
+    if mode_norm not in SRPI_MODES:
+        raise ValueError(f"mode must be one of {SRPI_MODES}")
+    if mode_norm == "agency":
+        if int(agency_null_permutations) < 2:
+            raise ValueError("agency_null_permutations must be >= 2")
+        if int(agency_components) < 1:
+            raise ValueError("agency_components must be >= 1")
+        if int(agency_pre_components) < 0:
+            raise ValueError("agency_pre_components must be >= 0")
 
     weights = np.asarray(component_weights, dtype=float).reshape(-1)
     if weights.size != 4:
@@ -6565,7 +8033,36 @@ def compute_SRPI(
     if not np.any(weights > 0):
         raise ValueError("At least one SRPI component weight must be > 0")
 
+    bearer_idx = _resolve_bearer_nodes(bearer_nodes, ts.shape[0])
+    if bearer_idx is not None:
+        ts = ts[bearer_idx]
+    mode_fields = {
+        "mode": mode_norm,
+        "bearer_nodes": None if bearer_idx is None else bearer_idx.tolist(),
+    }
     backend = resolve_hardware_backend(hardware_backend)
+    if mode_norm == "agency":
+        return _srpi_agency(
+            ts,
+            tr=float(tr),
+            agency_events=agency_events,
+            pre_window_sec=pre_window_sec,
+            response_lag_sec=response_lag_sec,
+            response_window_sec=response_window_sec,
+            weights=weights,
+            shrinkage_floor=float(covariance_ridge) / (1.0 + float(covariance_ridge)),
+            n_folds=int(separability_cv_folds),
+            min_events_per_class=int(min_events_per_class),
+            n_perm=int(agency_null_permutations),
+            n_components=int(agency_components),
+            n_pre_components=int(agency_pre_components),
+            seed=int(agency_random_state),
+            eps=float(eps),
+            modality=modality,
+            return_details=return_details,
+            backend=backend,
+            extra=mode_fields,
+        )
     n_regions, n_tp = ts.shape
     _, self_idx = _sanitize_onset_seconds(self_onsets, tr=tr, n_tp=n_tp)
     _, non_idx = _sanitize_onset_seconds(nonself_onsets, tr=tr, n_tp=n_tp)
@@ -6589,6 +8086,7 @@ def compute_SRPI(
             modality=modality,
             windows_sec=windows_sec,
             eps=eps,
+            extra=mode_fields,
         )
     if self_idx.size == 0:
         return _srpi_undefined_result(
@@ -6598,6 +8096,7 @@ def compute_SRPI(
             modality=modality,
             windows_sec=windows_sec,
             eps=eps,
+            extra=mode_fields,
         )
     if non_idx.size == 0:
         return _srpi_undefined_result(
@@ -6607,6 +8106,7 @@ def compute_SRPI(
             modality=modality,
             windows_sec=windows_sec,
             eps=eps,
+            extra=mode_fields,
         )
 
     ts_z = accelerated_zscore(ts, axis=1, backend=backend, eps=1e-12)
@@ -6639,6 +8139,7 @@ def compute_SRPI(
             modality=modality,
             windows_sec=windows_sec,
             eps=eps,
+            extra=mode_fields,
         )
     if used_non.size < int(min_events_per_class):
         return _srpi_undefined_result(
@@ -6648,6 +8149,7 @@ def compute_SRPI(
             modality=modality,
             windows_sec=windows_sec,
             eps=eps,
+            extra=mode_fields,
         )
 
     mag_self = accelerated_row_norm(delta_self, axis=1, backend=backend)
@@ -6678,6 +8180,7 @@ def compute_SRPI(
             modality=modality,
             windows_sec=windows_sec,
             eps=eps,
+            extra=mode_fields,
         )
     rho_self = _mean_pairwise_pattern_similarity(delta_self, hardware_backend=backend)
     rho_non = _mean_pairwise_pattern_similarity(delta_non, hardware_backend=backend)
@@ -6689,6 +8192,7 @@ def compute_SRPI(
             modality=modality,
             windows_sec=windows_sec,
             eps=eps,
+            extra=mode_fields,
         )
     c_stability = float(np.clip((float(rho_self) - float(rho_non)) / 2.0, 0.0, 1.0))
 
@@ -6701,6 +8205,7 @@ def compute_SRPI(
             modality=modality,
             windows_sec=windows_sec,
             eps=eps,
+            extra=mode_fields,
         )
     state_self = pre_self.dot(axis)
     state_non = pre_non.dot(axis)
@@ -6714,6 +8219,7 @@ def compute_SRPI(
             modality=modality,
             windows_sec=windows_sec,
             eps=eps,
+            extra=mode_fields,
         )
     c_internal = float(np.clip(float(corr_self) - float(corr_non), 0.0, 1.0))
 
@@ -6766,4 +8272,5 @@ def compute_SRPI(
         "modality": str(modality),
         "windows_sec": dict(windows_sec),
         "eps": float(eps),
+        **mode_fields,
     }
