@@ -66,6 +66,10 @@ Archive = "https://doi.org/10.5281/zenodo.15306740"
 where = ["src"]
 include = ["impact_pipeline*"]
 
+[tool.setuptools.package-data]
+# MPC-Bench witness catalogue (YAML and its JSON twin) in non-editable wheels.
+"impact_pipeline.bench" = ["*.yaml", "*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # run_pipeline.py and scripts/ are checkout-level entry points (not part of the

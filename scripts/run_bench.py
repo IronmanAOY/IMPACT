@@ -13,6 +13,16 @@ Examples:
         --confirmatory --freeze-tag <tag> --out <workspace>/bench/factorial_C
     python scripts/run_bench.py factorial --seeds 0-19 --n-shards 8 \
         --pbs-template bench_factorial.pbs
+    python scripts/run_bench.py patchwork_sweep --seeds 0-19 --levels 6 \
+        --out outputs/bench/patchwork_sweep
+    python scripts/run_bench.py manipulation --seeds 0-4 --out outputs/bench/manip
+    python scripts/run_bench.py adversarial --seeds 10000-10019 \
+        --confirmatory --freeze-tag <tag> --out <workspace>/bench/adversarial
+    python scripts/run_bench.py whole_brain --observations source,eeg,bold \
+        --seeds 10000-10004 --confirmatory --freeze-tag <tag> \
+        --out <workspace>/bench/whole_brain
+Add ``--se-groups 5`` for jackknife component SEs (needed by the v2 rule
+audit, scripts/benchmark_attribution_rules.py).
 """
 
 from __future__ import annotations

@@ -163,39 +163,79 @@ def test_compute_synergy_ci_runs_unchanged_on_export(exported):
     assert params["srpi_params"]["modality"] == "eeg"
 
 
+COMPONENT_FIELDS = {
+    "estimate",
+    "value",
+    "null_mean",
+    "null_sd",
+    "n_null",
+    "null_family",
+    "null_impl",
+    "defined",
+    "reason",
+    "bearer_id",
+    "seconds",
+}
+
+
 def test_run_in_memory_components_and_nulls():
+    """Legacy estimator modes: no null unless ``null_surrogates > 0``."""
     s = g.simulate_family_a(None, SMALL, seed=3)
-    res = export.run_in_memory(s, metrics=("PDI", "NAS", "SRPI"), null_surrogates=0)
+    res = export.run_in_memory(
+        s, metrics=("PDI", "NAS", "SRPI"), null_surrogates=0, use_optional_modes=False
+    )
     comps = res["components"]
     assert set(comps) == {"PDI", "NAS", "SRPI"}
     for c in comps.values():
-        assert set(c) >= {
-            "estimate",
-            "value",
-            "null_mean",
-            "null_sd",
-            "n_null",
-            "defined",
-            "reason",
-            "bearer_id",
-            "seconds",
-        }
+        assert set(c) >= COMPONENT_FIELDS
         assert c["bearer_id"] == "system" and c["n_null"] == 0
+        assert c["null_family"] is None and c["null_impl"] is None
     cal = export.run_in_memory(
-        s, metrics=("NAS", "SRPI", "IIM"), null_surrogates=3, null_seed=5
+        s,
+        metrics=("NAS", "SRPI", "IIM"),
+        null_surrogates=3,
+        null_seed=5,
+        use_optional_modes=False,
     )["components"]
     assert cal["NAS"]["n_null"] == 3 and np.isfinite(cal["NAS"]["null_sd"])
     assert cal["NAS"]["null_family"] == "circular_shift"
+    assert cal["NAS"]["null_impl"] == "estimator"
     assert cal["IIM"]["statistic"] == "Delta_Psi_bits" and cal["IIM"]["n_null"] == 3
     assert cal["SRPI"]["n_null"] + cal["SRPI"]["n_null_failed"] == 3
     assert cal["SRPI"]["null_family"] == "label_permutation"
     assert cal["SRPI"]["null_impl"] in ("bench_local", "impact_pipeline.nulls")
-    again = export.run_in_memory(s, metrics=("NAS",), null_surrogates=3, null_seed=5)
+    again = export.run_in_memory(
+        s, metrics=("NAS",), null_surrogates=3, null_seed=5, use_optional_modes=False
+    )
     assert again["components"]["NAS"]["null_mean"] == cal["NAS"]["null_mean"]
     with pytest.raises(ValueError):
         export.run_in_memory(s, metrics=("PHI",))
     with pytest.raises(ValueError):
         export.run_in_memory(s, metrics=("NAS",), params={"XYZ": {}})
+
+
+def test_self_calibrating_modes_record_their_own_null():
+    """PDI surrogate_excess, NAS capacity and SRPI agency return their own
+    null family even without ``null_surrogates``; SRPI-agency receives the
+    agency events (yoked replays) and is defined on the nominal agent."""
+    s = g.simulate_family_a(None, SMALL, seed=3)
+    res = export.run_in_memory(s, metrics=("PDI", "NAS", "SRPI"), null_surrogates=0)
+    modes = res["estimator_modes"]
+    if modes["SRPI"].get("mode") != "agency":
+        pytest.skip("installed compute_SRPI has no agency mode")
+    assert modes["SRPI"]["agency_events"] == "bundle"
+    comps = res["components"]
+    for p in ("PDI", "NAS", "SRPI"):
+        c = comps[p]
+        assert set(c) >= COMPONENT_FIELDS
+        assert c["defined"], (p, c["reason"])
+        assert c["n_null"] >= 2 and np.isfinite(c["null_sd"]) and c["null_sd"] > 0
+        assert c["null_impl"] == "estimator" and c["null_family"]
+        assert c["statistic"] == "raw"
+    assert comps["SRPI"]["null_family"] == "yoked_label_permutation"
+    # The returned value of SRPI-agency is the excess over its own null.
+    srpi = comps["SRPI"]
+    assert srpi["value"] == pytest.approx(srpi["estimate"] - srpi["null_mean"])
 
 
 def test_bearer_views_on_patchwork():
@@ -261,7 +301,7 @@ def test_evidence_verdict_uses_evidence_layer_when_available():
     res = export.run_in_memory(s, metrics=("NAS", "SRPI"), null_surrogates=2)
     out = export.evidence_verdict(res, s.meta)
     # The layer is installed: its API must be driven without error.
-    assert out["verdict"] in ("ATTRIBUTED", "NOT_ATTRIBUTED", "UNDETERMINED")
+    assert out["verdict"] in ("MPC_CONSISTENT", "EXCLUDED", "UNDETERMINED")
     assert not any(r.startswith("evidence_layer_") for r in out["reasons"])
     assert set(out["component_status"]) >= {"NAS", "SRPI"}
 
@@ -373,7 +413,11 @@ def test_event_nulls_use_the_installed_nulls_module(monkeypatch):
         9,
         {"common": True, "t_max": t_max, "min_shift": 0.1 * t_max},
     )
-    res = export.run_in_memory(s, metrics=("SRPI",), null_surrogates=4)
+    # Legacy SRPI (self/non-self onsets) uses the event-table label
+    # permutation of the installed module.
+    res = export.run_in_memory(
+        s, metrics=("SRPI",), null_surrogates=4, use_optional_modes=False
+    )
     comp = res["components"]["SRPI"]
     assert comp["null_impl"] == "impact_pipeline.nulls"
     assert comp["null_family"] == "label_permutation" and comp["n_null"] == 3
@@ -381,6 +425,18 @@ def test_event_nulls_use_the_installed_nulls_module(monkeypatch):
         "among": export.SRPI_NULL_LABELS,
         "stratify_col": "phase_bin",
     }
+    # SRPI-agency calibrates itself (yoked permutation): the event-table
+    # null, which would break the yoking, is not called.
+    n_calls = len(calls)
+    agency = export.run_in_memory(s, metrics=("SRPI",), null_surrogates=4)
+    if agency["estimator_modes"]["SRPI"].get("mode") == "agency":
+        assert len(calls) == n_calls
+        assert agency["components"]["SRPI"]["null_impl"] == "estimator"
+    # RAM (no self-calibrating mode) goes through the installed module.
+    ram = export.run_in_memory(s, metrics=("RAM",), null_surrogates=4)["components"]
+    if ram["RAM"]["defined"]:
+        assert ram["RAM"]["null_impl"] == "impact_pipeline.nulls"
+        assert calls[-1][0] == "onset_jitter"
 
     def broken(*args, **kwargs):
         raise TypeError("API drift")
@@ -502,8 +558,8 @@ def test_run_tasks_writes_results_with_provenance_and_resumes(tmp_path):
     assert rec["timing"]["simulate_s"] > 0 and "NAS" in rec["timing"]["estimators_s"]
     assert "LZc" in rec["markers"] and "PhiR_bits" in rec["markers"]
     assert rec["verdict"]["verdict"] is None or rec["verdict"]["verdict"] in (
-        "ATTRIBUTED",
-        "NOT_ATTRIBUTED",
+        "MPC_CONSISTENT",
+        "EXCLUDED",
         "UNDETERMINED",
     )
     df = pd.read_csv(out / run_bench.RESULTS_CSV)
@@ -602,9 +658,20 @@ def test_pbs_template_and_cli(tmp_path, capsys):
 
 
 def test_timing_report_measures_each_generator():
-    rep = run_bench.timing_report(seeds=(0,), config=SMALL_DICT, binary_steps=500)
+    rep = run_bench.timing_report(
+        seeds=(0,), config=SMALL_DICT, binary_steps=500, whole_brain_sec=4.0
+    )
     rows = rep["timings"]
-    assert {"family_A", "family_C", "patchwork"} <= set(rows)
+    assert {"family_A", "family_C", "patchwork", "patchwork_graded_lambda1"} <= set(
+        rows
+    )
     assert sum(k.startswith("family_B_") for k in rows) == len(g.BINARY_NETWORK_KINDS)
+    assert sum(k.startswith("adversarial_") for k in rows) == 6
+    assert {
+        "whole_brain_source_4s",
+        "whole_brain_eeg_forward",
+        "whole_brain_bold_forward",
+    } <= set(rows)
     assert all(r["mean_s"] > 0 for r in rows.values())
     assert rows["family_A"]["shape"][0] == 30
+    assert rows["whole_brain_eeg_forward"]["shape"][0] == 64

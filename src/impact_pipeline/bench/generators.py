@@ -27,7 +27,11 @@ B  Binary / kinetic-Ising networks with exact transition probability matrices
    (independent, ring, all-to-all, feedforward star, XOR loop, hidden common
    driver) and a trajectory sampler (IIM ground truth).
 C  Stuart-Landau (Hopf) oscillator network with the family-A switch semantics
-   and task (held-out family; run only after the code freeze).
+   and task (held-out family; run only after the code freeze). Design 2
+   (generator 1.1.0): resonant input drives, coupling near the network's Hopf
+   bifurcation and bifurcation-parameter ignition, validated by the
+   preregistered oracle manipulation checks of
+   :mod:`impact_pipeline.bench.manipulation`.
 
 Outputs of families A/C (:class:`BenchSystem`): ``ts`` (nodes x time),
 ``events`` (BIDS events table), ``meta`` (declared information an analyst may
@@ -59,7 +63,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-GENERATOR_VERSION = "mpc-bench-generators/1.0.0"
+GENERATOR_VERSION = "mpc-bench-generators/1.1.0"
 PRINCIPLES = ("RAM", "PDI", "NAS", "IIM", "SRPI")
 SWITCH_FOR_PRINCIPLE = {
     "RAM": "eta",
@@ -93,6 +97,9 @@ TRIAL_TYPES = (
 IMPACT_CHANNEL_TASK = "behavioural_feedback"
 IMPACT_CHANNEL_AGENCY = "agency"
 DYNAMICS = ("rate", "stuart_landau")
+# Substrate labels of the applicability registry (spec v2, V2-5).
+SUBSTRATE_OF_DYNAMICS = {"rate": "synthetic_rate", "stuart_landau": "stuart_landau"}
+FAMILY_C_DESIGN = 2
 
 # Module layouts of family A/C in topological (feedforward) order. W is the
 # workspace hub; the other modules are the periphery.
@@ -110,6 +117,7 @@ MODULE_ROLES = {
     "V": "evaluative",
 }
 _N_PATTERN_BANK = 32
+FEEDBACK_MODES = ("contingent", "scrambled")
 
 
 # ---------------------------------------------------------------------------
@@ -249,9 +257,15 @@ class AgentConfig:
     slow_gain: float = 0.15
     slow_stim_mod: float = 0.3
     n_phase_bins: int = 4
-    # Bandit.
+    # Bandit. ``feedback_mode='scrambled'`` delivers +-1 feedback with
+    # probability 1/2 whatever the choice (no action-outcome contingency;
+    # adversarial RAM null). ``reflex_gain`` adds a fixed stimulus-specific
+    # drive (stimulus id a -> action a) to the stimulus-response pathway
+    # (reflex arc; 0 in families A/C).
     n_trials: int = 80
     p_reward: float = 0.8
+    feedback_mode: str = "contingent"
+    reflex_gain: float = 0.0
     reversal_block: Tuple[int, int] = (15, 25)
     choice_beta: float = 5.0
     trial_sec: float = 3.0
@@ -269,16 +283,27 @@ class AgentConfig:
     phase_gap_sec: float = 3.0
     tail_sec: float = 3.0
     rest_sec: float = 0.0
-    # Stuart-Landau (family C) constants.
+    # Stuart-Landau (family C, design 2) constants: rate lam (1/s) of the
+    # amplitude dynamics, per-node natural frequency ~ U(sl_freq_hz), coupling
+    # kappa on the family-A matrix W, bifurcation parameters (sl_a < 0:
+    # damped nodes; the resting nominal network sits below the Hopf
+    # bifurcation of its dominant linear mode: leading eigenvalue of
+    # diag(a) + kappa W < 0, with sl_a + kappa * rho(W) < 0 and a lower hub
+    # parameter sl_hub_a), resonant input gain, hub ignition
+    # (bifurcation-parameter increment and adaptation) and noise.
     sl_substeps: int = 5
-    sl_freq_hz: Tuple[float, float] = (0.5, 1.0)
-    sl_coupling: float = 0.3
-    sl_input_gain: float = 4.0
-    sl_a: float = -0.3
-    sl_hub_a: float = -0.3
-    sl_ignition_gain: float = 0.6
-    sl_ignition_threshold: float = 0.65
-    sl_sigma: float = 0.3
+    sl_freq_hz: Tuple[float, float] = (1.15, 1.25)
+    sl_rate: float = 10.0
+    sl_coupling: float = 1.1
+    sl_input_gain: float = 1.0
+    sl_a: float = -1.0
+    sl_hub_a: float = -2.0
+    sl_ignition_gain: float = 2.5
+    sl_adapt_gain: float = 2.0
+    sl_ignition_threshold: float = 0.38
+    sl_ignition_slope: float = 20.0
+    sl_gate_tau: float = 0.2
+    sl_sigma: float = 0.15
 
     def __post_init__(self):
         if int(self.n_modules) not in MODULE_LAYOUTS:
@@ -293,12 +318,21 @@ class AgentConfig:
             raise ValueError("dt must be <= tau (Euler step dt/tau <= 1)")
         if int(self.sl_substeps) < 1:
             raise ValueError("sl_substeps must be >= 1")
+        if not (self.sl_rate > 0 and self.sl_gate_tau > 0):
+            raise ValueError("sl_rate and sl_gate_tau must be > 0")
+        if self.sl_rate * self.dt / int(self.sl_substeps) > 0.5:
+            # Euler-Maruyama substep of the amplitude dynamics must be small.
+            raise ValueError("sl_rate * dt / sl_substeps must be <= 0.5")
         if self.n_trials < 1 or self.n_reafference_pairs < 1:
             raise ValueError("n_trials and n_reafference_pairs must be >= 1")
         if self.n_phase_bins < 1:
             raise ValueError("n_phase_bins must be >= 1")
         if not 0.5 <= self.p_reward <= 1.0:
             raise ValueError("p_reward must be in [0.5, 1]")
+        if self.feedback_mode not in FEEDBACK_MODES:
+            raise ValueError(f"feedback_mode must be one of {FEEDBACK_MODES}")
+        if not (math.isfinite(self.reflex_gain) and self.reflex_gain >= 0):
+            raise ValueError("reflex_gain must be a finite value >= 0")
 
     def to_dict(self) -> dict:
         out = asdict(self)
@@ -804,6 +838,8 @@ def _simulate_agent(
     h = np.zeros(hub.size)
     ign_trace = np.zeros(T)
     gate_trace = np.zeros(T)
+    env = None
+    omega = None
 
     if dynamics == "rate":
         alpha = dt / cfg.tau
@@ -849,15 +885,30 @@ def _simulate_agent(
             gate_trace[t] = knobs.g_b * s_ign
         ts = act
     else:
+        # Family C (design 2): Stuart-Landau oscillators in rate units,
+        #   dz_j = { i w_j z_j + lam [ (a_j(t) - |z_j|^2) z_j + kappa (W z)_j
+        #            + I_j(t) e^{i w_j t} ] } dt + lam sigma dB_j,
+        # with task and endogenous inputs I_j(t) delivered as resonant drives
+        # (at each node's own frequency) and hub ignition acting on the hub's
+        # bifurcation parameter. In the frame rotating with each node the
+        # envelope obeys the family-A rate equations with a cubic saturation,
+        # so every switch acts through the same couplings, while the recorded
+        # signal Re z is an oscillation whose amplitude and phase carry them.
         sub = max(1, int(cfg.sl_substeps))
         dti = dt / sub
+        lam = float(cfg.sl_rate)
         f_lo, f_hi = cfg.sl_freq_hz
         omega = 2.0 * np.pi * struct_rng.uniform(f_lo, f_hi, size=n)
         a_vec = np.full(n, float(cfg.sl_a))
         a_vec[hub] = float(cfg.sl_hub_a)
-        noise_sd = cfg.sl_sigma * np.sqrt(dti / 2.0)
+        kappa_w = float(cfg.sl_coupling) * net.W
+        noise_sd = lam * cfg.sl_sigma * np.sqrt(dti / 2.0)
         z = np.zeros(n, dtype=complex)
         ts = np.zeros((n, T))
+        env = np.zeros((n, T), dtype=np.complex64)
+        rot_step = np.exp(1j * omega * dti)
+        rot = np.ones(n, dtype=complex)
+        hub_lp = 0.0
         for t in range(T):
             if t in handlers:
                 _run_handlers(
@@ -884,29 +935,40 @@ def _simulate_agent(
                 )
             drive = cfg.sl_input_gain * inp[:, t] + net.bias
             for _ in range(sub):
-                coup = cfg.sl_coupling * (net.W @ z)
-                hub_amp = float(np.mean(np.abs(z[hub]))) - cfg.w_adapt * float(
-                    np.mean(h)
-                )
+                amp = np.abs(z)
+                hub_amp = float(np.mean(amp[hub]))
+                # The gate reads the hub amplitude low-passed over sl_gate_tau
+                # (all-or-none episodes rather than cycle-by-cycle flicker).
+                hub_lp += (dti / cfg.sl_gate_tau) * (hub_amp - hub_lp)
                 s_ign = 1.0 / (
                     1.0
                     + np.exp(
-                        -cfg.ignition_slope * (hub_amp - cfg.sl_ignition_threshold)
+                        -cfg.sl_ignition_slope * (hub_lp - cfg.sl_ignition_threshold)
                     )
                 )
                 a_t = a_vec.copy()
-                a_t[hub] += cfg.sl_ignition_gain * knobs.g_b * s_ign
-                dz = (a_t + 1j * omega - np.abs(z) ** 2) * z + coup + drive
+                a_t[hub] += knobs.g_b * (
+                    cfg.sl_ignition_gain * s_ign - cfg.sl_adapt_gain * h
+                )
+                dz = 1j * omega * z + lam * (
+                    (a_t - amp * amp) * z + kappa_w @ z + drive * rot
+                )
                 z = (
                     z
                     + dti * dz
                     + noise_sd
                     * (noise_rng.standard_normal(n) + 1j * noise_rng.standard_normal(n))
                 )
-                h = h + (dti / cfg.tau_adapt) * (-h + knobs.g_b * s_ign)
+                rot = rot * rot_step
+                # Adaptation builds up while the hub is ignited (terminates
+                # the episode and makes the hub refractory afterwards).
+                h = h + (dti / cfg.tau_adapt) * (-h + s_ign)
+            rot = rot / np.abs(rot)
             ts[:, t] = z.real
-            act[:, t] = np.abs(z)
-            ign_trace[t] = float(np.mean(np.abs(z[hub])))
+            amp = np.abs(z)
+            act[:, t] = amp
+            env[:, t] = z * np.conj(rot)
+            ign_trace[t] = float(np.mean(amp[hub]))
             gate_trace[t] = knobs.g_b * s_ign
 
     return {
@@ -924,6 +986,8 @@ def _simulate_agent(
         "ignition_gate": gate_trace,
         "tag_trace": tag_trace,
         "reaff_attenuation": reaff_atten,
+        "hidden_envelope": env,
+        "oscillator_frequency_hz": None if omega is None else omega / (2.0 * np.pi),
     }
 
 
@@ -951,15 +1015,18 @@ def _run_handlers(
 ):
     for kind, i in items:
         if kind == "map":
-            # Plastic stimulus-response pathway: action-specific gains 1 + q_a.
+            # Plastic stimulus-response pathway: action-specific gains 1 + q_a
+            # (plus the fixed reflex mapping stimulus a -> action a, if any).
             q_trace[i] = q
+            stim_id = int(sched["stim_ids"][i])
             for a in (0, 1):
+                gain = cfg.g_sm * (1.0 + q[a]) + cfg.reflex_gain * float(stim_id == a)
                 _add_pulse(
                     inp,
                     act_units[a],
                     t,
                     map_dur,
-                    cfg.g_sm * (1.0 + q[a]) * np.ones(act_units[a].size),
+                    gain * np.ones(act_units[a].size),
                 )
         elif kind == "respond":
             s0 = int(sched["stim_idx"][i]) + readout_delay
@@ -970,9 +1037,14 @@ def _run_handlers(
             c = int(sched["choice_u"][i] < p1)
             p_choice1[i] = p1
             choices[i] = c
-            p_win = (
-                cfg.p_reward if c == int(sched["good_arm"][i]) else 1.0 - cfg.p_reward
-            )
+            if cfg.feedback_mode == "scrambled":
+                p_win = 0.5
+            else:
+                p_win = (
+                    cfg.p_reward
+                    if c == int(sched["good_arm"][i])
+                    else 1.0 - cfg.p_reward
+                )
             rewards[i] = 1.0 if sched["reward_u"][i] < p_win else -1.0
             _add_pulse(
                 inp,
@@ -1142,6 +1214,7 @@ def _assemble_system(
         "generator_version": GENERATOR_VERSION,
         "family": family,
         "dynamics": dynamics,
+        "substrate": SUBSTRATE_OF_DYNAMICS[dynamics],
         "seed": int(seed),
         "dt": float(dt),
         "sampling_frequency": float(1.0 / dt),
@@ -1167,6 +1240,8 @@ def _assemble_system(
         "reafference_start_sec": round(float(sched["reafference_start_idx"]) * dt, 6),
         "has_rest_run": rest is not None,
     }
+    if dynamics == "stuart_landau":
+        meta["family_c_design"] = FAMILY_C_DESIGN
     meta.update(extra_meta or {})
     meta.update(net.extra_meta)
     if "iim_macro_nodes" in net.extra_meta:
@@ -1206,6 +1281,11 @@ def _assemble_system(
         "action_onsets_sec": [round(float(i) * dt, 6) for i in sched["act_idx"]],
         "inputs": sim["inputs"],
     }
+    if sim.get("hidden_envelope") is not None:
+        # Oscillator families: demodulated complex state z_j e^{-i w_j t}
+        # (hidden; the recorded signal is Re z) and natural frequencies.
+        oracle["hidden_envelope"] = sim["hidden_envelope"]
+        oracle["oscillator_frequency_hz"] = sim["oscillator_frequency_hz"]
     oracle.update(net.extra_oracle)
     return BenchSystem(
         ts=sim["ts"],
@@ -1282,12 +1362,39 @@ def simulate_family_c(
     seed: int = 0,
 ) -> BenchSystem:
     """
-    Family C (held out): Stuart-Landau oscillators on the family-A module graph
-    with the same five switches and task. Node ``j`` follows
-    ``dz = [(a_j + i w_j - |z|^2) z + (W z)_j + I_j] dt + noise``; the recorded
-    signal is ``Re z`` at the family-A sampling interval (``sl_substeps``
-    Euler-Maruyama substeps per sample). Hub ignition raises the hub's
-    bifurcation parameter through ``g_b``; readouts use ``|z|``.
+    Family C (held out; design 2): Stuart-Landau oscillators on the family-A
+    module graph with the same five switches and task. Node ``j`` follows
+
+        dz_j = { i w_j z_j + lam [ (a_j(t) - |z_j|^2) z_j + kappa (W z)_j
+                 + I_j(t) e^{i w_j t} ] } dt + lam sigma dB_j
+
+    (``lam = sl_rate``, ``w_j = 2 pi f_j`` with ``f_j ~ U(sl_freq_hz)``,
+    ``kappa = sl_coupling``, ``sigma = sl_sigma``, complex white noise). Task
+    and endogenous inputs ``I_j`` (the family-A input channels, gain
+    ``sl_input_gain``) are resonant drives at each node's own frequency. The
+    hub's bifurcation parameter is ``sl_hub_a + g_b (sl_ignition_gain s -
+    sl_adapt_gain h)``: the ignition gate ``s`` is a steep sigmoid
+    (``sl_ignition_slope``) of the hub amplitude low-passed over
+    ``sl_gate_tau`` crossing ``sl_ignition_threshold``, and ``h`` is an
+    adaptation that integrates the gate (time constant ``tau_adapt``), so
+    ignitions are all-or-none episodes that end by adaptation. With the
+    defaults the resting nominal network is close to, but below, the Hopf
+    bifurcation of its dominant linear mode: with a uniform parameter
+    ``sl_a`` it would sit at ``sl_a + kappa * spectral_radius = -1 + 1.1 *
+    0.85 = -0.065``; the hub's lower resting parameter (``sl_hub_a = -2``)
+    moves the leading eigenvalue of ``diag(a) + kappa W`` to about -0.25,
+    and ignition raises the hub parameter transiently. Every coupling switch
+    therefore changes the dynamics (preregistered manipulation checks in
+    :mod:`impact_pipeline.bench.manipulation`). The recorded signal
+    is ``Re z`` at the family-A sampling interval (``sl_substeps``
+    Euler-Maruyama substeps per sample); choices are read out from ``|z|``.
+    The oracle adds the demodulated envelope ``z_j e^{-i w_j t}``
+    (``hidden_envelope``) and the natural frequencies.
+
+    Design 1 (generator 1.0.0: detuned 0.5-1 Hz oscillators, weak coupling
+    0.3 W z against a 4x additive input drive) failed the manipulation checks:
+    the NAS and IIM switches changed the recorded signal by 3-4 % and ignition
+    occurred in < 1 % of samples.
     """
     return _simulate_modular(
         "C", "stuart_landau", build_family_a_network, knobs, config, seed
@@ -1728,6 +1835,18 @@ GENERATOR_NAMES = (
     "null_ar1",
     "hypersynchronous",
 )
+# External and adversarial generators (not built around the five switches;
+# held out: confirmatory runs only). Built lazily by make_system.
+WHOLE_BRAIN_GENERATORS = ("whole_brain", "whole_brain_eeg", "whole_brain_bold")
+ADVERSARIAL_GENERATORS = (
+    "adversarial_parity_grid",
+    "adversarial_hypersynchrony",
+    "adversarial_common_driver",
+    "adversarial_reflex_arc",
+    "adversarial_random_label_self_other",
+    "adversarial_scrambled_feedback",
+)
+EXTERNAL_GENERATOR_NAMES = WHOLE_BRAIN_GENERATORS + ADVERSARIAL_GENERATORS
 
 
 def make_system(
@@ -1741,7 +1860,13 @@ def make_system(
     """
     Build one system by generator name. Null and hypersynchronous systems take
     their events and declared meta from a nominal run of ``template_family``
-    with the same seed and config.
+    with the same seed and config. External generators
+    (``EXTERNAL_GENERATOR_NAMES``): ``adversarial_<kind>`` (see
+    :mod:`impact_pipeline.bench.adversarial`; ``config`` is the agent
+    config) and ``whole_brain`` / ``whole_brain_eeg`` / ``whole_brain_bold``
+    (source, EEG-like and BOLD-like observations; ``whole_brain_config=`` a
+    :class:`~impact_pipeline.bench.whole_brain.WholeBrainConfig` or dict,
+    other keywords go to the forward model).
     """
     if generator == "family_a":
         return simulate_family_a(knobs, config, seed)
@@ -1751,6 +1876,24 @@ def make_system(
         from impact_pipeline.bench.patchwork import simulate_patchwork
 
         return simulate_patchwork(knobs, config, seed, **kwargs)
+    if generator.startswith("adversarial_"):
+        from impact_pipeline.bench.adversarial import make_adversarial
+
+        return make_adversarial(
+            generator[len("adversarial_") :], config, seed, **kwargs
+        )
+    if generator in WHOLE_BRAIN_GENERATORS:
+        from impact_pipeline.bench import forward, whole_brain
+
+        wb_cfg = kwargs.pop("whole_brain_config", None)
+        if not isinstance(wb_cfg, whole_brain.WholeBrainConfig):
+            wb_cfg = whole_brain.whole_brain_config_from_dict(wb_cfg)
+        source = whole_brain.simulate_whole_brain(wb_cfg, seed)
+        if generator == "whole_brain_eeg":
+            return forward.eeg_forward(source, seed=seed, **kwargs)
+        if generator == "whole_brain_bold":
+            return forward.bold_forward(source, seed=seed, **kwargs)
+        return source
     if generator in ("null_independent_noise", "null_ar1", "hypersynchronous"):
         tmpl = (
             simulate_family_c
@@ -1762,7 +1905,10 @@ def make_system(
             return hypersynchronous_system(like, seed=seed, **kwargs)
         kind = "independent_noise" if generator == "null_independent_noise" else "ar1"
         return null_system(kind, like, seed=seed, **kwargs)
-    raise ValueError(f"generator must be one of {GENERATOR_NAMES}, got {generator!r}")
+    raise ValueError(
+        f"generator must be one of {GENERATOR_NAMES + EXTERNAL_GENERATOR_NAMES}, "
+        f"got {generator!r}"
+    )
 
 
 def all_bit_patterns() -> List[Tuple[int, ...]]:
@@ -1773,7 +1919,25 @@ def all_bit_patterns() -> List[Tuple[int, ...]]:
 def summarise_oracle(system: BenchSystem) -> dict:
     """Scalar oracle summaries (hidden channels) used by tests and reports."""
     o = system.oracle
-    out = {"intended_bits": list(o.get("intended_bits", []))}
+    out = {"intended_bits": list(o.get("intended_bits") or [])}
+    for key in (
+        "adversarial",
+        "designed_to_fool",
+        "mean_order",
+        "metastability",
+        "n_edges_removed",
+        "inter_module_coupling",
+        "G",
+    ):
+        if key in o and not isinstance(o[key], np.ndarray):
+            out[key] = o[key]
+    if "ignition_gate" in o:
+        gate = np.asarray(o["ignition_gate"], dtype=float)
+        knobs = system.meta.get("knobs") or {}
+        g_b = float(knobs.get("g_b", 0.0) or 0.0)
+        out["ignition_occupancy"] = (
+            float(np.mean(gate > 0.5 * g_b)) if g_b > 0 and gate.size else 0.0
+        )
     if "q_by_trial" in o:
         q = np.asarray(o["q_by_trial"], dtype=float)
         out["q_range"] = float(np.ptp(q)) if q.size else 0.0

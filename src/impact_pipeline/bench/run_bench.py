@@ -3,16 +3,26 @@ MPC-Bench runner: simulate systems, score them with the public estimators and
 write JSONL/CSV results with provenance.
 
 Designs: ``factorial`` (2^5 cells x seeds), ``sweep`` (dose-response, 10
-levels per knob x seeds), ``witnesses`` (``witnesses.yaml`` x seeds) and
+levels per knob x seeds), ``witnesses`` (``witnesses.yaml`` x seeds),
+``patchwork_sweep`` (graded patchworks: inter-module coupling 0 -> nominal),
+``adversarial`` (the six constructions of ``bench.adversarial``),
+``whole_brain`` (Hopf model on the empirical connectome: G sweep and lesions,
+observed as sources, EEG-like and BOLD-like signals), ``manipulation``
+(preregistered oracle manipulation checks of families A/C; no estimator) and
 ``timing`` (simulation runtimes per generator). Tasks run in a process pool;
 with ``--n-shards`` / ``--shard-index`` a run is split deterministically
 (``--pbs-template`` writes a PBS Pro array script for HLRS Hunter).
 
-Seed policy: development seeds are 0-999; confirmatory seeds start at 10000
-and family C (held out) and confirmatory seeds run only with
-``--confirmatory``, which requires a clean git tree (no modified tracked
-files, no untracked files under ``src/`` or ``scripts/``), optionally a
-freeze tag that is an ancestor of HEAD, and records the commit.
+Development / confirmatory split (spec v2, V2-6): development runs use seeds
+0-999 and families A/B (factorial, sweeps, witnesses, rate patchworks);
+seeds >= 10000, family C (incl. its patchwork), the whole-brain generator and
+the adversarial set are confirmatory and run only with ``--confirmatory``,
+which requires a clean git tree (no modified tracked files, no untracked
+files under ``src/`` or ``scripts/``) and the code-freeze tag
+(``--freeze-tag``: an ancestor of HEAD with identical ``src/`` and
+``scripts/`` trees); the tag and commit are recorded in every output. The
+``manipulation`` design reads only oracle channels (no estimator), so it may
+run on development seeds for every family before the freeze.
 
 The estimators are imported lazily; ``impact_pipeline.evidence`` (verdicts)
 and optional estimator modes are used when available and recorded.
@@ -45,6 +55,7 @@ from impact_pipeline.bench.factorial import (
     factorial_tasks,
 )
 from impact_pipeline.bench.generators import (
+    EXTERNAL_GENERATOR_NAMES,
     GENERATOR_VERSION,
     PRINCIPLES,
     config_from_dict,
@@ -56,11 +67,29 @@ from impact_pipeline.bench.sweeps import SWEEP_KNOBS, sweep_tasks
 
 log = logging.getLogger("impact_pipeline.bench")
 
-RESULT_SCHEMA = "mpc-bench-result/1"
+RESULT_SCHEMA = "mpc-bench-result/2"
 DEV_SEED_MAX = 999
 CONFIRMATORY_SEED_START = 10000
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DESIGNS = ("factorial", "sweep", "witnesses", "timing")
+DESIGNS = (
+    "factorial",
+    "sweep",
+    "witnesses",
+    "patchwork_sweep",
+    "adversarial",
+    "whole_brain",
+    "manipulation",
+    "timing",
+)
+# Generators whose systems are confirmatory only (held out until the freeze).
+HELD_OUT_GENERATORS = frozenset(EXTERNAL_GENERATOR_NAMES)
+WHOLE_BRAIN_OBSERVATIONS = {
+    "source": "whole_brain",
+    "eeg": "whole_brain_eeg",
+    "bold": "whole_brain_bold",
+}
+MANIPULATION_CSV = "manipulation_checks.csv"
+BOLD_MIN_DURATION_SEC = 600.0
 RESULTS_JSONL = "results.jsonl"
 RESULTS_CSV = "results.csv"
 MANIFEST = "run_manifest.json"
@@ -79,6 +108,17 @@ def seed_set(seed: int) -> str:
     if seed >= CONFIRMATORY_SEED_START:
         return "confirmatory"
     return "reserved"
+
+
+def is_held_out(task: BenchTask) -> bool:
+    """Family C, whole-brain and adversarial systems are confirmatory only."""
+    return task.family == "C" or task.generator in HELD_OUT_GENERATORS
+
+
+def split_of(task: BenchTask) -> str:
+    """'confirmatory' or 'development' (spec v2, V2-6)."""
+    held = is_held_out(task) or seed_set(task.seed) == "confirmatory"
+    return "confirmatory" if held else "development"
 
 
 def check_seed_policy(tasks: Sequence[BenchTask], confirmatory: bool) -> None:
@@ -104,6 +144,11 @@ def check_seed_policy(tasks: Sequence[BenchTask], confirmatory: bool) -> None:
             raise ValueError(
                 f"{t.task_id}: family C is held out; it runs only with "
                 "--confirmatory after the code freeze"
+            )
+        if not confirmatory and t.generator in HELD_OUT_GENERATORS:
+            raise ValueError(
+                f"{t.task_id}: the whole-brain and adversarial sets are held "
+                "out; they run only with --confirmatory after the code freeze"
             )
 
 
@@ -233,17 +278,158 @@ def witness_tasks(
     return tasks
 
 
+def patchwork_sweep_tasks(
+    seeds: Iterable[int],
+    family: str = "A",
+    n_levels: int = 6,
+    config: Optional[dict] = None,
+) -> List[BenchTask]:
+    """Graded patchworks: inter-module coupling from 0 to nominal, scored with
+    system and per-principle bearers."""
+    from impact_pipeline.bench.patchwork import patchwork_sweep_levels
+
+    family = str(family).upper()
+    tasks = []
+    for li, lam in enumerate(patchwork_sweep_levels(n_levels)):
+        for mode in ("system", "principle"):
+            for seed in seeds:
+                suffix = "" if mode == "system" else "-principle"
+                tasks.append(
+                    BenchTask(
+                        task_id=f"pwsweep-{family}-l{li:02d}{suffix}-s{int(seed):05d}",
+                        design="patchwork_sweep",
+                        family=family,
+                        generator="patchwork",
+                        cell_id=f"lambda_l{li:02d}",
+                        knobs={},
+                        seed=int(seed),
+                        config=dict(config or {}),
+                        sweep_knob="inter_module_coupling",
+                        sweep_level=float(lam),
+                        bearer_mode=mode,
+                        generator_kwargs={"inter_module_coupling": float(lam)},
+                    )
+                )
+    return tasks
+
+
+def adversarial_tasks(
+    seeds: Iterable[int], kinds=None, config: Optional[dict] = None
+) -> List[BenchTask]:
+    """One task per adversarial construction and seed (held out)."""
+    from impact_pipeline.bench.adversarial import ADVERSARIAL_KINDS
+
+    kinds = list(ADVERSARIAL_KINDS if kinds is None else kinds)
+    unknown = sorted(set(kinds) - set(ADVERSARIAL_KINDS))
+    if unknown:
+        raise ValueError(f"unknown adversarial kind(s): {unknown}")
+    return [
+        BenchTask(
+            task_id=f"adversarial-{k}-s{int(seed):05d}",
+            design="adversarial",
+            family="adversarial",
+            generator=f"adversarial_{k}",
+            cell_id=k,
+            knobs={},
+            seed=int(seed),
+            config=dict(config or {}),
+        )
+        for k in kinds
+        for seed in seeds
+    ]
+
+
+def whole_brain_tasks(
+    seeds: Iterable[int],
+    observations: Sequence[str] = ("source", "eeg", "bold"),
+    base: Optional[dict] = None,
+    g_levels: Optional[Sequence[float]] = None,
+    lesions: Sequence[str] = ("hub", "interhemispheric", "long_range"),
+) -> List[BenchTask]:
+    """G sweep and lesions (with size-matched random controls) x observation
+    model x seeds (held out). BOLD-like tasks simulate at least
+    ``BOLD_MIN_DURATION_SEC`` (TR = 2 s: 300 volumes)."""
+    from impact_pipeline.bench import whole_brain as wb
+
+    base_cfg = wb.whole_brain_config_from_dict(base)
+    levels = wb.g_sweep_levels() if g_levels is None else list(g_levels)
+    tasks = []
+    for man in wb.manipulations(levels, lesions, base_cfg):
+        for obs in observations:
+            if obs not in WHOLE_BRAIN_OBSERVATIONS:
+                raise ValueError(
+                    f"observation must be one of {WHOLE_BRAIN_OBSERVATIONS}"
+                )
+            for seed in seeds:
+                tasks.append(
+                    BenchTask(
+                        task_id=f"wholebrain-{man['name']}-{obs}-s{int(seed):05d}",
+                        design="whole_brain",
+                        family="whole_brain",
+                        generator=WHOLE_BRAIN_OBSERVATIONS[obs],
+                        cell_id=man["name"],
+                        knobs={},
+                        seed=int(seed),
+                        sweep_knob="G" if man["name"].startswith("G") else "lesion",
+                        sweep_level=float(man["config"].G),
+                        generator_kwargs={
+                            "whole_brain_config": _observation_config(
+                                man["config"], obs
+                            ).to_dict()
+                        },
+                    )
+                )
+    return tasks
+
+
+def _observation_config(cfg, observation: str):
+    if observation == "bold" and cfg.duration_sec < BOLD_MIN_DURATION_SEC:
+        return cfg.replace(duration_sec=float(BOLD_MIN_DURATION_SEC))
+    return cfg
+
+
 def build_system(task: BenchTask):
     """Realise the system of a task (knobs are applied on top of the nominal)."""
+    gen = task.generator
+    kw = dict(task.generator_kwargs or {})
+    if gen in HELD_OUT_GENERATORS:
+        cfg = config_from_dict(task.config) if task.config else None
+        return make_system(gen, None, cfg, task.seed, **kw)
     cfg = config_from_dict(task.config)
     kn = knobs_from_dict(task.knobs)
-    gen = task.generator
-    kw = {}
     if gen == "family_a" and task.family == "C":
         gen = FAMILY_GENERATOR["C"]
     if gen == "patchwork":
         kw["dynamics"] = "rate" if task.family == "A" else "stuart_landau"
     return make_system(gen, kn, cfg, task.seed, template_family=task.family, **kw)
+
+
+def exact_iim(system, cut_mode: str = "bidirectional") -> Optional[dict]:
+    """
+    IIM of a declared exact TPM (``meta['exact_tpm']``, e.g. the parity grid)
+    at the declared current state, with ``compute_IIM_from_tpm``; None when
+    the system declares no TPM.
+    """
+    tpm = system.meta.get("exact_tpm")
+    if tpm is None:
+        return None
+    from impact_pipeline import mpc_metrics as mm
+
+    tpm = np.asarray(tpm, dtype=float)
+    w = np.zeros(tpm.shape[0])
+    w[int(system.meta.get("exact_tpm_state", 0))] = 1.0
+    t0 = time.perf_counter()
+    d = mm.compute_IIM_from_tpm(
+        tpm, state_weights=w, cut_mode=cut_mode, return_details=True
+    )
+    return {
+        "value": float(d.get("value", float("nan"))),
+        "raw": float(d.get("raw", float("nan"))),
+        "cut_mode": cut_mode,
+        "state": int(system.meta.get("exact_tpm_state", 0)),
+        "exact": True,
+        "seconds": round(time.perf_counter() - t0, 4),
+    }
 
 
 def _null_seed(seed: int) -> int:
@@ -293,8 +479,10 @@ def run_task(
     provenance: Optional[dict] = None,
     markers: bool = True,
     with_verdict: bool = True,
+    se_groups: int = 0,
 ) -> dict:
-    """Simulate and score one task; errors are recorded, not raised."""
+    """Simulate and score one task; errors are recorded, not raised. Verdict
+    names are the v2 names (MPC_CONSISTENT / EXCLUDED / UNDETERMINED)."""
     from impact_pipeline.bench.export import evidence_verdict, run_in_memory
 
     rec = {
@@ -303,7 +491,9 @@ def run_task(
         "generator_version": GENERATOR_VERSION,
         **task.to_dict(),
         "seed_set": seed_set(task.seed),
+        "split": split_of(task),
         "null_surrogates": int(null_surrogates),
+        "se_groups": int(se_groups),
         "null_seed": _null_seed(task.seed),
         "metrics": list(metrics),
         "provenance": provenance or {},
@@ -319,8 +509,9 @@ def run_task(
             "n_nodes": system.n_nodes,
             "n_time": system.n_time,
             "dt": system.dt,
+            "substrate": system.meta.get("substrate"),
         }
-        rec["intended_bits"] = list(system.oracle.get("intended_bits", []))
+        rec["intended_bits"] = list(system.oracle.get("intended_bits") or [])
         rec["oracle_summary"] = summarise_oracle(system)
         res = run_in_memory(
             system,
@@ -329,12 +520,16 @@ def run_task(
             null_surrogates=null_surrogates,
             null_seed=_null_seed(task.seed),
             bearer_mode=task.bearer_mode,
+            se_groups=se_groups,
         )
         rec["components"] = res["components"]
         rec["estimator_modes"] = res["estimator_modes"]
         rec["timing"]["estimators_s"] = {
             p: c["seconds"] for p, c in res["components"].items()
         }
+        exact = exact_iim(system)
+        if exact is not None:
+            rec["exact_iim"] = exact
         if markers:
             rec["markers"] = _markers(system)
         if with_verdict:
@@ -365,7 +560,9 @@ def flatten_record(rec: dict) -> dict:
             "bearer_mode",
             "seed",
             "seed_set",
+            "split",
             "null_surrogates",
+            "se_groups",
             "status",
             "error",
         )
@@ -387,11 +584,15 @@ def flatten_record(rec: dict) -> dict:
         if est is not None and nm is not None and nsd not in (None, 0):
             z = (est - nm) / nsd
         row[f"{p}_z"] = z
+        row[f"{p}_se"] = c.get("se")
+        row[f"{p}_statistic"] = c.get("statistic")
         row[f"{p}_defined"] = c.get("defined")
         row[f"{p}_reason"] = c.get("reason")
         row[f"{p}_seconds"] = c.get("seconds")
     for k, v in (rec.get("markers") or {}).items():
         row[f"marker_{k}"] = v
+    if rec.get("exact_iim"):
+        row["exact_IIM"] = rec["exact_iim"].get("value")
     for k, v in (rec.get("oracle_summary") or {}).items():
         if not isinstance(v, (list, dict)):
             row[f"oracle_{k}"] = v
@@ -405,6 +606,8 @@ def flatten_record(rec: dict) -> dict:
     code = prov.get("code_version") or {}
     row["git_sha"] = code.get("git_sha")
     row["git_dirty"] = code.get("git_dirty")
+    row["freeze_tag"] = code.get("freeze_tag")
+    row["freeze_tag_sha"] = code.get("freeze_tag_sha")
     return row
 
 
@@ -518,6 +721,7 @@ def run_tasks(
     provenance: Optional[dict] = None,
     markers: bool = True,
     confirmatory: bool = False,
+    se_groups: int = 0,
 ) -> List[dict]:
     """
     Run tasks (skipping task ids already completed in ``out_dir``) and append
@@ -563,7 +767,13 @@ def run_tasks(
                 for t in todo:
                     _emit(
                         run_task(
-                            t, metrics, null_surrogates, params, small_prov, markers
+                            t,
+                            metrics,
+                            null_surrogates,
+                            params,
+                            small_prov,
+                            markers,
+                            se_groups=se_groups,
                         )
                     )
         else:
@@ -587,6 +797,8 @@ def run_tasks(
                         params,
                         small_prov,
                         markers,
+                        True,
+                        se_groups,
                     )
                     for t in todo
                 ]
@@ -602,6 +814,8 @@ def run_tasks(
             "wall_s": round(time.time() - t_start, 3),
             "task_ids": [t.task_id for t in tasks],
             "confirmatory": bool(confirmatory),
+            "splits": sorted({split_of(t) for t in tasks}),
+            "se_groups": int(se_groups),
         }
     )
     (out / MANIFEST).write_text(
@@ -694,8 +908,16 @@ def timing_report(
     seeds: Sequence[int] = (0, 1, 2),
     config: Optional[dict] = None,
     binary_steps: int = 10000,
+    external: bool = True,
+    whole_brain_sec: float = 60.0,
 ) -> dict:
-    """Wall-clock simulation time per generator (mean, sd, n) on this machine."""
+    """
+    Wall-clock simulation time per generator (mean, sd, n) on this machine.
+    With ``external`` the graded patchwork, the adversarial constructions and
+    the whole-brain model (``whole_brain_sec`` of simulated time; source,
+    EEG-like and BOLD-like observation) are timed as well (simulation only:
+    no estimator, so held-out sets may be timed on development seeds).
+    """
     from impact_pipeline.bench.generators import (
         BINARY_NETWORK_KINDS,
         family_b_network,
@@ -733,6 +955,38 @@ def timing_report(
         _time(
             f"family_B_{kind}_n4_T{binary_steps}",
             lambda s, net=net: sample_binary_trajectory(net, binary_steps, seed=s),
+        )
+    if external:
+        from impact_pipeline.bench import adversarial, forward, whole_brain
+
+        _time(
+            "patchwork_graded_lambda1",
+            lambda s: simulate_patchwork(None, cfg, s, inter_module_coupling=1.0),
+        )
+        for kind in adversarial.ADVERSARIAL_KINDS:
+            kw = {"n": 4} if kind == "parity_grid" else {}
+            _time(
+                f"adversarial_{kind}",
+                lambda s, kind=kind, kw=kw: adversarial.make_adversarial(
+                    kind, cfg, s, **kw
+                ),
+            )
+        conn = whole_brain.load_connectome()
+        wcfg = whole_brain.WholeBrainConfig(duration_sec=float(whole_brain_sec))
+        sources = {}
+
+        def _source(s):
+            sources[s] = whole_brain.simulate_whole_brain(wcfg, s, connectome=conn)
+            return sources[s]
+
+        _time(f"whole_brain_source_{whole_brain_sec:g}s", _source)
+        _time(
+            "whole_brain_eeg_forward",
+            lambda s: forward.eeg_forward(sources[int(s)], seed=s),
+        )
+        _time(
+            "whole_brain_bold_forward",
+            lambda s: forward.bold_forward(sources[int(s)], seed=s),
         )
     import platform
 
@@ -795,6 +1049,25 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--levels", type=int, default=10, help="sweep: levels per knob")
     ap.add_argument("--witnesses", default=None, help="witnesses: comma-separated ids")
     ap.add_argument(
+        "--kinds", default=None, help="adversarial: comma-separated construction kinds"
+    )
+    ap.add_argument(
+        "--observations",
+        default="source,eeg,bold",
+        help="whole_brain: observation models (source, eeg, bold)",
+    )
+    ap.add_argument(
+        "--whole-brain-config",
+        default=None,
+        help="whole_brain: JSON object (or path) of WholeBrainConfig overrides",
+    )
+    ap.add_argument(
+        "--se-groups",
+        type=int,
+        default=0,
+        help="jackknife groups for component SEs (0 = off, else >= 2)",
+    )
+    ap.add_argument(
         "--no-markers", action="store_true", help="skip LZc / Phi_R markers"
     )
     ap.add_argument("--no-resume", action="store_true")
@@ -841,7 +1114,71 @@ def make_tasks(args) -> List[BenchTask]:
             else [w.strip() for w in args.witnesses.split(",")]
         )
         return witness_tasks(seeds, family=args.family, witness_ids=ids, config=config)
+    if args.design == "patchwork_sweep":
+        return patchwork_sweep_tasks(
+            seeds, family=args.family, n_levels=args.levels, config=config
+        )
+    if args.design == "adversarial":
+        kinds = None if not args.kinds else [k.strip() for k in args.kinds.split(",")]
+        return adversarial_tasks(seeds, kinds=kinds, config=config)
+    if args.design == "whole_brain":
+        obs = [o.strip() for o in args.observations.split(",") if o.strip()]
+        return whole_brain_tasks(
+            seeds, observations=obs, base=_json_arg(args.whole_brain_config)
+        )
     raise ValueError(f"design {args.design!r} has no tasks")
+
+
+def run_manipulation_checks(
+    seeds: Sequence[int],
+    families: Sequence[str] = ("A", "C"),
+    config: Optional[dict] = None,
+    out_dir=None,
+    code_version: Optional[dict] = None,
+) -> "object":
+    """
+    Preregistered oracle manipulation checks (``bench.manipulation``) for the
+    given families and seeds; written to ``manipulation_checks.csv`` with
+    provenance (``code_version``: the confirmatory guard's record, incl. the
+    freeze tag) when ``out_dir`` is given. No estimator is run.
+    """
+    import pandas as pd
+
+    from impact_pipeline.bench import manipulation
+    from impact_pipeline.bench.generators import simulate_family_a, simulate_family_c
+
+    cfg = config_from_dict(config)
+    sims = {"A": simulate_family_a, "C": simulate_family_c}
+    frames = [
+        manipulation.manipulation_report(sims[str(f).upper()], seeds, cfg)
+        for f in families
+    ]
+    df = pd.concat(frames, ignore_index=True)
+    if out_dir is not None:
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        df.to_csv(out / MANIPULATION_CSV, index=False)
+        (out / "manipulation_manifest.json").write_text(
+            json.dumps(
+                _sanitize(
+                    {
+                        "check_version": manipulation.MANIPULATION_CHECK_VERSION,
+                        "thresholds": manipulation.RELATIVE_CHANGE_THRESHOLD,
+                        "floors": manipulation.NOMINAL_FLOOR,
+                        "seeds": [int(s) for s in seeds],
+                        "families": list(families),
+                        "config": cfg.to_dict(),
+                        "all_passed": bool(df["passed"].all()),
+                        "confirmatory": code_version is not None,
+                        "provenance": collect_provenance(code_version=code_version),
+                    }
+                ),
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    return df
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -858,6 +1195,34 @@ def _main(args, argv: List[str]) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
+    if args.design == "manipulation":
+        seeds = parse_seeds(args.seeds)
+        # Oracle-only checks: development seeds before the freeze; seeds >=
+        # CONFIRMATORY_SEED_START only through the confirmatory path (freeze
+        # tag and clean tree checked, code identity recorded), like any other
+        # confirmatory simulation. Reserved seeds are refused.
+        want = "confirmatory" if args.confirmatory else "dev"
+        for s in seeds:
+            if seed_set(s) != want:
+                raise ValueError(
+                    f"manipulation checks use {want} seeds with"
+                    f"{'' if args.confirmatory else 'out'} --confirmatory "
+                    f"(seed {s} is {seed_set(s)})"
+                )
+        code = (
+            confirmatory_guard(REPO_ROOT, args.freeze_tag)
+            if args.confirmatory
+            else None
+        )
+        df = run_manipulation_checks(
+            seeds,
+            families=("A", "C"),
+            config=_json_arg(args.config),
+            out_dir=args.out,
+            code_version=code,
+        )
+        print(df.to_string(index=False))
+        return 0 if bool(df["passed"].all()) else 1
     if args.design == "timing":
         rep = timing_report(parse_seeds(args.seeds), _json_arg(args.config))
         text = json.dumps(_sanitize(rep), indent=2, sort_keys=True)
@@ -921,6 +1286,7 @@ def _main(args, argv: List[str]) -> int:
         provenance=prov,
         markers=not args.no_markers,
         confirmatory=args.confirmatory,
+        se_groups=args.se_groups,
     )
     n_err = sum(r["status"] != "ok" for r in recs)
     print(

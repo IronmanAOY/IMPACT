@@ -1,4 +1,5 @@
-# MPC-Bench witness catalogue (schema 1).
+# MPC-Bench witness catalogue (schema 2: v2 verdict names MPC_CONSISTENT /
+# EXCLUDED / UNDETERMINED of the necessity-only stance).
 #
 # Witnesses are defined by the mechanism that is removed, never by metric
 # values. intended_pattern lists, in `principles` order, whether each
@@ -8,9 +9,9 @@
 #
 # Keep witnesses.json (the JSON twin used when PyYAML is not installed) in
 # sync with this file; tests/test_bench_generators.py checks they are equal.
-schema_version: 1
+schema_version: 2
 principles: [RAM, PDI, NAS, IIM, SRPI]
-verdicts: [ATTRIBUTED, NOT_ATTRIBUTED, UNDETERMINED]
+verdicts: [MPC_CONSISTENT, EXCLUDED, UNDETERMINED]
 witnesses:
   - id: PC_nominal
     class: positive_control
@@ -29,7 +30,7 @@ witnesses:
         Nominal agent with all five mechanisms switched on at their nominal
         doses.
       references: [herzog2007consciousness, albantakis2025utility]
-    expected_verdict: ATTRIBUTED
+    expected_verdict: MPC_CONSISTENT
     notes: Not claimed to be conscious; used to measure sensitivity.
 
   - id: W_RAM_no_plasticity
@@ -50,7 +51,7 @@ witnesses:
         delivered and evoke responses, but the action gains are frozen, so
         choices do not track reversals.
       references: [pennartz2019indicators, butlin2023consciousness]
-    expected_verdict: NOT_ATTRIBUTED
+    expected_verdict: EXCLUDED
 
   - id: W_PDI_single_attractor
     class: single_deficit
@@ -69,7 +70,7 @@ witnesses:
         Agent with a single context pattern: the context drive is constant,
         so the global state never switches between attractors.
       references: [tononi1994measure, casali2013theoretically, marshall2016integrated]
-    expected_verdict: NOT_ATTRIBUTED
+    expected_verdict: EXCLUDED
 
   - id: W_NAS_no_workspace
     class: single_deficit
@@ -87,7 +88,7 @@ witnesses:
         Agent with the hub disconnected (no receive, return or ignition);
         periphery loops, plasticity, repertoire and efference tagging intact.
       references: [dehaene1998neuronal, dehaene2011experimental, mashour2020conscious]
-    expected_verdict: NOT_ATTRIBUTED
+    expected_verdict: EXCLUDED
 
   - id: W_NAS_broadcast_only
     class: single_deficit
@@ -105,7 +106,7 @@ witnesses:
         Agent with every periphery -> hub edge removed; the hub still ignites
         spontaneously and broadcasts.
       references: [kanai2026control, mashour2020conscious]
-    expected_verdict: NOT_ATTRIBUTED
+    expected_verdict: EXCLUDED
     notes: Variant witness for NAS (receive-transform-return removed, broadcast kept).
 
   - id: W_IIM_feedforward
@@ -126,7 +127,7 @@ witnesses:
         including hub -> upstream and downstream -> hub, so the hub is a relay
         (upstream -> W -> downstream).
       references: [doerig2019unfolding, oizumi2014phenomenology, tononi2016integrated]
-    expected_verdict: NOT_ATTRIBUTED
+    expected_verdict: EXCLUDED
     notes: >-
       IIT-conformant ground truth needs directional (unidirectional) cuts;
       bidirectional cuts can score a feedforward chain above zero. Report the
@@ -157,7 +158,7 @@ witnesses:
         stimulus-identical, phase-matched and processed identically; the
         actions preceding self-caused events remain.
       references: [blakemore1998central, blakemore2000cant]
-    expected_verdict: NOT_ATTRIBUTED
+    expected_verdict: EXCLUDED
 
   - id: N_independent_noise
     class: "null"
@@ -175,7 +176,7 @@ witnesses:
         Independent Gaussian white noise per node, scaled to the nominal run
         and paired with its events table.
       references: [barrett2011practical, mediano2018measuring]
-    expected_verdict: NOT_ATTRIBUTED
+    expected_verdict: EXCLUDED
 
   - id: N_ar1
     class: "null"
@@ -193,7 +194,7 @@ witnesses:
         Independent AR(1) (coefficient 0.9) per node, scaled to the nominal
         run and paired with its events table.
       references: [barrett2011practical, schartner2015complexity]
-    expected_verdict: NOT_ATTRIBUTED
+    expected_verdict: EXCLUDED
 
   - id: O_hypersynchronous
     class: over_excluded
@@ -212,7 +213,7 @@ witnesses:
         Every node follows the same 3 Hz oscillation with a random gain plus
         small independent noise; no task processing.
       references: [tononi1994measure, casali2013theoretically]
-    expected_verdict: NOT_ATTRIBUTED
+    expected_verdict: EXCLUDED
 
   - id: O_inert
     class: over_excluded
@@ -230,7 +231,7 @@ witnesses:
         Agent with every switch off: stimuli still propagate feedforward
         through the modules.
       references: [oizumi2014phenomenology]
-    expected_verdict: NOT_ATTRIBUTED
+    expected_verdict: EXCLUDED
 
   - id: PW_patchwork
     class: patchwork
@@ -251,8 +252,8 @@ witnesses:
         (bearer = that module); no shared input.
       references: [khadangi2026built, marshall2026intrinsic]
     expected_verdict: UNDETERMINED
-    expected_verdict_system_bearer: NOT_ATTRIBUTED
+    expected_verdict_system_bearer: EXCLUDED
     notes: >-
       Measured per principle on its own module the bearers differ
       (BEARER_MISMATCH, UNDETERMINED); measured on the whole system the
-      disconnected macro-node grain has no integration (NOT_ATTRIBUTED).
+      disconnected macro-node grain has no integration (EXCLUDED).

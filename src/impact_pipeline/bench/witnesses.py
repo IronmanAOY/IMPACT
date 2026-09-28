@@ -24,7 +24,9 @@ from impact_pipeline.bench.generators import (
 
 WITNESS_YAML = Path(__file__).with_name("witnesses.yaml")
 WITNESS_JSON = Path(__file__).with_name("witnesses.json")
-VERDICTS = ("ATTRIBUTED", "NOT_ATTRIBUTED", "UNDETERMINED")
+# v2 verdict names; catalogues written with the v1 names (ATTRIBUTED /
+# NOT_ATTRIBUTED) are accepted and normalised on load (bench.compat).
+VERDICTS = ("MPC_CONSISTENT", "EXCLUDED", "UNDETERMINED")
 WITNESS_CLASSES = (
     "positive_control",
     "single_deficit",
@@ -77,12 +79,32 @@ def load_witnesses(path=None, validate: bool = True) -> dict:
         except ImportError:
             cat = _read(WITNESS_JSON)
             source = str(WITNESS_JSON)
+    cat = _normalise_verdicts(cat)
     if validate:
         errors = validate_catalogue(cat)
         if errors:
             raise ValueError("Invalid witness catalogue: " + "; ".join(errors))
     cat = dict(cat)
     cat["source"] = source
+    return cat
+
+
+def _normalise_verdicts(cat: dict) -> dict:
+    """Expected verdicts in v2 names (v1 names are mapped; others kept for
+    validation to report)."""
+    from impact_pipeline.bench.compat import V1_TO_V2
+
+    cat = dict(cat)
+    out = []
+    for w in cat.get("witnesses") or []:
+        w = dict(w)
+        for key in ("expected_verdict", "expected_verdict_system_bearer"):
+            if key in w and w[key] in V1_TO_V2:
+                w[key] = V1_TO_V2[w[key]]
+        out.append(w)
+    cat["witnesses"] = out
+    if "verdicts" in cat:
+        cat["verdicts"] = [V1_TO_V2.get(v, v) for v in cat["verdicts"]]
     return cat
 
 
