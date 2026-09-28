@@ -23,6 +23,23 @@ correct outcome FALSIFIED). Outcome probabilities are exact (binomial);
 ``--mc-reps`` adds a seeded Monte-Carlo check through
 ``necessity.necessity_from_statuses`` on simulated episodes.
 
+Verdict level (``--level verdict``; registry H1): the EXCLUDED count among
+``n`` determinate report-positive episodes is ``Bin(n, q_excl)`` with
+
+    q_excl = (1 - lambda) e_c + lambda e_u
+
+where ``e_c`` is the probability that a truly conscious episode is EXCLUDED
+(some principle of the ``n_principles`` in N is called ABSENT, independently
+across principles: ``1 - (1 - q(pi_nec))^m`` when necessity holds, and
+``1 - (1 - q(pi_viol)) (1 - q(pi_nec))^(m - 1)`` when one principle is
+violated in a fraction ``pi_viol`` of conscious episodes) and ``e_u`` the
+probability that a mislabelled (truly unconscious) episode is EXCLUDED
+(``excluded_unconscious``; default 1, the worst case for SUPPORTED). The
+decision is the symmetric rule on the EXCLUDED rate against the margin
+(``tau`` = the registry's ``epsilon``) without a variation requirement.
+Outputs: ``verdict_power.csv``, ``verdict_min_n.csv`` and
+``verdict_power.json``.
+
 Outputs (``--out``): ``necessity_thresholds.csv`` (``n, k_F, k_S`` per tau),
 ``necessity_power.csv`` (outcome probabilities per scenario and n),
 ``necessity_min_n.csv`` (minimum n and N per target power: first n reaching
@@ -69,6 +86,10 @@ DEFAULTS = {
     "false_absent": (0.0, 0.02),
     "target_power": (0.8, 0.9),
     "n_values": tuple(range(5, 401, 5)),
+}
+VERDICT_DEFAULTS = {
+    "n_principles": (5,),
+    "excluded_unconscious": (1.0,),
 }
 
 
@@ -183,6 +204,109 @@ def min_n_table(power: pd.DataFrame, targets) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def verdict_scenario_grid(params) -> list:
+    """Parameter sets of the verdict-level (H1) model."""
+    keys = ("tau", "pi_nec", "pi_viol", "pi_unconscious", "label_noise",
+            "base_rate", "coverage", "sensitivity", "false_absent",
+            "n_principles", "excluded_unconscious")
+    grid = []
+    for vals in itertools.product(*(params[k] for k in keys)):
+        d = dict(zip(keys, (float(v) for v in vals)))
+        d["n_principles"] = int(d["n_principles"])
+        if d["n_principles"] < 1:
+            raise ValueError("n_principles must be >= 1")
+        if not 0.0 <= d["excluded_unconscious"] <= 1.0:
+            raise ValueError("excluded_unconscious must be in [0, 1]")
+        d["alpha"] = float(params["alpha"])
+        grid.append(d)
+    return grid
+
+
+def excluded_rate(sc, truth) -> tuple:
+    """``(e_c, q_excl)``: the EXCLUDED probability of a truly conscious
+    report-positive episode and the observed EXCLUDED rate among
+    report-positive episodes (see the module docstring)."""
+    s, f = sc["sensitivity"], sc["false_absent"]
+    m = int(sc["n_principles"])
+
+    def q(pi):
+        return pi * s + (1.0 - pi) * f
+
+    q_nec = q(sc["pi_nec"])
+    if truth == "necessity_holds":
+        e_c = 1.0 - (1.0 - q_nec) ** m
+    else:
+        e_c = 1.0 - (1.0 - q(sc["pi_viol"])) * (1.0 - q_nec) ** (m - 1)
+    lam = sc["label_noise"]
+    return e_c, (1.0 - lam) * e_c + lam * sc["excluded_unconscious"]
+
+
+def verdict_power_table(params, thresholds=None) -> pd.DataFrame:
+    """Exact outcome probabilities of the verdict-level decision (H1)."""
+    n_values = np.asarray(sorted(set(int(v) for v in params["n_values"])), dtype=int)
+    if n_values.size == 0 or n_values[0] < 1:
+        raise ValueError("n_values must be positive integers")
+    if thresholds is None:
+        thresholds = {
+            tau: nc.necessity_threshold_table(n_values, tau, params["alpha"])
+            for tau in params["tau"]
+        }
+    rows = []
+    for sid, sc in enumerate(verdict_scenario_grid(params)):
+        th = thresholds[sc["tau"]].set_index("n").loc[n_values]
+        k_f = th["k_F"].to_numpy()
+        k_s = th["k_S"].to_numpy()
+        for truth in ("necessity_holds", "necessity_violated"):
+            e_c, q_ex = excluded_rate(sc, truth)
+            p_f = np.where(k_f <= n_values, binom.sf(k_f - 1, n_values, q_ex), 0.0)
+            p_s = np.where(k_s >= 0, binom.cdf(k_s, n_values, q_ex), 0.0)
+            correct = "SUPPORTED" if truth == "necessity_holds" else "FALSIFIED"
+            for i, n in enumerate(n_values):
+                rows.append({
+                    "scenario_id": sid, **sc, "truth": truth,
+                    "excluded_given_conscious": e_c, "q_excluded": q_ex,
+                    "n": int(n),
+                    "N_total": int(math.ceil(n / (sc["base_rate"] * sc["coverage"]))),
+                    "k_F": int(k_f[i]), "k_S": int(k_s[i]),
+                    "P_SUPPORTED": float(p_s[i]), "P_FALSIFIED": float(p_f[i]),
+                    "P_INDETERMINATE": float(max(0.0, 1.0 - p_s[i] - p_f[i])),
+                    "correct_outcome": correct,
+                    "power": float(p_s[i] if correct == "SUPPORTED" else p_f[i]),
+                    "error": float(p_f[i] if correct == "SUPPORTED" else p_s[i]),
+                    "asymptotically_correct": bool(
+                        q_ex < sc["tau"] if correct == "SUPPORTED"
+                        else q_ex > sc["tau"]
+                    ),
+                })
+    return pd.DataFrame(rows)
+
+
+def verdict_minimum_n(assumptions, n_max=1000) -> int:
+    """
+    Registered verdict-level minimum n: the largest ``n_stable`` (power
+    ``target_power`` from there on) over the two truths, at the registry's
+    ``power_assumptions`` (``tau`` = the margin epsilon).
+    """
+    pa = dict(assumptions)
+    params = {
+        "tau": (float(pa["tau"]),), "alpha": float(pa["alpha"]),
+        "pi_nec": (float(pa["pi_nec"]),), "pi_viol": (float(pa["pi_viol"]),),
+        "pi_unconscious": (float(pa["pi_unconscious"]),),
+        "label_noise": (float(pa["label_noise"]),),
+        "base_rate": (float(pa["base_rate"]),), "coverage": (float(pa["coverage"]),),
+        "sensitivity": (float(pa["sensitivity"]),),
+        "false_absent": (float(pa["false_absent"]),),
+        "n_principles": (int(pa.get("n_principles", 5)),),
+        "excluded_unconscious": (float(pa.get("excluded_unconscious", 1.0)),),
+        "target_power": (float(pa["target_power"]),),
+        "n_values": tuple(range(1, int(n_max) + 1)),
+    }
+    mn = min_n_table(verdict_power_table(params), params["target_power"])
+    if mn["n_stable"].isna().any():
+        raise ValueError(f"target power not reached for n <= {n_max}")
+    return int(mn["n_stable"].max())
+
+
 def simulate_outcomes(sc, truth, n, reps, seed) -> dict:
     """
     Monte-Carlo outcome frequencies: episodes are simulated from the
@@ -288,9 +412,42 @@ def run(out_dir, params, mc_reps=0, seed=0, mc_n=None) -> dict:
     return {"summary": summary, "power": power, "min_n": min_n}
 
 
+def run_verdict(out_dir, params) -> dict:
+    """Verdict-level (H1) power analysis; see the module docstring."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    power = verdict_power_table(params)
+    power.to_csv(out / "verdict_power.csv", index=False)
+    min_n = min_n_table(power, params["target_power"])
+    min_n.to_csv(out / "verdict_min_n.csv", index=False)
+    summary = {
+        "version": POWER_VERSION,
+        "level": "verdict",
+        "params": {k: list(v) if isinstance(v, tuple) else v
+                   for k, v in params.items()},
+        "n_scenarios": len(verdict_scenario_grid(params)),
+        "decision_rule": "FALSIFIED if CP lower(EXCLUDED | report+) > epsilon; "
+                         "SUPPORTED if CP upper < epsilon; one-sided alpha each; "
+                         "no variation requirement",
+        "provenance": _provenance(),
+    }
+    with open(out / "verdict_power.json", "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2, default=str)
+    return {"summary": summary, "power": power, "min_n": min_n}
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", required=True)
+    ap.add_argument("--level", choices=("component", "verdict"), default="component",
+                    help="component: H3-H7 criterion; verdict: H1 EXCLUDED rate")
+    ap.add_argument("--n-principles",
+                    default=",".join(map(str, VERDICT_DEFAULTS["n_principles"])))
+    ap.add_argument(
+        "--excluded-unconscious",
+        default=",".join(map(str, VERDICT_DEFAULTS["excluded_unconscious"])),
+        help="P(EXCLUDED | mislabelled unconscious episode); 1 = worst case",
+    )
     ap.add_argument("--tau", default=",".join(map(str, DEFAULTS["tau"])))
     ap.add_argument("--alpha", type=float, default=DEFAULTS["alpha"])
     ap.add_argument("--pi-nec", default=",".join(map(str, DEFAULTS["pi_nec"])))
@@ -332,12 +489,19 @@ def params_from_args(args) -> dict:
         "false_absent": _floats(args.false_absent),
         "target_power": _floats(args.target_power),
         "n_values": _ints(args.n_values),
+        "n_principles": _ints(args.n_principles),
+        "excluded_unconscious": _floats(args.excluded_unconscious),
     }
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     params = params_from_args(args)
+    if args.level == "verdict":
+        res = run_verdict(args.out, params)
+        cols = ["scenario_id", "truth", "q_excluded", "target_power", "n_stable"]
+        print(res["min_n"][cols].to_string(index=False))
+        return 0
     res = run(args.out, params, mc_reps=args.mc_reps, seed=args.seed,
               mc_n=_ints(args.mc_n) if args.mc_n else None)
     print(json.dumps(res["summary"]["min_n_support_reachable"]))

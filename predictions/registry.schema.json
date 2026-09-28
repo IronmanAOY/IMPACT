@@ -52,6 +52,7 @@
           "id": {"type": "string", "minLength": 1},
           "hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
           "hash_algorithm": {"enum": ["canonical_json_sha256", "evidence.Protocol"]},
+          "file": {"type": "string", "minLength": 1},
           "necessity_set": {
             "type": "array", "minItems": 1, "uniqueItems": true,
             "items": {"enum": ["RAM", "PDI", "NAS", "IIM", "SRPI"]}
@@ -115,10 +116,10 @@
               "absent_rate_report_positive",
               "reason_rate_report_positive",
               "coverage",
-              "selective_accuracy_gap"
+              "selective_exclusion_accuracy_gap"
             ]
           },
-          "decision": {"enum": ["null_band", "symmetric_upper_lower", "symmetric_necessity", "auxiliary_report", "non_inferiority"]},
+          "decision": {"enum": ["null_calibration", "symmetric_upper_lower", "symmetric_necessity", "auxiliary_report", "non_inferiority"]},
           "principle": {"enum": ["RAM", "PDI", "NAS", "IIM", "SRPI"]},
           "necessity_set": {
             "type": "array", "minItems": 1, "uniqueItems": true,
@@ -130,16 +131,19 @@
           "epsilon": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
           "kappa": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
           "margin": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+          "min_exclusions": {"type": "integer", "minimum": 1},
           "alpha": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.2},
           "missing": {"enum": ["determinate", "worst_case"]},
           "variation_floor": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
           "minimum_n": {"type": "integer", "minimum": 1},
           "minimum_n_source": {"type": "string"},
+          "minimum_n_status": {"enum": ["provisional", "frozen"]},
           "power_assumptions": {
             "type": "object",
             "required": ["tau", "alpha", "pi_nec", "pi_viol", "pi_unconscious", "label_noise", "base_rate", "coverage", "sensitivity", "false_absent", "target_power"],
             "additionalProperties": false,
             "properties": {
+              "level": {"enum": ["component", "verdict"]},
               "tau": {"type": "number"},
               "alpha": {"type": "number"},
               "pi_nec": {"type": "number", "minimum": 0, "maximum": 1},
@@ -150,6 +154,8 @@
               "coverage": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
               "sensitivity": {"type": "number", "minimum": 0, "maximum": 1},
               "false_absent": {"type": "number", "minimum": 0, "maximum": 1},
+              "n_principles": {"type": "integer", "minimum": 1},
+              "excluded_unconscious": {"type": "number", "minimum": 0, "maximum": 1},
               "target_power": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}
             }
           },

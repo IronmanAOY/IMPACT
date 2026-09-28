@@ -21,13 +21,25 @@
 #                           else INDETERMINATE.
 #   symmetric_upper_lower:  the same without the variation requirement
 #                           (margin epsilon or kappa).
-#   Every decision is INDETERMINATE below the registered minimum_n.
+#   null_calibration (H0):  one-sided calibration of the false-PRESENT rate
+#                           against alpha + null_band. FALSIFIED if some
+#                           (null family, regime, principle) cell's lower bound
+#                           at level alpha / m (m cells; family-wise) exceeds
+#                           the bound; SUPPORTED otherwise if every principle's
+#                           upper bound (level alpha / P) of its rate pooled
+#                           over its cells is below the bound; else
+#                           INDETERMINATE. Does not degrade with the number of
+#                           cells; rates far below alpha count as calibrated.
+#   non_inferiority (H10):  paired bootstrap of the gap in selective accuracy
+#                           of exclusion claims (see H10).
+#   Every decision is INDETERMINATE below the registered minimum_n. A
+#   minimum_n marked provisional must be confirmed before the freeze.
 #
 # Before the freeze: fill the protocol hash (evidence.Protocol JSON of the frozen
 # protocol), register the estimator versions validated in the applicability
 # registry (V2-5), set status: frozen and freeze_tag, and commit the tag.
 
-registry_version: "0.1.0"
+registry_version: "0.2.0"
 status: draft
 freeze_tag: null
 created: "2026-09-28"
@@ -62,6 +74,7 @@ protocols:
   - id: mpc-v2-default
     hash: null
     hash_algorithm: evidence.Protocol
+    file: protocols/mpc_default_v1.json
     necessity_set: [RAM, PDI, NAS, IIM, SRPI]
     spec:
       cutoffs: {z: 0.25, delta: 0.10}
@@ -70,21 +83,31 @@ protocols:
       reference: cohort_high_state
       bearer_rule: single_source
     note: >-
-      Construct-scale cutoffs z_j = 0.25 and delta_j = 0.10 (V2-2 initial defaults, to
-      be justified by MPC-Bench dose-response before the freeze). The hash is the
-      evidence.Protocol hash of the frozen protocol.
+      Candidate: protocols/mpc_default_v1.json (not frozen; its evidence.Protocol
+      hash goes into 'hash' at the freeze). Construct-scale cutoffs z_j = 0.25 and
+      delta_j = 0.10 (V2-2 initial defaults, to be justified by MPC-Bench
+      dose-response before the freeze). The cohort_high_state reference is circular
+      for high-state (report-positive) episodes, whose c averages 1 by construction:
+      the confirmatory necessity tests (H1, H3-H7) need a protocol with an external
+      reference before the freeze.
 
 estimators:
   - principle: RAM
     estimator: "compute_RAM:prediction_error"
     version: null
     registration: pending_validation
-    note: behavioural_feedback channel; Rescorla-Wagner prediction-error U.
+    note: >-
+      Rescorla-Wagner prediction-error U. Runs without a choice/reward log use the
+      protocol's declared fallback (compute_RAM:feedback_magnitude); results from an
+      unregistered fallback estimator are refused unless it is registered too.
   - principle: PDI
-    estimator: "compute_PDI:surrogate_excess"
+    estimator: "compute_PDI:repertoire"
     version: null
     registration: pending_validation
-    note: Construct not yet validated (B1 strict xfail on multistable switching).
+    note: >-
+      Unlabelled repertoire of distinguishable states (bits over its state-count
+      null). surrogate_excess is a documented negative result and is not
+      registered. Human EEG/fMRI entries need forward-model validation (V2-5).
   - principle: NAS
     estimator: "compute_NAS:capacity"
     version: null
@@ -98,6 +121,10 @@ estimators:
     estimator: "compute_SRPI:agency"
     version: null
     registration: pending_validation
+    note: >-
+      Runs without self_caused/other_caused events use the protocol's declared
+      legacy fallback (compute_SRPI:legacy), which must be registered separately to
+      contribute confirmatory results.
 
 datasets:
   - id: ds003171
@@ -157,20 +184,26 @@ hypotheses:
     level: measurement
     counts_for_stance: false
     statistic: null_false_present_rate
-    decision: null_band
+    decision: null_calibration
     minimum_n: 460
+    minimum_n_status: provisional
     minimum_n_source: >-
-      Replicates per (null family, regime) cell for a 95% half-width of 0.02 at a
-      rate of 0.05 (1.96^2 * 0.05 * 0.95 / 0.02^2 = 456).
-    prediction: false-PRESENT rate within alpha +- 0.02 (V2-5 entry criterion a).
+      Minimum replicates per (null family, regime, principle) cell: a 95% Wald
+      half-width of 0.02 at a rate of 0.05 (1.96^2 * 0.05 * 0.95 / 0.02^2 = 456).
+      Not a power computation for the pooled rule.
+    prediction: >-
+      The false-PRESENT rate on the declared null families is at most alpha + 0.02
+      (V2-5 entry criterion a, one-sided): no cell credibly above it (family-wise)
+      and every principle's pooled rate credibly below it.
     note: >-
-      Evaluated on scripts/null_calibration.py output (--null-calibration);
-      NOT_EVALUABLE when a cell's statuses come from the local fallback rule instead
-      of the installed evidence layer (status_impl). SUPPORTED needs every cell's
-      point rate within the band, so with many cells it is rarely reached even
-      under exact calibration (about 0.95^cells at n = 460 per cell): revisit the
-      decision rule (e.g. equivalence bounds with a multiplicity correction)
-      before the freeze.
+      Evaluated on scripts/null_calibration.py output (--null-calibration; v2
+      evidence rule under the bench protocol, jackknife SEs); NOT_EVALUABLE when a
+      cell's statuses come from another rule (status_impl, e.g. the legacy_v1
+      diagnostic). One-sided because a calibrated v2 rule (PRESENT needs
+      c_lower > z) has a false-PRESENT rate far below alpha; the pooled
+      per-principle criterion with family-wise per-cell falsification does not
+      become harder to meet as cells are added (the former all-cells-within-band
+      rule was almost never met with many cells).
 
   - id: H1
     title: Report-positive episodes are (almost) never EXCLUDED
@@ -180,14 +213,31 @@ hypotheses:
     decision: symmetric_upper_lower
     population: report_positive
     epsilon: 0.05
-    minimum_n: 155
+    minimum_n: 286
+    minimum_n_status: provisional
     minimum_n_source: >-
-      Reused from the component-level design of H3-H7; NOT a verdict-level power
-      computation (scripts/necessity_power.py models the component criterion).
-      Under the H3 power_assumptions the EXCLUDED rate among report-positive
-      episodes is at most the label noise (0.02); at that bound P(SUPPORTED) is about
-      0.62 at n = 155, and 80% power needs n >= 286 (exact binomial, epsilon 0.05).
-      Fix the value before the freeze.
+      scripts/necessity_power.py --level verdict at power_assumptions: n_stable for
+      80% power, the maximum over the necessity-holds and violated truths (the
+      value the script produces; provisional until the freeze). The EXCLUDED rate
+      among report-positive episodes is (1 - lambda) e_c + lambda e_u with e_u = 1
+      (worst case: every mislabelled unconscious episode EXCLUDED), i.e. 0.02 when
+      necessity holds; the draft value 155 (borrowed from H3-H7) had a SUPPORTED
+      probability of about 0.62.
+    power_assumptions:
+      level: verdict
+      tau: 0.05
+      alpha: 0.05
+      pi_nec: 0.0
+      pi_viol: 0.25
+      pi_unconscious: 0.6
+      label_noise: 0.02
+      base_rate: 0.5
+      coverage: 0.8
+      sensitivity: 0.9
+      false_absent: 0.0
+      n_principles: 5
+      excluded_unconscious: 1.0
+      target_power: 0.8
     supported_if: upper bound of the EXCLUDED rate among determinate report-positive episodes < 0.05
     falsified_if: lower bound of the EXCLUDED rate among determinate report-positive episodes > 0.05
 
@@ -315,21 +365,29 @@ hypotheses:
     falsified_if: upper bound of the determinate fraction < 0.5
 
   - id: H10
-    title: Selective accuracy is not inferior to single-marker comparators
+    title: Exclusion claims are not less accurate than those of single-marker comparators
     level: comparative
     counts_for_stance: false
-    statistic: selective_accuracy_gap
+    statistic: selective_exclusion_accuracy_gap
     decision: non_inferiority
     comparators: [LZc, PhiR, IIM_only, NAS_only]
     margin: 0.05
+    min_exclusions: 10
     n_boot: 2000
     seed: 0
     minimum_n: 155
     minimum_n_source: same value as H3-H7; no power computation for this statistic yet
     note: >-
-      Correct = EXCLUDED on report-negative or MPC_CONSISTENT on report-positive
-      episodes; UNDETERMINED abstains. Comparator columns comparator_<name> hold
-      True (not excluded), False (excluded) or empty (abstain). Paired bootstrap
-      over episodes; SUPPORTED if the lower 1-alpha bound of the accuracy gap
-      (IMPaCT minus the best comparator) exceeds -margin, FALSIFIED if the upper
-      bound is below -margin.
+      Only exclusion claims are scored (V2-1): an EXCLUDED verdict (comparator
+      False) is correct on a report-negative and an error on a report-positive
+      episode; MPC_CONSISTENT ("not excluded", never an attribution) and
+      UNDETERMINED make no claim, so MPC_CONSISTENT on a report-negative episode
+      (e.g. covert or disconnected consciousness) is not an error. Selective
+      accuracy = fraction of a rule's exclusion claims made on report-negative
+      episodes; comparators with fewer than min_exclusions claims are not
+      eligible. Reported with it: the EXCLUDED rates among report-positive and
+      report-negative episodes of IMPaCT and of each comparator. Comparator
+      columns comparator_<name> hold True (not excluded), False (excluded) or
+      empty (abstain). Paired bootstrap over episodes; SUPPORTED if the lower
+      1-alpha bound of the gap (IMPaCT minus the best comparator) exceeds
+      -margin, FALSIFIED if the upper bound is below -margin.

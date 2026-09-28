@@ -29,8 +29,29 @@ code ``BEARER_MISMATCH:COHERENCE`` counts as ``SOURCE_INCOHERENT``),
 Episodes whose report label is missing or unrecognised are excluded from
 every hypothesis (never counted as report-negative; ``n_report_unknown``).
 H0 reads ``null_calibration_rates.csv`` (``--null-calibration``); cells whose
-statuses did not come from the installed evidence layer (``status_impl``)
-make H0 NOT_EVALUABLE.
+statuses did not come from the evidence layer (``status_impl``, e.g. the
+``legacy_v1`` diagnostic rule) make H0 NOT_EVALUABLE.
+
+H0 (decision ``null_calibration``): one-sided calibration of the false-PRESENT
+rate on the null families, with bound ``alpha + null_band``. FALSIFIED if some
+(family, regime, principle) cell is credibly anti-conservative family-wise
+(its one-sided Clopper-Pearson lower bound at level ``alpha / m``, ``m`` =
+number of cells, exceeds the bound); SUPPORTED otherwise if, for every
+principle, the one-sided upper bound (level ``alpha / P``, ``P`` = number of
+principles) of its false-PRESENT rate pooled over its cells is below the
+bound; else INDETERMINATE. Rates far below ``alpha`` are calibrated (the v2
+rule needs ``c_lower > z``, so a calibrated estimator's false-PRESENT rate is
+well below ``alpha``); the rule does not degrade with the number of cells.
+
+H10 (statistic ``selective_exclusion_accuracy_gap``): only exclusion claims
+are scored (V2-1: MPC_CONSISTENT is "not excluded", never an attribution, so
+MPC_CONSISTENT on a report-negative episode is not an error, and neither
+MPC_CONSISTENT nor UNDETERMINED is a claim). The selective accuracy of a rule
+is the fraction of its exclusion claims (EXCLUDED; comparator ``False``) made
+on report-negative episodes; the gap is IMPaCT minus the best comparator with
+at least ``min_exclusions`` claims (paired bootstrap over episodes). The
+EXCLUDED rates among report-positive and report-negative episodes of IMPaCT
+and of every comparator are reported with it.
 
 Outcomes per hypothesis and stratum (confirmatory datasets / exploratory
 datasets): SUPPORTED, FALSIFIED, INDETERMINATE (also below the registered
@@ -203,13 +224,13 @@ def jsonschema_errors(instance, schema):
 # semantic rules
 # --------------------------------------------------------------------------
 _STAT_RULES = {
-    "null_false_present_rate": ("null_band", {"measurement"}),
+    "null_false_present_rate": ("null_calibration", {"measurement"}),
     "excluded_rate_report_positive": ("symmetric_upper_lower", {"verdict"}),
     "aggregation_exponent": ("auxiliary_report", {"auxiliary"}),
     "absent_rate_report_positive": ("symmetric_necessity", {"component"}),
     "reason_rate_report_positive": ("symmetric_upper_lower", {"verdict"}),
     "coverage": ("symmetric_upper_lower", {"measurement"}),
-    "selective_accuracy_gap": ("non_inferiority", {"comparative"}),
+    "selective_exclusion_accuracy_gap": ("non_inferiority", {"comparative"}),
 }
 
 
@@ -240,6 +261,12 @@ def semantic_errors(reg: dict) -> list:
         if h.get("counts_for_stance") and not stance_level:
             errs.append(f"{hid}: only verdict/component hypotheses count for "
                         "the stance")
+        pa_level = (h.get("power_assumptions") or {}).get("level", "component")
+        want = {"component": "absent_rate_report_positive",
+                "verdict": "excluded_rate_report_positive"}[pa_level]
+        if h.get("power_assumptions") and stat != want:
+            errs.append(f"{hid}: {pa_level}-level power assumptions need "
+                        f"statistic {want}")
     h2 = next((h for h in hyps if h.get("id") == "H2"), None)
     if h2 is not None and (h2.get("counts_for_stance")
                            or h2.get("level") != "auxiliary"):
@@ -259,6 +286,10 @@ def semantic_errors(reg: dict) -> list:
     if reg.get("status") == "frozen":
         if not reg.get("freeze_tag"):
             errs.append("a frozen registry needs a freeze_tag")
+        for h in hyps:
+            if h.get("minimum_n_status") == "provisional":
+                errs.append(f"frozen registry: {h.get('id')} has a provisional "
+                            "minimum_n")
         for p in reg.get("protocols") or []:
             if not p.get("hash"):
                 errs.append(f"frozen registry: protocol {p.get('id')} has no hash")
@@ -448,31 +479,19 @@ def eval_hypothesis(h, df, defaults, null_rates=None) -> dict:
             if null_rates is None or null_rates.empty:
                 return {**base, "outcome": NOT_EVALUABLE,
                         "reason": "no_null_calibration"}
-            band = float(p.get("null_band", 0.02))
             r = null_rates
             if "status_impl" in r.columns:
                 impl = r["status_impl"].astype(str)
                 foreign = sorted(set(impl[impl != "evidence"]))
                 if foreign:
-                    # statuses from the local fallback rule, not the installed
-                    # (registered) evidence layer, cannot calibrate it
+                    # statuses from a rule other than the evidence layer (e.g.
+                    # the legacy_v1 diagnostic) cannot calibrate it
                     return {**base, "outcome": NOT_EVALUABLE,
                             "reason": "statuses_not_from_evidence_layer:"
                                       + ",".join(foreign)}
-            n_min = int(r["n"].min())
-            within = (r["false_present_rate"] - alpha).abs() <= band + 1e-12
-            outside = (r["false_present_lo"] > alpha + band) | (
-                r["false_present_hi"] < alpha - band)
-            if outside.any():
-                outcome, reason = nc.FALSIFIED, "rate_ci_outside_band"
-            elif within.all():
-                outcome, reason = nc.SUPPORTED, "all_rates_within_band"
-            else:
-                outcome, reason = nc.INDETERMINATE, "some_rates_outside_band"
-            res = {**base, "outcome": outcome, "reason": reason,
-                   "rate": float(r["false_present_rate"].max()),
-                   "n_cells": int(len(r)), "n_cells_outside": int(outside.sum())}
-            return _gate_minimum_n(res, n_min, h.get("minimum_n"))
+            res = _null_calibration(r, alpha, float(p.get("null_band", 0.02)))
+            return _gate_minimum_n({**base, **res}, int(r["n"].min()),
+                                   h.get("minimum_n"))
         lab = report_labels(df)
         known = ~np.isnan(lab)
         n_unknown = int((~known).sum())
@@ -536,9 +555,9 @@ def eval_hypothesis(h, df, defaults, null_rates=None) -> dict:
                    "rate": 1.0 - res["rate"] if n else float("nan"),
                    "lower": 1.0 - res["upper"], "upper": 1.0 - res["lower"]}
             return _gate_minimum_n(out, n, h.get("minimum_n"))
-        if stat == "selective_accuracy_gap":
+        if stat == "selective_exclusion_accuracy_gap":
             return _gate_minimum_n(
-                {**base, **_accuracy_gap(df, pos, h, p, alpha)},
+                {**base, **_exclusion_accuracy_gap(df, pos, h, p, alpha)},
                 int(len(df)), h.get("minimum_n"))
         if stat == "aggregation_exponent":
             res = {**base, **_aggregation_exponent(df, h, p)}
@@ -590,11 +609,55 @@ def _decisions_from_column(col):
     return out
 
 
-def _accuracy(dec, truth, idx):
-    made = [(dec[i], truth[i]) for i in idx if dec[i] is not None]
-    if not made:
-        return float("nan")
-    return float(np.mean([d == t for d, t in made]))
+def _null_calibration(rates, alpha, band):
+    """H0: family-wise per-cell falsification, pooled per-principle support."""
+    n = rates["n"].to_numpy(dtype=float)
+    if "n_present" in rates.columns:
+        k = rates["n_present"].to_numpy(dtype=float)
+    else:
+        k = np.rint(rates["false_present_rate"].to_numpy(dtype=float) * n)
+    bound = float(alpha) + float(band)
+    m = int(len(rates))
+    lo_cell, _ = nc.clopper_pearson(k, n, float(alpha) / m, "lower")
+    lo_cell = np.atleast_1d(lo_cell)
+    principles = (rates["principle"].astype(str).to_numpy()
+                  if "principle" in rates.columns else np.full(m, "all"))
+    names = sorted(set(principles))
+    pooled = {}
+    for pr in names:
+        sel = principles == pr
+        kk, nn = float(k[sel].sum()), float(n[sel].sum())
+        _, hi = nc.clopper_pearson(kk, nn, float(alpha) / len(names), "upper")
+        pooled[pr] = {"k": int(kk), "n": int(nn),
+                      "rate": kk / nn if nn else float("nan"), "upper": float(hi)}
+    n_out = int(np.sum(lo_cell > bound))
+    if n_out:
+        outcome, reason = nc.FALSIFIED, "cell_lower_bound_above_alpha_plus_band"
+    elif all(v["upper"] < bound for v in pooled.values()):
+        outcome, reason = nc.SUPPORTED, "pooled_upper_bounds_below_alpha_plus_band"
+    else:
+        outcome, reason = nc.INDETERMINATE, "pooled_upper_bound_not_below_bound"
+    return {"outcome": outcome, "reason": reason,
+            "rate": float(k.sum() / n.sum()) if n.sum() else float("nan"),
+            "upper": max(v["upper"] for v in pooled.values()),
+            "bound": bound, "n_cells": m, "n_cells_outside": n_out,
+            "pooled": pooled}
+
+
+def _exclusion_precision(dec, truth, idx):
+    """Fraction of exclusion claims (False) made on report-negative episodes,
+    and the number of claims."""
+    claims = [truth[i] for i in idx if dec[i] is False]
+    if not claims:
+        return float("nan"), 0
+    return float(np.mean([not t for t in claims])), len(claims)
+
+
+def _excluded_rates(dec, truth):
+    pos = [d is False for d, t in zip(dec, truth) if t]
+    neg = [d is False for d, t in zip(dec, truth) if not t]
+    return (float(np.mean(pos)) if pos else float("nan"),
+            float(np.mean(neg)) if neg else float("nan"))
 
 
 def _best(values):
@@ -603,10 +666,11 @@ def _best(values):
     return max(fin) if fin else float("nan")
 
 
-def _accuracy_gap(df, pos, h, p, alpha):
+def _exclusion_accuracy_gap(df, pos, h, p, alpha):
     v = df["MPC_verdict"].map(nc.normalize_verdict).tolist()
-    impact = [None if x not in (nc.EXCLUDED, nc.MPC_CONSISTENT) else
-              (x == nc.MPC_CONSISTENT) for x in v]
+    # an exclusion claim (False), or no claim (None): MPC_CONSISTENT is
+    # "not excluded" and UNDETERMINED abstains; neither is scored
+    impact = [False if x == nc.EXCLUDED else None for x in v]
     comps = {}
     for name in h.get("comparators") or []:
         col = f"comparator_{name}"
@@ -620,19 +684,35 @@ def _accuracy_gap(df, pos, h, p, alpha):
         return {"outcome": NOT_EVALUABLE, "reason": "no_comparator_columns"}
     truth = list(pos)
     idx = np.arange(len(df))
+    min_claims = int(p.get("min_exclusions", 1))
 
     def _gap(sel):
-        best = _best([_accuracy(d, truth, sel) for d in comps.values()])
-        return _accuracy(impact, truth, sel) - best
+        acc, n_claims = _exclusion_precision(impact, truth, sel)
+        if n_claims < min_claims:
+            return float("nan")
+        best = []
+        for d in comps.values():
+            a, n_c = _exclusion_precision(d, truth, sel)
+            if n_c >= min_claims:
+                best.append(a)
+        return acc - _best(best)
 
+    rates = {"impact": _excluded_rates(impact, truth)}
+    rates.update({k: _excluded_rates(d, truth) for k, d in comps.items()})
+    extra = {
+        "excluded_rate_report_positive": {k: r[0] for k, r in rates.items()},
+        "excluded_rate_report_negative": {k: r[1] for k, r in rates.items()},
+        "n_exclusions": _exclusion_precision(impact, truth, idx)[1],
+        "comparators_used": ",".join(sorted(comps)),
+    }
     point = _gap(idx)
     rng = np.random.default_rng(int(p.get("seed", 0)))
     boots = np.asarray([_gap(rng.integers(0, len(df), len(df)))
                         for _ in range(int(p.get("n_boot", 2000)))])
     boots = boots[np.isfinite(boots)]
     if boots.size < 10 or not math.isfinite(point):
-        return {"outcome": nc.INDETERMINATE, "reason": "too_few_decisions",
-                "rate": point}
+        return {"outcome": nc.INDETERMINATE, "reason": "too_few_exclusions",
+                "rate": point, **extra}
     lo, hi = float(np.quantile(boots, alpha)), float(np.quantile(boots, 1 - alpha))
     margin = float(p["margin"])
     if lo > -margin:
@@ -643,7 +723,7 @@ def _accuracy_gap(df, pos, h, p, alpha):
         outcome, reason = nc.INDETERMINATE, "interval_contains_minus_margin"
     cov = float(np.mean([d is not None for d in impact]))
     return {"outcome": outcome, "reason": reason, "rate": point, "lower": lo,
-            "upper": hi, "coverage": cov, "comparators_used": ",".join(sorted(comps))}
+            "upper": hi, "coverage": cov, **extra}
 
 
 def _aggregation_exponent(df, h, p):
