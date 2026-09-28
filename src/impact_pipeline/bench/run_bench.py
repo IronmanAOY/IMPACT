@@ -1134,11 +1134,13 @@ def run_manipulation_checks(
     families: Sequence[str] = ("A", "C"),
     config: Optional[dict] = None,
     out_dir=None,
+    code_version: Optional[dict] = None,
 ) -> "object":
     """
     Preregistered oracle manipulation checks (``bench.manipulation``) for the
     given families and seeds; written to ``manipulation_checks.csv`` with
-    provenance when ``out_dir`` is given. No estimator is run.
+    provenance (``code_version``: the confirmatory guard's record, incl. the
+    freeze tag) when ``out_dir`` is given. No estimator is run.
     """
     import pandas as pd
 
@@ -1167,7 +1169,8 @@ def run_manipulation_checks(
                         "families": list(families),
                         "config": cfg.to_dict(),
                         "all_passed": bool(df["passed"].all()),
-                        "provenance": collect_provenance(),
+                        "confirmatory": code_version is not None,
+                        "provenance": collect_provenance(code_version=code_version),
                     }
                 ),
                 indent=2,
@@ -1194,11 +1197,29 @@ def _main(args, argv: List[str]) -> int:
     )
     if args.design == "manipulation":
         seeds = parse_seeds(args.seeds)
+        # Oracle-only checks: development seeds before the freeze; seeds >=
+        # CONFIRMATORY_SEED_START only through the confirmatory path (freeze
+        # tag and clean tree checked, code identity recorded), like any other
+        # confirmatory simulation. Reserved seeds are refused.
+        want = "confirmatory" if args.confirmatory else "dev"
         for s in seeds:
-            if seed_set(s) != "dev" and not args.confirmatory:
-                raise ValueError("manipulation checks before the freeze use dev seeds")
+            if seed_set(s) != want:
+                raise ValueError(
+                    f"manipulation checks use {want} seeds with"
+                    f"{'' if args.confirmatory else 'out'} --confirmatory "
+                    f"(seed {s} is {seed_set(s)})"
+                )
+        code = (
+            confirmatory_guard(REPO_ROOT, args.freeze_tag)
+            if args.confirmatory
+            else None
+        )
         df = run_manipulation_checks(
-            seeds, families=("A", "C"), config=_json_arg(args.config), out_dir=args.out
+            seeds,
+            families=("A", "C"),
+            config=_json_arg(args.config),
+            out_dir=args.out,
+            code_version=code,
         )
         print(df.to_string(index=False))
         return 0 if bool(df["passed"].all()) else 1

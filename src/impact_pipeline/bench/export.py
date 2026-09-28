@@ -701,7 +701,10 @@ def run_in_memory(
     ``G`` interleaved groups of trials / yoked pairs deleted; the replicates
     use the same statistic as the estimate and no null (self-calibrating
     modes use their minimum of 2 surrogates, which does not change the raw
-    statistic). ``se = sqrt((G - 1) / G * sum (theta_g - mean)^2)``.
+    statistic; NAS capacity replicates re-measure the transfer direction of
+    the estimate, ``se_statistic``, because which direction is reported
+    depends on the surrogates). ``se = sqrt((G - 1) / G * sum (theta_g -
+    mean)^2)``.
 
     Systems without events (e.g. the whole-brain generator) get RAM and SRPI
     undefined with reason ``no_events`` (the estimators are not called).
@@ -709,8 +712,9 @@ def run_in_memory(
     Returns per-component ``estimate`` (raw statistic), ``value`` (returned
     value), ``null_mean``, ``null_sd``, ``n_null``, ``null_family``,
     ``null_impl``, ``n_null_failed``, ``defined``, ``reason``, ``bearer_id``,
-    ``seconds`` and, with ``se_groups``, ``se``, ``se_method`` and ``se_n``,
-    plus the optional ``estimator_modes`` used.
+    ``seconds`` and, with ``se_groups``, ``se``, ``se_method``, ``se_n`` and
+    ``se_seconds`` (NAS capacity also ``se_statistic``), plus the optional
+    ``estimator_modes`` used.
     """
     from impact_pipeline import mpc_metrics as mm
     from impact_pipeline.event_parsing import events_table_to_bundle
@@ -959,6 +963,12 @@ def run_in_memory(
         )
         if n_groups and _defined("NAS"):
             k_rep = 2 if kw.get("mode") == "capacity" else 0
+            # NAS capacity: ``raw`` is the transfer entropy of the direction
+            # with the smaller null z, and that choice depends on the
+            # surrogates. The replicates must measure the direction of the
+            # estimate (``limiting_direction`` of the full recording), not
+            # the one their own 2-surrogate null happens to pick.
+            lim = d.get("limiting_direction") if isinstance(d, dict) else None
 
             def nas_stat(x):
                 r = mm.compute_NAS(
@@ -971,9 +981,13 @@ def run_in_memory(
                     **nas_kw,
                     **kw,
                 )
+                if lim in ("in", "out"):
+                    return float((r.get("transfer") or {}).get(f"te_{lim}", np.nan))
                 return float(r.get("raw", np.nan))
 
             _ts_se("NAS", nas_stat, view["ts"])
+            if lim in ("in", "out"):
+                out["components"]["NAS"]["se_statistic"] = f"te_{lim}"
 
     if "IIM" in metrics:
         t0 = time.perf_counter()

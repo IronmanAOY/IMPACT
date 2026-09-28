@@ -150,8 +150,9 @@ def granger_gain(target, source, lags: int = GRANGER_LAGS) -> float:
     past samples) explained by ``lags`` past samples of ``source``; both may
     be complex (real and imaginary parts are separate regressors/targets).
     OLS with an intercept; residual variances are degrees-of-freedom adjusted
-    (``RSS / (N - k)``), so the expected gain of an unrelated source is 0
-    whatever the run length; negative values are floored at 0.
+    (``RSS / (N - k)``), so the gain of an unrelated source is centred at 0
+    whatever the run length (before the floor: negative values are set to 0,
+    so its mean is slightly positive, of order ``sqrt(k) / N``).
     """
     y = _standardise(_real_features(target))
     s = _standardise(_real_features(source))

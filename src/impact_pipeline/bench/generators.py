@@ -286,9 +286,11 @@ class AgentConfig:
     # Stuart-Landau (family C, design 2) constants: rate lam (1/s) of the
     # amplitude dynamics, per-node natural frequency ~ U(sl_freq_hz), coupling
     # kappa on the family-A matrix W, bifurcation parameters (sl_a < 0:
-    # damped nodes; the nominal network sits below the Hopf bifurcation of
-    # its dominant mode, a + kappa * rho(W) < 0), resonant input gain, hub
-    # ignition (bifurcation-parameter increment and adaptation) and noise.
+    # damped nodes; the resting nominal network sits below the Hopf
+    # bifurcation of its dominant linear mode: leading eigenvalue of
+    # diag(a) + kappa W < 0, with sl_a + kappa * rho(W) < 0 and a lower hub
+    # parameter sl_hub_a), resonant input gain, hub ignition
+    # (bifurcation-parameter increment and adaptation) and noise.
     sl_substeps: int = 5
     sl_freq_hz: Tuple[float, float] = (1.15, 1.25)
     sl_rate: float = 10.0
@@ -1376,10 +1378,14 @@ def simulate_family_c(
     ``sl_gate_tau`` crossing ``sl_ignition_threshold``, and ``h`` is an
     adaptation that integrates the gate (time constant ``tau_adapt``), so
     ignitions are all-or-none episodes that end by adaptation. With the
-    defaults the dominant linear mode of the nominal network is just below its
-    Hopf bifurcation (``sl_a + kappa * spectral_radius = -1 + 1.1 * 0.85``),
-    so every coupling switch changes the dynamics (preregistered manipulation
-    checks in :mod:`impact_pipeline.bench.manipulation`). The recorded signal
+    defaults the resting nominal network is close to, but below, the Hopf
+    bifurcation of its dominant linear mode: with a uniform parameter
+    ``sl_a`` it would sit at ``sl_a + kappa * spectral_radius = -1 + 1.1 *
+    0.85 = -0.065``; the hub's lower resting parameter (``sl_hub_a = -2``)
+    moves the leading eigenvalue of ``diag(a) + kappa W`` to about -0.25,
+    and ignition raises the hub parameter transiently. Every coupling switch
+    therefore changes the dynamics (preregistered manipulation checks in
+    :mod:`impact_pipeline.bench.manipulation`). The recorded signal
     is ``Re z`` at the family-A sampling interval (``sl_substeps``
     Euler-Maruyama substeps per sample); choices are read out from ``|z|``.
     The oracle adds the demodulated envelope ``z_j e^{-i w_j t}``

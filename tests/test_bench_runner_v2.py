@@ -102,6 +102,72 @@ def test_manipulation_design_runs_on_dev_seeds(tmp_path):
     assert man["all_passed"] and man["check_version"].startswith("mpc-bench-manip")
 
 
+def test_manipulation_design_keeps_the_seed_policy(tmp_path):
+    """Oracle-only checks still respect the split: confirmatory seeds only
+    through the confirmatory path (freeze tag and clean tree checked before
+    anything is simulated), no reserved seeds, no dev seeds labelled
+    confirmatory."""
+    out = str(tmp_path / "manip")
+    assert run_bench.main(["manipulation", "--seeds", "10000", "--out", out]) == 2
+    assert run_bench.main(["manipulation", "--seeds", "5000", "--out", out]) == 2
+    assert (
+        run_bench.main(["manipulation", "--seeds", "0", "--confirmatory", "--out", out])
+        == 2
+    )
+    for extra in ([], ["--freeze-tag", "no-such-freeze-tag-bench2"]):
+        argv = ["manipulation", "--seeds", "10000", "--confirmatory", "--out", out]
+        assert run_bench.main(argv + extra) == 2
+    assert not (tmp_path / "manip").exists()
+
+
+def test_nas_capacity_jackknife_measures_the_direction_of_the_estimate(monkeypatch):
+    """NAS capacity reports the transfer entropy of the direction with the
+    smaller null z, a choice that depends on the surrogates. The jackknife
+    replicates (2 surrogates each) must re-measure the direction of the
+    estimate, not the one their own small null happens to pick."""
+    from impact_pipeline import mpc_metrics as mm
+
+    def fake_nas(
+        ts,
+        tr=None,
+        workspace_nodes=None,
+        return_details=False,
+        null_surrogates=0,
+        null_seed=None,
+        mode="legacy",
+        **kw,
+    ):
+        x = np.asarray(ts, dtype=float)
+        te_in, te_out = 10.0 + float(x[0].mean()), float(x[1].mean())
+        # The full run's null picks 'out'; the replicates' 2-surrogate nulls
+        # pick 'in' (a surrogate-driven switch of the reported direction).
+        lim = "in" if int(null_surrogates) == 2 else "out"
+        raw = te_in if lim == "in" else te_out
+        return {
+            "value": raw,
+            "raw": raw,
+            "defined": True,
+            "undefined_reason": None,
+            "mode": mode,
+            "limiting_direction": lim,
+            "transfer": {"te_in": te_in, "te_out": te_out},
+            "NAS_null_n": 19,
+            "NAS_null_mean": 0.0,
+            "NAS_null_sd": 1.0,
+            "NAS_null_method": "block_circular_shift",
+        }
+
+    monkeypatch.setattr(mm, "compute_NAS", fake_nas)
+    s = g.simulate_family_a(None, SMALL, seed=0)
+    res = export.run_in_memory(s, metrics=("NAS",), null_surrogates=19, se_groups=4)
+    c = res["components"]["NAS"]
+    x = export.bearer_view(s, "NAS")["ts"]
+    assert c["estimate"] == pytest.approx(x[1].mean())
+    reps = [x[1, export.block_keep(x.shape[1], 4, k)].mean() for k in range(4)]
+    assert c["se"] == pytest.approx(export.jackknife_se(reps)[0], rel=1e-12)
+    assert c["se_statistic"] == "te_out" and c["se_n"] == 4
+
+
 def test_exact_iim_of_a_declared_tpm():
     pytest.importorskip("impact_pipeline.mpc_metrics")
     from impact_pipeline.bench.adversarial import parity_grid_system

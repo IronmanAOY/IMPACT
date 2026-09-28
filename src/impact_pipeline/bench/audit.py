@@ -32,8 +32,11 @@ Pipeline (:func:`audit`)
 5. Outputs: per rule, scenario, noise level and class the verdict
    distribution P(verdict | class); coverage (fraction determinate);
    selective risk (error among determinate decisions on systems with a
-   stipulated truth); risk-coverage curves (determinate decisions ranked by
-   the rule's confidence) and their area (AURC).
+   stipulated truth) and selective accuracy (1 - selective risk);
+   risk-coverage curves (determinate decisions ranked by the rule's
+   confidence) and their area (AURC, the mean selective risk over the ranked
+   prefixes up to the rule's own coverage). A rule without a confidence (the
+   evidence layer's verdicts) gets its full-coverage point only and no AURC.
 
 Truth: a system whose stipulated mechanism pattern has every principle of
 the necessity set present is a positive (``MPC_CONSISTENT`` correct); one
@@ -107,8 +110,11 @@ def truth_of(rec: dict, necessity_set: Sequence[str] = PRINCIPLES) -> Optional[i
     return int(all(int(bits[i]) == 1 for i in idx))
 
 
-def records_to_arrays(records: Iterable[dict]) -> dict:
-    """Stack ok-status records into component arrays (n x 5) and labels."""
+def records_to_arrays(
+    records: Iterable[dict], necessity_set: Sequence[str] = PRINCIPLES
+) -> dict:
+    """Stack ok-status records into component arrays (n x 5) and labels
+    (truth relative to ``necessity_set``, see :func:`truth_of`)."""
     rows = [r for r in records if r.get("status", "ok") == "ok"]
     n = len(rows)
     shape = (n, len(PRINCIPLES))
@@ -133,7 +139,7 @@ def records_to_arrays(records: Iterable[dict]) -> dict:
         markers["LZc"][i] = _f(mk.get("LZc"))
         markers["PhiR_bits"][i] = _f(mk.get("PhiR_bits"))
         markers["exact_IIM"][i] = _f((r.get("exact_iim") or {}).get("value"))
-    truth = [truth_of(r) for r in rows]
+    truth = [truth_of(r, necessity_set) for r in rows]
     return {
         "records": rows,
         "task_id": [r.get("task_id") for r in rows],
@@ -287,6 +293,7 @@ def _evidence_layer_verdicts(arrs, c_missing, rho, se_rho, necessity_set):
                     null_sd=float(arrs["null_sd"][i, j]),
                     se=float(se_m) if np.isfinite(se_m) else 0.0,
                     reference=None if not np.isfinite(rho[j]) else float(rho[j]),
+                    reference_se=(float(se_rho[j]) if np.isfinite(se_rho[j]) else None),
                     n_null=int(arrs["n_null"][i, j]),
                     bearer_id="system",
                 )
@@ -458,6 +465,9 @@ def summarise(decisions: pd.DataFrame) -> dict:
                 selective_risk=(
                     (float(err.sum()) / n_det_known) if n_det_known else np.nan
                 ),
+                selective_accuracy=(
+                    1.0 - float(err.sum()) / n_det_known if n_det_known else np.nan
+                ),
                 p_excluded_given_positive=(
                     float((sub.loc[pos, "decision"] == R.EXCLUDED).mean())
                     if pos.any()
@@ -471,7 +481,13 @@ def summarise(decisions: pd.DataFrame) -> dict:
             )
         )
         rc = risk_coverage(sub["decision"], sub["confidence"], sub["truth"])
-        aurc = float(rc["risk"].mean()) if len(rc) else np.nan
+        # A rule without a confidence (the evidence layer's verdicts) cannot
+        # rank its decisions: only its full determinate set is meaningful, so
+        # it gets no partial-coverage risks and no AURC.
+        ranked = bool(np.isfinite(sub.loc[det & known, "confidence"]).any())
+        if not ranked:
+            rc = rc.iloc[len(rc) - 1 :] if len(rc) else rc
+        aurc = float(rc["risk"].mean()) if (len(rc) and ranked) else np.nan
         for cg in COVERAGE_GRID:
             hit = rc[rc["coverage"] <= cg + 1e-12]
             rc_rows.append(
@@ -481,6 +497,7 @@ def summarise(decisions: pd.DataFrame) -> dict:
                     risk=float(hit["risk"].iloc[-1]) if len(hit) else np.nan,
                     reached=bool(len(hit) and hit["coverage"].iloc[-1] >= cg - 1e-9),
                     aurc=aurc,
+                    ranked=ranked,
                 )
             )
     return {
@@ -502,14 +519,21 @@ def audit(
     Run the rule audit (module docstring) and return ``{'decisions',
     'p_verdict_given_class', 'coverage', 'risk_coverage', 'settings'}``.
     """
-    arrs = records_to_arrays(records)
+    arrs = records_to_arrays(records, necessity_set)
     n = len(arrs["task_id"])
     if n == 0:
         raise ValueError("no usable records")
     folds = (arrs["seed"] % 2).astype(int)
     rows_all = []
-    for s_i, scen in enumerate(scenarios):
-        miss = missing_mask(scen, arrs["estimate"].shape, seed=seed + 101 * s_i)
+    in_sample = False
+    for scen in scenarios:
+        if scen not in SCENARIOS:
+            raise ValueError(f"scenario must be one of {SCENARIOS}")
+        # Seeded by the scenario itself, so a scenario's mask does not depend
+        # on which other scenarios are run or in which order.
+        miss = missing_mask(
+            scen, arrs["estimate"].shape, seed=seed + 101 * SCENARIOS.index(scen)
+        )
         for p_noise in label_noise:
             noisy = flip_labels(
                 arrs["truth"], p_noise, seed=seed + 7 + int(1000 * p_noise)
@@ -521,6 +545,7 @@ def audit(
                     continue
                 if fit_rows.size == 0:  # a single seed: fit and score in-sample
                     fit_rows = eval_rows
+                    in_sample = True
                 res = apply_audit_rules(
                     arrs, fit_rows, eval_rows, noisy, miss, necessity_set, alpha, seed
                 )
@@ -541,6 +566,8 @@ def audit(
                             }
                         )
     decisions = pd.DataFrame(rows_all)
+    with np.errstate(invalid="ignore"):
+        se_ok = np.isfinite(arrs["se"]) & (arrs["se"] > 0)
     out = summarise(decisions)
     out["decisions"] = decisions
     out["settings"] = {
@@ -554,8 +581,19 @@ def audit(
         "c_absent": R.C_ABSENT_DEFAULT,
         "random_missing_p": RANDOM_MISSING_P,
         "folds": "2-fold cross-fitting by seed parity",
+        # True when every system has the same seed parity: anchors, likelihood
+        # ratios, the classifier and marker thresholds were then fitted on the
+        # scored systems themselves (not cross-fitted; not for reporting).
+        "in_sample_fit": bool(in_sample),
         "n_systems": int(n),
         "n_with_truth": int(np.isfinite(arrs["truth"]).sum()),
+        # Defined components with a usable sampling SE (records run without
+        # --se-groups have none, and impact_c is then UNDETERMINED throughout).
+        "fraction_defined_with_se": (
+            float(np.mean(se_ok[np.isfinite(arrs["estimate"])]))
+            if np.isfinite(arrs["estimate"]).any()
+            else float("nan")
+        ),
         "seed": int(seed),
     }
     return out

@@ -236,3 +236,135 @@ def test_benchmark_script_on_existing_results(tmp_path):
         assert (out / name).exists(), name
     cov = pd.read_csv(out / "audit_coverage.csv")
     assert set(cov["scenario"]) == set(A.SCENARIOS)
+
+
+def test_zero_sampling_se_is_undefined_not_absent():
+    """Spec V2-2 (NO_SAMPLING_SE): a zero, negative or missing sampling SE
+    leaves the component UNDEFINED; the Monte-Carlo error of the null mean
+    and the reference SE never stand in for it (a clipped estimate at 0 with
+    identical jackknife replicates is not credibly absent)."""
+    c, se = R.construct_scale(
+        [0.0, 0.0, 0.0, 0.0],
+        0.0,
+        1.0,
+        se_estimate=[0.0, -0.1, np.nan, 0.01],
+        null_sd=0.1,
+        n_null=19,
+        se_reference=0.05,
+    )
+    assert np.all(c == 0.0)
+    assert np.all(np.isnan(se[:3])) and np.isfinite(se[3])
+    # se_c^2 = 0.01^2 + (1 - 0)^2 (0.1 / sqrt(19))^2 + 0 -> upper < 0.10.
+    assert se[3] == pytest.approx(math.sqrt(1e-4 + 0.01 / 19))
+    st = R.component_status_c(c, se)
+    assert list(st) == [R.UNDEFINED] * 3 + [R.ABSENT]
+    # Exact known-TPM values need no sampling SE; scalar in, scalar out.
+    assert R.component_status_c(0.9, se[0], exact=True) == R.PRESENT
+    assert R.component_status_c(0.9, 0.1) == R.PRESENT
+    res = A.audit(_records(se=0.0), scenarios=("none",), label_noise=(0.0,))
+    dec = res["decisions"]
+    assert set(dec.loc[dec.rule == "impact_c", "decision"]) == {R.UNDETERMINED}
+    assert res["settings"]["fraction_defined_with_se"] == 0.0
+    ok = A.audit(_records(), scenarios=("none",), label_noise=(0.0,))
+    assert ok["settings"]["fraction_defined_with_se"] == 1.0
+
+
+def test_construct_scale_status_matches_the_v2_evidence_layer():
+    """Cross-check of the bench's construct-scale rule with the evidence
+    layer's v2 ``component_assessment`` (skipped while a v1 layer is
+    installed): same c, same SE and same status on random evidence."""
+    ev = pytest.importorskip("impact_pipeline.evidence")
+    if not hasattr(ev, "component_assessment"):
+        pytest.skip("installed evidence layer is v1 (null-SD status rule)")
+    rng = np.random.default_rng(12)
+    n = 3000
+    nu = rng.normal(0.0, 0.3, n)
+    rho = nu + rng.uniform(-0.3, 2.0, n)
+    m = nu + (rho - nu) * rng.uniform(-0.5, 1.5, n)
+    se = rng.uniform(0.0, 0.3, n) * (rng.random(n) > 0.05)
+    sd0 = rng.uniform(0.01, 0.3, n)
+    k = rng.integers(0, 40, n)
+    se_rho = rng.uniform(0.0, 0.1, n)
+    c, se_c = R.construct_scale(
+        m,
+        nu,
+        rho,
+        se_estimate=se,
+        null_sd=sd0,
+        n_null=np.where(k > 0, k, np.inf),
+        se_reference=se_rho,
+    )
+    ours = R.component_status_c(c, se_c)
+    for i in range(n):
+        a = ev.component_assessment(
+            ev.ComponentEvidence(
+                principle="NAS",
+                estimate=float(m[i]),
+                null_mean=float(nu[i]),
+                null_sd=float(sd0[i]),
+                se=float(se[i]),
+                reference=float(rho[i]),
+                reference_se=float(se_rho[i]),
+                n_null=int(k[i]),
+            )
+        )
+        assert a.status.value == ours[i], i
+        if np.isfinite(se_c[i]):
+            assert a.c == pytest.approx(c[i]) and a.se == pytest.approx(se_c[i])
+
+
+def test_evidence_layer_rule_agrees_with_impact_c_on_a_v2_layer():
+    ev = pytest.importorskip("impact_pipeline.evidence")
+    if not hasattr(ev, "component_assessment"):
+        pytest.skip("installed evidence layer is v1 (null-SD status rule)")
+    res = A.audit(_records(se=0.08), scenarios=A.SCENARIOS, label_noise=(0.0, 0.2))
+    dec = res["decisions"].set_index(["task_id", "scenario", "label_noise"])
+    a = dec.loc[dec.rule == "impact_c", "decision"].sort_index()
+    b = dec.loc[dec.rule == "evidence_layer", "decision"].sort_index()
+    assert a.index.equals(b.index) and (a == b).all()
+
+
+def test_unranked_rules_get_no_aurc_and_masks_do_not_depend_on_order():
+    recs = _records()
+    res = A.audit(recs, scenarios=("none",), label_noise=(0.0,))
+    rc = res["risk_coverage"]
+    cov = res["coverage"].set_index("rule")
+    layer = rc[rc.rule == "evidence_layer"]
+    if len(layer):
+        # No confidence: no ranking, so no partial-coverage risk and no AURC.
+        assert not layer["ranked"].any() and layer["aurc"].isna().all()
+        assert layer.loc[layer.coverage < 0.5, "risk"].isna().all()
+    imp = rc[rc.rule == "impact_c"]
+    assert imp["ranked"].all() and np.isfinite(imp["aurc"]).all()
+    assert np.allclose(cov["selective_accuracy"], 1.0 - cov["selective_risk"])
+    # The random-missingness mask belongs to the scenario, not to its
+    # position in the requested list.
+    one = A.audit(recs, scenarios=("random20",), label_noise=(0.0,))["decisions"]
+    two = A.audit(recs, scenarios=("none", "random20"), label_noise=(0.0,))
+    two = two["decisions"]
+    two = two[two.scenario == "random20"].reset_index(drop=True)
+    pd.testing.assert_frame_equal(one.reset_index(drop=True), two)
+    assert res["settings"]["in_sample_fit"] is False
+    solo = A.audit(_records(n_seeds=1), scenarios=("none",), label_noise=(0.0,))
+    assert solo["settings"]["in_sample_fit"] is True
+
+
+def test_truth_follows_the_declared_necessity_set():
+    """With N = {RAM, PDI} a system lacking only NAS is a positive: the truth
+    used to score every rule is the stance's truth under N."""
+    nset = ("RAM", "PDI")
+    res = A.audit(
+        _records(), scenarios=("none",), label_noise=(0.0,), necessity_set=nset
+    )
+    dec = res["decisions"]
+    imp = dec[dec.rule == "impact_c"]
+    for p in ("NAS", "IIM", "SRPI"):
+        sub = imp[imp["class"] == f"single_deficit:{p}"]
+        assert set(sub["truth"]) == {1.0}
+        assert set(sub["decision"]) == {R.MPC_CONSISTENT}
+    for p in ("RAM", "PDI"):
+        sub = imp[imp["class"] == f"single_deficit:{p}"]
+        assert set(sub["truth"]) == {0.0} and set(sub["decision"]) == {R.EXCLUDED}
+    cov = res["coverage"].set_index("rule")
+    assert cov.loc["impact_c", "selective_risk"] == pytest.approx(0.0)
+    assert res["settings"]["necessity_set"] == list(nset)

@@ -364,6 +364,62 @@ def test_family_c_ignition_and_plasticity_are_effective():
     assert nom.meta["family_c_design"] == 2 and nom.meta["substrate"] == "stuart_landau"
 
 
+# Summaries of generator 1.0.0 outputs (computed with the sources of
+# polish/hlrs-handoff-2026-09 at f44f539): sum, sum of squares, ts[5, 1000],
+# ts[-1, -1], number of event rows, number of choices of arm 1. Generator
+# 1.1.0 changed family C only; family A (incl. the new reflex / feedback
+# options at their defaults) and the disconnected patchwork must reproduce
+# 1.0.0, so results of the two versions stay comparable.
+GENERATOR_1_0_0_SUMMARIES = {
+    "A_nominal_s0": [
+        6129.513953424195,
+        26150.086816880368,
+        -0.2405775571703625,
+        -0.22253087847408287,
+        82,
+        2.0,
+    ],
+    "A_off_s1": [
+        -8419.37900300308,
+        19367.538836233452,
+        0.28207484420428197,
+        -0.9161191399229291,
+        82,
+        11.0,
+    ],
+    "patchwork_s2": [
+        3401.8677569028832,
+        15038.39436579045,
+        -0.4585253131408725,
+        0.7141329574447668,
+        82,
+        3.0,
+    ],
+}
+
+
+def test_family_a_and_patchwork_reproduce_generator_1_0_0():
+    def summ(s):
+        ts = s.ts
+        return [
+            float(ts.sum()),
+            float((ts**2).sum()),
+            float(ts[5, 1000]),
+            float(ts[-1, -1]),
+            int(s.events.shape[0]),
+            float(np.nansum(s.oracle["choices"])),
+        ]
+
+    got = {
+        "A_nominal_s0": summ(g.simulate_family_a(None, SMALL, 0)),
+        "A_off_s1": summ(g.simulate_family_a(g.OFF_KNOBS, SMALL, 1)),
+        "patchwork_s2": summ(simulate_patchwork(None, SMALL, 2)),
+    }
+    for key, ref in GENERATOR_1_0_0_SUMMARIES.items():
+        assert got[key][4:] == ref[4:], key
+        assert got[key][:4] == pytest.approx(ref[:4], rel=1e-9, abs=1e-12), key
+
+
 def test_rest_run():
     s = g.simulate_family_a(None, SMALL.replace(rest_sec=20.0), seed=2)
     assert s.rest_ts is not None and s.rest_ts.shape == (s.n_nodes, 400)

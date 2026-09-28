@@ -493,8 +493,11 @@ def construct_scale(
     reference are propagated through the ratio by the delta method,
     ``se_c^2 = [se_m^2 + (1 - c)^2 se_nu^2 + c^2 se_rho^2] / (rho - nu)^2``.
     Element-wise; ``c`` is NaN (invalid anchors) unless every anchor is
-    finite and ``rho > nu``; ``se_c`` is NaN when ``se_estimate`` is missing.
-    Returns ``(c, se_c)``.
+    finite and ``rho > nu``; ``se_c`` is NaN when the sampling SE
+    ``se_estimate`` is missing, non-finite, zero or negative (spec V2-2:
+    ``NO_SAMPLING_SE``; the Monte-Carlo error of the anchors never stands in
+    for it; exact known-TPM values use ``exact=True`` in
+    :func:`component_status_c`). Returns ``(c, se_c)``.
     """
     m, nu, rho = np.broadcast_arrays(
         *(np.asarray(v, dtype=float) for v in (estimate, null_mean, reference))
@@ -510,6 +513,8 @@ def construct_scale(
         return np.broadcast_to(np.asarray(v, dtype=float), shape)
 
     se_m = _arr(se_estimate, np.nan)
+    with np.errstate(invalid="ignore"):
+        se_m = np.where(np.isfinite(se_m) & (se_m > 0), se_m, np.nan)
     sd0 = _arr(null_sd, 0.0)
     k = _arr(n_null, np.inf)
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -535,9 +540,12 @@ def component_status_c(
     UNDEFINED. A missing, non-finite or zero SE is UNDEFINED (no sampling SE)
     unless ``exact`` (known-TPM computations: the value is exact, SE 0).
     ``z_present`` / ``delta_absent`` may be per-column arrays (principles);
-    ``delta_absent <= z_present`` is required (exclusivity).
+    ``delta_absent <= z_present`` is required (exclusivity). A scalar ``c``
+    gives a scalar status.
     """
     c = np.asarray(c, dtype=float)
+    scalar = c.ndim == 0
+    c = np.atleast_1d(c)
     zp = np.broadcast_to(np.asarray(z_present, dtype=float), c.shape[-1:] or (1,))
     da = np.broadcast_to(np.asarray(delta_absent, dtype=float), c.shape[-1:] or (1,))
     if np.any(~np.isfinite(zp)) or np.any(~np.isfinite(da)) or np.any(da > zp):
@@ -555,7 +563,7 @@ def component_status_c(
     out = np.full(c.shape, UNDEFINED, dtype=object)
     out[absent] = ABSENT
     out[present] = PRESENT
-    return out
+    return out[0] if scalar else out
 
 
 def rule_impact_c(
