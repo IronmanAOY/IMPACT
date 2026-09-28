@@ -1,0 +1,323 @@
+# IMPaCT paper-2 executable hypothesis registry.
+#
+# Schema: predictions/registry.schema.json. Evaluated by scripts/run_predictions.py,
+# which refuses results produced by estimator versions or protocol hashes that
+# are not registered here, refuses confirmatory evaluation while the registry is a
+# draft, and never lets data with prior access contribute to a confirmatory
+# outcome.
+#
+# Stance (spec V2-1): necessary conditions license only exclusion. EXCLUDED means
+# some principle of the necessity set is credibly ABSENT; MPC_CONSISTENT means
+# consciousness is not excluded by the MPC stance (no attribution);
+# UNDETERMINED otherwise. v1 names (ATTRIBUTED / NOT_ATTRIBUTED) are accepted and
+# mapped. H2 (aggregation exponent) is auxiliary and never counts for or against
+# the stance (V2-7).
+#
+# Decision rules (impact_pipeline.necessity; one-sided exact Clopper-Pearson
+# bounds at level 1 - alpha):
+#   symmetric_necessity:    FALSIFIED if lower(ABSENT rate | report+) > tau;
+#                           SUPPORTED if upper < tau and the component varies
+#                           (>= 1 ABSENT among report-negative episodes);
+#                           else INDETERMINATE.
+#   symmetric_upper_lower:  the same without the variation requirement
+#                           (margin epsilon or kappa).
+#   Every decision is INDETERMINATE below the registered minimum_n.
+#
+# Before the freeze: fill the protocol hash (evidence.Protocol JSON of the frozen
+# protocol), register the estimator versions validated in the applicability
+# registry (V2-5), set status: frozen and freeze_tag, and commit the tag.
+
+registry_version: "0.1.0"
+status: draft
+freeze_tag: null
+created: "2026-09-28"
+description: >-
+  Paper-2 confirmatory hypotheses of the IMPaCT measurement framework: null
+  calibration (H0), verdict-level non-exclusion of report-positive episodes (H1),
+  the auxiliary aggregation exponent (H2), symmetric necessity of each principle
+  (H3-H7), the single-source constraint (H8), coverage (H9) and selective accuracy
+  against comparators (H10).
+spec_refs:
+  - "PAPER1_SCIENCE_SPEC (2026-09-28)"
+  - "PAPER1_SCIENCE_SPEC v2 addendum V2-1 to V2-7 (2026-09-28)"
+
+verdict_names:
+  excluded: EXCLUDED
+  consistent: MPC_CONSISTENT
+  undetermined: UNDETERMINED
+  v1_aliases:
+    NOT_ATTRIBUTED: EXCLUDED
+    ATTRIBUTED: MPC_CONSISTENT
+
+defaults:
+  alpha: 0.05
+  tau: 0.05
+  epsilon: 0.05
+  missing: determinate
+  sensitivity_missing: worst_case
+  ci_method: clopper_pearson_one_sided
+  null_band: 0.02
+
+protocols:
+  - id: mpc-v2-default
+    hash: null
+    hash_algorithm: evidence.Protocol
+    necessity_set: [RAM, PDI, NAS, IIM, SRPI]
+    spec:
+      cutoffs: {z: 0.25, delta: 0.10}
+      scale: two_anchor_c
+      alpha: 0.05
+      reference: cohort_high_state
+      bearer_rule: single_source
+    note: >-
+      Construct-scale cutoffs z_j = 0.25 and delta_j = 0.10 (V2-2 initial defaults, to
+      be justified by MPC-Bench dose-response before the freeze). The hash is the
+      evidence.Protocol hash of the frozen protocol.
+
+estimators:
+  - principle: RAM
+    estimator: "compute_RAM:prediction_error"
+    version: null
+    registration: pending_validation
+    note: behavioural_feedback channel; Rescorla-Wagner prediction-error U.
+  - principle: PDI
+    estimator: "compute_PDI:surrogate_excess"
+    version: null
+    registration: pending_validation
+    note: Construct not yet validated (B1 strict xfail on multistable switching).
+  - principle: NAS
+    estimator: "compute_NAS:capacity"
+    version: null
+    registration: pending_validation
+  - principle: IIM
+    estimator: "compute_IIM:delta_psi"
+    version: null
+    registration: pending_validation
+    note: Delta_Psi (bits) against circular-shift surrogates.
+  - principle: SRPI
+    estimator: "compute_SRPI:agency"
+    version: null
+    registration: pending_validation
+
+datasets:
+  - id: ds003171
+    prior_access: exploratory_calibration
+    role: exploratory
+    modality: fmri
+    note: Analysed during development; exploratory / calibration only (V2-7).
+  - id: ds005620
+    prior_access: exploratory_calibration
+    role: exploratory
+    modality: eeg
+    note: Analysed during development; exploratory / calibration only (V2-7).
+  - id: ds006623
+    prior_access: exploratory_calibration
+    role: exploratory
+    modality: fmri
+    note: Analysed during development; exploratory / calibration only (V2-7).
+  - id: ds002547
+    prior_access: metadata_only
+    role: exploratory
+    modality: fmri
+    access_log: scripts/definedness_audit.py (definedness_access_log.csv)
+  - id: ds004295
+    prior_access: metadata_only
+    role: exploratory
+    modality: eeg
+    access_log: scripts/definedness_audit.py (definedness_access_log.csv)
+  - id: ds005479
+    prior_access: metadata_only
+    role: exploratory
+    modality: fmri
+    access_log: scripts/definedness_audit.py (definedness_access_log.csv)
+  - id: ds002685
+    prior_access: metadata_only
+    role: exploratory
+    modality: fmri
+    access_log: scripts/definedness_audit.py (definedness_access_log.csv)
+  - id: ds002336
+    prior_access: metadata_only
+    role: exploratory
+    modality: mixed
+    access_log: scripts/definedness_audit.py (definedness_access_log.csv)
+  - id: dream_mediated
+    prior_access: never_accessed
+    role: confirmatory
+    modality: unknown
+    note: DREAM mediated subsets; confirmatory only if never accessed before the freeze.
+  - id: requested_pending
+    prior_access: never_accessed
+    role: confirmatory
+    modality: unknown
+    note: Placeholder for requested datasets; replace with their identifiers.
+
+hypotheses:
+  - id: H0
+    title: Every registered estimator is calibrated on its declared null family
+    level: measurement
+    counts_for_stance: false
+    statistic: null_false_present_rate
+    decision: null_band
+    minimum_n: 460
+    minimum_n_source: >-
+      Replicates per (null family, regime) cell for a 95% half-width of 0.02 at a
+      rate of 0.05 (1.96^2 * 0.05 * 0.95 / 0.02^2 = 456).
+    prediction: false-PRESENT rate within alpha +- 0.02 (V2-5 entry criterion a).
+    note: Evaluated on scripts/null_calibration.py output (--null-calibration).
+
+  - id: H1
+    title: Report-positive episodes are (almost) never EXCLUDED
+    level: verdict
+    counts_for_stance: true
+    statistic: excluded_rate_report_positive
+    decision: symmetric_upper_lower
+    population: report_positive
+    epsilon: 0.05
+    minimum_n: 155
+    minimum_n_source: scripts/necessity_power.py with power_assumptions (n_stable, power 0.8)
+    power_assumptions: &power
+      tau: 0.05
+      alpha: 0.05
+      pi_nec: 0.0
+      pi_viol: 0.25
+      pi_unconscious: 0.6
+      label_noise: 0.02
+      base_rate: 0.5
+      coverage: 0.8
+      sensitivity: 0.9
+      false_absent: 0.0
+      target_power: 0.8
+    supported_if: upper bound of the EXCLUDED rate among determinate report-positive episodes < 0.05
+    falsified_if: lower bound of the EXCLUDED rate among determinate report-positive episodes > 0.05
+
+  - id: H2
+    title: Aggregation exponent of the MPC degree (auxiliary)
+    level: auxiliary
+    counts_for_stance: false
+    statistic: aggregation_exponent
+    decision: auxiliary_report
+    outcome_column: outcome_graded
+    minimum_n: 200
+    minimum_n_source: >-
+      scripts/simulate_rule_recovery.py: p is weakly identifiable; measurement error
+      biases it towards compensatory (arithmetic) aggregation.
+    note: Reported with its profile-likelihood interval; never counts for or against the stance.
+
+  - id: H3
+    title: RAM is necessary (symmetric necessity criterion)
+    level: component
+    counts_for_stance: true
+    statistic: absent_rate_report_positive
+    decision: symmetric_necessity
+    principle: RAM
+    population: report_positive
+    tau: 0.05
+    variation_floor: 0.0
+    minimum_n: 155
+    minimum_n_source: scripts/necessity_power.py with power_assumptions (n_stable, power 0.8)
+    power_assumptions: *power
+
+  - id: H4
+    title: PDI is necessary (symmetric necessity criterion)
+    level: component
+    counts_for_stance: true
+    statistic: absent_rate_report_positive
+    decision: symmetric_necessity
+    principle: PDI
+    population: report_positive
+    tau: 0.05
+    variation_floor: 0.0
+    minimum_n: 155
+    minimum_n_source: scripts/necessity_power.py with power_assumptions (n_stable, power 0.8)
+    power_assumptions: *power
+
+  - id: H5
+    title: NAS is necessary (symmetric necessity criterion)
+    level: component
+    counts_for_stance: true
+    statistic: absent_rate_report_positive
+    decision: symmetric_necessity
+    principle: NAS
+    population: report_positive
+    tau: 0.05
+    variation_floor: 0.0
+    minimum_n: 155
+    minimum_n_source: scripts/necessity_power.py with power_assumptions (n_stable, power 0.8)
+    power_assumptions: *power
+
+  - id: H6
+    title: IIM is necessary (symmetric necessity criterion)
+    level: component
+    counts_for_stance: true
+    statistic: absent_rate_report_positive
+    decision: symmetric_necessity
+    principle: IIM
+    population: report_positive
+    tau: 0.05
+    variation_floor: 0.0
+    minimum_n: 155
+    minimum_n_source: scripts/necessity_power.py with power_assumptions (n_stable, power 0.8)
+    power_assumptions: *power
+
+  - id: H7
+    title: SRPI is necessary (symmetric necessity criterion)
+    level: component
+    counts_for_stance: true
+    statistic: absent_rate_report_positive
+    decision: symmetric_necessity
+    principle: SRPI
+    population: report_positive
+    tau: 0.05
+    variation_floor: 0.0
+    minimum_n: 155
+    minimum_n_source: scripts/necessity_power.py with power_assumptions (n_stable, power 0.8)
+    power_assumptions: *power
+
+  - id: H8
+    title: Single-source constraint holds in report-positive episodes
+    level: verdict
+    counts_for_stance: true
+    statistic: reason_rate_report_positive
+    decision: symmetric_upper_lower
+    reason_code: SOURCE_INCOHERENT
+    population: report_positive
+    epsilon: 0.05
+    minimum_n: 155
+    minimum_n_source: same design as H1
+    note: >-
+      Joint dependence of the component node sets above the between-set null
+      (V2-4); SOURCE_INCOHERENT is read from the MPC_reason column.
+
+  - id: H9
+    title: The verdict is determinate for at least half of the episodes (coverage)
+    level: measurement
+    counts_for_stance: false
+    statistic: coverage
+    decision: symmetric_upper_lower
+    necessity_set: [RAM, PDI, NAS, IIM, SRPI]
+    population: all
+    kappa: 0.5
+    minimum_n: 155
+    minimum_n_source: same design as H1
+    supported_if: lower bound of the determinate fraction > 0.5
+    falsified_if: upper bound of the determinate fraction < 0.5
+
+  - id: H10
+    title: Selective accuracy is not inferior to single-marker comparators
+    level: comparative
+    counts_for_stance: false
+    statistic: selective_accuracy_gap
+    decision: non_inferiority
+    comparators: [LZc, PhiR, IIM_only, NAS_only]
+    margin: 0.05
+    n_boot: 2000
+    seed: 0
+    minimum_n: 155
+    minimum_n_source: same design as H1
+    note: >-
+      Correct = EXCLUDED on report-negative or MPC_CONSISTENT on report-positive
+      episodes; UNDETERMINED abstains. Comparator columns comparator_<name> hold
+      True (not excluded), False (excluded) or empty (abstain). Paired bootstrap
+      over episodes; SUPPORTED if the lower 1-alpha bound of the accuracy gap
+      (IMPaCT minus the best comparator) exceeds -margin, FALSIFIED if the upper
+      bound is below -margin.
