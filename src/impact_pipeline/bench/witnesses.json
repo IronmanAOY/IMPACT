@@ -1,0 +1,385 @@
+{
+  "schema_version": 1,
+  "principles": [
+    "RAM",
+    "PDI",
+    "NAS",
+    "IIM",
+    "SRPI"
+  ],
+  "verdicts": [
+    "ATTRIBUTED",
+    "NOT_ATTRIBUTED",
+    "UNDETERMINED"
+  ],
+  "witnesses": [
+    {
+      "id": "PC_nominal",
+      "class": "positive_control",
+      "generator": "family_a",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {},
+      "target": null,
+      "mechanism_removed": "none",
+      "intended_pattern": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "counterexample": {
+        "claim": "Positive control. Small white-box systems can satisfy every conjunctive requirement, so passing all five conditions is not a sufficiency claim.",
+        "formalised_as": "Nominal agent with all five mechanisms switched on at their nominal doses.",
+        "references": [
+          "herzog2007consciousness",
+          "albantakis2025utility"
+        ]
+      },
+      "expected_verdict": "ATTRIBUTED",
+      "notes": "Not claimed to be conscious; used to measure sensitivity."
+    },
+    {
+      "id": "W_RAM_no_plasticity",
+      "class": "single_deficit",
+      "generator": "family_a",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {
+        "eta": 0.0
+      },
+      "target": "RAM",
+      "mechanism_removed": "feedback-driven plasticity of the stimulus-response gain",
+      "intended_pattern": [
+        0,
+        1,
+        1,
+        1,
+        1
+      ],
+      "counterexample": {
+        "claim": "A system can be differentiated, integrated, broadcasting and self-tagging while its stimulus-response mapping never changes with feedback (a fixed lookup table or reflex arc).",
+        "formalised_as": "Agent with eta = 0: goal cues, stimuli and +-1 feedback are still delivered and evoke responses, but the action gains are frozen, so choices do not track reversals.",
+        "references": [
+          "pennartz2019indicators",
+          "butlin2023consciousness"
+        ]
+      },
+      "expected_verdict": "NOT_ATTRIBUTED"
+    },
+    {
+      "id": "W_PDI_single_attractor",
+      "class": "single_deficit",
+      "generator": "family_a",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {
+        "K": 1
+      },
+      "target": "PDI",
+      "mechanism_removed": "repertoire of context attractor patterns (K = 1)",
+      "intended_pattern": [
+        1,
+        0,
+        1,
+        1,
+        1
+      ],
+      "counterexample": {
+        "claim": "Integration without differentiation: a system locked in one global state (generalised seizure, deep anaesthesia) can be highly integrated while having almost no repertoire.",
+        "formalised_as": "Agent with a single context pattern: the context drive is constant, so the global state never switches between attractors.",
+        "references": [
+          "tononi1994measure",
+          "casali2013theoretically",
+          "marshall2016integrated"
+        ]
+      },
+      "expected_verdict": "NOT_ATTRIBUTED"
+    },
+    {
+      "id": "W_NAS_no_workspace",
+      "class": "single_deficit",
+      "generator": "family_a",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {
+        "g_b": 0.0
+      },
+      "target": "NAS",
+      "mechanism_removed": "workspace receive-and-return broadcast and ignition (g_b = 0)",
+      "intended_pattern": [
+        1,
+        1,
+        0,
+        1,
+        1
+      ],
+      "counterexample": {
+        "claim": "Local recurrent processing without global availability: contents are processed and integrated locally but never ignite or broadcast.",
+        "formalised_as": "Agent with the hub disconnected (no receive, return or ignition); periphery loops, plasticity, repertoire and efference tagging intact.",
+        "references": [
+          "dehaene1998neuronal",
+          "dehaene2011experimental",
+          "mashour2020conscious"
+        ]
+      },
+      "expected_verdict": "NOT_ATTRIBUTED"
+    },
+    {
+      "id": "W_NAS_broadcast_only",
+      "class": "single_deficit",
+      "generator": "family_a",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {
+        "ff_only": true
+      },
+      "target": "NAS",
+      "mechanism_removed": "receive path of the workspace (one-way broadcast only)",
+      "intended_pattern": [
+        1,
+        1,
+        0,
+        1,
+        1
+      ],
+      "counterexample": {
+        "claim": "One-way fan-out is not a workspace: a hub that transmits to every module but never receives from them makes nothing globally available.",
+        "formalised_as": "Agent with every periphery -> hub edge removed; the hub still ignites spontaneously and broadcasts.",
+        "references": [
+          "kanai2026control",
+          "mashour2020conscious"
+        ]
+      },
+      "expected_verdict": "NOT_ATTRIBUTED",
+      "notes": "Variant witness for NAS (receive-transform-return removed, broadcast kept)."
+    },
+    {
+      "id": "W_IIM_feedforward",
+      "class": "single_deficit",
+      "generator": "family_a",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {
+        "c_int": 0.0
+      },
+      "target": "IIM",
+      "mechanism_removed": "recurrent (backward) inter-module loops",
+      "intended_pattern": [
+        1,
+        1,
+        1,
+        0,
+        1
+      ],
+      "counterexample": {
+        "claim": "A feedforward system can be functionally equivalent to a recurrent one (unfolding argument); IIT assigns such architectures zero integrated information.",
+        "formalised_as": "Agent whose module graph is acyclic: every backward edge is removed, including hub -> upstream and downstream -> hub, so the hub is a relay (upstream -> W -> downstream).",
+        "references": [
+          "doerig2019unfolding",
+          "oizumi2014phenomenology",
+          "tononi2016integrated"
+        ]
+      },
+      "expected_verdict": "NOT_ATTRIBUTED",
+      "notes": "IIT-conformant ground truth needs directional (unidirectional) cuts; bidirectional cuts can score a feedforward chain above zero. Report the witness as unrealised when the estimator's cut family cannot separate it."
+    },
+    {
+      "id": "W_SRPI_no_efference",
+      "class": "single_deficit",
+      "generator": "family_a",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {
+        "e": 0.0
+      },
+      "target": "SRPI",
+      "mechanism_removed": "efference-copy tag and attenuation of reafferent input",
+      "intended_pattern": [
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "counterexample": {
+        "claim": "A system that cannot tell self-caused from externally caused input (no efference copy or corollary discharge) lacks a minimal self/world distinction, however sophisticated its other processing.",
+        "formalised_as": "Agent with e = 0: self-caused and yoked other-caused events are stimulus-identical, phase-matched and processed identically; the actions preceding self-caused events remain.",
+        "references": [
+          "blakemore1998central",
+          "blakemore2000cant"
+        ]
+      },
+      "expected_verdict": "NOT_ATTRIBUTED"
+    },
+    {
+      "id": "N_independent_noise",
+      "class": "null",
+      "generator": "null_independent_noise",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {},
+      "target": null,
+      "mechanism_removed": "all (independent white noise, template events)",
+      "intended_pattern": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "counterexample": {
+        "claim": "Estimators of integration and complexity can score independent noise at or above structured systems (finite-sample bias).",
+        "formalised_as": "Independent Gaussian white noise per node, scaled to the nominal run and paired with its events table.",
+        "references": [
+          "barrett2011practical",
+          "mediano2018measuring"
+        ]
+      },
+      "expected_verdict": "NOT_ATTRIBUTED"
+    },
+    {
+      "id": "N_ar1",
+      "class": "null",
+      "generator": "null_ar1",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {},
+      "target": null,
+      "mechanism_removed": "all (independent AR(1), template events)",
+      "intended_pattern": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "counterexample": {
+        "claim": "Autocorrelated but uncoupled signals inflate complexity and integration estimates.",
+        "formalised_as": "Independent AR(1) (coefficient 0.9) per node, scaled to the nominal run and paired with its events table.",
+        "references": [
+          "barrett2011practical",
+          "schartner2015complexity"
+        ]
+      },
+      "expected_verdict": "NOT_ATTRIBUTED"
+    },
+    {
+      "id": "O_hypersynchronous",
+      "class": "over_excluded",
+      "generator": "hypersynchronous",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {},
+      "target": null,
+      "mechanism_removed": "all (one common oscillation, template events)",
+      "intended_pattern": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "counterexample": {
+        "claim": "Hypersynchrony (seizure-like) is maximally synchronous, which synchrony-based broadcast measures can mistake for global availability, yet it is undifferentiated.",
+        "formalised_as": "Every node follows the same 3 Hz oscillation with a random gain plus small independent noise; no task processing.",
+        "references": [
+          "tononi1994measure",
+          "casali2013theoretically"
+        ]
+      },
+      "expected_verdict": "NOT_ATTRIBUTED"
+    },
+    {
+      "id": "O_inert",
+      "class": "over_excluded",
+      "generator": "family_a",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {
+        "eta": 0.0,
+        "K": 1,
+        "g_b": 0.0,
+        "c_int": 0.0,
+        "e": 0.0
+      },
+      "target": null,
+      "mechanism_removed": "all five mechanisms (passive feedforward transducer)",
+      "intended_pattern": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "counterexample": {
+        "claim": "A passive transducer responds to its inputs but has none of the five capacities.",
+        "formalised_as": "Agent with every switch off: stimuli still propagate feedforward through the modules.",
+        "references": [
+          "oizumi2014phenomenology"
+        ]
+      },
+      "expected_verdict": "NOT_ATTRIBUTED"
+    },
+    {
+      "id": "PW_patchwork",
+      "class": "patchwork",
+      "generator": "patchwork",
+      "families": [
+        "A",
+        "C"
+      ],
+      "knobs": {},
+      "target": null,
+      "mechanism_removed": "coupling between the modules that implement the principles",
+      "intended_pattern": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "intended_pattern_system_bearer": [
+        1,
+        1,
+        1,
+        0,
+        1
+      ],
+      "counterexample": {
+        "claim": "Aggregates: every capacity is realised somewhere, but in different, causally disconnected parts (the quantifier shift from 'each principle is realised' to 'one bearer realises every principle').",
+        "formalised_as": "Five mutually disconnected modules, each implementing one mechanism (bearer = that module); no shared input.",
+        "references": [
+          "khadangi2026built",
+          "marshall2026intrinsic"
+        ]
+      },
+      "expected_verdict": "UNDETERMINED",
+      "expected_verdict_system_bearer": "NOT_ATTRIBUTED",
+      "notes": "Measured per principle on its own module the bearers differ (BEARER_MISMATCH, UNDETERMINED); measured on the whole system the disconnected macro-node grain has no integration (NOT_ATTRIBUTED)."
+    }
+  ]
+}
