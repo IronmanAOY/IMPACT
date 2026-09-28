@@ -159,8 +159,9 @@ def test_pbs_is_default_and_scripts_carry_hunter_directives(tmp_path, monkeypatc
     )
     assert "--hunter-stage phase1-shard --hunter-array-index" in p1
     assert "--hunter-shards-per-node 4" in p1
-    # phase-1 Psi is CPU-only; the cut shards request the campaign target
+    # phase-1 and cut shards both request the campaign target (cpu here)
     assert "--hardware-target cpu" in p1
+    assert "--hardware-target cpu" in cut
     # one merged reduce + finalize job, not one node per run
     assert "#PBS -J" not in red
     assert (
@@ -510,6 +511,9 @@ def test_build_campaign_on_login_node_without_accelerator(tmp_path, monkeypatch)
     assert manifest["build_hardware_backend"] == "cpu->cpu"
     cut = (campaign / "pbs" / "02_cut_shards.pbs").read_text()
     assert "--hardware-target hunter-apu" in cut
+    # GPU use is mandatory on Hunter: phase-1 Psi runs on the APU as well
+    p1 = (campaign / "pbs" / "01_phase1_shards.pbs").read_text()
+    assert "--hardware-target hunter-apu" in p1
     # a local (non-build) stage still resolves the target strictly
     with pytest.raises(RuntimeError, match="Hardware target unavailable"):
         run_pipeline.main(
@@ -582,3 +586,48 @@ def test_ci_reference_is_forwarded_to_the_campaign_and_finalize(tmp_path, monkey
             **common,
         )
     assert captured["ci_reference"] == str(ref.resolve())
+
+
+def test_jobs_run_an_explicit_checkout_and_export_it(tmp_path, monkeypatch):
+    monkeypatch.delenv("IMPACT_REPO_ROOT", raising=False)
+    checkout = tmp_path / "ws" / "impact-synergy-pipeline"
+    checkout.mkdir(parents=True)
+    (checkout / "run_pipeline.py").write_text("# entry point\n")
+    campaign_dir, manifest = _build(tmp_path, overrides={"repo_root": str(checkout)})
+    assert manifest["scheduler"]["repo_root"] == str(checkout.resolve())
+    for name in ("01_phase1_shards.pbs", "02_cut_shards.pbs", "03_reduce_finalize.pbs"):
+        text = _read(campaign_dir, name)
+        assert f"cd {checkout.resolve()}" in text, name
+        assert f"export IMPACT_REPO_ROOT={checkout.resolve()}" in text, name
+        assert str(checkout.resolve() / "run_pipeline.py") in text, name
+    with pytest.raises(FileNotFoundError, match="run_pipeline.py"):
+        _build(tmp_path / "bad", overrides={"repo_root": str(tmp_path)})
+
+
+def test_non_editable_install_needs_repo_root(tmp_path, monkeypatch):
+    from impact_pipeline import provenance
+
+    site = tmp_path / "site-packages" / "impact_pipeline"
+    site.mkdir(parents=True)
+    monkeypatch.setattr(provenance, "__file__", str(site / "provenance.py"))
+    monkeypatch.delenv("IMPACT_REPO_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="--repo-root"):
+        _build(tmp_path / "a")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "run_pipeline.py").write_text("# entry point\n")
+    monkeypatch.setenv("IMPACT_REPO_ROOT", str(checkout))
+    _campaign_dir, manifest = _build(tmp_path / "b")
+    assert manifest["scheduler"]["repo_root"] == str(checkout.resolve())
+
+
+def test_shard_code_version_is_package_version_plus_commit(tmp_path):
+    import impact_pipeline
+
+    campaign_dir, manifest = _build(tmp_path)
+    base = impact_pipeline.__version__.split("+", 1)[0]
+    assert manifest["kernel_code_version"].startswith(base + "+")
+    assert manifest["code_version"]["package_version"] == impact_pipeline.__version__
+    shard = hunter_iim.run_phase1_shard(campaign_dir, 0)
+    assert shard["identity"]["code_version"] == manifest["kernel_code_version"]

@@ -3,12 +3,16 @@ from pathlib import Path
 
 import pytest
 
+import impact_pipeline
+from impact_pipeline import provenance
 from impact_pipeline.provenance import (
     assert_origin_matches_dataset,
     collect_code_version,
     collect_runtime_versions,
     dataset_declares_synthetic,
+    format_code_version,
     resolve_dataset_provenance,
+    resolve_repo_root,
 )
 
 
@@ -97,3 +101,100 @@ def test_synthetic_dataset_cannot_be_labelled_real(tmp_path):
     (tmp_path / "dataset_description.json").write_text(json.dumps({"Name": "real"}))
     assert not dataset_declares_synthetic(tmp_path)
     assert_origin_matches_dataset(tmp_path, "real")
+
+
+# ---------------------------------------------------------------------------
+# Package version, code version and checkout resolution (stream I2)
+# ---------------------------------------------------------------------------
+
+
+def _pyproject_version():
+    import re
+
+    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    return re.search(r'(?m)^version\s*=\s*"([^"]+)"', text).group(1)
+
+
+def test_package_version_is_the_declared_version():
+    from importlib import metadata
+
+    try:
+        installed = metadata.version("impact-synergy-pipeline")
+    except metadata.PackageNotFoundError:
+        installed = None
+    assert impact_pipeline.__version__ in {_pyproject_version(), installed}
+    assert collect_runtime_versions()["impact_pipeline_version"] == (
+        impact_pipeline.__version__
+    )
+
+
+def test_package_version_falls_back_without_distribution_metadata(monkeypatch):
+    from importlib import metadata
+
+    def missing(_name):
+        raise metadata.PackageNotFoundError(_name)
+
+    monkeypatch.setattr(metadata, "version", missing)
+    assert impact_pipeline._resolve_version() == _pyproject_version()
+    monkeypatch.setattr(impact_pipeline, "_version_from_pyproject", lambda: None)
+    assert impact_pipeline._resolve_version() == "0+unknown"
+
+
+def test_code_version_is_package_version_plus_commit(tmp_path, monkeypatch):
+    base = impact_pipeline.__version__.split("+", 1)[0]
+    sha = "a" * 40
+    assert (
+        format_code_version({"package_version": base, "git_sha": sha})
+        == f"{base}+g{sha}"
+    )
+    assert (
+        format_code_version(
+            {"package_version": base, "git_sha": sha, "git_dirty": True}
+        )
+        == f"{base}+g{sha}.dirty"
+    )
+    assert format_code_version({"package_version": base}) == f"{base}+unknown"
+    monkeypatch.setenv("IMPACT_CODE_VERSION", "hunter-2026-09")
+    info = collect_code_version(tmp_path)  # not a git checkout
+    assert info["package_version"] == impact_pipeline.__version__
+    assert info["code_version"] == f"{base}+hunter-2026-09"
+    repo = Path(__file__).resolve().parents[1]
+    info = collect_code_version(repo)
+    if info["source"] == "git":
+        assert info["code_version"].startswith(f"{base}+g{info['git_sha']}")
+
+
+def test_repo_root_resolution(tmp_path, monkeypatch):
+    repo = Path(__file__).resolve().parents[1]
+    monkeypatch.delenv(provenance.REPO_ROOT_ENV, raising=False)
+    # source checkout / editable install: the package-relative root
+    assert resolve_repo_root() == repo
+    other = tmp_path / "checkout"
+    other.mkdir()
+    (other / "run_pipeline.py").write_text("# entry point\n")
+    assert resolve_repo_root(other) == other.resolve()
+    monkeypatch.setenv(provenance.REPO_ROOT_ENV, str(other))
+    assert resolve_repo_root() == other.resolve()
+    with pytest.raises(FileNotFoundError, match="--repo-root"):
+        resolve_repo_root(tmp_path)  # explicit but not a checkout: no substitution
+    monkeypatch.setenv(provenance.REPO_ROOT_ENV, str(tmp_path))
+    with pytest.raises(FileNotFoundError, match=provenance.REPO_ROOT_ENV):
+        resolve_repo_root()
+
+
+def test_repo_root_for_a_non_editable_install(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages" / "impact_pipeline"
+    site.mkdir(parents=True)
+    monkeypatch.setattr(provenance, "__file__", str(site / "provenance.py"))
+    monkeypatch.delenv(provenance.REPO_ROOT_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert resolve_repo_root(required=False) is None
+    with pytest.raises(FileNotFoundError, match="non-editable"):
+        resolve_repo_root()
+    checkout = tmp_path / "ws" / "impact-synergy-pipeline"
+    checkout.mkdir(parents=True)
+    (checkout / "run_pipeline.py").write_text("# entry point\n")
+    # run_pipeline.py passes its own directory as the fallback
+    assert resolve_repo_root(fallback=checkout) == checkout.resolve()
+    monkeypatch.setenv(provenance.REPO_ROOT_ENV, str(checkout))
+    assert resolve_repo_root() == checkout.resolve()

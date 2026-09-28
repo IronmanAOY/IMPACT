@@ -195,3 +195,22 @@ def test_smoke_helper_builds_a_tiny_campaign(tmp_path):
     assert (campaign / "pbs" / "90_smoke_all_in_one.pbs").exists()
     assert "qsub" in proc.stdout
     assert "IMPACT_HUNTER_SETUP_FILE is not set" in proc.stderr
+
+
+def test_requirements_match_the_cray_python_route_and_document_2026_2():
+    reqs = {
+        line.split("==")[0].strip().lower(): line.split("==")[1].strip()
+        for line in (REPO / "requirements-hunter.txt").read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    # numba 0.61.x supports numpy < 2.3 (stack 2026.1: numpy 1.24.4)
+    assert reqs["numba"].startswith("0.61.")
+    # CuPy's runtime dependency, so a locally built CuPy installs with --no-deps
+    assert "fastrlock" in reqs
+    constraints = (REPO / "constraints-hunter.txt").read_text()
+    for token in ("testing-2026.2", "numpy==2.3.5", "scipy==1.16.3", "numba==0.62.1"):
+        assert token in constraints
+    smoke = (HUNTER / "hunter_smoke_test.sh").read_text()
+    assert "--hunter-iim-null-surrogates" in smoke
+    readme = (HUNTER / "README.md").read_text()
+    assert "iim_psi_xp_parity" in readme and "--hunter-iim-null-surrogates" in readme

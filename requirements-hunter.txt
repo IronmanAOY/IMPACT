@@ -1,8 +1,13 @@
 # Runtime requirements for HLRS Hunter (cray-python venv created with --system-site-packages).
 # Install on a login node through the HLRS SOCKS tunnel (see scripts/hunter/install_hunter_env.sh):
 #   python3 -m pip install -c constraints-hunter.txt -r requirements-hunter.txt
-# numpy/scipy come from cray-python (Cray LibSci-linked) and are pinned by constraints-hunter.txt.
-# CuPy for ROCm is NOT listed: it must match the ROCm stack and is installed separately.
+# numpy/scipy come from cray-python (Cray LibSci-linked) and are pinned by constraints-hunter.txt
+# (default stack HLRS/APU/2026.1: numpy 1.24.4, scipy 1.10.1). Every pin below is compatible with
+# them (checked against the PyPI metadata: e.g. pybids 0.21.0 needs numpy>=1.24/scipy>=1.10,
+# nilearn 0.13.1 numpy>=1.22.4/scipy>=1.9, statsmodels 0.14.6 scipy>=1.8, numba 0.61.2 numpy<2.3).
+# CuPy for ROCm is NOT listed: it must match the ROCm stack and is installed separately
+# (install_hunter_env.sh --cupy source-13.6 | wheel-rocm7). fastrlock is CuPy's runtime dependency,
+# pinned here so a locally built CuPy wheel can be installed with --no-deps.
 # Developer tools (pytest, flake8, black, pyinstaller, bids-validator CLI, node) are not needed on Hunter.
 pandas==2.3.3
 scikit-learn==1.7.2
@@ -19,3 +24,4 @@ matplotlib==3.10.8
 python-docx==1.2.0
 pybids==0.21.0
 psutil==7.2.2
+fastrlock==0.8.3

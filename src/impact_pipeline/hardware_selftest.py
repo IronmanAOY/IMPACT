@@ -11,9 +11,14 @@ Hunter mi300a node) before submitting a campaign::
 The test prints device information and compares CuPy results with NumPy for
 the operations the pipeline relies on: matmul, eigh (used by
 ``accelerated_psd_invsqrt``), ``ufunc.at`` scatter-add and weighted
-``bincount`` (IIM transition counting / cut TPMs), SVD, pinv, and the IIM TPM
-kernels themselves. The exit code is non-zero when any comparison fails, or
-when an accelerator was requested but could not be resolved.
+``bincount`` (IIM transition counting / cut TPMs), SVD, pinv, the IIM TPM
+kernels, and the IIM Psi kernels themselves (``iim_psi_xp_parity``: phase-1
+Psi and bidirectional/directional cut TPMs and their Psi from the array-module
+kernel on the device against the numba/host reference kernel). This is the
+first command to run on a Hunter mi300a node: the shard jobs run their Psi work
+through exactly this device kernel. The exit code is non-zero when any
+comparison fails, or when an accelerator was requested but could not be
+resolved.
 """
 
 from __future__ import annotations
@@ -157,6 +162,54 @@ def run_selftest(
         errs.append(_rel_err(cut_out, cut_ref))
         return {"rel_err": float(max(errs))}
 
+    def _iim_psi():
+        # The IIM Psi kernels that Hunter shards run on the device: phase-1 Psi
+        # and the Psi of a bidirectional and a directional cut TPM, from the
+        # array-module kernel (on the backend's device) against the numba/host
+        # reference kernel.
+        from impact_pipeline import iim_xp
+        from impact_pipeline import mpc_metrics as mm
+
+        n_nodes, base = 4, 2
+        n_states = base ** n_nodes
+        tpm = rng.random((n_states, n_states)) ** 3
+        tpm /= tpm.sum(axis=1, keepdims=True)
+        states = iim_xp.state_table(n_nodes, base)
+        curr = states[rng.integers(0, n_states, size=48)]
+        mechs = tuple(mm._iim_enumerate_subsets(tuple(range(n_nodes)), n_nodes))
+        tpm_d = xp.asarray(tpm, dtype=xp.float64)
+        workspace = iim_xp.IIMXpWorkspace(xp, states, base)
+        part_a, part_b = (0, 1), (2, 3)
+        pairs = []
+        ref = mm._iim_phase1_chunk_contribution(mechs, mechs, base, tpm, curr, states)
+        out = iim_xp.psi_contribution(
+            mechs, mechs, base, tpm_d, curr, states, xp=xp, workspace=workspace
+        )
+        pairs.append((out, ref))
+        for mode in ("bidirectional", "directional"):
+            cut_ref = mm._iim_build_cut_tpm_for_mode(
+                tpm, states, base, part_a, part_b, cut_mode=mode, hardware_backend="cpu"
+            )
+            cut_d = iim_xp.cut_tpm(tpm_d, n_nodes, base, part_a, part_b, mode, xp=xp)
+            pairs.append((to_numpy(cut_d), cut_ref))
+            pairs.append(
+                (
+                    iim_xp.psi_contribution(
+                        mechs, mechs, base, cut_d, curr, states,
+                        xp=xp, workspace=workspace,
+                    ),
+                    mm._iim_phase1_chunk_contribution(
+                        mechs, mechs, base, cut_ref, curr, states
+                    ),
+                )
+            )
+        return {
+            "rel_err": float(max(_rel_err(a, b) for a, b in pairs)),
+            "psi_full_xp": float(out),
+            "psi_full_numba": float(ref),
+            "psi_kernel_for_target": mm.resolve_iim_psi_kernel("auto", backend),
+        }
+
     cases = [
         _case("matmul", _matmul, rtol),
         _case("eigh", _eigh, rtol),
@@ -166,13 +219,24 @@ def run_selftest(
         _case("pinv", _pinv, rtol),
         _case("psd_invsqrt", _psd_invsqrt, rtol),
         _case("iim_tpm_kernels", _iim_tpm, rtol),
+        _case("iim_psi_xp_parity", _iim_psi, rtol),
     ]
     # eigh may legitimately fail on ROCm: the pipeline then uses the CPU
     # fallback, so it does not fail the self-test on its own.
     required = [c for c in cases if c["name"] != "eigh"]
+    from impact_pipeline.mpc_metrics import resolve_iim_psi_kernel
+    from impact_pipeline.provenance import collect_code_version, resolve_repo_root
+
+    code_root = resolve_repo_root(required=False)
     return {
         "requested_target": str(target),
         "backend_summary": backend_summary(backend),
+        "code_version": (
+            collect_code_version(code_root)["code_version"]
+            if code_root is not None
+            else collect_code_version(Path.cwd())["code_version"]
+        ),
+        "iim_psi_kernel": resolve_iim_psi_kernel("auto", backend),
         "device_info": device_info(backend),
         "rtol": float(rtol),
         "cases": cases,
@@ -188,6 +252,10 @@ def run_selftest(
 
 def _print_report(report: dict) -> None:
     print(f"IMPaCT hardware self-test: {report['backend_summary']}")
+    print(
+        f"  code version: {report.get('code_version')}; "
+        f"IIM Psi kernel for this target: {report.get('iim_psi_kernel')}"
+    )
     dev = report.get("device_info", {})
     for rec in dev.get("devices", []) or []:
         arch = rec.get("gcnArchName", "")
