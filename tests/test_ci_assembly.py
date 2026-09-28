@@ -152,3 +152,74 @@ def test_compute_synergy_ci_emits_ci_status_columns(tmp_path):
         and df["CI_missing"].str.contains("SRPI").all()
     )
     assert (df["CI_reference"] == CI_REFERENCE_COHORT_HIGH_STATE).all()
+
+
+def test_cohort_reference_ignores_iim_flagged_undefined():
+    df = _frame()
+    # Subject a's awake IIM is flagged undefined although a value is stored.
+    df.loc[(df.subject == "a") & (df.session == "awake"), "IIM_defined"] = False
+    refs, _ = resolve_ci_references(df)
+    assert refs["IIM"] == pytest.approx(1.2)  # only subject b's awake IIM
+
+
+def test_compute_synergy_ci_end_to_end_reference_and_theta_invariance(
+    tmp_path, monkeypatch
+):
+    """All five components defined (RAM/NAS/SRPI stubbed with deterministic
+    values); checks NAS enters directly, CI is theta-invariant, and the cohort
+    reference is the mean over subjects of per-subject awake means with an unequal
+    number of runs per subject."""
+    import impact_pipeline.synergy_ci as sc
+
+    rng = np.random.RandomState(0)
+    iim = {}
+    for si, subj in enumerate(("s1", "s2", "s3")):
+        for ses in ("awake", "deep"):
+            n_runs = 2 if subj == "s1" else 1
+            for run in range(1, n_runs + 1):
+                d = tmp_path / subj / ses / "audio"
+                d.mkdir(parents=True, exist_ok=True)
+                p = d / f"{subj}_run-{run}_schaefer400_ts.npy"
+                np.save(p, rng.randn(96, 6))
+                undefined = subj == "s3" and ses == "deep"
+                iim[str(p)] = (
+                    {"defined": False, "undefined_reason": "t", "canonical": np.nan,
+                     "raw": np.nan}
+                    if undefined
+                    else {"defined": True, "canonical": 0.3 + 0.1 * si, "raw": 0.3}
+                )
+            rest = tmp_path / subj / ses / "rest"
+            rest.mkdir(parents=True, exist_ok=True)
+            np.save(rest / f"{subj}_run-1_schaefer400_ts.npy", rng.randn(96, 6))
+
+    def _stub(row):
+        return lambda ts, **k: float(np.abs(ts[row, :10]).mean()) + 0.1
+
+    monkeypatch.setattr(sc, "compute_RAM", _stub(0))
+    monkeypatch.setattr(sc, "compute_SRPI", _stub(1))
+    monkeypatch.setattr(sc, "compute_NAS", _stub(2))
+    df = compute_synergy_ci(
+        str(tmp_path), "schaefer400", [0.2, 0.5, 0.8], sessions=("awake", "deep"),
+        tr=0.1, pdi_params=_PDI_PARAMS, pdi_require_explicit_params=True,
+        pdi_require_strict_baseline=True, nas_params=_NAS_PARAMS,
+        srpi_params=_SRPI_PARAMS, iim_precomputed_by_path=iim,
+    )
+    awake = df[df.session == "awake"]
+    for k in COMPS:
+        expected = awake.groupby("subject")[k].mean().mean()
+        assert df.attrs["ci_references"][k] == pytest.approx(expected)
+    refs = df.attrs["ci_references"]
+    # One run per (subject, session, RAM value); CI identical across theta.
+    for _, grp in df.groupby(["subject", "session", "RAM"]):
+        assert grp["theta"].nunique() == 3
+        ci = grp["CI"].to_numpy(dtype=float)
+        assert np.all(np.isnan(ci)) or np.allclose(ci, ci[0])
+    np.testing.assert_allclose(df["NAS_norm"], df["NAS"] / refs["NAS"])
+    bad = df[(df.subject == "s3") & (df.session == "deep")]
+    assert bad["CI"].isna().all() and (bad["CI_missing"] == "IIM").all()
+    good = df[df["CI_defined"]]
+    assert len(good) == len(df) - len(bad)
+    for _, row in good.iterrows():
+        norms = [max(row[k] / refs[k], 0.0) for k in COMPS]
+        expected = 0.0 if min(norms) <= 0 else float(np.prod(norms) ** 0.2)
+        assert row["CI"] == pytest.approx(expected, rel=1e-9, abs=1e-12)

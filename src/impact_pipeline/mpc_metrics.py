@@ -4735,9 +4735,16 @@ def compute_CI(
         # Explicit opt-out of normalisation (unit references).
         references = {k: 1.0 for k in comp_keys}
     else:
-        # A component missing from a supplied reference dict has no reference (no
-        # silent 1.0); it is treated like a non-finite reference below.
-        references = {k: float(references.get(k, np.nan)) for k in comp_keys}
+        # A component missing from a supplied reference dict (or given as None /
+        # non-numeric) has no reference (no silent 1.0); it is treated like a
+        # non-finite reference below.
+        def _ref_value(val):
+            try:
+                return np.nan if val is None else float(val)
+            except (TypeError, ValueError):
+                return np.nan
+
+        references = {k: _ref_value(references.get(k)) for k in comp_keys}
 
     if weights is None:
         weights = {k: 1.0 / len(comp_keys) for k in comp_keys}

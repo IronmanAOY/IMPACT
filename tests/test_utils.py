@@ -110,3 +110,12 @@ def test_delong_requires_finite_scores_and_two_cases_per_class():
         fast_delong(np.array([1, 0, 1, 0]), np.array([0.1, np.nan, 0.3, 0.2]))
     with pytest.raises(ValueError):
         fast_delong(np.array([1, 0]), np.array([0.1, 0.2]))
+
+
+def test_delong_rejects_non_binary_labels():
+    # Labels outside {0, 1} would otherwise be silently dropped from both classes.
+    s = np.arange(6, dtype=float)
+    with pytest.raises(ValueError, match="binary labels"):
+        fast_delong(np.array([1, 2, 1, 2, 1, 2]), s)
+    auc, _ = fast_delong(np.array([True, False] * 3), s)
+    assert auc == pytest.approx(roc_auc_score([1, 0] * 3, s))

@@ -177,3 +177,47 @@ def test_definedness_summary_counts():
     assert out["n_rows_defined"] == 4 and out["n_rows_undefined"] == 2
     assert out["missing_component_row_counts"] == {"SRPI": 2, "IIM": 1}
     assert out["n_subjects_complete_pairs"] == 1 and out["n_subjects_excluded"] == 2
+
+
+def test_definedness_counts_runs_not_theta_replicates():
+    # compute_synergy_ci repeats every run at each theta; CI does not depend on
+    # theta, so one undefined run must be counted once, not once per theta.
+    rows = []
+    for subj in ("a", "b"):
+        for ses in ("awake", "deep"):
+            undefined = subj == "b" and ses == "deep"
+            for theta in (0.1, 0.5, 0.9):
+                rows.append({
+                    "subject": subj, "session": ses, "theta": theta,
+                    "CI": np.nan if undefined else 1.0,
+                    "CI_defined": not undefined,
+                    "CI_missing": "SRPI" if undefined else "",
+                })
+    out = definedness_summary(pd.DataFrame(rows))
+    assert out["count_unit"] == "run" and out["n_thetas"] == 3
+    assert out["n_rows"] == 4 and out["n_table_rows"] == 12
+    assert out["n_rows_defined"] == 3 and out["n_rows_undefined"] == 1
+    assert out["missing_component_row_counts"] == {"SRPI": 1}
+    assert out["n_subjects_complete_pairs"] == 1
+
+
+def test_definedness_falls_back_to_rows_when_it_varies_with_theta():
+    df = pd.DataFrame({
+        "subject": ["a"] * 4, "session": ["awake", "awake", "deep", "deep"],
+        "theta": [0.1, 0.9, 0.1, 0.9], "CI": [1.0, np.nan, 1.0, 1.0],
+    })
+    out = definedness_summary(df)
+    assert out["count_unit"] == "row"
+    assert out["n_rows"] == 4 and out["n_rows_undefined"] == 1
+
+
+@pytest.mark.parametrize(
+    "flags", [[1.0, 1.0, 0.0, 1.0], ["True", "true", "False", "1"], [1, 1, 0, 1]]
+)
+def test_definedness_accepts_numeric_and_text_flags(flags):
+    df = pd.DataFrame({
+        "subject": list("aabb"), "session": ["awake", "deep"] * 2,
+        "CI": [1.0, 2.0, np.nan, 1.0], "CI_defined": flags,
+    })
+    out = definedness_summary(df)
+    assert out["n_rows_defined"] == 3 and out["n_rows_undefined"] == 1

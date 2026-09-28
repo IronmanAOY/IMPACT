@@ -137,13 +137,15 @@ def test_report_has_no_post_hoc_theta_and_reports_exclusions(tmp_path):
     # Holm-adjusted p for S over θ: [0.02, 0.01, 0.3] -> [0.04, 0.03, 0.3]
     assert "θ=0.30: t_S=2.500, p_S=0.0200, p_Holm=0.0400" in text
     assert "p_Holm=0.0300" in text
-    # CI exclusions are reported, not averaged as zeros.
-    assert "undefined rows excluded: 3" in text
+    # CI exclusions are reported, not averaged as zeros; the one undefined run is
+    # counted once (not once per θ).
+    assert "Runs with defined CI: 19/20" in text
+    assert "undefined runs excluded: 1" in text
     assert "1 subject(s) without a defined value in both sessions excluded" in text
     # Motion DataFrame is rendered (old code silently dropped it).
     assert "FD-adjusted state contrast" in text and "Motion (FD) within awake" in text
     assert "Atlas shen268: skipped (missing time series)" in text
-    assert "S vs mean_conn: ΔAUC=0.100" in text and "p_Holm=0.1200" in text
+    assert "S vs mean_conn: signed ΔAUC=0.100" in text and "p_Holm=0.1200" in text
     assert "paired subject bootstrap 95% CI of mean difference" in text
     assert (tmp_path / "figs" / "supp_theta_curve.png").exists()
 
@@ -189,3 +191,62 @@ def test_threshold_plot_has_no_selected_theta(tmp_path, scale):
         _df(), str(tmp_path / "t.png"), scale=scale
     )
     assert ok is True and (tmp_path / "t.png").exists()
+
+
+def _n_pictures(path):
+    return len(Document(str(path)).inline_shapes)
+
+
+def test_stale_figures_are_not_embedded(tmp_path):
+    # A θ plot left by step 2 (which marks a post hoc θ*) must not be embedded when
+    # create_doc cannot redraw it, e.g. for a session pair other than awake/deep.
+    figs = tmp_path / "figs"
+    figs.mkdir()
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    ax.axvline(0.5, linestyle="--")
+    fig.savefig(figs / "supp_theta_curve.png")
+    fig.savefig(figs / "s_curve.png")
+    plt.close(fig)
+    df = _df().assign(session=lambda d: d["session"].map({"awake": "a", "deep": "b"}))
+    out = tmp_path / "r.docx"
+    gwd.create_doc(
+        path=str(out), df=df, df_stats_by_theta=None, motion=None,
+        atlas_results={}, mc={}, fig_dir=str(figs), sessions=("a", "light"),
+    )
+    text = _text(out)
+    assert "θ-curve not drawn" in text
+    assert _n_pictures(out) == 0
+    # With the analysed pair available, the θ plot is redrawn and embedded.
+    gwd.create_doc(
+        path=str(out), df=df, df_stats_by_theta=None, motion=None,
+        atlas_results={}, mc={}, fig_dir=str(figs), sessions=("a", "b"),
+    )
+    assert "S difference across θ" in _text(out) and _n_pictures(out) > 1
+
+
+def test_model_comparison_line_reports_discriminability(tmp_path):
+    mc = {
+        "mean_conn": {
+            "score": "S",
+            "auc_score": 0.1,
+            "auc_metric": 0.9,
+            "delta_auc": -0.8,
+            "p_val": 1e-6,
+            "p_holm": 3e-6,
+            "delta_auc_ci": (-0.9, -0.7),
+            "delta_discrimination": 0.0,
+            "delta_discrimination_ci": (-0.1, 0.1),
+            "p_discrimination": 0.9,
+            "p_discrimination_holm": 1.0,
+        }
+    }
+    out = tmp_path / "r.docx"
+    gwd.create_doc(
+        path=str(out), df=_df(), df_stats_by_theta=None, motion=None,
+        atlas_results={}, mc=mc,
+    )
+    line = next(t for t in _text(out).split("\n") if t.startswith("S vs mean_conn"))
+    assert "AUC_S=0.100, AUC_mean_conn=0.900" in line
+    assert "Discriminability Δ|AUC−0.5|=0.000 [-0.100, 0.100], p=0.9000" in line

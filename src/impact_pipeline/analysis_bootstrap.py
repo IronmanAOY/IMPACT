@@ -378,6 +378,19 @@ def paired_bootstrap_mean_diff(
     }
 
 
+def _flag_is_true(val):
+    """Parse a stored definedness flag (bool, 1/0, 1.0/0.0, 'True'/'False')."""
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
+    if isinstance(val, str):
+        return val.strip().lower() in {"true", "1", "1.0", "yes"}
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return False
+    return bool(np.isfinite(num) and num != 0.0)
+
+
 def definedness_summary(
     df,
     value_col="CI",
@@ -386,23 +399,45 @@ def definedness_summary(
     sessions=("awake", "deep"),
     subject_col="subject",
     session_col="session",
+    theta_col="theta",
 ):
     """
     Count defined/undefined rows of a three-valued metric (e.g. CI) and how many
     subjects remain with a defined value in both compared sessions.
+
+    compute_synergy_ci repeats each run once per theta. When definedness is the
+    same at every theta (as for CI, which does not depend on theta), the counts
+    are made on one theta slice, i.e. one row per run (``count_unit='run'``), so
+    one undefined run is counted once rather than once per theta.
+    ``n_table_rows`` is always the number of rows passed in.
     """
-    out = {"metric": value_col, "n_rows": int(len(df))}
+    out = {"metric": value_col, "n_rows": int(len(df)), "n_table_rows": int(len(df))}
     if value_col not in df.columns:
         out["available"] = False
         return out
     vals = pd.to_numeric(df[value_col], errors="coerce").to_numpy(dtype=float)
     if defined_col in df.columns:
-        defined = df[defined_col].astype(str).str.lower().isin(
-            {"true", "1"}
-        ).to_numpy() & np.isfinite(vals)
+        flags = np.array([_flag_is_true(v) for v in df[defined_col]], dtype=bool)
+        defined = flags & np.isfinite(vals)
     else:
         defined = np.isfinite(vals)
     out["available"] = True
+    out["count_unit"] = "row"
+    if theta_col is not None and theta_col in df.columns:
+        th = pd.to_numeric(df[theta_col], errors="coerce").to_numpy(dtype=float)
+        uniq = np.unique(th[np.isfinite(th)])
+        if uniq.size > 1:
+            masks = [th == t for t in uniq]
+            slices = [defined[m] for m in masks]
+            same = len({s.size for s in slices}) == 1 and all(
+                np.array_equal(slices[0], s) for s in slices[1:]
+            )
+            if same:
+                df = df.loc[masks[0]]
+                defined = slices[0]
+                out["count_unit"] = "run"
+                out["n_thetas"] = int(uniq.size)
+                out["n_rows"] = int(len(df))
     out["n_rows_defined"] = int(defined.sum())
     out["n_rows_undefined"] = int((~defined).sum())
     if missing_col in df.columns:

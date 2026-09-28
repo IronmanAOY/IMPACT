@@ -763,10 +763,10 @@ def _postprocess_after_step2(
         stats['ci_reference'] = _ci_reference_record(df)
         cd = stats['ci_definedness']
         log.info(
-            "CI defined in %s/%s rows (%s undefined, excluded); "
+            "CI defined in %s/%s %ss (%s undefined, excluded); "
             "%s subject(s) with defined CI in both sessions",
-            cd.get('n_rows_defined'), cd.get('n_rows'), cd.get('n_rows_undefined'),
-            cd.get('n_subjects_complete_pairs', 'na'),
+            cd.get('n_rows_defined'), cd.get('n_rows'), cd.get('count_unit', 'row'),
+            cd.get('n_rows_undefined'), cd.get('n_subjects_complete_pairs', 'na'),
         )
     boot_S = bootstrap_ci(df_mean, 'S', sessions=pair, random_state=stats_seed)
     auc_S, p_S = permutation_test_auc(

@@ -183,6 +183,14 @@ def resolve_ci_references(df, reference=None, high_state_session="awake"):
                 refs[k] = float("nan")
                 continue
             vals = pd.to_numeric(high[k], errors="coerce")
+            if k == "IIM" and "IIM_defined" in high.columns:
+                # Same definedness rule as assemble_ci: a flagged-undefined IIM
+                # does not contribute to the reference even if a value is stored.
+                iim_ok = [
+                    _as_bool(f, default=np.isfinite(v))
+                    for f, v in zip(high["IIM_defined"], vals)
+                ]
+                vals = vals.where(np.asarray(iim_ok, dtype=bool))
             if "subject" in high.columns:
                 vals = vals.groupby(high["subject"].astype(str)).mean()
             m = float(vals.mean(skipna=True)) if vals.notna().any() else float("nan")

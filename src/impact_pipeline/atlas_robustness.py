@@ -117,7 +117,10 @@ def atlas_check(
         dropped = [m for m in mpc_eff if m in {"RAM", "SRPI"}]
         mpc_eff = tuple(m for m in mpc_eff if m not in {"RAM", "SRPI"})
         if dropped or compute_ci:
-            notes.append("RAM/SRPI omitted in atlas robustness because no event timings were provided.")
+            notes.append(
+                "RAM/SRPI omitted in atlas robustness because no event timings "
+                "were provided."
+            )
     ci_enabled = bool(compute_ci and set(valid_mpc).issubset(set(mpc_eff)))
     if compute_ci and not ci_enabled:
         missing = sorted(set(valid_mpc) - set(mpc_eff))

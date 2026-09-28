@@ -85,7 +85,11 @@ def _fast_delong_components(y_true, scores):
     of the AUC estimates, including the between-score covariance terms.
     AUC is P(score_pos > score_neg) + 0.5 P(tie), with positives = (y_true == 1).
     """
-    y = np.asarray(y_true).astype(int).ravel()
+    y_raw = np.asarray(y_true).ravel()
+    if not np.all(np.isin(y_raw, (0, 1))):
+        # Any other label would be silently dropped from both classes.
+        raise ValueError("DeLong requires binary labels coded 0/1 (or False/True)")
+    y = y_raw.astype(int)
     S = np.atleast_2d(np.asarray(scores, dtype=float))
     if S.shape[1] != y.size:
         raise ValueError("scores and y_true must have the same number of cases")

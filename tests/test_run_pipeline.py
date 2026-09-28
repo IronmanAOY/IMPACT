@@ -179,7 +179,9 @@ def test_statistics_step_excludes_undefined_ci_and_writes_outputs(
     summary = out_dir / "stats" / "statistics_summary.json"
     stats = json.loads(summary.read_text(encoding="utf-8"))
     cd = stats["ci_definedness"]
-    assert cd["n_rows_undefined"] == 2 and cd["n_rows_defined"] == 30
+    # One undefined run (repeated at 2 thetas) is counted once, per run.
+    assert cd["count_unit"] == "run" and cd["n_table_rows"] == 32
+    assert cd["n_rows_undefined"] == 1 and cd["n_rows_defined"] == 15
     assert cd["n_subjects_complete_pairs"] == 7
     assert stats["ci_test"]["n_pairs"] == 7
     assert stats["ci_test"]["n_subjects_excluded"] == 1
@@ -194,7 +196,9 @@ def test_statistics_step_excludes_undefined_ci_and_writes_outputs(
     np.testing.assert_allclose(theta_tab["p_S_holm"], [0.02, 0.04])
     motion = pd.read_csv(out_dir / "stats" / "motion_covariates.csv").iloc[0]
     assert motion["n_rows_undefined_score"] == 1 and motion["fd_condition"] == "audio"
-    assert captured["stats"]["ci_definedness"]["n_rows_undefined"] == 2
+    assert captured["stats"]["ci_definedness"]["n_rows_undefined"] == 1
+    mc = stats["model_comparison"]["mean_conn"]
+    assert {"delta_discrimination", "p_discrimination_holm"}.issubset(mc)
     assert captured["LABEL_CI"] == "CI (reference-normalised)"
     # CI status columns survive the metric-subset filter.
     assert {"CI_defined", "CI_missing", "CI_reference"}.issubset(captured["df"].columns)

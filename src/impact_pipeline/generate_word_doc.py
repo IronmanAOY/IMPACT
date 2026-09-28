@@ -169,24 +169,28 @@ def _save_paired_metric_plot(
     return True
 
 
-def _theta_diff_table(df: pd.DataFrame, scale: float = 1.0) -> pd.DataFrame:
+def _theta_diff_table(
+    df: pd.DataFrame, scale: float = 1.0, sessions=("awake", "deep")
+) -> pd.DataFrame:
     """
-    Build per-theta paired awake-deep S summary.
+    Build per-theta paired sessions[0] − sessions[1] S summary.
     """
+    s0, s1 = str(sessions[0]), str(sessions[1])
     rows = []
     for theta, subdf in df.groupby('theta'):
         sub_mean = (
-            subdf.groupby(['subject', 'session'], as_index=False)['S']
+            subdf.assign(session=subdf['session'].astype(str))
+            .groupby(['subject', 'session'], as_index=False)['S']
             .mean()
         )
         piv = sub_mean.pivot(index='subject', columns='session', values='S')
-        if not {'awake', 'deep'}.issubset(set(piv.columns)):
+        if not {s0, s1}.issubset(set(piv.columns)):
             continue
-        paired = piv[['awake', 'deep']].dropna()
+        paired = piv[[s0, s1]].dropna()
         if paired.empty:
             continue
-        a = paired['awake'].to_numpy(dtype=float) * scale
-        d = paired['deep'].to_numpy(dtype=float) * scale
+        a = paired[s0].to_numpy(dtype=float) * scale
+        d = paired[s1].to_numpy(dtype=float) * scale
         diff = a - d
         n = int(np.isfinite(diff).sum())
         sem = float(np.nanstd(diff, ddof=1) / np.sqrt(n)) if n > 1 else np.nan
@@ -223,22 +227,26 @@ def _save_threshold_difference_plot(
     df: pd.DataFrame,
     out_path: str,
     scale: float = 1.0,
+    sessions=("awake", "deep"),
 ) -> bool:
     """
-    Save the descriptive θ-scan plot of the paired awake−deep S difference.
+    Save the descriptive θ-scan plot of the paired sessions[0]−sessions[1] S
+    difference.
 
     No θ is selected or marked: S is an exploratory legacy statistic and θ
     selection by the largest difference would bias any inference at that θ.
+    Returns False (and writes nothing) when no paired θ summary is available.
     """
-    ttab = _theta_diff_table(df, scale=scale)
+    ttab = _theta_diff_table(df, scale=scale, sessions=sessions)
     if ttab.empty:
         return False
 
+    s0, s1 = str(sessions[0]), str(sessions[1])
     ttab = ttab.sort_values('theta')
     fig, ax = plt.subplots(figsize=(6.0, 4.0))
     ax.errorbar(ttab['theta'], ttab['mean_diff'], yerr=ttab['sem_diff'], marker='o')
     ax.axhline(0.0, color="#888888", linewidth=0.8)
-    ax.set(xlabel='θ', ylabel='Mean S_awake–S_deep (exploratory)')
+    ax.set(xlabel='θ', ylabel=f'Mean S_{s0}–S_{s1} (exploratory)')
     fig.tight_layout()
     fig.savefig(out_path, dpi=160)
     plt.close(fig)
@@ -347,12 +355,15 @@ def _motion_paragraphs(motion):
 def _ci_definedness_line(ci_ref, dfn):
     missing = dfn.get('missing_component_row_counts')
     missing_txt = f" (missing components: {missing})" if missing else ""
+    # One row per run when definedness does not vary with θ (CI never does).
+    unit = "runs" if dfn.get('count_unit') == "run" else "rows"
     return (
         f"CI reference: {ci_ref or 'unknown'} (each component divided by the "
         "reference mean; NAS enters directly, S is not part of CI). "
-        f"Rows with defined CI: {dfn.get('n_rows_defined', 'na')}/"
+        f"{unit.capitalize()} with defined CI: {dfn.get('n_rows_defined', 'na')}/"
         f"{dfn.get('n_rows', 'na')}; "
-        f"undefined rows excluded: {dfn.get('n_rows_undefined', 'na')}{missing_txt}; "
+        f"undefined {unit} excluded: {dfn.get('n_rows_undefined', 'na')}"
+        f"{missing_txt}; "
         "subjects with defined CI in both sessions: "
         f"{dfn.get('n_subjects_complete_pairs', 'na')}."
     )
@@ -414,11 +425,33 @@ def _model_comparison_paragraphs(mc):
                     f"{fmt(ci[1], decimals=3)}]"
                 )
             note = f" ({res['note']})" if res.get('note') else ""
+            score = res.get('score', 'S')
+            auc_txt = ""
+            if 'auc_score' in res and 'auc_metric' in res:
+                auc_txt = (
+                    f"AUC_{score}={fmt(res['auc_score'], decimals=3)}, "
+                    f"AUC_{m}={fmt(res['auc_metric'], decimals=3)}; "
+                )
+            disc_txt = ""
+            if 'delta_discrimination' in res:
+                dci = res.get('delta_discrimination_ci')
+                dci_txt = ""
+                if isinstance(dci, (list, tuple)) and len(dci) == 2:
+                    dci_txt = (
+                        f" [{fmt(dci[0], decimals=3)}, {fmt(dci[1], decimals=3)}]"
+                    )
+                disc_txt = (
+                    " Discriminability Δ|AUC−0.5|="
+                    f"{fmt(res['delta_discrimination'], decimals=3)}{dci_txt}, "
+                    f"p={fmt(res.get('p_discrimination', np.nan), decimals=4)}, "
+                    "p_Holm="
+                    f"{fmt(res.get('p_discrimination_holm', np.nan), decimals=4)}."
+                )
             lines.append(
-                f"{res.get('score', 'S')} vs {m}: "
-                f"ΔAUC={fmt(res['delta_auc'], decimals=3)}{ci_txt}, "
+                f"{score} vs {m}: {auc_txt}"
+                f"signed ΔAUC={fmt(res['delta_auc'], decimals=3)}{ci_txt}, "
                 f"p={fmt(res['p_val'], decimals=4)}, "
-                f"p_Holm={fmt(res.get('p_holm', np.nan), decimals=4)}.{note}"
+                f"p_Holm={fmt(res.get('p_holm', np.nan), decimals=4)}.{disc_txt}{note}"
             )
         except Exception:
             lines.append(f"Model {m}: {res}")
@@ -503,20 +536,26 @@ def create_doc(
 
     # Generate per-metric session plots for the report when a figure directory
     # is provided. These are data-driven and use subject-level paired values.
+    # Only figures drawn by this call are embedded, so a stale file from an earlier
+    # run (e.g. the step-2 θ plot that marks a selected θ) is never reported.
+    made_figs = set()
     if fig_dir:
         os.makedirs(fig_dir, exist_ok=True)
         theta_png = os.path.join(fig_dir, 'supp_theta_curve.png')
-        _save_threshold_difference_plot(df, theta_png, scale=1.0)
+        if _save_threshold_difference_plot(df, theta_png, scale=1.0, sessions=pair):
+            made_figs.add(theta_png)
         for metric, filename, title, ylabel, scale in plot_specs:
-            _save_paired_metric_plot(
+            fig_path = os.path.join(fig_dir, filename)
+            if _save_paired_metric_plot(
                 agg=agg,
                 metric=metric,
-                out_path=os.path.join(fig_dir, filename),
+                out_path=fig_path,
                 title=title,
                 y_label=ylabel,
                 scale=scale,
                 sessions=pair,
-            )
+            ):
+                made_figs.add(fig_path)
 
     # ---------- build document ----------
     doc = Document()
@@ -702,19 +741,22 @@ def create_doc(
     # 8) Figures
     if fig_dir:
         theta_fig = os.path.join(fig_dir, 'supp_theta_curve.png')
-        if os.path.exists(theta_fig):
+        if theta_fig in made_figs:
             doc.add_heading(
                 "Supplementary: S difference across θ (exploratory, descriptive)",
                 level=2,
             )
             doc.add_picture(theta_fig, width=Inches(5.0))
         else:
-            doc.add_paragraph(f"(Could not find θ-curve at {theta_fig})")
+            doc.add_paragraph(
+                "(θ-curve not drawn: no subjects with S in both "
+                f"{s0} and {s1})"
+            )
 
         headings = {"S": "Synergy S (exploratory)"}
         for metric, filename, title, _ylabel, _scale in plot_specs:
             fig_path = os.path.join(fig_dir, filename)
-            if os.path.exists(fig_path):
+            if fig_path in made_figs:
                 heading = f"Supplementary: {headings.get(metric, title)}"
                 doc.add_heading(heading, level=2)
                 doc.add_picture(fig_path, width=Inches(5.0))

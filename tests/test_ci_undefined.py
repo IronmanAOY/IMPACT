@@ -68,3 +68,10 @@ def test_ci_reference_dict_missing_component_is_not_silently_one():
     assert math.isnan(out["value"]) and out["missing"] == ["SRPI_reference"]
     # Explicitly passing no references keeps the documented unit normalisation.
     assert mm.compute_CI(1.0, 1.0, 1.0, 1.0, 1.0) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("bad_ref", [None, "n/a"])
+def test_ci_null_or_non_numeric_reference_is_undefined_not_an_error(bad_ref):
+    refs = {"RAM": 1.0, "PDI": 1.0, "NAS": 1.0, "IIM": bad_ref, "SRPI": 1.0}
+    out = mm.compute_CI(1.0, 1.0, 1.0, 1.0, 1.0, references=refs, return_details=True)
+    assert math.isnan(out["value"]) and out["missing"] == ["IIM_reference"]

@@ -77,3 +77,50 @@ def test_compare_models_alternate_score_column():
     assert out["mean_conn"]["score"] == "CI"
     ref = compare_models(df, n_boot=20)["mean_conn"]["auc_score"]
     assert out["mean_conn"]["auc_score"] == pytest.approx(ref)
+
+
+def _opposite_direction_frame(n=30, seed=0, s_effect=1.5, m_effect=-1.5):
+    rng = np.random.RandomState(seed)
+    rows = []
+    for i in range(n):
+        base = rng.randn()
+        for ses, state in (("awake", 1.0), ("deep", 0.0)):
+            rows.append({
+                "subject": f"s{i}", "session": ses,
+                "S": base + s_effect * state + rng.randn() * 0.5,
+                "mean_conn": base + m_effect * state + rng.randn() * 0.5,
+                "modularity": rng.randn(), "lzc": rng.randn(),
+            })
+    return pd.DataFrame(rows)
+
+
+def test_equal_discriminability_in_opposite_directions_is_not_a_difference():
+    # S higher when awake, mean_conn higher when deep, same strength: the signed
+    # ΔAUC is large and "significant", but discriminability does not differ.
+    res = compare_models(_opposite_direction_frame(), n_boot=400)["mean_conn"]
+    assert res["auc_score"] < 0.25 and res["auc_metric"] > 0.75
+    assert res["delta_auc"] < -0.5 and res["p_val"] < 1e-6
+    assert abs(res["delta_discrimination"]) < 0.1
+    lo, hi = res["delta_discrimination_ci"]
+    assert lo < 0 < hi
+    assert res["p_discrimination"] > 0.05
+    # Oriented DeLong equals the DeLong test on sign-aligned scores.
+    df = _opposite_direction_frame()
+    y = (df.session == "deep").astype(int).to_numpy()
+    p_ref = delong_roc_test(y, -df.S.to_numpy(), df.mean_conn.to_numpy())
+    assert res["p_discrimination"] == pytest.approx(p_ref)
+
+
+def test_discriminability_detects_a_better_score():
+    res = compare_models(
+        _opposite_direction_frame(s_effect=2.0, m_effect=-0.2, seed=1), n_boot=400
+    )
+    r = res["mean_conn"]
+    assert r["delta_discrimination"] > 0.2
+    assert r["delta_discrimination_ci"][0] > 0
+    assert r["p_discrimination"] < 0.01
+    p = [res[m]["p_discrimination"] for m in ("mean_conn", "modularity", "lzc")]
+    np.testing.assert_allclose(
+        [res[m]["p_discrimination_holm"] for m in ("mean_conn", "modularity", "lzc")],
+        multipletests(p, method="holm")[1],
+    )
