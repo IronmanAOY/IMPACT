@@ -138,8 +138,9 @@ def test_definedness_rules_on_synthetic_datasets(bids, tmp_path):
     # EEG agency task: SRPI agency and legacy definable, RAM not
     assert _status(rec, "dsB", "agency", "SRPI", "agency")[0] == da.DEFINABLE
     assert _status(rec, "dsB", "agency", "SRPI", "legacy_self_other")[0] == da.DEFINABLE
-    reason = _status(rec, "dsB", "agency", "RAM", "untyped")[1]
-    assert reason.startswith("no_levels:goal")
+    # no numeric feedback value column: strict RAM is undefined whatever the levels
+    assert _status(rec, "dsB", "agency", "RAM", "untyped") == (
+        da.NOT_DEFINABLE, "missing_columns:feedback_value")
     # missing sampling frequency: no timing, nothing time-series based is definable
     assert _status(rec, "dsB", "noev", "PDI", "surrogate_excess") == (
         da.NOT_DEFINABLE, "missing_SamplingFrequency")
@@ -154,12 +155,71 @@ def test_undescribed_levels_require_event_values(tmp_path):
     _data(d / "sub-01/func/sub-01_task-t_bold.nii")
     _json(d / "sub-01/func/sub-01_task-t_bold.json", {"RepetitionTime": 1.5})
     _tsv(d / "sub-01/func/sub-01_task-t_events.tsv",
+         ["onset", "duration", "trial_type", "stim_file", "reward"])
+    _data(d / "sub-02/func/sub-02_task-t_bold.nii")
+    _json(d / "sub-02/func/sub-02_task-t_bold.json", {"RepetitionTime": 1.5})
+    _tsv(d / "sub-02/func/sub-02_task-t_events.tsv",
          ["onset", "duration", "trial_type", "stim_file"])
     rec = da.run_audit(root, tmp_path / "o", datasets=("dsX",))["recordings"]
-    assert _status(rec, "dsX", "task-t", "RAM", "untyped") == (
+    assert _status(rec, "dsX", "sub-01_task-t", "RAM", "untyped") == (
         da.REQUIRES_EVENT_VALUES, "levels_not_described:trial_type")
-    assert _status(rec, "dsX", "task-t", "SRPI", "legacy_self_other") == (
+    assert _status(rec, "dsX", "sub-01_task-t", "SRPI", "legacy_self_other") == (
         da.REQUIRES_EVENT_VALUES, "levels_not_described:trial_type,stim_file")
+    # the header alone rules strict RAM out: no feedback value column
+    assert _status(rec, "dsX", "sub-02_task-t", "RAM", "untyped") == (
+        da.NOT_DEFINABLE, "missing_columns:feedback_value")
+
+
+def test_ram_and_srpi_rules_follow_the_estimator_contracts(tmp_path):
+    """Regression: the RAM rule needs feedback-labelled trial types *and* a
+    numeric feedback value column (strict RAM, event_parsing._ram_fields);
+    SRPI self/non-self use event_parsing.classify_self_nonself; the legacy
+    PDI baseline needs a rest recording of the same modality."""
+    from impact_pipeline.event_parsing import events_table_to_bundle
+    import pandas as pd
+
+    root = tmp_path / "scratch"
+    d = root / "dsY"
+    _json(d / "dataset_description.json", {"Name": "Y"})
+    _json(d / "task-t_bold.json", {"RepetitionTime": 2.0})
+    _json(d / "task-rest_eeg.json", {"SamplingFrequency": 250})
+    # 1) feedback level described but no value column
+    _data(d / "sub-01/func/sub-01_task-t_bold.nii.gz")
+    _tsv(d / "sub-01/func/sub-01_task-t_events.tsv",
+         ["onset", "duration", "trial_type"])
+    _json(d / "sub-01/func/sub-01_task-t_events.json", {"trial_type": {"Levels": {
+        "goal_cue": "g", "stimulus": "s", "feedback": "f",
+        "non_self_name": "a", "other_name": "b"}}})
+    # 2) value column but no feedback-labelled trial type
+    _data(d / "sub-02/func/sub-02_task-t_bold.nii.gz")
+    _tsv(d / "sub-02/func/sub-02_task-t_events.tsv",
+         ["onset", "duration", "trial_type", "value"])
+    _json(d / "sub-02/func/sub-02_task-t_events.json", {"trial_type": {"Levels": {
+        "goal_cue": "g", "stimulus": "s", "SelfName": "a", "OtherName": "b"}}})
+    # sub-02 has an EEG rest recording only (not an fMRI baseline)
+    _data(d / "sub-02/eeg/sub-02_task-rest_eeg.edf")
+    rec = da.run_audit(root, tmp_path / "o", datasets=("dsY",))["recordings"]
+    assert _status(rec, "dsY", "sub-01_task-t", "RAM", "untyped") == (
+        da.NOT_DEFINABLE, "missing_columns:feedback_value")
+    assert _status(rec, "dsY", "sub-02_task-t", "RAM", "untyped") == (
+        da.NOT_DEFINABLE, "no_levels:feedback")
+    # "non_self_name" is not a self label: only non-self levels are present
+    assert _status(rec, "dsY", "sub-01_task-t", "SRPI", "legacy_self_other") == (
+        da.NOT_DEFINABLE, "no_levels:self")
+    # camelCase labels are split like the estimator does
+    assert _status(rec, "dsY", "sub-02_task-t", "SRPI", "legacy_self_other")[0] == (
+        da.DEFINABLE)
+    assert _status(rec, "dsY", "sub-02_task-t", "PDI", "legacy_baseline") == (
+        da.NOT_DEFINABLE, "no_rest_recording")
+    assert _status(rec, "dsY", "sub-02_task-rest", "PDI", "legacy_baseline")[0] == (
+        da.DEFINABLE)
+    # the estimator side agrees: without a value column there are no values
+    ev = pd.DataFrame({"onset": [1.0, 2.0, 3.0], "duration": 0.1,
+                       "trial_type": ["goal_cue", "stimulus", "feedback"]})
+    assert events_table_to_bundle(ev)["feedback_values"] is None
+    ev2 = pd.DataFrame({"onset": [1.0, 2.0], "duration": 0.1,
+                        "trial_type": ["goal_cue", "stimulus"], "value": [1, 0]})
+    assert events_table_to_bundle(ev2)["feedback_onsets"] == []
 
 
 def test_coverage_matrix_and_prior_access(bids, tmp_path):

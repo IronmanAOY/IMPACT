@@ -168,6 +168,36 @@ def test_sensitivity_analysis_is_deterministic_and_well_formed():
         assert (miss["undefined_rate"] > 0).all()
 
 
+def test_sobol_estimators_recover_analytic_indices():
+    """Known answers: additive Y = sum a_i X_i (S_i = S_Ti = a_i^2 / sum a^2)
+    and Y = X1 X2 (S_1 = S_2 = 3/7, S_T1 = S_T2 = 4/7), X_i ~ U(0, 1)."""
+    rng = np.random.default_rng(0)
+    n = 40000
+    A, B = rng.random((n, 3)), rng.random((n, 3))
+
+    def _run(f):
+        fAB = {}
+        for j in range(3):
+            ab = A.copy()
+            ab[:, j] = B[:, j]
+            fAB[j] = f(ab)
+        return aa.sobol_indices(f(A), f(B), fAB)
+
+    a = np.array([1.0, 2.0, 3.0])
+    lin = _run(lambda X: X @ a)
+    for j in range(3):
+        assert lin[j][0] == pytest.approx(a[j] ** 2 / np.sum(a ** 2), abs=0.02)
+        assert lin[j][1] == pytest.approx(a[j] ** 2 / np.sum(a ** 2), abs=0.02)
+    prod = _run(lambda X: X[:, 0] * X[:, 1])
+    for j in (0, 1):
+        assert prod[j][0] == pytest.approx(3 / 7, abs=0.03)
+        assert prod[j][1] == pytest.approx(4 / 7, abs=0.03)
+    assert prod[2][0] == pytest.approx(0.0, abs=0.02)
+    assert prod[2][1] == pytest.approx(0.0, abs=1e-12)
+    const = aa.sobol_indices(np.ones(5), np.ones(5), {"g": np.ones(5)})
+    assert all(math.isnan(v) for v in const["g"])
+
+
 def test_baseline_configuration_has_zero_rank_shift():
     panel = aa.synthetic_panel(10, seed=3)
     X = panel[list(aa.COMPONENTS)].to_numpy(float)

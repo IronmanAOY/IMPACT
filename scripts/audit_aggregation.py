@@ -488,6 +488,36 @@ def _rank_shift(ranks, ref_ranks):
     return float(np.mean(np.abs(ranks[ok] - ref_ranks[ok]))) if ok.any() else np.nan
 
 
+def sobol_indices(fA, fB, fAB, idx=None) -> dict:
+    """
+    First-order and total Sobol indices per factor (group) ``g`` from model
+    outputs on the base matrices A and B and on AB_g (A with the columns of
+    group g taken from B): ``S_g = mean(f_B (f_ABg - f_A)) / V`` (Saltelli et
+    al. 2010, *Comput. Phys. Commun.* 181:259-270, Table 2 (b)) and
+    ``S_Tg = mean((f_A - f_ABg)**2) / (2 V)`` (Jansen 1999), with ``V`` the
+    variance of the pooled ``f_A`` and ``f_B``. Outputs are centred on their
+    pooled mean first (the first-order estimator stays unbiased, since
+    ``E[f_ABg - f_A] = 0``, and its variance no longer grows with the output
+    mean). ``idx`` selects base samples (bootstrap). Returns
+    ``{g: (S_g, S_Tg)}`` (NaN when ``V`` is 0).
+    """
+    fA, fB = np.asarray(fA, dtype=float), np.asarray(fB, dtype=float)
+    idx = np.arange(fA.size) if idx is None else np.asarray(idx)
+    fa, fb = fA[idx], fB[idx]
+    centre = float(np.mean(np.r_[fa, fb])) if fa.size else 0.0
+    fa, fb = fa - centre, fb - centre
+    var = np.var(np.r_[fa, fb], ddof=1)
+    out = {}
+    for name, f_ab in fAB.items():
+        fg = np.asarray(f_ab, dtype=float)[idx] - centre
+        if not var > 0:
+            out[name] = (np.nan, np.nan)
+            continue
+        out[name] = (float(np.mean(fb * (fg - fa)) / var),
+                     float(np.mean((fa - fg) ** 2) / (2.0 * var)))
+    return out
+
+
 def sensitivity_analysis(panel: pd.DataFrame, n_base=256, seed=0, threshold=0.5,
                          kappa=20.0, ref_sigma=0.2, n_boot=200) -> tuple:
     """
@@ -539,17 +569,7 @@ def sensitivity_analysis(panel: pd.DataFrame, n_base=256, seed=0, threshold=0.5,
         fAB[name], _, _ = _evaluate(ABg)
 
     def _indices(idx):
-        fa, fb = fA[idx], fB[idx]
-        var = np.var(np.r_[fa, fb], ddof=1)
-        out = {}
-        for name, _dim in FACTOR_GROUPS:
-            fg = fAB[name][idx]
-            if not var > 0:
-                out[name] = (np.nan, np.nan)
-                continue
-            out[name] = (float(np.mean(fb * (fg - fa)) / var),
-                         float(np.mean((fa - fg) ** 2) / (2.0 * var)))
-        return out
+        return sobol_indices(fA, fB, fAB, idx)
 
     point = _indices(np.arange(int(n_base)))
     boot_rng = np.random.default_rng(int(seed) + 1)

@@ -334,6 +334,27 @@ def test_undefining_a_status_never_creates_a_worst_case_decision():
             assert after["outcome"] in (before["outcome"], nc.INDETERMINATE)
 
 
+def test_worst_case_variation_counts_undefined_negatives():
+    """Regression: under missing='worst_case' the UNDEFINED report-negative
+    statuses must not be dropped from the variation bound (dropping them
+    made the worst case as optimistic as the determinate policy)."""
+    st = np.r_[np.full(100, "PRESENT"), np.full(10, "ABSENT"),
+               np.full(10, "PRESENT"), np.full(200, "UNDEFINED")].astype(object)
+    pos = np.r_[np.ones(100, bool), np.zeros(220, bool)]
+    det = nc.necessity_from_statuses(st, pos, 0.05, variation_floor=0.2)
+    wc = nc.necessity_from_statuses(st, pos, 0.05, missing="worst_case",
+                                    variation_floor=0.2)
+    assert det["outcome"] == nc.SUPPORTED and det["varies"]
+    lo_det, _ = nc.clopper_pearson(10, 20, 0.05, "lower")
+    lo_wc, _ = nc.clopper_pearson(10, 220, 0.05, "lower")
+    assert det["variation_lower"] == pytest.approx(lo_det)
+    assert wc["variation_lower"] == pytest.approx(lo_wc)
+    assert not wc["varies"] and wc["outcome"] == nc.INDETERMINATE
+    # with the default floor 0 one ABSENT suffices under both policies
+    assert nc.necessity_from_statuses(st, pos, 0.05, missing="worst_case")[
+        "outcome"] == nc.SUPPORTED
+
+
 def test_outcome_probabilities_match_simulation():
     rng = np.random.default_rng(5)
     n, q, nn, qn = 80, 0.02, 60, 0.05

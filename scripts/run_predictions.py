@@ -20,11 +20,17 @@ Refusals (exit code 2, ``predictions_refusal.json``):
   explicitly labelled exploratory run).
 
 Results table (CSV; one row per episode): ``dataset``, ``episode_id``,
-``report_positive`` (bool) or ``report`` (positive/negative), ``MPC_verdict``
-(v1 or v2 names), ``MPC_reason`` (``;``-joined codes), ``<P>_status``,
-``protocol_hash``, ``<P>_estimator``, ``<P>_estimator_version``; optional
-``<P>_c`` and the H2 outcome column, and ``comparator_<name>`` decisions for
-H10. H0 reads ``null_calibration_rates.csv`` (``--null-calibration``).
+``report_positive`` (bool or 0/1) or ``report`` (positive/negative),
+``MPC_verdict`` (v1 or v2 names), ``MPC_reason`` (``;``-joined codes; the v1
+code ``BEARER_MISMATCH:COHERENCE`` counts as ``SOURCE_INCOHERENT``),
+``<P>_status``, ``protocol_hash``, ``<P>_estimator``,
+``<P>_estimator_version``; optional ``<P>_c`` and the H2 outcome column, and
+``comparator_<name>`` decisions for H10 (True/False/1/0, empty = abstain).
+Episodes whose report label is missing or unrecognised are excluded from
+every hypothesis (never counted as report-negative; ``n_report_unknown``).
+H0 reads ``null_calibration_rates.csv`` (``--null-calibration``); cells whose
+statuses did not come from the installed evidence layer (``status_impl``)
+make H0 NOT_EVALUABLE.
 
 Outcomes per hypothesis and stratum (confirmatory datasets / exploratory
 datasets): SUPPORTED, FALSIFIED, INDETERMINATE (also below the registered
@@ -350,17 +356,53 @@ def registration_problems(df: pd.DataFrame, reg: dict) -> list:
 # --------------------------------------------------------------------------
 # evaluation
 # --------------------------------------------------------------------------
-def report_positive(df: pd.DataFrame) -> np.ndarray:
+_REPORT_TRUE = ("true", "1", "1.0", "yes", "positive", "report_positive")
+_REPORT_FALSE = ("false", "0", "0.0", "no", "negative", "report_negative")
+
+
+def _parse_label(v):
+    """True / False for a recognised report label, None otherwise (missing or
+    unrecognised labels are never guessed)."""
+    if v is None:
+        return None
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        if not math.isfinite(float(v)):
+            return None
+        return {1.0: True, 0.0: False}.get(float(v))
+    txt = str(v).strip().lower()
+    if txt in _REPORT_TRUE:
+        return True
+    if txt in _REPORT_FALSE:
+        return False
+    return None
+
+
+def report_labels(df: pd.DataFrame) -> np.ndarray:
+    """
+    Report label per episode: 1.0 (report-positive), 0.0 (report-negative)
+    or NaN (missing / unrecognised; such episodes are excluded from every
+    hypothesis rather than counted as report-negative).
+    """
     if "report_positive" in df.columns:
         col = df["report_positive"]
-        if col.dtype == object:
-            return col.astype(str).str.strip().str.lower().isin(
-                ("true", "1", "yes", "positive")).to_numpy()
-        return col.fillna(False).astype(bool).to_numpy()
-    if "report" in df.columns:
-        return df["report"].astype(str).str.strip().str.lower().isin(
-            ("positive", "report_positive", "1", "true", "yes")).to_numpy()
-    raise KeyError("results need 'report_positive' or 'report'")
+    elif "report" in df.columns:
+        col = df["report"]
+    else:
+        raise KeyError("results need 'report_positive' or 'report'")
+    lab = [_parse_label(v) for v in col.tolist()]
+    return np.asarray([np.nan if v is None else float(v) for v in lab], dtype=float)
+
+
+def report_positive(df: pd.DataFrame) -> np.ndarray:
+    """Boolean report-positive mask; raises if any label is missing or
+    unrecognised (use :func:`report_labels` to filter them first)."""
+    lab = report_labels(df)
+    if np.isnan(lab).any():
+        raise ValueError(f"{int(np.isnan(lab).sum())} episodes have a missing or "
+                         "unrecognised report label")
+    return lab.astype(bool)
 
 
 def _params(h, defaults):
@@ -381,9 +423,17 @@ def _gate_minimum_n(res, n, minimum_n):
     return res
 
 
+# v1 spellings of v2 reason codes (spec V2-4 renamed the bearer-coherence
+# failure of the v1 evidence layer to the single-source code).
+REASON_ALIASES = {"SOURCE_INCOHERENT": ("BEARER_MISMATCH:COHERENCE",)}
+
+
 def _has_reason(text, code):
-    parts = [s.strip() for s in str(text or "").split(";")]
-    return any(s == code or s.startswith(code + ":") for s in parts)
+    if text is None or (isinstance(text, float) and math.isnan(text)):
+        return False
+    parts = [s.strip() for s in str(text).split(";")]
+    codes = (code,) + REASON_ALIASES.get(code, ())
+    return any(s == c or s.startswith(c + ":") for s in parts for c in codes)
 
 
 def eval_hypothesis(h, df, defaults, null_rates=None) -> dict:
@@ -400,6 +450,15 @@ def eval_hypothesis(h, df, defaults, null_rates=None) -> dict:
                         "reason": "no_null_calibration"}
             band = float(p.get("null_band", 0.02))
             r = null_rates
+            if "status_impl" in r.columns:
+                impl = r["status_impl"].astype(str)
+                foreign = sorted(set(impl[impl != "evidence"]))
+                if foreign:
+                    # statuses from the local fallback rule, not the installed
+                    # (registered) evidence layer, cannot calibrate it
+                    return {**base, "outcome": NOT_EVALUABLE,
+                            "reason": "statuses_not_from_evidence_layer:"
+                                      + ",".join(foreign)}
             n_min = int(r["n"].min())
             within = (r["false_present_rate"] - alpha).abs() <= band + 1e-12
             outside = (r["false_present_lo"] > alpha + band) | (
@@ -414,7 +473,13 @@ def eval_hypothesis(h, df, defaults, null_rates=None) -> dict:
                    "rate": float(r["false_present_rate"].max()),
                    "n_cells": int(len(r)), "n_cells_outside": int(outside.sum())}
             return _gate_minimum_n(res, n_min, h.get("minimum_n"))
-        pos = report_positive(df)
+        lab = report_labels(df)
+        known = ~np.isnan(lab)
+        n_unknown = int((~known).sum())
+        if n_unknown:
+            df = df[known]
+        pos = lab[known].astype(bool)
+        base["n_report_unknown"] = n_unknown
         sens = p.get("sensitivity_missing")
         if stat == "excluded_rate_report_positive":
             res = nc.verdict_level_summary(df["MPC_verdict"], pos, p["epsilon"], alpha,
@@ -476,23 +541,52 @@ def eval_hypothesis(h, df, defaults, null_rates=None) -> dict:
                 {**base, **_accuracy_gap(df, pos, h, p, alpha)},
                 int(len(df)), h.get("minimum_n"))
         if stat == "aggregation_exponent":
-            return {**base, **_aggregation_exponent(df, h, p)}
+            res = {**base, **_aggregation_exponent(df, h, p)}
+            if res["outcome"] != AUXILIARY_REPORTED:
+                return res
+            # the estimate is still reported, but not as a registered result
+            return _gate_minimum_n(res, res["n"], h.get("minimum_n"))
     except KeyError as exc:
         return {**base, "outcome": NOT_EVALUABLE, "reason": f"missing_column:{exc}"}
     return {**base, "outcome": NOT_EVALUABLE, "reason": f"unknown_statistic:{stat}"}
 
 
+_DECISION_TRUE = ("true", "1", "1.0", "yes", "positive", "consistent",
+                  "mpc_consistent", "not_excluded")
+_DECISION_FALSE = ("false", "0", "0.0", "no", "negative", "excluded")
+_DECISION_ABSTAIN = ("", "nan", "none", "abstain", "undetermined")
+
+
 def _decisions_from_column(col):
+    """
+    Comparator decisions: True (not excluded), False (excluded) or None
+    (abstain). Booleans, 0/1 numbers (a CSV column with abstentions is read
+    as float) and the labels above are accepted; anything else raises.
+    """
     out = []
     for v in col:
-        if v is None or (isinstance(v, float) and math.isnan(v)):
+        if v is None:
             out.append(None)
-            continue
-        txt = str(v).strip().lower()
-        if txt in ("", "nan", "none", "abstain", "undetermined"):
-            out.append(None)
+        elif isinstance(v, (bool, np.bool_)):
+            out.append(bool(v))
+        elif isinstance(v, (int, float, np.integer, np.floating)):
+            f = float(v)
+            if math.isnan(f):
+                out.append(None)
+            elif f in (0.0, 1.0):
+                out.append(f == 1.0)
+            else:
+                raise ValueError(f"comparator decision {v!r} is not 0/1")
         else:
-            out.append(txt in ("true", "1", "yes", "positive", "consistent"))
+            txt = str(v).strip().lower()
+            if txt in _DECISION_ABSTAIN:
+                out.append(None)
+            elif txt in _DECISION_TRUE:
+                out.append(True)
+            elif txt in _DECISION_FALSE:
+                out.append(False)
+            else:
+                raise ValueError(f"unrecognised comparator decision {v!r}")
     return out
 
 
@@ -503,6 +597,12 @@ def _accuracy(dec, truth, idx):
     return float(np.mean([d == t for d, t in made]))
 
 
+def _best(values):
+    """Largest finite value (NaN when none is finite; order-independent)."""
+    fin = [v for v in values if math.isfinite(v)]
+    return max(fin) if fin else float("nan")
+
+
 def _accuracy_gap(df, pos, h, p, alpha):
     v = df["MPC_verdict"].map(nc.normalize_verdict).tolist()
     impact = [None if x not in (nc.EXCLUDED, nc.MPC_CONSISTENT) else
@@ -511,14 +611,18 @@ def _accuracy_gap(df, pos, h, p, alpha):
     for name in h.get("comparators") or []:
         col = f"comparator_{name}"
         if col in df.columns:
-            comps[name] = _decisions_from_column(df[col].tolist())
+            try:
+                comps[name] = _decisions_from_column(df[col].tolist())
+            except ValueError as exc:
+                return {"outcome": NOT_EVALUABLE,
+                        "reason": f"invalid_comparator_column:{col}:{exc}"}
     if not comps:
         return {"outcome": NOT_EVALUABLE, "reason": "no_comparator_columns"}
     truth = list(pos)
     idx = np.arange(len(df))
 
     def _gap(sel):
-        best = max(_accuracy(d, truth, sel) for d in comps.values())
+        best = _best([_accuracy(d, truth, sel) for d in comps.values()])
         return _accuracy(impact, truth, sel) - best
 
     point = _gap(idx)
@@ -589,8 +693,12 @@ def evaluate(reg, results: pd.DataFrame, *, null_rates=None, exploratory=False,
              allow_unregistered=False) -> dict:
     """
     Evaluate every hypothesis. Raises :class:`RegistryRefusal` on the refusal
-    conditions of the module docstring. Returns ``rows`` (one per hypothesis
-    and stratum), ``stance`` per stratum and ``registration_problems``.
+    conditions of the module docstring except the freeze-tag check, which
+    needs the registry file and is done by :func:`verify_freeze_tag` (the CLI
+    runs it before this function). Episodes with a missing or unrecognised
+    report label are excluded (counted in ``n_report_unknown``). Returns
+    ``rows`` (one per hypothesis and stratum), ``stance`` per stratum and
+    ``registration_problems``.
     """
     errs = validate_registry(reg)
     if errs:

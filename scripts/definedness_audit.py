@@ -20,17 +20,22 @@ Read-only and metadata-only by construction:
   symlinks) are logged and never followed.
 
 Definedness rules mirror the pipeline contracts (``event_parsing`` patterns,
-``mpc_metrics`` channels): PDI (surrogate_excess), NAS (capacity) and IIM need
-a recording with its sampling metadata (``RepetitionTime`` /
-``SamplingFrequency``; no silent TR fallback); PDI's legacy baseline needs a
-rest recording of the subject; RAM needs an events table with ``trial_type``
-and goal, stimulus and feedback levels (typed channels need an
-``impact_channel`` column; perturbational and endogenous are not
-implemented); SRPI legacy needs self and non-self levels, SRPI agency needs
-``self_caused``/``other_caused`` levels plus ``yoked_to`` and ``phase_bin``
-columns. When the level set cannot be known from metadata (no
-``*_events.json`` level description) the cell is ``REQUIRES_EVENT_VALUES``:
-the audit does not read event rows.
+``mpc_metrics`` channels, with the pipeline's strict defaults): PDI
+(surrogate_excess), NAS (capacity) and IIM need a recording with its sampling
+metadata (``RepetitionTime`` / ``SamplingFrequency``; no silent TR fallback);
+PDI's legacy baseline needs a rest recording of the same subject and
+modality; RAM needs an events table with ``trial_type`` goal, stimulus and
+feedback levels and a numeric feedback value column
+(``event_parsing.FEEDBACK_VALUE_COLUMNS``; strict RAM is undefined without
+explicit feedback values), and typed channels also need an ``impact_channel``
+column (perturbational and endogenous are not implemented); SRPI legacy needs
+levels that ``event_parsing.classify_self_nonself`` classifies as self and as
+non-self; SRPI agency needs ``self_caused``/``other_caused`` levels plus
+``yoked_to`` and ``phase_bin`` columns. When the level set cannot be known
+from metadata (no ``*_events.json`` level description) the cell is
+``REQUIRES_EVENT_VALUES``: the audit does not read event rows. DEFINABLE is a
+metadata-level statement; event counts and value ranges are checked only when
+the estimators run.
 
 Statuses: ``DEFINABLE``, ``REQUIRES_EVENT_VALUES``, ``NOT_DEFINABLE``,
 ``NOT_IMPLEMENTED``, ``METADATA_UNAVAILABLE``.
@@ -78,10 +83,10 @@ from impact_pipeline.event_parsing import (  # noqa: E402
     IMPACT_CHANNEL_COLUMN,
     IMPACT_CHANNELS,
     IMPLEMENTED_RAM_CHANNELS,
-    NONSELF_RE,
-    SELF_RE,
     SRPI_TEXT_COLUMNS,
     STIM_RE,
+    _norm_trial_type,
+    classify_self_nonself,
 )
 
 AUDIT_VERSION = "definedness-audit/1.0.0"
@@ -303,11 +308,14 @@ def _event_status(rec, cols, label_cols):
     return None
 
 
-def _level_rule(rec, cols, levels_by_col, label_cols, checks, extra_cols=()):
+def _level_rule(rec, cols, levels_by_col, label_cols, checks, extra_cols=(),
+                any_of_cols=None):
     """
     DEFINABLE when the described levels of the present label columns pass
     ``checks``; REQUIRES_EVENT_VALUES when they fail only because some present
-    label column has no level description; NOT_DEFINABLE otherwise.
+    label column has no level description; NOT_DEFINABLE otherwise, and
+    whenever a required column is absent from the header (every column of
+    ``extra_cols``; at least one column of ``any_of_cols = (name, columns)``).
     """
     pre = _event_status(rec, cols, label_cols)
     if pre is not None:
@@ -315,6 +323,8 @@ def _level_rule(rec, cols, levels_by_col, label_cols, checks, extra_cols=()):
     missing_cols = [c for c in extra_cols if c not in cols]
     if missing_cols:
         return (NOT_DEFINABLE, "missing_columns:" + ",".join(missing_cols))
+    if any_of_cols is not None and not any(c in cols for c in any_of_cols[1]):
+        return (NOT_DEFINABLE, f"missing_columns:{any_of_cols[0]}")
     present = [c for c in label_cols if c in cols]
     described = [lv for c in present for lv in levels_by_col.get(c, [])]
     undescribed = [c for c in present if c not in levels_by_col]
@@ -351,17 +361,25 @@ def evaluate_recording(rec, sidecar, columns, levels_by_col, subject_tasks):
     )
 
     cols = None if columns is None else {c.lower() for c in columns}
-    fb_col = [c for c in FEEDBACK_VALUE_COLUMNS if cols is not None and c in cols]
+    # Strict RAM (the pipeline default, require_explicit_feedback=True): the
+    # feedback events are trial_type rows matching FEEDBACK_RE, and their
+    # values come from a numeric column of FEEDBACK_VALUE_COLUMNS
+    # (event_parsing._ram_fields); without such a column RAM is undefined
+    # (missing_explicit_feedback) whatever the levels.
+    fb_value = ("feedback_value", FEEDBACK_VALUE_COLUMNS)
 
     def _ram_checks(lv):
         return [("goal", _any(GOAL_RE, lv)), ("stimulus", _any(STIM_RE, lv)),
-                ("feedback", _any(FEEDBACK_RE, lv) or bool(fb_col))]
+                ("feedback", _any(FEEDBACK_RE, lv))]
 
     def _srpi_checks(lv):
-        return [("self", _any(SELF_RE, lv)), ("nonself", _any(NONSELF_RE, lv))]
+        # the estimator's own classifier (token rules, "non-self" is not self)
+        self_m, nonself_m = classify_self_nonself(pd.Series([str(v) for v in lv],
+                                                            dtype=object))
+        return [("self", bool(self_m.any())), ("nonself", bool(nonself_m.any()))]
 
     def _agency_checks(lv):
-        low = {str(v).strip().lower().replace("-", "_").replace(" ", "_") for v in lv}
+        low = {_norm_trial_type(v) for v in lv}
         return [(AGENCY_SELF_LABEL, AGENCY_SELF_LABEL in low),
                 (AGENCY_OTHER_LABEL, AGENCY_OTHER_LABEL in low)]
 
@@ -371,7 +389,7 @@ def evaluate_recording(rec, sidecar, columns, levels_by_col, subject_tasks):
 
     tt = ("trial_type",)
     out[("RAM", "untyped")] = _gate(_level_rule(rec, cols, levels_by_col, tt,
-                                                _ram_checks))
+                                                _ram_checks, any_of_cols=fb_value))
     ev_pre = _event_status(rec, cols, tt)
     for ch in IMPACT_CHANNELS:
         if ch not in IMPLEMENTED_RAM_CHANNELS:
@@ -387,7 +405,8 @@ def evaluate_recording(rec, sidecar, columns, levels_by_col, subject_tasks):
                                     "levels_not_described:impact_channel")
             elif ch in {str(v).strip().lower() for v in lv}:
                 out[("RAM", ch)] = _gate(_level_rule(rec, cols, levels_by_col, tt,
-                                                     _ram_checks))
+                                                     _ram_checks,
+                                                     any_of_cols=fb_value))
             else:
                 out[("RAM", ch)] = (NOT_DEFINABLE, "channel_not_in_levels")
     out[("SRPI", "legacy_self_other")] = _gate(_level_rule(
@@ -406,10 +425,12 @@ def audit_dataset(reader, dataset_root: Path, dataset_id: str):
     desc_path = dataset_root / "dataset_description.json"
     description = reader.json(desc_path) if desc_path.exists() or os.path.islink(
         desc_path) else None
+    # rest recordings of the same subject *and modality* (the legacy PDI
+    # baseline is a recording of the same kind as the evaluated run)
     tasks_by_subject = {}
     for r in recs:
-        tasks_by_subject.setdefault(r["entities"].get("sub"), set()).add(
-            r["entities"].get("task"))
+        tasks_by_subject.setdefault((r["entities"].get("sub"), r["modality"]),
+                                    set()).add(r["entities"].get("task"))
     rows = []
     for r in recs:
         sidecar_paths = _applicable(meta_by_dir, r, dataset_root, r["suffix"], ".json")
@@ -427,7 +448,7 @@ def audit_dataset(reader, dataset_root: Path, dataset_id: str):
             levels.update(_levels(reader.json(p)))
         cells = evaluate_recording(
             r, sidecar, columns, levels,
-            tasks_by_subject.get(r["entities"].get("sub"), set()))
+            tasks_by_subject.get((r["entities"].get("sub"), r["modality"]), set()))
         base = {
             "dataset": dataset_id,
             "recording": os.path.relpath(r["path"], dataset_root),

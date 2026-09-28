@@ -163,7 +163,14 @@ hypotheses:
       Replicates per (null family, regime) cell for a 95% half-width of 0.02 at a
       rate of 0.05 (1.96^2 * 0.05 * 0.95 / 0.02^2 = 456).
     prediction: false-PRESENT rate within alpha +- 0.02 (V2-5 entry criterion a).
-    note: Evaluated on scripts/null_calibration.py output (--null-calibration).
+    note: >-
+      Evaluated on scripts/null_calibration.py output (--null-calibration);
+      NOT_EVALUABLE when a cell's statuses come from the local fallback rule instead
+      of the installed evidence layer (status_impl). SUPPORTED needs every cell's
+      point rate within the band, so with many cells it is rarely reached even
+      under exact calibration (about 0.95^cells at n = 460 per cell): revisit the
+      decision rule (e.g. equivalence bounds with a multiplicity correction)
+      before the freeze.
 
   - id: H1
     title: Report-positive episodes are (almost) never EXCLUDED
@@ -174,19 +181,13 @@ hypotheses:
     population: report_positive
     epsilon: 0.05
     minimum_n: 155
-    minimum_n_source: scripts/necessity_power.py with power_assumptions (n_stable, power 0.8)
-    power_assumptions: &power
-      tau: 0.05
-      alpha: 0.05
-      pi_nec: 0.0
-      pi_viol: 0.25
-      pi_unconscious: 0.6
-      label_noise: 0.02
-      base_rate: 0.5
-      coverage: 0.8
-      sensitivity: 0.9
-      false_absent: 0.0
-      target_power: 0.8
+    minimum_n_source: >-
+      Reused from the component-level design of H3-H7; NOT a verdict-level power
+      computation (scripts/necessity_power.py models the component criterion).
+      Under the H3 power_assumptions the EXCLUDED rate among report-positive
+      episodes is at most the label noise (0.02); at that bound P(SUPPORTED) is about
+      0.62 at n = 155, and 80% power needs n >= 286 (exact binomial, epsilon 0.05).
+      Fix the value before the freeze.
     supported_if: upper bound of the EXCLUDED rate among determinate report-positive episodes < 0.05
     falsified_if: lower bound of the EXCLUDED rate among determinate report-positive episodes > 0.05
 
@@ -215,7 +216,18 @@ hypotheses:
     variation_floor: 0.0
     minimum_n: 155
     minimum_n_source: scripts/necessity_power.py with power_assumptions (n_stable, power 0.8)
-    power_assumptions: *power
+    power_assumptions: &power
+      tau: 0.05
+      alpha: 0.05
+      pi_nec: 0.0
+      pi_viol: 0.25
+      pi_unconscious: 0.6
+      label_noise: 0.02
+      base_rate: 0.5
+      coverage: 0.8
+      sensitivity: 0.9
+      false_absent: 0.0
+      target_power: 0.8
 
   - id: H4
     title: PDI is necessary (symmetric necessity criterion)
@@ -283,7 +295,7 @@ hypotheses:
     population: report_positive
     epsilon: 0.05
     minimum_n: 155
-    minimum_n_source: same design as H1
+    minimum_n_source: same value as H3-H7; no power computation for this statistic yet
     note: >-
       Joint dependence of the component node sets above the between-set null
       (V2-4); SOURCE_INCOHERENT is read from the MPC_reason column.
@@ -298,7 +310,7 @@ hypotheses:
     population: all
     kappa: 0.5
     minimum_n: 155
-    minimum_n_source: same design as H1
+    minimum_n_source: same value as H3-H7; no power computation for this statistic yet
     supported_if: lower bound of the determinate fraction > 0.5
     falsified_if: upper bound of the determinate fraction < 0.5
 
@@ -313,7 +325,7 @@ hypotheses:
     n_boot: 2000
     seed: 0
     minimum_n: 155
-    minimum_n_source: same design as H1
+    minimum_n_source: same value as H3-H7; no power computation for this statistic yet
     note: >-
       Correct = EXCLUDED on report-negative or MPC_CONSISTENT on report-positive
       episodes; UNDETERMINED abstains. Comparator columns comparator_<name> hold

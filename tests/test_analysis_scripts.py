@@ -70,6 +70,8 @@ def test_cli_parsing(tmp_path):
                      "--pi-viol", "0.3", "--n-values", "10:50:10,75"]) == 0
     pw = pd.read_csv(tmp_path / "necessity_power.csv")
     assert sorted(pw["n"].unique()) == [10, 20, 30, 40, 50, 75]
+    with pytest.raises(ValueError, match="positive"):
+        npw.power_table(_params(n_values=(0, 10)))
 
 
 # --------------------------------------------------------------------------
@@ -178,6 +180,37 @@ def test_expected_exchangeable_rate_and_local_rule_agree():
         st = ncal.local_status(draws[0], null.mean(), null.std(ddof=1))
         hits += st == "PRESENT"
     assert hits / reps == pytest.approx(exp, abs=0.006)
+
+
+def test_local_fallback_rule_equals_the_v1_evidence_rule():
+    from impact_pipeline import evidence as ev1
+
+    rng = np.random.default_rng(11)
+    for _ in range(5000):
+        est, nm = rng.normal(0, 3), rng.normal(0, 1)
+        nsd = float(rng.choice([0.0, rng.exponential(1.0)]))
+        se = float(rng.choice([0.0, rng.exponential(0.5)]))
+        ref = ev1.component_status(ev1.ComponentEvidence(
+            principle="PDI", estimate=est, null_mean=nm, null_sd=nsd, se=se))[0]
+        assert ncal.local_status(est, nm, nsd, se) == ref.value
+
+
+def test_expected_rate_uses_the_null_size_of_calibrated_replicates():
+    """Regression: undefined replicates record n_null = 0; the median over all
+    replicates then understated K (or gave K = 0 -> NaN)."""
+    rows = []
+    for rep, (st, n_null) in enumerate([("UNDEFINED", 0), ("UNDEFINED", 0),
+                                        ("PRESENT", 19), ("ABSENT", 19),
+                                        ("UNDEFINED", 0)]):
+        rows.append({"null_kind": "ar1", "n_time": 1200, "n_nodes": 8,
+                     "replicate": rep, "principle": "PDI", "status": st,
+                     "n_null": n_null, "margin": 0.0, "defined": n_null > 0,
+                     "status_impl": "evidence", "runner": "x",
+                     "seconds_system": 0.1})
+    rates, _ = ncal.summarise(pd.DataFrame(rows))
+    assert int(rates["median_n_null"].iloc[0]) == 19
+    assert rates["expected_rate_exchangeable_v1"].iloc[0] == pytest.approx(
+        ncal.expected_exchangeable_rate(19))
 
 
 def test_classify_uses_v1_and_v2_style_evidence_apis():

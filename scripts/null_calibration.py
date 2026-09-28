@@ -442,7 +442,10 @@ def summarise(rep: pd.DataFrame, alpha=0.05, z_present=1.645) -> tuple:
         rate = k_p / n if n else np.nan
         margins = sub["margin"].to_numpy(dtype=float)
         fin = np.isfinite(margins)
-        k_null = int(sub["n_null"].median()) if n else 0
+        # null size of the replicates that have a null (undefined components
+        # record n_null = 0 and must not shrink the expected-rate K)
+        with_null = sub["n_null"][sub["n_null"] > 0]
+        k_null = int(with_null.median()) if len(with_null) else 0
         rows.append({
             **dict(zip(keys, key)), "n": n, "n_defined": int(sub["defined"].sum()),
             "n_present": k_p, "false_present_rate": rate,

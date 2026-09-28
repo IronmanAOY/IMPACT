@@ -413,14 +413,15 @@ def necessity_from_statuses(
     :func:`symmetric_necessity` from per-episode component statuses
     (PRESENT / ABSENT / UNDEFINED, v1/v2 enums or strings) and a boolean
     report-positive label; variation is evaluated on the report-negative
-    episodes.
+    episodes (with ``missing="worst_case"`` their UNDEFINED statuses count as
+    not ABSENT, i.e. they enlarge the denominator of the variation bound).
     """
     st = np.asarray([normalize_status(s) for s in statuses], dtype=object)
     pos = np.asarray(report_positive, dtype=bool).reshape(-1)
     if st.size != pos.size:
         raise ValueError("statuses and report_positive must align")
     det_pos = pos & (st != "UNDEFINED")
-    det_neg = ~pos & (st != "UNDEFINED")
+    neg_pool = ~pos if missing == "worst_case" else ~pos & (st != "UNDEFINED")
     return symmetric_necessity(
         int(np.sum(pos & (st == "ABSENT"))),
         int(det_pos.sum()),
@@ -429,7 +430,7 @@ def necessity_from_statuses(
         n_undefined=int(np.sum(pos & (st == "UNDEFINED"))),
         missing=missing,
         k_absent_negative=int(np.sum(~pos & (st == "ABSENT"))),
-        n_negative=int(det_neg.sum()),
+        n_negative=int(neg_pool.sum()),
         variation_floor=variation_floor,
     )
 
@@ -537,9 +538,11 @@ def risk_coverage(confidence, correct) -> dict:
     order of decreasing ``confidence`` (ties are accepted together); at each
     acceptance level the coverage is the accepted fraction and the risk is the
     error rate among the accepted cases. Returns ``coverage``, ``risk``
-    (arrays) and ``aurc`` (area under the curve by the step rule over the
-    accepted levels; lower is better). Non-finite confidences are never
-    accepted (abstentions).
+    (arrays) and ``aurc``: the step-rule area under the curve divided by the
+    largest coverage reached, i.e. the mean selective risk over the covered
+    range (lower is better; equal to the usual AURC when every case has a
+    finite confidence). Non-finite confidences are never accepted
+    (abstentions).
     """
     conf = np.asarray(confidence, dtype=float).reshape(-1)
     ok = np.asarray(correct, dtype=bool).reshape(-1)

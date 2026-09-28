@@ -2,6 +2,7 @@
 schema) and scripts/run_predictions.py (refusals, strata, decisions)."""
 import copy
 import json
+import math
 
 import numpy as np
 import pandas as pd
@@ -158,8 +159,27 @@ def test_registered_minimum_n_is_reproduced_by_the_power_analysis(registry):
         }
         mn = npw.min_n_table(npw.power_table(params), (pa["target_power"],))
         assert int(mn["n_stable"].max()) == h["minimum_n"], h["id"]
+        assert h["statistic"] == "absent_rate_report_positive", h["id"]
         checked += 1
-    assert checked >= 6
+    assert checked == 5  # H3-H7: necessity_power models the component criterion
+
+
+def test_h1_minimum_n_is_documented_as_borrowed_and_underpowered(registry):
+    """H1 (verdict level, no variation requirement) is not modelled by
+    necessity_power; the registry states the verdict-level numbers."""
+    from scipy.stats import binom
+
+    h1 = next(h for h in registry["hypotheses"] if h["id"] == "H1")
+    assert "power_assumptions" not in h1
+    assert "NOT a verdict-level power" in h1["minimum_n_source"]
+    q = 0.02  # EXCLUDED rate bound under the H3 assumptions (label noise)
+    _, k_s = nc.necessity_thresholds(h1["minimum_n"], h1["epsilon"], 0.05)
+    assert binom.cdf(k_s, h1["minimum_n"], q) == pytest.approx(0.62, abs=0.01)
+    tab = nc.necessity_threshold_table(range(1, 601), h1["epsilon"], 0.05)
+    pw = np.where(tab["k_S"] >= 0, binom.cdf(tab["k_S"], tab["n"], q), 0.0)
+    ok = np.flip(np.logical_and.accumulate(np.flip(pw >= 0.8)))
+    assert int(tab["n"].to_numpy()[np.argmax(ok)]) == 286
+    assert "286" in h1["minimum_n_source"]
 
 
 def test_frozen_registry_rules(registry, schema):
@@ -313,6 +333,101 @@ def test_selective_accuracy_gap(registry):
     assert rp.eval_hypothesis(h10, df, reg["defaults"])["outcome"] == rp.NOT_EVALUABLE
 
 
+def test_comparator_columns_read_back_from_csv(registry, tmp_path):
+    """Regression: a 0/1 comparator column with abstentions is read by pandas
+    as float (1.0/0.0/NaN); 1.0 must count as 'not excluded', not as False."""
+    reg = frozen(registry)
+    df = episodes(reg=reg, absent_neg={p: 0.0 for p in PRINCIPLES})
+    pos = df["report_positive"].to_numpy()
+    df["MPC_verdict"] = np.where(pos, "MPC_CONSISTENT", "EXCLUDED")
+    comp = pos.astype(float)
+    comp[::7] = np.nan  # abstentions
+    df["comparator_LZc"] = comp  # a perfect comparator on its decided cases
+    path = tmp_path / "episodes.csv"
+    df.to_csv(path, index=False)
+    back = pd.read_csv(path)
+    assert back["comparator_LZc"].dtype == float
+    h10 = {**next(h for h in reg["hypotheses"] if h["id"] == "H10"), "n_boot": 200}
+    r = rp.eval_hypothesis(h10, back, reg["defaults"])
+    assert r["rate"] == pytest.approx(0.0)  # both perfect: gap 0, not +0.67
+    assert r["outcome"] == nc.SUPPORTED
+    assert rp._decisions_from_column([1.0, 0.0, np.nan, True, "EXCLUDED", ""]) == [
+        True, False, None, True, False, None]
+    back["comparator_LZc"] = back["comparator_LZc"].fillna(2.0)
+    bad = rp.eval_hypothesis(h10, back, reg["defaults"])
+    assert bad["outcome"] == rp.NOT_EVALUABLE
+    assert bad["reason"].startswith("invalid_comparator_column")
+
+
+def test_best_comparator_ignores_comparators_without_decisions(registry):
+    """Regression: max() over accuracies with a NaN (a comparator that
+    abstains everywhere) depended on the column order."""
+    reg = frozen(registry)
+    df = episodes(reg=reg, absent_neg={p: 0.0 for p in PRINCIPLES})
+    pos = df["report_positive"].to_numpy()
+    df["MPC_verdict"] = np.where(pos, "MPC_CONSISTENT", "EXCLUDED")
+    h10 = {**next(h for h in reg["hypotheses"] if h["id"] == "H10"), "n_boot": 200}
+    rng = np.random.default_rng(0)
+    good = np.where(rng.random(len(df)) < 0.9, pos, ~pos)
+    res = []
+    for order in (("LZc", "PhiR"), ("PhiR", "LZc")):
+        d = df.copy()
+        d[f"comparator_{order[0]}"] = [None] * len(d)  # abstains everywhere
+        d[f"comparator_{order[1]}"] = good
+        res.append(rp.eval_hypothesis(h10, d, reg["defaults"]))
+    assert res[0]["rate"] == pytest.approx(res[1]["rate"])
+    assert res[0]["outcome"] == res[1]["outcome"] == nc.SUPPORTED
+    assert math.isfinite(res[0]["rate"])
+
+
+def test_missing_report_labels_are_excluded_not_negative(registry):
+    """Regression: a missing / unrecognised report label was counted as
+    report-negative (it fed the variation check and H10's truth)."""
+    reg = frozen(registry)
+    df = episodes(reg=reg, absent_neg={p: 0.0 for p in PRINCIPLES})
+    base = outcomes(rp.evaluate(reg, df))
+    assert base["H3"]["reason"] == "component_does_not_vary"
+    # unknown-report episodes with RAM ABSENT must not make RAM 'vary'
+    extra = episodes(n_pos=0, n_neg=30, reg=reg, absent_neg={"RAM": 1.0}, seed=5)
+    extra["report_positive"] = [np.nan] * 15 + ["unknown"] * 15
+    both = pd.concat([df, extra], ignore_index=True)
+    out = outcomes(rp.evaluate(reg, both))
+    assert out["H3"]["reason"] == "component_does_not_vary"
+    assert out["H3"]["n_report_unknown"] == 30
+    assert out["H1"]["n"] == base["H1"]["n"]
+    labels = rp.report_labels(pd.DataFrame({"report": ["positive", "Negative", "",
+                                                       "maybe", 1, 0.0]}))
+    assert labels[:2].tolist() == [1.0, 0.0] and np.isnan(labels[2:4]).all()
+    assert labels[4:].tolist() == [1.0, 0.0]
+    with pytest.raises(ValueError, match="missing or unrecognised"):
+        rp.report_positive(pd.DataFrame({"report_positive": [True, np.nan]}))
+
+
+def test_v1_coherence_reason_counts_as_source_incoherent(registry):
+    reg = frozen(registry)
+    df = episodes(reg=reg)
+    df.loc[:149, "MPC_reason"] = "INCONCLUSIVE:PDI;BEARER_MISMATCH:COHERENCE"
+    out = outcomes(rp.evaluate(reg, df))
+    assert out["H8"]["outcome"] == nc.FALSIFIED
+    assert not rp._has_reason(np.nan, "SOURCE_INCOHERENT")
+    assert rp._has_reason("SOURCE_INCOHERENT:RAM|PDI", "SOURCE_INCOHERENT")
+
+
+def test_null_calibration_from_the_fallback_rule_is_not_evaluable(registry):
+    reg = frozen(registry)
+    df = episodes(reg=reg)
+    rates = pd.DataFrame([{"null_kind": "ar1", "n_time": 1200, "n_nodes": 8,
+                           "principle": p, "n": 500, "false_present_rate": 0.05,
+                           "false_present_lo": 0.032, "false_present_hi": 0.072,
+                           "status_impl": "evidence"} for p in PRINCIPLES])
+    assert outcomes(rp.evaluate(reg, df, null_rates=rates))["H0"]["outcome"] == (
+        nc.SUPPORTED)
+    rates.loc[2, "status_impl"] = "local_v1(TypeError)"
+    h0 = outcomes(rp.evaluate(reg, df, null_rates=rates))["H0"]
+    assert h0["outcome"] == rp.NOT_EVALUABLE
+    assert "local_v1(TypeError)" in h0["reason"]
+
+
 def test_aggregation_exponent_is_auxiliary(registry):
     reg = frozen(registry)
     df = episodes(reg=reg, absent_neg={p: 0.0 for p in PRINCIPLES})
@@ -327,6 +442,11 @@ def test_aggregation_exponent_is_auxiliary(registry):
     assert h2["counts_for_stance"] is False
     assert h2["rate"] == pytest.approx(1.0, abs=0.5)  # arithmetic mean planted
     assert "H2" not in res["stance"]["confirmatory"].get("supported", [])
+    # the registered minimum n (200 MPC_CONSISTENT episodes) applies to H2 too
+    small = outcomes(rp.evaluate(reg, df.iloc[:150]))["H2"]
+    assert small["outcome"] == nc.INDETERMINATE
+    assert small["reason"] == "below_minimum_n" and small["n"] == 150
+    assert small["outcome_ignoring_minimum_n"] == rp.AUXILIARY_REPORTED
 
 
 # --------------------------------------------------------------------------

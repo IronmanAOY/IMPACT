@@ -105,6 +105,8 @@ def n_negative_for(n, base_rate):
 def power_table(params, thresholds=None) -> pd.DataFrame:
     """Exact outcome probabilities for every scenario, truth and n."""
     n_values = np.asarray(sorted(set(int(v) for v in params["n_values"])), dtype=int)
+    if n_values.size == 0 or n_values[0] < 1:
+        raise ValueError("n_values must be positive integers")
     if thresholds is None:
         thresholds = {
             tau: nc.necessity_threshold_table(n_values, tau, params["alpha"])
