@@ -333,6 +333,72 @@ def test_reupload_requires_confirmation_and_replaces_atomically(server, tmp_path
     assert not any(staging.iterdir())
 
 
+def test_rejected_large_upload_still_delivers_the_error(server, tmp_path):
+    """
+    IDs and the destination are validated before the body is read. The unread
+    body must be drained, otherwise clients that send the whole body before
+    reading (http.client, urllib; timing-dependent in browsers) get a reset
+    connection instead of the 400/409, and the replace-confirmation flow breaks.
+    """
+    dest = _write_bids(tmp_path / "data" / "managed" / "dsexist", name="Keep")
+    big = b"\0" * (8 * 1024 * 1024)
+
+    def upload(dataset_id):
+        return _request(
+            server,
+            "POST",
+            "/api/dataset/upload",
+            body=big,
+            headers={
+                "X-IMPaCT-CSRF": "test-token-123",
+                "X-Filename": "big.tar",
+                "X-Dataset-Id": dataset_id,
+                "X-Data-Origin": "real",
+            },
+        )
+
+    status, body, _ = upload("..")
+    assert status == 400 and "Invalid dataset_id" in json.loads(body)["error"]
+    status, body, _ = upload("dsexist")
+    assert status == 409 and "already exists" in json.loads(body)["error"]
+    assert json.loads((dest / "dataset_description.json").read_text())["Name"] == "Keep"
+    staging = tmp_path / "data" / "managed" / ".impact_upload_tmp"
+    assert not staging.exists() or not any(staging.iterdir())
+
+
+def test_upload_never_replaces_a_container_of_other_datasets(state, tmp_path):
+    container = tmp_path / "test_objects" / "datasets" / "real_derived_synth_completed"
+    nested = _write_bids(container / "ds003171", name="Synth")
+    archive = tmp_path / "a.tar.gz"
+    archive.write_bytes(_bids_archive())
+    with pytest.raises(ValueError, match="not a BIDS dataset folder"):
+        state.upload_dataset_archive(
+            archive_path=archive,
+            dataset_id="real_derived_synth_completed",
+            out_dir=None,
+            data_origin="dummy",
+            modality_profile="auto",
+            replace_existing=True,
+        )
+    assert json.loads((nested / "dataset_description.json").read_text())["Name"] == (
+        "Synth"
+    )
+
+
+@pytest.mark.parametrize("tr", ["nan", "inf", "-1", "0"])
+def test_run_command_rejects_non_finite_or_non_positive_tr(state, tmp_path, tr):
+    root = _write_bids(tmp_path / "data" / "scratch" / "ds003171")
+    with pytest.raises(ValueError, match="Invalid tr"):
+        state._build_run_command(
+            {
+                "dataset_id": "ds003171",
+                "bids_root": str(root),
+                "run_preprocessing": True,
+                "tr": tr,
+            }
+        )
+
+
 def test_upload_refuses_symlinked_destination(state, tmp_path):
     target = tmp_path / "elsewhere" / "raw"
     target.mkdir(parents=True)

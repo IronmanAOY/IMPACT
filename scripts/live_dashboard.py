@@ -6607,20 +6607,35 @@ class DashboardState:
                         "'skip combined index' to only build the campaigns."
                     )
                 for src_ds in sorted(set(metric_map.values()) - {anchor_dataset_id}):
-                    mapped = [
-                        a
-                        for a, b in (
-                            effective_subject_mapping.get(src_ds) or {}
-                        ).items()
-                        if b not in (None, "")
-                    ]
-                    if not mapped:
+                    anchors_by_target: dict[str, list[str]] = {}
+                    for a, b in (effective_subject_mapping.get(src_ds) or {}).items():
+                        if b not in (None, ""):
+                            anchors_by_target.setdefault(str(b), []).append(str(a))
+                    if not anchors_by_target:
                         plan_blockers.append(
                             f"No {anchor_dataset_id} participant is matched to a "
                             "participant "
                             f"in {src_ds}. A combined index needs the same "
                             "participants: map "
                             "subjects explicitly or skip the combined index."
+                        )
+                    # A match asserts that both IDs are the same person, so one
+                    # source participant can stand for at most one anchor
+                    # participant (otherwise one person's metrics are reused for
+                    # several people and the sample size is inflated).
+                    shared = {
+                        b: sorted(a) for b, a in anchors_by_target.items() if len(a) > 1
+                    }
+                    if shared:
+                        detail = "; ".join(
+                            f"{src_ds} sub-{b} <- "
+                            + ", ".join(f"sub-{x}" for x in anchors)
+                            for b, anchors in sorted(shared.items())
+                        )
+                        plan_blockers.append(
+                            "The participant matching reuses one participant for "
+                            f"several {anchor_dataset_id} participants ({detail}). "
+                            "Each participant can be matched at most once."
                         )
 
         effective_dirs: dict[str, str] = {}
@@ -6645,13 +6660,16 @@ class DashboardState:
                 plan_blockers.append(f"{dataset_id}: {support_status.get('summary')}")
             eff_txt = str(support_status.get("effective_out_dir") or "").strip()
             if eff_txt:
-                eff_key = str(Path(eff_txt).resolve())
+                eff_path = str(Path(eff_txt).resolve())
+                # Case-insensitive key: on the default macOS/Windows file systems
+                # 'dsX' and 'DSX' are the same folder.
+                eff_key = os.path.normcase(eff_path).casefold()
                 other = effective_dirs.get(eff_key)
                 if other is not None and other != dataset_id:
                     plan_blockers.append(
                         f"{other} and {dataset_id} would write to the same output "
                         "directory "
-                        f"'{eff_key}'. Give one of them a different output directory."
+                        f"'{eff_path}'. Give one of them a different output directory."
                     )
                 effective_dirs.setdefault(eff_key, dataset_id)
             plan_items.append(
@@ -6661,6 +6679,9 @@ class DashboardState:
                     "data_origin": str(base.get("data_origin")),
                     "bids_root": base.get("bids_root"),
                     "out_dir": base.get("out_dir"),
+                    # Where the run really writes (the combined index reads its
+                    # cache/step2_df.csv from here, never from the requested base).
+                    "effective_out_dir": eff_txt or None,
                     "modality_profile": base.get("modality_profile"),
                     "execution_mode": execution_mode,
                     "hardware_target": hardware_target,
@@ -7703,8 +7724,9 @@ class DashboardState:
         if tr_raw not in (None, "", "null"):
             try:
                 tr_val = float(tr_raw)
-                if tr_val <= 0:
-                    raise ValueError("tr must be > 0")
+                # float() accepts 'nan'/'inf'; neither is a usable TR.
+                if not math.isfinite(tr_val) or tr_val <= 0:
+                    raise ValueError("tr must be a finite number > 0")
             except Exception as exc:
                 raise ValueError(f"Invalid tr value: {tr_raw}") from exc
 
@@ -7859,12 +7881,14 @@ class DashboardState:
             if "run_pipeline.py" not in cmdline or proc.poll() is not None:
                 raise ValueError("not a live pipeline run")
             status = psutil.Process(proc.pid).status()
+            # Signals go to the live process group of the verified pid, never to
+            # a group number read from the (editable) JSON record.
+            live_pgid = None if _IS_WINDOWS else int(os.getpgid(proc.pid))
         except Exception:
             self._clear_persisted_managed_run()
             return
         self._managed_proc = proc  # type: ignore[assignment]
-        pgid = rec.get("pgid")
-        self._managed_pgid = int(pgid) if isinstance(pgid, int) else None
+        self._managed_pgid = live_pgid
         self._managed_adopted = True
         self._managed_started_unix = rec.get("started_unix")
         self._managed_log_file = rec.get("log_file")
@@ -8386,6 +8410,17 @@ class DashboardState:
             dest, managed_root, strict=True
         ):
             raise ValueError(f"Refusing to write outside the dataset store: '{dest}'.")
+        if (
+            dest.exists()
+            and not (dest.is_dir() and not any(dest.iterdir()))
+            and not _looks_like_bids_root(dest)
+        ):
+            # e.g. test_objects/datasets/real_derived_synth_completed holds
+            # several datasets; replacing it would delete all of them.
+            raise ValueError(
+                f"Refusing to replace '{dest}': it is not a BIDS dataset folder (it "
+                "may contain other datasets). Choose another dataset ID."
+            )
         if dest.exists() and not replace_existing:
             raise FileExistsError(
                 f"Dataset '{ds}' already exists at '{dest}'. Confirm the replacement "
@@ -8743,6 +8778,27 @@ class DashboardState:
             "source": source,
         }
 
+    def _plan_item_effective_out_dir(self, item: dict[str, Any]) -> Path:
+        """
+        Folder a plan item's run actually writes to. A selection may carry the
+        requested base --out-dir (e.g. typed in the review card); reading
+        <base>/cache/step2_df.csv would then load another dataset's table
+        (ds003171 has no per-dataset suffix), so the effective directory is
+        always re-derived (resolve_dataset_provenance is idempotent).
+        """
+        raw = item.get("effective_out_dir") or item.get("out_dir")
+        if not raw:
+            raise RuntimeError(
+                "Combined index plan item has no output directory: "
+                f"{item.get('dataset_id')!r}"
+            )
+        return resolve_dataset_provenance(
+            repo_root=self._repo_root,
+            out_dir=self._abs_user_path(raw),
+            dataset_id=self._clean_dataset_id(item.get("dataset_id")),
+            data_origin=item.get("data_origin") or REAL_DATA_ORIGIN,
+        ).effective_out_dir
+
     def _load_step2_for_mixed_source(self, out_dir: Path) -> pd.DataFrame:
         """
         Subject x session component values from one run's cache/step2_df.csv.
@@ -8806,9 +8862,13 @@ class DashboardState:
         if anchor_dataset_id not in plan_by_dataset:
             anchor_dataset_id = str(plan[0]["dataset_id"])
 
-        run_frames = {
-            ds: self._load_step2_for_mixed_source(Path(item["out_dir"]))
+        source_dirs = {
+            ds: self._plan_item_effective_out_dir(item)
             for ds, item in plan_by_dataset.items()
+        }
+        run_frames = {
+            ds: self._load_step2_for_mixed_source(source_dirs[ds])
+            for ds in plan_by_dataset
         }
         anchor_df = run_frames[anchor_dataset_id]
         mixed = pd.DataFrame(
@@ -8973,7 +9033,7 @@ class DashboardState:
             )
             subject_metric_summary.append(row)
         run_stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time()))
-        out_dir = Path(plan_by_dataset[anchor_dataset_id]["out_dir"]).resolve() / "mixed_source_ci" / run_stamp
+        out_dir = source_dirs[anchor_dataset_id] / "mixed_source_ci" / run_stamp
         cache_dir = out_dir / "cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         mixed.to_csv(cache_dir / "step2_df.csv", index=False)
@@ -8993,6 +9053,7 @@ class DashboardState:
             "metric_source_origins": source_origins,
             "subject_mapping_effective": subject_mapping,
             "subject_pairing": "identity_or_explicit_manual_mapping",
+            "source_out_dirs": {ds: str(p) for ds, p in source_dirs.items()},
             "subject_metric_summary": subject_metric_summary,
             "ci_problem_note": str(context.get("ci_problem_note") or ""),
             "ci_formula": (
@@ -10719,6 +10780,19 @@ def _split_host_port(value: str) -> tuple[str, int | None]:
     return host, port
 
 
+class _CountingReader:
+    """Request-body reader that counts the bytes consumed so far."""
+
+    def __init__(self, raw: Any) -> None:
+        self._raw = raw
+        self.consumed = 0
+
+    def read(self, n: int = -1) -> bytes:
+        data = self._raw.read(n)
+        self.consumed += len(data)
+        return data
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "IMPaCTDashboard/1.2"
 
@@ -10772,6 +10846,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
         self.close_connection = True
         self._send_json({"ok": False, "error": message}, status=status)
+
+    def _drain_request_body(self, remaining: int) -> None:
+        """Read and discard an unread request body (bounded by Content-Length)."""
+        if remaining <= 0:
+            return
+        try:
+            self.connection.settimeout(60)
+        except OSError:
+            pass
+        try:
+            while remaining > 0:
+                chunk = self.rfile.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except OSError:  # includes socket timeouts
+            self.close_connection = True
 
     def end_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -10931,21 +11022,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "true",
                     "yes",
                 }
-                if not filename:
-                    raise ValueError("X-Filename header is required.")
-                if not dataset_id:
-                    raise ValueError("X-Dataset-Id header is required.")
-                payload = state.upload_dataset_stream(
-                    self.rfile,
-                    content_length=clen,
-                    filename=filename,
-                    dataset_id=dataset_id,
-                    out_dir=out_dir,
-                    data_origin=data_origin,
-                    modality_profile=modality_profile,
-                    replace_existing=replace_existing,
-                    max_upload_bytes=max_upload,
-                )
+                body_reader = _CountingReader(self.rfile)
+                try:
+                    if not filename:
+                        raise ValueError("X-Filename header is required.")
+                    if not dataset_id:
+                        raise ValueError("X-Dataset-Id header is required.")
+                    payload = state.upload_dataset_stream(
+                        body_reader,
+                        content_length=clen,
+                        filename=filename,
+                        dataset_id=dataset_id,
+                        out_dir=out_dir,
+                        data_origin=data_origin,
+                        modality_profile=modality_profile,
+                        replace_existing=replace_existing,
+                        max_upload_bytes=max_upload,
+                    )
+                except Exception:
+                    # IDs and the destination are validated before the body is
+                    # read. Discard the unread remainder (already capped by
+                    # --max-upload-gb) so the 400/409 reaches every client:
+                    # closing with unread data resets the connection, and e.g.
+                    # http.client/urllib then never see the response.
+                    self._drain_request_body(clen - body_reader.consumed)
+                    raise
                 self._send_json(payload)
                 return
 

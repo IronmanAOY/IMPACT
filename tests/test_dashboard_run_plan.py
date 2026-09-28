@@ -1045,3 +1045,153 @@ def test_powermetrics_feed_falls_back_to_base_cache(tmp_path, monkeypatch):
     feed = state._read_powermetrics_cache()
     assert feed["available"] is True
     assert np.isfinite(feed["cpu_temp_c"])
+
+
+# ---------------------------------------------------------------------------
+# Independent-review regressions (2026-09-28).
+# ---------------------------------------------------------------------------
+
+
+def test_compose_reads_each_runs_effective_folder_not_the_requested_base(
+    tmp_path, monkeypatch
+):
+    """
+    A selection may carry the base --out-dir (e.g. typed in the review card).
+    ds005620's run then writes to <base>/ds005620, while <base>/cache holds
+    ds003171's table; the combined index must read the folder the run used.
+    """
+    dash, state = _state(tmp_path, monkeypatch)
+    base = tmp_path / "outputs" / "scratch"
+    _write_minimal_bids_root(tmp_path / "data" / "scratch" / "ds003171", "A")
+    _write_minimal_bids_root(tmp_path / "data" / "scratch" / "ds005620", "B")
+    plan = state.preview_run_plan(
+        {
+            "selected_datasets": [
+                {"dataset_id": "ds003171", "data_origin": "real", "out_dir": str(base)},
+                {"dataset_id": "ds005620", "data_origin": "real", "out_dir": str(base)},
+            ],
+            "primary_dataset_id": "ds003171",
+            "mpc_metrics": ["RAM", "PDI", "NAS", "IIM", "SRPI"],
+            "metric_dataset_map": {
+                "RAM": "ds003171",
+                "PDI": "ds003171",
+                "NAS": "ds003171",
+                "IIM": "ds005620",
+                "SRPI": "ds005620",
+            },
+            "run_preprocessing": True,
+        }
+    )
+    assert plan["plan_ready"] is True, plan["plan_blockers"]
+    eff = {item["dataset_id"]: item["effective_out_dir"] for item in plan["plan"]}
+    assert Path(eff["ds005620"]) == (base / "ds005620").resolve()
+
+    # ds003171's own table (with IIM/SRPI from an earlier full run) is in <base>.
+    _write_step2(
+        base,
+        _rows("01", "awake", RAM=1.0, PDI=1.0, NAS=1.0, IIM=111.0, SRPI=111.0)
+        + _rows("01", "deep", RAM=1.0, PDI=1.0, NAS=1.0, IIM=111.0, SRPI=111.0),
+    )
+    _write_step2(
+        base / "ds005620",
+        _rows("01", "awake", IIM=2.0, SRPI=2.0)
+        + _rows("01", "deep", IIM=1.0, SRPI=1.0),
+    )
+    # Exactly the context start_run stores for the composition.
+    manifest = state._compose_mixed_source_ci(dash.json_ready(dict(plan)))
+    mixed = _read_mixed(manifest)
+    assert sorted(set(mixed["IIM"])) == [1.0, 2.0]  # never ds003171's 111.0
+    assert manifest["source_out_dirs"]["ds005620"] == str((base / "ds005620").resolve())
+    assert Path(manifest["out_dir"]).parent == (base / "mixed_source_ci").resolve()
+
+
+def test_plan_blocks_one_participant_matched_to_several(tmp_path, monkeypatch):
+    dash, state = _state(tmp_path, monkeypatch, dataset_id="ds_primary")
+    ra = tmp_path / "data" / "managed" / "ds_primary"
+    rb = tmp_path / "data" / "managed" / "ds_other"
+    _write_minimal_bids_root(ra, "A")
+    (ra / "sub-02" / "func").mkdir(parents=True)
+    (rb / "sub-99" / "func").mkdir(parents=True)
+    (rb / "dataset_description.json").write_text(
+        json.dumps({"Name": "B"}), encoding="utf-8"
+    )
+    for r in ("ds_primary", "ds_other"):
+        (tmp_path / "outputs" / "scratch" / r / "preprocessed").mkdir(parents=True)
+    payload = {
+        "selected_datasets": [
+            {"dataset_id": "ds_primary", "bids_root": str(ra), "data_origin": "real"},
+            {"dataset_id": "ds_other", "bids_root": str(rb), "data_origin": "real"},
+        ],
+        "primary_dataset_id": "ds_primary",
+        "mpc_metrics": ["RAM", "PDI", "NAS", "IIM", "SRPI"],
+        "metric_dataset_map": {
+            "RAM": "ds_primary",
+            "PDI": "ds_primary",
+            "NAS": "ds_primary",
+            "IIM": "ds_other",
+            "SRPI": "ds_other",
+        },
+        "run_preprocessing": False,
+    }
+    plan = state.preview_run_plan(
+        {**payload, "subject_mapping": {"ds_other": {"01": "99", "02": "99"}}}
+    )
+    assert plan["plan_ready"] is False
+    assert any("at most once" in b for b in plan["plan_blockers"])
+    plan = state.preview_run_plan(
+        {**payload, "subject_mapping": {"ds_other": {"01": "99"}}}
+    )
+    assert not any("at most once" in b for b in plan["plan_blockers"])
+
+
+def test_plan_blocks_case_variant_ids_that_share_a_folder(tmp_path, monkeypatch):
+    """On case-insensitive file systems (macOS default) dsX and DSX collide."""
+    dash, state = _state(tmp_path, monkeypatch)
+    root = tmp_path / "data" / "managed" / "dscase"
+    _write_minimal_bids_root(root, "x")
+    for name in ("dscase", "DSCASE"):
+        (tmp_path / "outputs" / "scratch" / name / "preprocessed").mkdir(
+            parents=True, exist_ok=True
+        )
+    plan = state.preview_run_plan(
+        {
+            "selected_datasets": [
+                {"dataset_id": "dscase", "data_origin": "real", "bids_root": str(root)},
+                {"dataset_id": "DSCASE", "data_origin": "real", "bids_root": str(root)},
+            ],
+            "primary_dataset_id": "dscase",
+            "mpc_metrics": ["RAM", "PDI"],
+            "metric_dataset_map": {"RAM": "dscase", "PDI": "DSCASE"},
+            "run_preprocessing": False,
+        }
+    )
+    assert plan["plan_ready"] is False
+    assert any("same output directory" in b for b in plan["plan_blockers"])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
+def test_reattach_signals_the_live_process_group_not_the_recorded_one(
+    tmp_path, monkeypatch
+):
+    dash, state = _state(tmp_path, monkeypatch)
+    fake_pipeline = tmp_path / "run_pipeline.py"
+    fake_pipeline.write_text(
+        "import time\nwhile True:\n    time.sleep(0.05)\n", encoding="utf-8"
+    )
+    state._launch_managed_process(
+        cmd=[sys.executable, str(fake_pipeline)],
+        resolved={"out_dir": str(tmp_path / "o"), "dataset_id": "ds003171"},
+        queue_remaining=0,
+    )
+    proc = state._managed_proc
+    try:
+        rec = json.loads(state._managed_run_file.read_text(encoding="utf-8"))
+        rec["pgid"] = os.getpgid(0)  # edited record: the test runner's own group
+        state._managed_run_file.write_text(json.dumps(rec), encoding="utf-8")
+        _, state2 = _state(tmp_path, monkeypatch)
+        assert state2._managed_adopted is True
+        assert state2._managed_pgid == os.getpgid(proc.pid)
+        assert state2._managed_pgid != os.getpgid(0)
+    finally:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        proc.wait(timeout=10)
