@@ -9,6 +9,12 @@ Serves a local web UI with:
 - System + pipeline CPU/RAM stats
 - Time-series charts (CPU, RAM, pipeline RSS)
 - Dataset-science context (cohort and selected subset)
+
+Security model: the server binds to 127.0.0.1 by default and is meant for the
+local user only. Every request must carry a loopback Host header (DNS-rebinding
+guard), and every state-changing POST must carry the per-process CSRF token that
+is embedded in the served page (plus a same-origin Origin header when a browser
+sends one). Binding to a non-loopback address requires --allow-remote.
 """
 
 from __future__ import annotations
@@ -16,11 +22,14 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import hmac
 import importlib.util
+import ipaddress
 import json
 import math
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -50,6 +59,7 @@ try:
 except Exception:
     check_mpc_readiness = None  # type: ignore[assignment]
 from impact_pipeline.provenance import (
+    DUMMY_DATA_ORIGIN,
     REAL_DATA_ORIGIN,
     VALID_DATA_ORIGINS,
     normalize_data_origin,
@@ -101,6 +111,124 @@ OPTIONAL_TOOLS: dict[str, str] = {
     "openneuro": "OpenNeuro CLI for dataset downloads.",
     "git-annex": "Needed when working with annex-backed datasets.",
 }
+
+# Dataset IDs become directory names (data/managed/<id>, <out>/<id>) and
+# run_pipeline arguments, so they must start with an alphanumeric character.
+# This rejects '.', '..', leading '-' (flag injection) and path separators.
+_SAFE_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+# Library entries are keyed by (dataset_id, origin); synthetic copies of a real
+# dataset ID get this suffix so they never shadow the real entry.
+SYNTHETIC_LIBRARY_SUFFIX = "@synthetic"
+LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+CSRF_HEADER = "X-IMPaCT-CSRF"
+DEFAULT_MAX_UPLOAD_BYTES = 20 * 1024**3
+DEFAULT_MAX_EXTRACT_BYTES = 200 * 1024**3
+MAX_ARCHIVE_MEMBERS = 500_000
+MAX_JSON_BODY_BYTES = 8 * 1024**2
+DEFAULT_HISTORY_POINTS = 900
+HISTORY_MIN_INTERVAL_S = 1.0
+# Exit code reported for a run re-attached after a dashboard restart: the
+# process is not our child, so its real exit status cannot be observed.
+ADOPTED_EXIT_UNKNOWN = -999
+_IS_WINDOWS = os.name == "nt"
+MIXED_CI_COMPONENTS = ("RAM", "PDI", "NAS", "IIM", "SRPI")
+# Cohort high-state condition used as the default CI reference (D3).
+MIXED_CI_HIGH_STATE_SESSION = "awake"
+HUNTER_BUILD_NOTE = (
+    "Hunter mode only BUILDS an IIM campaign for HLRS Hunter (PBS) under "
+    "<output>/cache/hunter_iim_campaign. Nothing is submitted and no metrics are "
+    "computed on this computer: copy the campaign to Hunter and submit it there "
+    "with qsub."
+)
+
+
+def is_safe_token(value: Any) -> bool:
+    return bool(_SAFE_TOKEN_RE.fullmatch(str(value or "")))
+
+
+def library_key_for(dataset_id: str, data_origin: str | None) -> str:
+    """Stable library/registry key for a (dataset_id, origin) pair."""
+    ds = str(dataset_id)
+    if normalize_data_origin(data_origin) == DUMMY_DATA_ORIGIN:
+        return f"{ds}{SYNTHETIC_LIBRARY_SUFFIX}"
+    return ds
+
+
+def is_loopback_host(host: str | None) -> bool:
+    h = str(host or "").strip().strip("[]").lower()
+    if h in LOOPBACK_HOSTNAMES:
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def _looks_like_bids_root(path: Path) -> bool:
+    try:
+        if (path / "dataset_description.json").is_file():
+            return True
+        return any(p.is_dir() for p in path.glob("sub-*"))
+    except OSError:
+        return False
+
+
+def _is_within(path: Path, parent: Path, *, strict: bool = False) -> bool:
+    try:
+        rel = Path(path).resolve().relative_to(Path(parent).resolve())
+    except (ValueError, OSError):
+        return False
+    return (rel != Path(".")) if strict else True
+
+
+def _kill_process_tree(pid: int) -> None:
+    try:
+        parent = psutil.Process(int(pid))
+    except psutil.Error:
+        return
+    try:
+        children = parent.children(recursive=True)
+    except psutil.Error:
+        children = []
+    for p in [*children, parent]:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+
+
+class _AdoptedProcess:
+    """
+    Minimal Popen stand-in for a pipeline run started by an earlier dashboard
+    session (re-attached after a restart). Its exit code is not observable.
+    """
+
+    def __init__(self, pid: int, create_time: float) -> None:
+        self.pid = int(pid)
+        self.returncode: int | None = None
+        self._proc = psutil.Process(self.pid)
+        if abs(float(self._proc.create_time()) - float(create_time)) > 1.0:
+            raise psutil.NoSuchProcess(self.pid)
+
+    def poll(self) -> int | None:
+        if self.returncode is not None:
+            return self.returncode
+        try:
+            if self._proc.is_running() and self._proc.status() != psutil.STATUS_ZOMBIE:
+                return None
+        except psutil.Error:
+            pass
+        self.returncode = ADOPTED_EXIT_UNKNOWN
+        return self.returncode
+
+    def terminate(self) -> None:
+        try:
+            self._proc.terminate()
+        except psutil.Error:
+            pass
+
+    def kill(self) -> None:
+        _kill_process_tree(self.pid)
 
 
 def display_data_origin_label(origin: str | None) -> str:
@@ -200,6 +328,7 @@ HTML_PAGE = """<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="impact-csrf-token" content="__IMPACT_CSRF_TOKEN__" />
   <title>IMPaCT Live Dashboard</title>
   <style>
     @import url("https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
@@ -2167,7 +2296,7 @@ HTML_PAGE = """<!doctype html>
             <div class="support-item"><span class="support-mark eeg">EEG</span><span>.edf, .set, event timing</span></div>
             <div class="support-item"><span class="support-mark fmri">fMRI</span><span>.nii.gz, BIDS, events</span></div>
             <div class="support-item"><span class="support-mark aux">Synthetic</span><span>validation datasets, metric bank</span></div>
-            <div class="support-item"><span class="support-mark api">Remote Runs</span><span>local runs and remote queue launches</span></div>
+            <div class="support-item"><span class="support-mark api">HLRS Hunter</span><span>local runs; Hunter PBS campaigns are built here and submitted on Hunter</span></div>
           </div>
         </div>
       </aside>
@@ -2382,7 +2511,9 @@ HTML_PAGE = """<!doctype html>
                       <label for="executionMode">Run Location</label>
                       <select id="executionMode">
                         <option value="local">This computer</option>
-                        <option value="hunter">Remote compute queue</option>
+                        <option value="hunter">
+                          Build HLRS Hunter campaign (PBS; not submitted)
+                        </option>
                       </select>
                     </div>
                     <div class="field">
@@ -2503,7 +2634,7 @@ HTML_PAGE = """<!doctype html>
                     <div class="panel-header">
                       <div class="k-label">Cross-Dataset Subject Matching</div>
                       <h4 class="panel-title">Confirm how participants are matched across datasets.</h4>
-                      <p class="panel-copy">The primary dataset is used as the reference when different sources feed different metrics.</p>
+                      <p class="panel-copy">The primary dataset is used as the reference when different sources feed different metrics. Participants are matched automatically only when they have the same subject ID; any other match must be set explicitly and asserts that both IDs are the same person.</p>
                     </div>
                     <div class="status-line mono" id="subjectMappingStatus">No participant matching prepared yet.</div>
                     <div class="subject-map-list" id="subjectMappingList"></div>
@@ -2621,7 +2752,7 @@ HTML_PAGE = """<!doctype html>
                   <div class="panel-card soft">
                     <div class="k-label">Dataset Context</div>
                     <div class="dataset-title" id="datasetLabel">-</div>
-                    <div class="dataset-meta mono" id="datasetPath">path: -</div>
+                    <div class="dataset-meta mono" id="monitorDatasetPath">path: -</div>
                   </div>
                   <div class="panel-card">
                     <div class="k-label">Run Configuration</div>
@@ -2887,10 +3018,18 @@ HTML_PAGE = """<!doctype html>
 
   <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
-  <script>
+  <script nonce="__IMPACT_CSP_NONCE__">
+    // Per-server CSRF token; every state-changing request must send it.
+    const CSRF_META = document.querySelector('meta[name="impact-csrf-token"]');
+    const CSRF_TOKEN = (CSRF_META && CSRF_META.content) || "";
     let history = [];
     let uiState = {};
     let controlsBound = false;
+    // Intake fields the user edited since the last server-side selection change;
+    // the 2 s status poll must never overwrite them.
+    const intakeDirty = new Set();
+    let lastSyncedSelectionSig = "";
+    let libraryLoadedOnce = false;
     const metricState = {};
     const levelOrder = ["cold", "normal", "warn", "hot"];
     const appState = {
@@ -3036,10 +3175,30 @@ HTML_PAGE = """<!doctype html>
     function displayBackend(raw) {
       const value = txt(raw, "local").trim().toLowerCase();
       if (value === "local") return "This computer";
-      if (value === "hunter") return "Remote compute queue";
+      if (value === "hunter") return "Build HLRS Hunter campaign (PBS; not submitted)";
       return humanizeToken(raw) || "-";
     }
+    function libraryKeyOf(rec) {
+      if (!rec) return "";
+      const key = txt(rec.library_key, "").trim();
+      if (key) return key;
+      const ds = txt(rec.dataset_id, "").trim();
+      const synthetic = txt(rec.data_origin, "real").trim().toLowerCase() === "dummy";
+      return synthetic ? `${ds}@synthetic` : ds;
+    }
     function datasetWorkflowSupport(datasetId) {
+      const libRec = appState.datasetLibrary.find(
+        (d) => txt(d.dataset_id, "") === txt(datasetId, "")
+      );
+      const serverSupport = libRec && libRec.workflow_support;
+      if (serverSupport && typeof serverSupport === "object") {
+        const full = !!serverSupport.full_pipeline_supported;
+        return {
+          full,
+          label: full ? "Full run ready" : "Review only",
+          detail: txt(serverSupport.detail, ""),
+        };
+      }
       const ds = txt(datasetId, "").trim().toLowerCase();
       if (ds === "ds003171" || ds === "ds005620") {
         return {
@@ -3063,6 +3222,7 @@ HTML_PAGE = """<!doctype html>
     }
     function datasetLibrarySignature(entries) {
       return JSON.stringify(asList(entries).map((item) => ({
+        library_key: libraryKeyOf(item),
         dataset_id: txt(item && item.dataset_id, ""),
         bids_root: txt(item && item.bids_root, ""),
         data_origin: txt(item && item.data_origin, ""),
@@ -3190,8 +3350,10 @@ HTML_PAGE = """<!doctype html>
       const planBlocked = !!(planState && planState.plan_ready === false);
       const blockers = asList(planState && planState.plan_blockers).join(" | ");
 
-      setDisabledState("btnPauseRun", !(active && status === "running"), active ? "Pause is available only while a run is actively processing." : "No active run to pause.");
-      setDisabledState("btnResumeRun", !(active && status === "paused"), active ? "Resume is available only after a run has been paused." : "No paused run to resume.");
+      const pauseSupported = managed.pause_supported !== false;
+      const noPause = "Pause and resume are not supported on Windows; use Stop.";
+      setDisabledState("btnPauseRun", !(active && status === "running" && pauseSupported), !pauseSupported ? noPause : (active ? "Pause is available only while a run is actively processing." : "No active run to pause."));
+      setDisabledState("btnResumeRun", !(active && status === "paused" && pauseSupported), !pauseSupported ? noPause : (active ? "Resume is available only after a run has been paused." : "No paused run to resume."));
       setDisabledState("btnStopRun", !active, "Stop is available only while a run is active.");
       setDisabledState("btnRestartRun", !(active || hasHistory), "Restart becomes available after at least one managed run has been started.");
 
@@ -3279,6 +3441,7 @@ HTML_PAGE = """<!doctype html>
     }
 
     function updateSelectedDatasetRecord(datasetId, updates) {
+      // Dataset IDs are unique within a selection (one copy per ID).
       const ds = txt(datasetId, "").trim();
       appState.selectedDatasets = appState.selectedDatasets.map((rec) => (
         rec.dataset_id === ds ? { ...rec, ...updates } : rec
@@ -3332,7 +3495,7 @@ HTML_PAGE = """<!doctype html>
       const current = txt(sel.value, "");
       const options = appState.selectedDatasets.map((d) => {
         const label = `${d.dataset_id} (${displayDataOrigin(d.data_origin)})`;
-        return `<option value="${d.dataset_id}">${label}</option>`;
+        return `<option value="${esc(d.dataset_id)}">${esc(label)}</option>`;
       });
       sel.innerHTML = options.join("");
       if (!options.length) return;
@@ -3351,7 +3514,7 @@ HTML_PAGE = """<!doctype html>
       if (!host) return;
       const selectedIds = selectedDatasetIds();
       const optionHtml = appState.selectedDatasets.map((d) => (
-        `<option value="${d.dataset_id}">${d.dataset_id} (${displayDataOrigin(d.data_origin)})</option>`
+        `<option value="${esc(d.dataset_id)}">${esc(d.dataset_id)} (${esc(displayDataOrigin(d.data_origin))})</option>`
       )).join("");
       host.innerHTML = ALL_MPCS.map((metric) => {
         const checked = boolEl(`metric${metric}`);
@@ -3412,14 +3575,39 @@ HTML_PAGE = """<!doctype html>
       refreshJourneyRail();
     }
 
-    function toggleDatasetSelection(datasetId) {
-      const ds = String(datasetId || "").trim();
-      const existing = appState.selectedDatasets.find((d) => d.dataset_id === ds);
+    function addLibraryRecordToSelection(rec) {
+      // A plan may use only one copy of a dataset ID: selecting the synthetic
+      // copy replaces the real one (and vice versa).
+      const key = libraryKeyOf(rec);
+      const sameId = appState.selectedDatasets.find(
+        (d) => d.dataset_id === rec.dataset_id && libraryKeyOf(d) !== key
+      );
+      if (sameId) {
+        showToast(
+          `Replaced ${displayDataOriginShort(sameId.data_origin)} ${rec.dataset_id} `
+          + `with the ${displayDataOriginShort(rec.data_origin)} copy `
+          + "(one copy per dataset ID).",
+          "warn",
+          3200,
+          false
+        );
+      }
+      appState.selectedDatasets = [
+        ...appState.selectedDatasets.filter((d) => d.dataset_id !== rec.dataset_id),
+        rec,
+      ];
+    }
+
+    function toggleDatasetSelection(libraryKey) {
+      const key = String(libraryKey || "").trim();
+      const existing = appState.selectedDatasets.find((d) => libraryKeyOf(d) === key);
       if (existing) {
-        appState.selectedDatasets = appState.selectedDatasets.filter((d) => d.dataset_id !== ds);
+        appState.selectedDatasets = appState.selectedDatasets.filter(
+          (d) => libraryKeyOf(d) !== key
+        );
       } else {
-        const rec = appState.datasetLibrary.find((d) => d.dataset_id === ds);
-        if (rec) appState.selectedDatasets = [...appState.selectedDatasets, rec];
+        const rec = appState.datasetLibrary.find((d) => libraryKeyOf(d) === key);
+        if (rec) addLibraryRecordToSelection(rec);
       }
       appState.lastRunPlan = null;
       renderDatasetLibrary();
@@ -3428,12 +3616,14 @@ HTML_PAGE = """<!doctype html>
       setText("subjectMappingStatus", "Dataset selection changed. Participant matching will refresh after analysis.");
     }
 
-    function selectDatasetById(datasetId) {
+    function selectDatasetById(datasetId, libraryKey="") {
       const ds = String(datasetId || "").trim();
-      const existing = appState.selectedDatasets.find((d) => d.dataset_id === ds);
+      const key = String(libraryKey || "").trim() || ds;
+      const existing = appState.selectedDatasets.find((d) => libraryKeyOf(d) === key);
       if (!existing) {
-        const rec = appState.datasetLibrary.find((d) => d.dataset_id === ds);
-        if (rec) appState.selectedDatasets = [...appState.selectedDatasets, rec];
+        const rec = appState.datasetLibrary.find((d) => libraryKeyOf(d) === key)
+          || appState.datasetLibrary.find((d) => d.dataset_id === ds);
+        if (rec) addLibraryRecordToSelection(rec);
       }
       appState.lastRunPlan = null;
       renderDatasetLibrary();
@@ -3445,18 +3635,20 @@ HTML_PAGE = """<!doctype html>
     function renderDatasetLibrary() {
       const host = document.getElementById("datasetLibrary");
       if (!host) return;
-      const selected = new Set(selectedDatasetIds());
+      const selected = new Set(appState.selectedDatasets.map((d) => libraryKeyOf(d)));
       host.innerHTML = appState.datasetLibrary.map((rec) => {
-        const active = selected.has(rec.dataset_id);
+        const key = libraryKeyOf(rec);
+        const active = selected.has(key);
         const support = datasetWorkflowSupport(rec.dataset_id);
         return `
           <div class="dataset-library-card ${active ? "active" : ""}">
             <div class="dataset-library-head">
               <div>
-                <div class="dataset-library-title">${rec.dataset_id}</div>
-                <div class="dataset-library-meta">${txt(rec.dataset_name, "No dataset name")}<br>${txt(rec.bids_root, "path not registered")}<br>${esc(support.detail)}</div>
+                <div class="dataset-library-title">${esc(rec.dataset_id)}</div>
+                <div class="dataset-library-meta">${esc(txt(rec.dataset_name, "No dataset name"))}<br>${esc(txt(rec.bids_root, "path not registered"))}<br>${esc(support.detail)}</div>
               </div>
-              <button class="btn secondary" type="button" data-dataset-toggle="${rec.dataset_id}">
+              <button class="btn secondary" type="button"
+                data-dataset-toggle="${esc(key)}">
                 ${active ? "Remove" : "Select"}
               </button>
             </div>
@@ -3483,10 +3675,12 @@ HTML_PAGE = """<!doctype html>
       }
       appState.datasetLibrary = nextEntries;
       appState.datasetLibrarySignature = nextSignature;
-      const selectedById = new Map(appState.selectedDatasets.map((rec) => [txt(rec.dataset_id, ""), { ...rec }]));
+      const selectedByKey = new Map(
+        appState.selectedDatasets.map((rec) => [libraryKeyOf(rec), { ...rec }])
+      );
       const refreshed = [];
       for (const rec of appState.datasetLibrary) {
-        const current = selectedById.get(txt(rec.dataset_id, ""));
+        const current = selectedByKey.get(libraryKeyOf(rec));
         if (current) refreshed.push({ ...rec, ...current });
       }
       appState.selectedDatasets = refreshed;
@@ -3552,8 +3746,8 @@ HTML_PAGE = """<!doctype html>
               </div>
               <div class="config-cell">
                 <div class="config-title">Coverage Summary</div>
-                <div class="config-value">Subjects found: ${txt(inventory.subjects_total, "0")} | total runs: ${txt(inventory.total_runs, "0")} | events: ${txt(capability.event_files, "0")}</div>
-                <div class="config-value">Preprocessed time-series: ${txt(capability.timeseries_files, "0")} | self events: ${txt(capability.self_event_hits, "0")} | non-self events: ${txt(capability.nonself_event_hits, "0")}</div>
+                <div class="config-value">Subjects found: ${esc(txt(inventory.subjects_total, "0"))} | total runs: ${esc(txt(inventory.total_runs, "0"))} | events: ${esc(txt(capability.event_files, "0"))}</div>
+                <div class="config-value">Preprocessed time-series: ${esc(txt(capability.timeseries_files, "0"))} | self events: ${esc(txt(capability.self_event_hits, "0"))} | non-self events: ${esc(txt(capability.nonself_event_hits, "0"))}</div>
                 <div class="config-value">Sessions: ${esc(asList(mapping.sessions).join(", ") || "-")} | condition: ${esc(txt(mapping.condition, "-"))} | atlas: ${esc(txt(mapping.atlas, "-"))}</div>
               </div>
             </div>
@@ -3629,7 +3823,8 @@ HTML_PAGE = """<!doctype html>
         const review = reviewsByDataset[datasetId] || {};
         const availableSubjects = asList((review.inventory || {}).all_subjects).map(canonicalSubjectId).filter(Boolean);
         const mapping = (appState.subjectMapping && appState.subjectMapping[datasetId]) || {};
-        const rows = anchorSubjects.map((anchorSubject, idx) => {
+        const rows = anchorSubjects.map((anchorSubject) => {
+          // The automatic default is identity only (same subject ID) or Unmapped.
           const autoDefault = txt((((plan && plan.subject_mapping_auto) || {})[datasetId] || {})[anchorSubject], "");
           const selectedValue = canonicalSubjectId(mapping[anchorSubject] || autoDefault);
           const options = [
@@ -3646,7 +3841,7 @@ HTML_PAGE = """<!doctype html>
                   ${options}
                 </select>
               </td>
-              <td>${esc(displaySubjectId(autoDefault || availableSubjects[idx] || ""))}</td>
+              <td>${esc(displaySubjectId(autoDefault))}</td>
             </tr>
           `;
         }).join("");
@@ -3658,7 +3853,7 @@ HTML_PAGE = """<!doctype html>
                 <div class="dataset-library-meta">Reference dataset: ${esc(anchorDatasetId)} | available subjects: ${availableSubjects.length}</div>
               </div>
               <div class="dataset-pills">
-                ${makeMetadataPill("Mapping", "One-to-many default")}
+                ${makeMetadataPill("Mapping", "Same participant ID only")}
                 ${makeMetadataPill("Origin", displayDataOriginShort(review.data_origin))}
               </div>
             </div>
@@ -3687,7 +3882,7 @@ HTML_PAGE = """<!doctype html>
       });
       const ciMode = txt(plan && plan.ci_mode, "disabled");
       const baseNote = ciMode === "mixed_source"
-        ? `A combined index across multiple datasets is enabled with ${anchorDatasetId} as the reference dataset. Review every participant remap before starting the run.`
+        ? `A combined index across multiple datasets is enabled with ${anchorDatasetId} as the reference dataset. Only participants with the same ID are matched automatically; any manual match asserts that both IDs are the same person. Unmatched participants get an undefined (NaN) index.`
         : `Metrics are split across datasets, but the combined index is not active yet. This matching table will be used once all five MPCs are included and the combined index is enabled.`;
       setText("subjectMappingStatus", baseNote);
     }
@@ -3758,9 +3953,17 @@ HTML_PAGE = """<!doctype html>
       const createdAt = txt(manifest.created_at_human, "unknown time");
       const note = txt(manifest.ci_problem_note, "");
       const suffix = note ? ` Note: ${note}` : "";
+      const hasCounts = (
+        manifest.ci_rows_total !== undefined && manifest.ci_rows_total !== null
+      );
+      const definedTxt = hasCounts
+        ? ` Defined CI rows: ${txt(manifest.ci_rows_defined, "0")} of `
+          + `${txt(manifest.ci_rows_total, "0")} (undefined rows are excluded, `
+          + "never counted as zero)."
+        : "";
       setText(
         "mixedSourceSummaryStatus",
-        `Final combined results bundle created at ${createdAt}. Reference dataset: ${txt(manifest.anchor_dataset_id, "-")}.${suffix}`
+        `Final combined results bundle created at ${createdAt}. Reference dataset: ${txt(manifest.anchor_dataset_id, "-")}.${definedTxt}${suffix}`
       );
     }
 
@@ -3773,6 +3976,14 @@ HTML_PAGE = """<!doctype html>
       const host = document.getElementById("runPlanList");
       if (host) {
         const rows = [];
+        if (res.execution_note) {
+          rows.push(`
+            <div class="plan-card notice">
+              <div class="dataset-library-title">HLRS Hunter campaign build only</div>
+              <div class="dataset-library-meta">${esc(res.execution_note)}</div>
+            </div>
+          `);
+        }
         if (res.ci_problem_note) {
           rows.push(`
             <div class="plan-card problem">
@@ -3795,8 +4006,8 @@ HTML_PAGE = """<!doctype html>
           const detailLines = asList(support.details).filter(Boolean).map((line) => `<div class="dataset-library-meta">${esc(line)}</div>`).join("");
           return `
             <div class="plan-card ${cardClass}">
-              <div class="dataset-library-title">Run ${idx + 1}: ${txt(item.dataset_id, "-")}</div>
-              <div class="dataset-library-meta">Metrics: ${asList(item.metrics).join(", ") || "none"}<br>Data source: ${displayDataOrigin(item.data_origin)}<br>Run location: ${displayBackend(res.execution_mode)}${item.compute_ci ? "<br>Combined index: included in this run" : ""}</div>
+              <div class="dataset-library-title">Run ${idx + 1}: ${esc(txt(item.dataset_id, "-"))}</div>
+              <div class="dataset-library-meta">Metrics: ${esc(asList(item.metrics).join(", ") || "none")}<br>Data source: ${esc(displayDataOrigin(item.data_origin))}<br>Run location: ${esc(displayBackend(res.execution_mode))}${item.compute_ci ? "<br>Combined index: included in this run" : ""}</div>
               <div class="dataset-library-meta"><strong>${esc(txt(support.support_label, "Run status"))}:</strong> ${esc(txt(support.summary, ""))}</div>
               ${detailLines}
             </div>
@@ -3844,7 +4055,12 @@ HTML_PAGE = """<!doctype html>
     }
 
     async function apiJson(path, method="GET", payload=null, headers={}) {
-      const opts = { method, cache: "no-store", headers: { ...headers } };
+      const opts = {
+        method, cache: "no-store", credentials: "same-origin", headers: { ...headers },
+      };
+      if (String(method).toUpperCase() !== "GET") {
+        opts.headers["X-IMPaCT-CSRF"] = CSRF_TOKEN;
+      }
       if (payload !== null) {
         opts.headers["Content-Type"] = "application/json";
         opts.body = JSON.stringify(payload);
@@ -3962,23 +4178,31 @@ HTML_PAGE = """<!doctype html>
       const primary = appState.selectedDatasets.find((d) => d.dataset_id === primaryDatasetId) || appState.selectedDatasets[0] || null;
       if (!primary) return;
 
+      // User-edited intake fields are never overwritten (see intakeDirty).
+      const canSet = (el) => (
+        el && document.activeElement !== el && !intakeDirty.has(el.id)
+      );
       const dsField = document.getElementById("datasetId");
-      if (dsField && document.activeElement !== dsField) dsField.value = txt(primary.dataset_id, "");
+      if (canSet(dsField)) dsField.value = txt(primary.dataset_id, "");
       const originField = document.getElementById("dataOrigin");
-      if (originField && document.activeElement !== originField) originField.value = txt(primary.data_origin, "real");
+      if (canSet(originField)) originField.value = txt(primary.data_origin, "real");
       const pathField = document.getElementById("datasetPath");
-      if (pathField && txt(primary.bids_root, "").trim() && document.activeElement !== pathField) {
+      if (canSet(pathField) && txt(primary.bids_root, "").trim()) {
         pathField.value = txt(primary.bids_root, "");
       }
       const modField = document.getElementById("datasetModality");
-      if (modField && txt(primary.modality_profile, "").trim() && document.activeElement !== modField) {
+      if (canSet(modField) && txt(primary.modality_profile, "").trim()) {
         modField.value = txt(primary.modality_profile, "auto");
       }
 
       const outField = document.getElementById("outDir");
       const originKey = txt(primary.data_origin, "real").trim().toLowerCase();
-      const primaryOutDir = txt(primary.out_dir, "").trim() || defaultOutDirForOrigin(originKey);
-      if (outField) {
+      // The intake form holds the BASE output directory; the per-dataset folder
+      // is derived by the server (using another dataset's folder nests/collides).
+      const primaryOutDir = txt(primary.base_out_dir, "").trim()
+        || txt(primary.out_dir, "").trim()
+        || defaultOutDirForOrigin(originKey);
+      if (outField && !intakeDirty.has("outDir")) {
         const currentOut = txt(outField.value, "").trim();
         const incompatible = (
           (originKey === "real" && isTestObjectsPath(currentOut))
@@ -4044,9 +4268,9 @@ HTML_PAGE = """<!doctype html>
         if (!rec) continue;
         rows.push(`
           <tr>
-            <td>${metric}</td>
-            <td>${txt(rec.ready, "0")}</td>
-            <td>${txt(rec.not_ready, "0")}</td>
+            <td>${esc(metric)}</td>
+            <td>${esc(txt(rec.ready, "0"))}</td>
+            <td>${esc(txt(rec.not_ready, "0"))}</td>
             <td>${fmtNumber(Number(rec.ready_fraction || 0) * 100.0, 1)}%</td>
           </tr>
         `);
@@ -4067,9 +4291,9 @@ HTML_PAGE = """<!doctype html>
         const detail = txt(c.message, "-");
         return `
           <tr>
-            <td>${txt(c.name, "-")}</td>
-            <td>${status}</td>
-            <td>${detail}</td>
+            <td>${esc(txt(c.name, "-"))}</td>
+            <td>${esc(status)}</td>
+            <td>${esc(detail)}</td>
           </tr>
         `;
       }).join("");
@@ -4180,19 +4404,36 @@ HTML_PAGE = """<!doctype html>
     function syncControlsFromState(data) {
       const ctl = data.control || {};
       const active = ctl.active_selection || {};
-      const dsField = document.getElementById("datasetId");
-      if (dsField && active.dataset_id && document.activeElement !== dsField) dsField.value = active.dataset_id;
-      const originField = document.getElementById("dataOrigin");
-      if (originField && active.data_origin && document.activeElement !== originField) originField.value = active.data_origin;
-      const outField = document.getElementById("outDir");
-      if (outField && active.out_dir && document.activeElement !== outField) outField.value = active.out_dir;
-      const pathField = document.getElementById("datasetPath");
-      if (pathField && active.bids_root && document.activeElement !== pathField) pathField.value = active.bids_root;
-      const uploadId = document.getElementById("uploadDatasetId");
-      if (uploadId && active.dataset_id && document.activeElement !== uploadId) uploadId.value = active.dataset_id;
-      if (active.modality_profile) {
-        const modSel = document.getElementById("datasetModality");
-        if (modSel && document.activeElement !== modSel) modSel.value = active.modality_profile;
+      // Intake fields follow the server only when its active selection actually
+      // changes (not on every 2 s poll), and never overwrite fields the user
+      // edited. Previously the poll reverted a newly typed dataset ID within
+      // 2 s, so register/upload went to the wrong dataset.
+      const selectionSig = JSON.stringify([
+        active.dataset_id, active.data_origin, active.out_dir, active.bids_root,
+        active.modality_profile, ctl.base_out_dir,
+      ]);
+      if (selectionSig !== lastSyncedSelectionSig) {
+        lastSyncedSelectionSig = selectionSig;
+        const setIfClean = (id, value) => {
+          const el = document.getElementById(id);
+          const v = txt(value, "").trim();
+          if (!el || !v || intakeDirty.has(id) || document.activeElement === el) return;
+          el.value = v;
+        };
+        const activeOrigin = txt(active.data_origin, "real").trim().toLowerCase();
+        setIfClean("datasetId", active.dataset_id);
+        setIfClean("dataOrigin", active.data_origin);
+        const baseOut = activeOrigin === "dummy"
+          ? "test_objects/runs"
+          : ctl.base_out_dir;
+        setIfClean("outDir", baseOut);
+        setIfClean("datasetPath", active.bids_root);
+        setIfClean("datasetModality", active.modality_profile);
+        syncUploadDatasetIdFromDatasetId();
+      }
+      if (!libraryLoadedOnce && Array.isArray(ctl.dataset_library)) {
+        libraryLoadedOnce = true;
+        updateDatasetLibrary(ctl.dataset_library);
       }
       setText("datasetSetupStatus", ctl.last_dataset_message || "No dataset action yet.");
       const managed = ctl.managed_run || {};
@@ -4241,6 +4482,15 @@ HTML_PAGE = """<!doctype html>
         });
       };
 
+      const intakeIds = [
+        "datasetId", "dataOrigin", "outDir", "datasetPath", "datasetModality",
+      ];
+      for (const id of intakeIds) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        el.addEventListener("input", () => intakeDirty.add(id));
+        el.addEventListener("change", () => intakeDirty.add(id));
+      }
       const dsIdInput = document.getElementById("datasetId");
       if (dsIdInput) {
         dsIdInput.addEventListener("input", () => {
@@ -4260,6 +4510,7 @@ HTML_PAGE = """<!doctype html>
       const primarySel = document.getElementById("primaryDataset");
       if (primarySel) primarySel.addEventListener("change", () => {
         appState.lastRunPlan = null;
+        intakeDirty.clear();  // explicit choice: intake fields follow the new primary
         syncDatasetIntakeFieldsFromPrimary(true);
         applyDatasetDefaultsUi();
         renderMetricMappingGrid();
@@ -4439,7 +4690,26 @@ HTML_PAGE = """<!doctype html>
       bind("btnSetupFix", async () => {
         try {
           const payload = collectRunPayload();
-          const res = await apiJson("/api/setup/autofix", "POST", payload);
+          payload.install_python_packages = false;
+          let res = await apiJson("/api/setup/autofix", "POST", payload);
+          const missing = asList(res.pip_install_skipped);
+          if (missing.length) {
+            // Installing into the pinned conda env changes it; ask explicitly.
+            const ok = window.confirm(
+              `Missing Python packages: ${missing.join(", ")}.\\n\\n`
+              + "Install them with pip into "
+              + `${txt(res.pip_install_target, "the running Python")}? `
+              + "This modifies the pinned conda environment. The recommended fix is "
+              + "'conda env update -n impact-synergy-clean -f environment.yml'."
+            );
+            if (ok) {
+              res = await apiJson(
+                "/api/setup/autofix",
+                "POST",
+                { ...payload, install_python_packages: true }
+              );
+            }
+          }
           setText("setupStatus", res.message || "Setup auto-fix completed.");
           if (res.report) renderSetupTable(res.report);
         } catch (err) {
@@ -4457,11 +4727,12 @@ HTML_PAGE = """<!doctype html>
             modality_profile: txt(document.getElementById("datasetModality")?.value, "auto").trim(),
           };
           const res = await apiJson("/api/dataset/register", "POST", payload);
+          intakeDirty.clear();
           setText("datasetSetupStatus", res.message || "Dataset registered.");
           try {
             const ctl = await apiJson("/api/control/state", "GET");
             updateDatasetLibrary(ctl.dataset_library || []);
-            if (res.dataset_id) selectDatasetById(res.dataset_id);
+            if (res.dataset_id) selectDatasetById(res.dataset_id, res.library_key);
           } catch (_err) {}
           try {
             await runDatasetWizard(false);
@@ -4485,32 +4756,54 @@ HTML_PAGE = """<!doctype html>
           setText("datasetSetupStatus", "Choose an archive file first.");
           return;
         }
-        const targetDatasetId = txt(document.getElementById("uploadDatasetId")?.value, "").trim()
-          || txt(document.getElementById("datasetId")?.value, "").trim();
+        // The visible Dataset ID field is the upload target (the hidden mirror
+        // used to be overwritten by the status poll).
+        const targetDatasetId = txt(
+          document.getElementById("datasetId")?.value, ""
+        ).trim();
         const outDir = txt(document.getElementById("outDir")?.value, "").trim();
         const dataOrigin = txt(document.getElementById("dataOrigin")?.value, "real").trim();
         const modalityProfile = txt(document.getElementById("datasetModality")?.value, "auto").trim();
+        const sendUpload = (replaceExisting) => fetch("/api/dataset/upload", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "X-IMPaCT-CSRF": CSRF_TOKEN,
+            "X-Filename": file.name,
+            "X-Dataset-Id": targetDatasetId,
+            "X-Out-Dir": outDir,
+            "X-Data-Origin": dataOrigin,
+            "X-Modality-Profile": modalityProfile,
+            "X-Replace-Existing": replaceExisting ? "1" : "0",
+          },
+          body: file,
+        });
         try {
-          const r = await fetch("/api/dataset/upload", {
-            method: "POST",
-            headers: {
-              "X-Filename": file.name,
-              "X-Dataset-Id": targetDatasetId,
-              "X-Out-Dir": outDir,
-              "X-Data-Origin": dataOrigin,
-              "X-Modality-Profile": modalityProfile,
-            },
-            body: file,
-          });
-          const data = await r.json();
+          let r = await sendUpload(false);
+          let data = await r.json();
+          if (r.status === 409) {
+            const ok = window.confirm(
+              `${txt(data.error, "The dataset already exists.")}\\n\\n`
+              + "Replace it with the uploaded archive?"
+            );
+            if (!ok) {
+              setText(
+                "datasetSetupStatus", "Upload cancelled; the existing dataset was kept."
+              );
+              return;
+            }
+            r = await sendUpload(true);
+            data = await r.json();
+          }
           if (!r.ok) {
             throw new Error(data.error || `HTTP ${r.status}`);
           }
+          intakeDirty.clear();
           setText("datasetSetupStatus", data.message || "Dataset uploaded.");
           try {
             const ctl = await apiJson("/api/control/state", "GET");
             updateDatasetLibrary(ctl.dataset_library || []);
-            if (data.dataset_id) selectDatasetById(data.dataset_id);
+            if (data.dataset_id) selectDatasetById(data.dataset_id, data.library_key);
           } catch (_err) {}
           const dsField = document.getElementById("datasetId");
           if (dsField && data.dataset_id) dsField.value = data.dataset_id;
@@ -4722,11 +5015,11 @@ HTML_PAGE = """<!doctype html>
       el.innerHTML = "";
       asList(steps).forEach(s => {
         const d = document.createElement("div");
-        d.className = `step ${s.status}`;
+        d.className = `step ${txt(s.status, "").replace(/[^a-z_-]/gi, "")}`;
         d.innerHTML = `
-          <div class="s-id">Step ${s.id}</div>
-          <div class="s-name">${s.name}</div>
-          <div class="s-state">${s.status}</div>
+          <div class="s-id">Step ${esc(s.id)}</div>
+          <div class="s-name">${esc(s.name)}</div>
+          <div class="s-state">${esc(s.status)}</div>
         `;
         el.appendChild(d);
       });
@@ -4749,24 +5042,26 @@ HTML_PAGE = """<!doctype html>
         const nodesUsed = (c.n_nodes_used === null || c.n_nodes_used === undefined) ? "?" : String(c.n_nodes_used);
         const d = document.createElement("div");
         d.className = "checkpoint";
+        // Checkpoint JSON is read from disk: escape every interpolated field.
+        const pctW = (v) => Math.max(0, Math.min(100, Number(v) || 0));
         d.innerHTML = `
           <div class="checkpoint-head">
-            <span class="state-badge ${stateClass}">${state}</span>
-            <div class="name" title="${c.file}">${c.file}</div>
+            <span class="state-badge ${stateClass}">${esc(state)}</span>
+            <div class="name" title="${esc(c.file)}">${esc(c.file)}</div>
           </div>
-          <div class="meta">subject=${c.subject || "?"} | session=${c.session || "?"} | condition=${c.condition || "?"} | run=${c.run || "?"} | atlas=${c.atlas || "?"}(${atlasSize}) | bins=${binsUsed} | nodes=${nodesUsed} | status=${c.status} | phase=${c.iim_phase || "?"} | mode=${c.phase2_mode || "?"} | phase1 eta=${c.phase1_eta_human || "n/a"}</div>
+          <div class="meta">subject=${esc(c.subject || "?")} | session=${esc(c.session || "?")} | condition=${esc(c.condition || "?")} | run=${esc(c.run || "?")} | atlas=${esc(c.atlas || "?")}(${esc(atlasSize)}) | bins=${esc(binsUsed)} | nodes=${esc(nodesUsed)} | status=${esc(c.status)} | phase=${esc(c.iim_phase || "?")} | mode=${esc(c.phase2_mode || "?")} | phase1 eta=${esc(c.phase1_eta_human || "n/a")}</div>
           <div class="bars-2">
             <div>
-              <div class="small">Phase 1 (Psi): ${c.phase1_done}/${c.phase1_total ?? "?"} (${fmtNumber(c.phase1_pct,1)}%)</div>
-              <div class="bar"><span style="width:${Math.max(0, Math.min(100, c.phase1_pct || 0))}%"></span></div>
+              <div class="small">Phase 1 (Psi): ${esc(c.phase1_done)}/${esc(c.phase1_total ?? "?")} (${fmtNumber(c.phase1_pct,1)}%)</div>
+              <div class="bar"><span style="width:${pctW(c.phase1_pct)}%"></span></div>
             </div>
             <div>
-              <div class="small">Materialize kernels: ${c.materialization_done}/${c.materialization_total ?? "?"} (${fmtNumber(c.materialization_pct,1)}%)</div>
-              <div class="bar blue"><span style="width:${Math.max(0, Math.min(100, c.materialization_pct || 0))}%"></span></div>
+              <div class="small">Materialize kernels: ${esc(c.materialization_done)}/${esc(c.materialization_total ?? "?")} (${fmtNumber(c.materialization_pct,1)}%)</div>
+              <div class="bar blue"><span style="width:${pctW(c.materialization_pct)}%"></span></div>
             </div>
             <div>
-              <div class="small">Cuts (lookup/aggregate): ${c.cuts_done}/${c.cuts_total ?? "?"} (${fmtNumber(c.cuts_pct,1)}%)</div>
-              <div class="bar orange"><span style="width:${Math.max(0, Math.min(100, c.cuts_pct || 0))}%"></span></div>
+              <div class="small">Cuts (lookup/aggregate): ${esc(c.cuts_done)}/${esc(c.cuts_total ?? "?")} (${fmtNumber(c.cuts_pct,1)}%)</div>
+              <div class="bar orange"><span style="width:${pctW(c.cuts_pct)}%"></span></div>
             </div>
           </div>
         `;
@@ -4951,7 +5246,7 @@ HTML_PAGE = """<!doctype html>
       const ds = data.dataset_context || {};
       const rc = data.run_config || {};
       document.getElementById("datasetLabel").textContent = `${data.dataset_id} (${ds.dataset_name || "unknown"})`;
-      document.getElementById("datasetPath").textContent = `path: ${ds.dataset_root || "not found"} | modality: ${ds.modality || "unknown"}`;
+      document.getElementById("monitorDatasetPath").textContent = `path: ${ds.dataset_root || "not found"} | modality: ${ds.modality || "unknown"}`;
       document.getElementById("cohortSubjects").textContent = `${ds.subjects_total || 0} subjects`;
       document.getElementById("cohortMeta").textContent =
         `participants.tsv: ${ds.participants_total || 0} | with runs: ${ds.subjects_with_runs || 0} | events: ${ds.events_total || 0}`;
@@ -5298,9 +5593,10 @@ def _checkpoint_filename_for_ts(
     include_phase1_signature: bool = True,
 ) -> str:
     """
-    Reproduce the checkpoint naming logic from synergy_ci._iim_worker_from_path.
+    Reproduce the checkpoint naming logic from synergy_ci._iim_worker_from_path
+    (which uses os.path.abspath, so symlinks are not resolved here either).
     """
-    path_abs = str(Path(ts_path).resolve())
+    path_abs = os.path.abspath(str(ts_path))
     sig = (
         f"{path_abs}|bins={bins}|lag={lag_trs}|n_parts={n_parts}|"
         f"max_tp={max_timepoints}|max_nodes={max_nodes}|"
@@ -5331,7 +5627,25 @@ class DashboardState:
     def __init__(self, cfg: DashboardConfig) -> None:
         self.cfg = cfg
         self._repo_root = REPO_ROOT
+        if not is_safe_token(cfg.dataset_id):
+            raise ValueError(f"Invalid dataset id: {cfg.dataset_id!r}")
+        # Base output root (CLI --out-dir). Per-dataset output directories are
+        # always derived from this base, never from the active dataset's
+        # effective directory (which caused cross-dataset collisions).
+        self._base_out_dir = Path(cfg.out_dir).expanduser().resolve()
+        # Short critical sections for managed-process state.
         self._control_lock = threading.RLock()
+        # Dataset registry, active selection and persisted caches.
+        self._state_lock = threading.RLock()
+        # Serialises run starts; heavy planning runs outside _control_lock.
+        self._start_lock = threading.Lock()
+        self._history_lock = threading.Lock()
+        self._library_cache: dict[str, Any] = {"t": 0.0, "data": None}
+        self._managed_stop_requested = False
+        self._managed_adopted = False
+        # Upload guards (make_server overrides max_upload_bytes from --max-upload-gb).
+        self.max_upload_bytes = DEFAULT_MAX_UPLOAD_BYTES
+        self.max_extract_bytes = DEFAULT_MAX_EXTRACT_BYTES
         self._managed_proc: subprocess.Popen | None = None
         self._managed_pgid: int | None = None
         self._managed_started_unix: float | None = None
@@ -5376,9 +5690,14 @@ class DashboardState:
         self._dataset_profile_file = self._control_cache_dir / "dataset_profile_cache.json"
         self._last_error_file = self._control_cache_dir / "last_error.json"
         self._last_mixed_source_file = self._control_cache_dir / "last_mixed_source_result.json"
+        self._managed_run_file = self._control_cache_dir / "managed_run.json"
         self._load_control_cache()
 
-        # Keep the full timeline for the active run.
+        # Chart timeline for the active run, bounded to history_points (older
+        # points are thinned so the whole run stays visible at lower resolution).
+        self._history_points = max(
+            60, int(cfg.history_points or DEFAULT_HISTORY_POINTS)
+        )
         self.history: list[dict[str, Any]] = []
         self._history_run_pid: int | None = None
         self._history_run_start_unix: float | None = None
@@ -5395,14 +5714,27 @@ class DashboardState:
         self._step2_file = Path()
         self._doc_files: list[Path] = []
         self._ck_dir = Path()
-        self._set_runtime_paths(cfg.out_dir, cfg.dataset_id, cfg.data_origin)
+        try:
+            init_out = resolve_dataset_provenance(
+                repo_root=self._repo_root,
+                out_dir=self._base_out_dir,
+                dataset_id=cfg.dataset_id,
+                data_origin=cfg.data_origin,
+            ).effective_out_dir
+        except Exception:
+            init_out = self._base_out_dir
+        self._active_selection["out_dir"] = str(init_out)
+        self._set_runtime_paths(init_out, cfg.dataset_id, cfg.data_origin)
 
         if self._active_selection.get("bids_root") is None:
-            auto_root = self._detect_dataset_root_for_id(cfg.dataset_id)
+            auto_root = self._detect_dataset_root_for_id(
+                cfg.dataset_id, cfg.data_origin
+            )
             if auto_root is not None:
                 self._active_selection["bids_root"] = str(auto_root)
 
         self._dataset_inventory = self._build_dataset_inventory()
+        self._adopt_persisted_managed_run()
 
         # Prime psutil system and dashboard-process counters.
         psutil.cpu_percent(interval=None)
@@ -5424,14 +5756,39 @@ class DashboardState:
         ]
         self._ck_dir = out_p / "cache" / "iim_checkpoints"
 
+    def _normalize_registry(self, raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """
+        Key registry records by (dataset_id, origin) and drop unsafe IDs.
+
+        Older registries were keyed by dataset_id only, so a synthetic copy
+        overwrote the real entry; those records are re-keyed here.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for key, rec in raw.items():
+            if not isinstance(rec, dict):
+                continue
+            ds = str(
+                rec.get("dataset_id") or str(key).split(SYNTHETIC_LIBRARY_SUFFIX)[0]
+            )
+            if not is_safe_token(ds):
+                continue
+            try:
+                origin = normalize_data_origin(rec.get("data_origin"))
+            except ValueError:
+                continue
+            out[library_key_for(ds, origin)] = {
+                **dict(rec),
+                "dataset_id": ds,
+                "data_origin": origin,
+            }
+        return out
+
     def _load_control_cache(self) -> None:
         if self._registry_file.exists():
             try:
                 raw = json.loads(self._registry_file.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
-                    self._dataset_registry = {
-                        str(k): dict(v) for k, v in raw.items() if isinstance(v, dict)
-                    }
+                    self._dataset_registry = self._normalize_registry(raw)
             except Exception:
                 pass
         if self._readiness_summary_file.exists():
@@ -5488,56 +5845,44 @@ class DashboardState:
             except Exception:
                 pass
 
+    def _write_json_atomic(self, path: Path, payload: Any) -> None:
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+
     def _persist_control_cache(self) -> None:
-        self._control_cache_dir.mkdir(parents=True, exist_ok=True)
-        self._registry_file.write_text(
-            json.dumps(self._dataset_registry, indent=2),
-            encoding="utf-8",
-        )
-        if self._last_readiness_summary is not None:
-            self._readiness_summary_file.write_text(
-                json.dumps(self._last_readiness_summary, indent=2),
-                encoding="utf-8",
+        with self._state_lock:
+            self._control_cache_dir.mkdir(parents=True, exist_ok=True)
+            self._write_json_atomic(self._registry_file, self._dataset_registry)
+            # (path, payload, write-if-truthy?) -- None payloads are never written.
+            pending = (
+                (self._readiness_summary_file, self._last_readiness_summary, False),
+                (self._readiness_preview_file, self._last_readiness_preview, True),
+                (self._readiness_cache_file, self._dataset_readiness_cache, True),
+                (self._setup_report_file, self._last_setup_report, False),
+                (self._dataset_profile_file, self._dataset_profile_cache, True),
+                (self._last_error_file, self._last_error, False),
             )
-        if self._last_readiness_preview:
-            self._readiness_preview_file.write_text(
-                json.dumps(self._last_readiness_preview, indent=2),
-                encoding="utf-8",
-            )
-        if self._dataset_readiness_cache:
-            self._readiness_cache_file.write_text(
-                json.dumps(self._dataset_readiness_cache, indent=2),
-                encoding="utf-8",
-            )
-        if self._last_setup_report is not None:
-            self._setup_report_file.write_text(
-                json.dumps(self._last_setup_report, indent=2),
-                encoding="utf-8",
-            )
-        if self._dataset_profile_cache:
-            self._dataset_profile_file.write_text(
-                json.dumps(self._dataset_profile_cache, indent=2),
-                encoding="utf-8",
-            )
-        if self._last_error is not None:
-            self._last_error_file.write_text(
-                json.dumps(self._last_error, indent=2),
-                encoding="utf-8",
-            )
-        if self._last_mixed_source_result is not None:
-            self._last_mixed_source_file.write_text(
-                json.dumps(self._last_mixed_source_result, indent=2),
-                encoding="utf-8",
-            )
-        elif self._last_mixed_source_file.exists():
-            self._last_mixed_source_file.unlink(missing_ok=True)
+            for path, payload, needs_content in pending:
+                if payload is None or (needs_content and not payload):
+                    continue
+                self._write_json_atomic(path, payload)
+            mixed = self._last_mixed_source_result
+            if mixed is not None:
+                self._write_json_atomic(self._last_mixed_source_file, mixed)
+            elif self._last_mixed_source_file.exists():
+                self._last_mixed_source_file.unlink(missing_ok=True)
 
     def _clean_dataset_id(self, dataset_id: str | None) -> str:
         d = str(dataset_id or "").strip()
         if not d:
             raise ValueError("dataset_id is required")
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", d):
-            raise ValueError("dataset_id contains invalid characters")
+        if not is_safe_token(d):
+            raise ValueError(
+                f"Invalid dataset_id {d!r}: use 1-128 letters, digits, '.', '_' or "
+                "'-', "
+                "starting with a letter or digit (no path separators)."
+            )
         return d
 
     def _token_list(self, value: Any) -> list[str]:
@@ -5549,6 +5894,30 @@ class DashboardState:
             parts = re.split(r"[\s,]+", str(value))
         return [p.strip() for p in parts if str(p).strip()]
 
+    def _safe_cli_tokens(self, value: Any, field: str) -> list[str]:
+        """
+        Tokens that become run_pipeline.py arguments or path components must
+        not start with '-' (flag injection) or contain separators/globs.
+        """
+        out = self._token_list(value)
+        for tok in out:
+            if not is_safe_token(tok):
+                raise ValueError(
+                    f"Invalid {field} value {tok!r}: use letters, digits, '.', '_' or "
+                    "'-', "
+                    "starting with a letter or digit."
+                )
+        return out
+
+    def _safe_cli_value(self, value: Any, field: str, default: str) -> str:
+        raw = str(value if value not in (None, "") else default).strip()
+        if not is_safe_token(raw):
+            raise ValueError(
+                f"Invalid {field} value {raw!r}: use letters, digits, '.', '_' or '-', "
+                "starting with a letter or digit."
+            )
+        return raw
+
     def _metric_list(self, value: Any) -> list[str]:
         allowed = {"RAM", "PDI", "NAS", "IIM", "SRPI"}
         out: list[str] = []
@@ -5558,31 +5927,129 @@ class DashboardState:
                 out.append(mm)
         return out
 
-    def _detect_dataset_root_for_id(self, dataset_id: str) -> Path | None:
+    def _abs_user_path(self, value: Any) -> Path:
+        """Resolve a path typed in the UI; relative paths are repo-relative."""
+        p = Path(str(value)).expanduser()
+        if not p.is_absolute():
+            p = self._repo_root / p
+        return p.resolve()
+
+    def _registry_snapshot(self) -> dict[str, dict[str, Any]]:
+        with self._state_lock:
+            raw = dict(self._dataset_registry)
+        return self._normalize_registry(raw)
+
+    def _synthetic_dataset_bases(self) -> list[Path]:
+        """
+        Folders holding synthetic BIDS datasets: <repo>/test_objects/datasets and,
+        when set, $IMPACT_SYNTH_ROOT/test_objects/datasets (the documented
+        location of the real-derived synthetic archive).
+        """
+        bases = [self._repo_root / "test_objects" / "datasets"]
+        synth_root = os.environ.get("IMPACT_SYNTH_ROOT")
+        if synth_root:
+            bases.append(Path(synth_root).expanduser() / "test_objects" / "datasets")
+        out: list[Path] = []
+        seen: set[Path] = set()
+        for base in bases:
+            try:
+                rb = base.resolve()
+            except OSError:
+                continue
+            if rb in seen or not rb.is_dir():
+                continue
+            seen.add(rb)
+            out.append(rb)
+        return out
+
+    def _synthetic_roots_in_bases(self) -> list[tuple[str, Path, Path]]:
+        """
+        (dataset_id, bids_root, base) for every synthetic dataset. Handles the
+        flat layout (<base>/<ds>) and container layouts such as
+        <base>/real_derived_synth_completed/<ds>. Flat entries win on ID clashes.
+        """
+        direct: list[tuple[str, Path, Path]] = []
+        nested: list[tuple[str, Path, Path]] = []
+        for base in self._synthetic_dataset_bases():
+            try:
+                children = sorted(base.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                if _looks_like_bids_root(child):
+                    direct.append((child.name, child, base))
+                    continue
+                try:
+                    grandchildren = sorted(child.iterdir())
+                except OSError:
+                    continue
+                for gc in grandchildren:
+                    if (
+                        gc.is_dir()
+                        and not gc.name.startswith(".")
+                        and _looks_like_bids_root(gc)
+                    ):
+                        nested.append((gc.name, gc, base))
+        out: list[tuple[str, Path, Path]] = []
+        seen: set[str] = set()
+        for ds, root, base in [*direct, *nested]:
+            if ds in seen or not is_safe_token(ds):
+                continue
+            seen.add(ds)
+            out.append((ds, root, base))
+        return out
+
+    def _detect_dataset_root_for_id(
+        self,
+        dataset_id: str,
+        data_origin: str | None = None,
+    ) -> Path | None:
+        """
+        Locate a dataset root. With an explicit origin, real datasets are never
+        resolved to synthetic folders and vice versa.
+        """
         ds = str(dataset_id)
-        reg = self._dataset_registry.get(ds) or {}
-        reg_root = reg.get("bids_root")
-        if reg_root:
-            p = Path(str(reg_root)).expanduser().resolve()
-            if p.exists():
-                return p
-        preferred = resolve_local_dataset_root(ds, self._repo_root)
-        if preferred is not None:
-            return preferred.resolve()
-        if ds.endswith("_annex"):
-            base_ds = ds[: -len("_annex")]
-            if get_report_dataset(base_ds) is not None:
-                preferred = resolve_local_dataset_root(base_ds, self._repo_root)
-                if preferred is not None:
-                    return preferred.resolve()
-        candidates = (
-            self._repo_root / "test_objects" / "datasets" / ds,
-            self._repo_root / "data" / "scratch" / ds,
-            self._repo_root / "data" / "scratch" / f"{ds}_annex",
-            self._repo_root / "data" / "managed" / ds,
-            self._repo_root / "data" / ds,
+        origin = (
+            None if data_origin in (None, "") else normalize_data_origin(data_origin)
         )
-        return _first_existing_path(*candidates)
+        registry = self._registry_snapshot()
+        if origin is None:
+            reg_keys = [
+                library_key_for(ds, REAL_DATA_ORIGIN),
+                library_key_for(ds, DUMMY_DATA_ORIGIN),
+            ]
+        else:
+            reg_keys = [library_key_for(ds, origin)]
+        for key in reg_keys:
+            reg_root = (registry.get(key) or {}).get("bids_root")
+            if reg_root:
+                p = Path(str(reg_root)).expanduser().resolve()
+                if p.exists():
+                    return p
+        if origin != DUMMY_DATA_ORIGIN:
+            preferred = resolve_local_dataset_root(ds, self._repo_root)
+            if preferred is not None:
+                return preferred.resolve()
+            if ds.endswith("_annex"):
+                base_ds = ds[: -len("_annex")]
+                if get_report_dataset(base_ds) is not None:
+                    preferred = resolve_local_dataset_root(base_ds, self._repo_root)
+                    if preferred is not None:
+                        return preferred.resolve()
+            found = _first_existing_path(
+                self._repo_root / "data" / "scratch" / ds,
+                self._repo_root / "data" / "scratch" / f"{ds}_annex",
+                self._repo_root / "data" / "managed" / ds,
+                self._repo_root / "data" / ds,
+            )
+            if found is not None or origin == REAL_DATA_ORIGIN:
+                return found
+        for synth_ds, root, _base in self._synthetic_roots_in_bases():
+            if synth_ds == ds:
+                return root.resolve()
+        return None
 
     def _set_active_selection(
         self,
@@ -5593,6 +6060,7 @@ class DashboardState:
         bids_root: str | Path | None,
         modality_profile: str,
         subjects: list[str] | None = None,
+        requested_out_dir: str | Path | None = None,
     ) -> None:
         ds = self._clean_dataset_id(dataset_id)
         origin = normalize_data_origin(data_origin)
@@ -5605,30 +6073,41 @@ class DashboardState:
         out_p = provenance.effective_out_dir
         out_p.mkdir(parents=True, exist_ok=True)
         if bids_root is None:
-            bids_p = self._detect_dataset_root_for_id(ds)
+            bids_p = self._detect_dataset_root_for_id(ds, origin)
             bids_txt = None if bids_p is None else str(bids_p)
         else:
             bids_p = Path(bids_root).expanduser().resolve()
             bids_txt = str(bids_p)
-        self._active_selection = {
-            "dataset_id": ds,
-            "out_dir": str(out_p),
-            "data_origin": str(origin),
-            "bids_root": bids_txt,
-            "modality_profile": str(modality_profile or "auto"),
-            "subjects": list(subjects or []),
-        }
-        if bids_txt:
-            self._dataset_registry[ds] = {
-                "bids_root": bids_txt,
+        with self._state_lock:
+            self._active_selection = {
+                "dataset_id": ds,
+                "out_dir": str(out_p),
                 "data_origin": str(origin),
+                "bids_root": bids_txt,
                 "modality_profile": str(modality_profile or "auto"),
-                "updated_at_unix": time.time(),
+                "subjects": list(subjects or []),
             }
-        self._set_runtime_paths(out_p, ds, origin)
-        self.cfg.subject_filter = None
-        self._dataset_inventory = self._build_dataset_inventory()
-        self._persist_control_cache()
+            if bids_txt:
+                key = library_key_for(ds, origin)
+                registry = self._registry_snapshot()
+                previous = registry.get(key) or {}
+                record = {
+                    "dataset_id": ds,
+                    "bids_root": bids_txt,
+                    "data_origin": str(origin),
+                    "modality_profile": str(modality_profile or "auto"),
+                    "updated_at_unix": time.time(),
+                }
+                base_out = requested_out_dir or previous.get("out_dir")
+                if base_out:
+                    record["out_dir"] = str(Path(str(base_out)).expanduser().resolve())
+                registry[key] = record
+                self._dataset_registry = registry
+                self._library_cache = {"t": 0.0, "data": None}
+            self._set_runtime_paths(out_p, ds, origin)
+            self.cfg.subject_filter = None
+            self._dataset_inventory = self._build_dataset_inventory()
+            self._persist_control_cache()
 
     def _classify_state(self, task_label: str) -> str | None:
         t = task_label.lower()
@@ -5644,18 +6123,21 @@ class DashboardState:
             p = Path(str(active_root)).expanduser().resolve()
             if p.exists():
                 return p
-        return self._detect_dataset_root_for_id(self.cfg.dataset_id)
+        return self._detect_dataset_root_for_id(
+            self.cfg.dataset_id, self.cfg.data_origin
+        )
 
     def _infer_origin_from_path(self, path: Path | None) -> str:
         if path is None:
             return REAL_DATA_ORIGIN
-        p = Path(path).resolve()
-        test_root = (self._repo_root / "test_objects").resolve()
-        try:
-            p.relative_to(test_root)
-            return "dummy"
-        except Exception:
-            return REAL_DATA_ORIGIN
+        test_roots = [self._repo_root / "test_objects"]
+        synth_root = os.environ.get("IMPACT_SYNTH_ROOT")
+        if synth_root:
+            test_roots.append(Path(synth_root).expanduser() / "test_objects")
+        for test_root in test_roots:
+            if _is_within(Path(path), test_root):
+                return DUMMY_DATA_ORIGIN
+        return REAL_DATA_ORIGIN
 
     def _infer_modality_from_root(self, dataset_root: Path | None) -> str:
         if dataset_root is None or not dataset_root.exists():
@@ -5666,22 +6148,72 @@ class DashboardState:
             return "fmri"
         return "auto"
 
-    def dataset_library(self) -> list[dict[str, Any]]:
-        entries: dict[str, dict[str, Any]] = {}
+    def _default_out_dir_for(self, dataset_id: str, data_origin: str | None) -> Path:
+        """
+        Requested (base) output directory for a dataset that is not active: the
+        registry's recorded base if any, else the dashboard's base --out-dir.
+        """
+        key = library_key_for(dataset_id, data_origin)
+        rec = self._registry_snapshot().get(key) or {}
+        base = rec.get("out_dir")
+        return Path(str(base)).expanduser().resolve() if base else self._base_out_dir
 
-        def _upsert(dataset_id: str, *, bids_root: Path | None, data_origin: str | None, modality_profile: str | None, source: str) -> None:
-            ds = self._clean_dataset_id(dataset_id)
+    def _cached_dataset_library(self, max_age_s: float = 3.0) -> list[dict[str, Any]]:
+        cached = self._library_cache
+        age = time.time() - float(cached.get("t", 0.0))
+        if cached.get("data") is not None and age < max_age_s:
+            return [dict(x) for x in cached["data"]]
+        data = self.dataset_library()
+        self._library_cache = {"t": time.time(), "data": [dict(x) for x in data]}
+        return data
+
+    def dataset_library(self) -> list[dict[str, Any]]:
+        """
+        Discover datasets. Entries are keyed by (dataset_id, origin) via
+        ``library_key`` so a synthetic copy never shadows the real dataset, and
+        every entry's out_dir is derived from the base output root.
+        """
+        entries: dict[str, dict[str, Any]] = {}
+        registry_keys: set[str] = set()
+
+        def _upsert(
+            dataset_id: str,
+            *,
+            bids_root: Path | None,
+            data_origin: str | None,
+            modality_profile: str | None,
+            source: str,
+            base_out_dir: str | Path | None = None,
+            overwrite: bool = True,
+        ) -> None:
+            if not is_safe_token(dataset_id):
+                return
+            ds = str(dataset_id)
             root_txt = None if bids_root is None else str(Path(bids_root).resolve())
-            origin = normalize_data_origin(data_origin or self._infer_origin_from_path(bids_root))
-            existing = entries.get(ds) or {}
+            try:
+                origin = normalize_data_origin(
+                    data_origin or self._infer_origin_from_path(bids_root)
+                )
+            except ValueError:
+                return
+            key = library_key_for(ds, origin)
+            existing = entries.get(key) or {}
+            if existing and not overwrite:
+                return
             root_obj = None if root_txt is None else Path(root_txt)
             catalog = get_report_dataset(ds)
             rec = {
                 "dataset_id": ds,
+                "library_key": key,
                 "bids_root": root_txt,
                 "data_origin": origin,
-                "modality_profile": str(modality_profile or existing.get("modality_profile") or self._infer_modality_from_root(root_obj)),
+                "modality_profile": str(
+                    modality_profile
+                    or existing.get("modality_profile")
+                    or self._infer_modality_from_root(root_obj)
+                ),
                 "source": source,
+                "workflow_support": dataset_pipeline_support_summary(ds),
             }
             if catalog is not None:
                 rec.update(
@@ -5696,38 +6228,52 @@ class DashboardState:
                         "fetch_strategy": str(catalog.fetch_strategy),
                     }
                 )
+            base_out = (
+                Path(
+                    str(
+                        base_out_dir
+                        or existing.get("base_out_dir")
+                        or self._base_out_dir
+                    )
+                )
+                .expanduser()
+                .resolve()
+            )
             provenance = resolve_dataset_provenance(
                 repo_root=self._repo_root,
-                out_dir=existing.get("out_dir") or str(self.cfg.out_dir),
+                out_dir=base_out,
                 dataset_id=ds,
                 data_origin=origin,
             )
+            rec["base_out_dir"] = str(base_out)
             rec["out_dir"] = str(provenance.effective_out_dir)
             if root_obj is not None and (root_obj / "dataset_description.json").exists():
                 try:
                     desc = json.loads((root_obj / "dataset_description.json").read_text(encoding="utf-8"))
-                    rec["dataset_name"] = desc.get("Name")
+                    name = desc.get("Name") if isinstance(desc, dict) else None
+                    rec["dataset_name"] = None if name is None else str(name)
                 except Exception:
                     rec["dataset_name"] = None
             else:
                 rec["dataset_name"] = existing.get("dataset_name")
-            entries[ds] = {**existing, **rec}
+            entries[key] = {**existing, **rec}
 
-        for ds, rec in sorted(self._dataset_registry.items()):
+        for key, rec in sorted(self._registry_snapshot().items()):
             root_txt = rec.get("bids_root")
             bids_root = None if not root_txt else Path(str(root_txt)).expanduser().resolve()
             _upsert(
-                ds,
+                str(rec.get("dataset_id")),
                 bids_root=bids_root,
                 data_origin=rec.get("data_origin"),
                 modality_profile=rec.get("modality_profile"),
                 source="registry",
+                base_out_dir=rec.get("out_dir"),
             )
+            registry_keys.add(key)
 
-        for base_dir, origin in (
-            (self._repo_root / "data" / "managed", REAL_DATA_ORIGIN),
-            (self._repo_root / "data" / "scratch", REAL_DATA_ORIGIN),
-            (self._repo_root / "test_objects" / "datasets", "dummy"),
+        for base_dir in (
+            self._repo_root / "data" / "managed",
+            self._repo_root / "data" / "scratch",
         ):
             if not base_dir.exists():
                 continue
@@ -5739,22 +6285,41 @@ class DashboardState:
                     base_ds = dataset_id[: -len("_annex")]
                     if get_report_dataset(base_ds) is not None:
                         dataset_id = base_ds
+                if library_key_for(dataset_id, REAL_DATA_ORIGIN) in registry_keys:
+                    continue  # an explicit registration wins over folder scans
                 _upsert(
                     dataset_id,
                     bids_root=child,
-                    data_origin=origin,
+                    data_origin=REAL_DATA_ORIGIN,
                     modality_profile=None,
                     source=str(base_dir.relative_to(self._repo_root)),
                 )
 
+        repo_synth_base = (self._repo_root / "test_objects" / "datasets").resolve()
+        for dataset_id, root, base in self._synthetic_roots_in_bases():
+            if library_key_for(dataset_id, DUMMY_DATA_ORIGIN) in registry_keys:
+                continue
+            _upsert(
+                dataset_id,
+                bids_root=root,
+                data_origin=DUMMY_DATA_ORIGIN,
+                modality_profile=None,
+                source=(
+                    "test_objects/datasets"
+                    if base == repo_synth_base
+                    else "synthetic_archive"
+                ),
+                overwrite=False,
+            )
+
         for ds in sorted(DATASET_DEFAULTS.keys()):
-            existing = entries.get(ds)
-            bids_root = None if existing is None else (None if not existing.get("bids_root") else Path(existing["bids_root"]))
+            if library_key_for(ds, REAL_DATA_ORIGIN) in entries:
+                continue
             _upsert(
                 ds,
-                bids_root=bids_root,
-                data_origin=(None if existing is None else existing.get("data_origin")),
-                modality_profile=(None if existing is None else existing.get("modality_profile")),
+                bids_root=self._detect_dataset_root_for_id(ds, REAL_DATA_ORIGIN),
+                data_origin=REAL_DATA_ORIGIN,
+                modality_profile=None,
                 source="defaults",
             )
 
@@ -5764,24 +6329,41 @@ class DashboardState:
         selected = payload.get("selected_datasets")
         if not isinstance(selected, list) or not selected:
             return []
-        library_index = {rec["dataset_id"]: rec for rec in self.dataset_library()}
+        library_index = {rec["library_key"]: rec for rec in self.dataset_library()}
         out: list[dict[str, Any]] = []
-        seen: set[str] = set()
+        seen: dict[str, str] = {}
         for item in selected:
             if not isinstance(item, dict):
                 continue
             ds = self._clean_dataset_id(item.get("dataset_id"))
+            origin_raw = item.get("data_origin")
+            if origin_raw:
+                lib = library_index.get(library_key_for(ds, origin_raw)) or {}
+            else:
+                lib = library_index.get(str(item.get("library_key") or ds)) or {}
+            origin = normalize_data_origin(
+                origin_raw or lib.get("data_origin") or self.cfg.data_origin
+            )
             if ds in seen:
+                if seen[ds] != origin:
+                    raise ValueError(
+                        f"Both the real and the synthetic copy of '{ds}' are selected. "
+                        "A plan can use only one copy of a dataset ID; deselect one of "
+                        "them."
+                    )
                 continue
-            seen.add(ds)
-            lib = library_index.get(ds) or {}
+            seen[ds] = origin
             bids_txt = item.get("bids_root") or lib.get("bids_root")
-            out_dir_txt = item.get("out_dir") or lib.get("out_dir") or str(self.cfg.out_dir)
-            origin = normalize_data_origin(item.get("data_origin") or lib.get("data_origin") or self.cfg.data_origin)
+            out_dir_txt = (
+                item.get("out_dir")
+                or lib.get("out_dir")
+                or str(self._default_out_dir_for(ds, origin))
+            )
             modality_profile = str(item.get("modality_profile") or lib.get("modality_profile") or "auto")
             out.append(
                 {
                     "dataset_id": ds,
+                    "library_key": library_key_for(ds, origin),
                     "bids_root": bids_txt,
                     "out_dir": out_dir_txt,
                     "data_origin": origin,
@@ -5804,52 +6386,38 @@ class DashboardState:
                 }
             ]
 
-        active_backup = dict(self._active_selection)
-        cfg_backup = {
-            "out_dir": self.cfg.out_dir,
-            "dataset_id": self.cfg.dataset_id,
-            "data_origin": self.cfg.data_origin,
-            "subject_filter": self.cfg.subject_filter,
-        }
-        inventory_backup = dict(self._dataset_inventory)
-
+        # Reviews must not touch the active selection or the monitoring paths
+        # (dataset_wizard(activate=False)); previously a multi-dataset preview
+        # left the checkpoint/step2/report paths pointing at the last dataset.
         reviews: list[dict[str, Any]] = []
-        try:
-            for base in selected_datasets:
-                review_payload = dict(payload)
-                review_payload.update(
-                    {
-                        "dataset_id": base["dataset_id"],
-                        "bids_root": base["bids_root"],
-                        "out_dir": base["out_dir"],
-                        "data_origin": base["data_origin"],
-                        "modality_profile": base["modality_profile"],
-                        "use_cache": bool(use_cache),
-                        "force_recompute": False,
-                    }
-                )
-                wiz = self.dataset_wizard(review_payload)
-                profile = dict(wiz.get("profile") or {})
-                bids_root = Path(base["bids_root"]).resolve()
-                inventory = self._build_dataset_inventory_for_root(bids_root)
-                reviews.append(
-                    {
-                        "dataset_id": str(base["dataset_id"]),
-                        "bids_root": str(bids_root),
-                        "out_dir": str(base["out_dir"]),
-                        "data_origin": str(base["data_origin"]),
-                        "modality_profile": str(base["modality_profile"]),
-                        "profile": profile,
-                        "inventory": inventory,
-                    }
-                )
-        finally:
-            self._active_selection = dict(active_backup)
-            self.cfg.out_dir = Path(cfg_backup["out_dir"]).resolve()
-            self.cfg.dataset_id = str(cfg_backup["dataset_id"])
-            self.cfg.data_origin = str(cfg_backup["data_origin"])
-            self.cfg.subject_filter = cfg_backup["subject_filter"]
-            self._dataset_inventory = dict(inventory_backup)
+        for base in selected_datasets:
+            review_payload = dict(payload)
+            review_payload.update(
+                {
+                    "dataset_id": base["dataset_id"],
+                    "bids_root": base["bids_root"],
+                    "out_dir": base["out_dir"],
+                    "data_origin": base["data_origin"],
+                    "modality_profile": base["modality_profile"],
+                    "use_cache": bool(use_cache),
+                    "force_recompute": False,
+                }
+            )
+            wiz = self.dataset_wizard(review_payload, activate=False)
+            profile = dict(wiz.get("profile") or {})
+            bids_root = Path(base["bids_root"]).resolve()
+            inventory = self._build_dataset_inventory_for_root(bids_root)
+            reviews.append(
+                {
+                    "dataset_id": str(base["dataset_id"]),
+                    "bids_root": str(bids_root),
+                    "out_dir": str(base["out_dir"]),
+                    "data_origin": str(base["data_origin"]),
+                    "modality_profile": str(base["modality_profile"]),
+                    "profile": profile,
+                    "inventory": inventory,
+                }
+            )
 
         return {
             "datasets": reviews,
@@ -5861,6 +6429,15 @@ class DashboardState:
         reviews_by_dataset: dict[str, dict[str, Any]],
         anchor_dataset_id: str,
     ) -> dict[str, dict[str, str | None]]:
+        """
+        Default cross-dataset participant mapping: identity only.
+
+        An anchor subject is paired with the subject of the same ID in another
+        dataset (e.g. a real dataset and its real-derived synthetic copy);
+        everything else stays unmapped (None). Pairing different people by list
+        position is never done automatically; users can map subjects manually,
+        which is an explicit assertion that the IDs denote the same participant.
+        """
         anchor_review = reviews_by_dataset.get(anchor_dataset_id) or {}
         anchor_subjects = [
             str(s).replace("sub-", "")
@@ -5871,14 +6448,16 @@ class DashboardState:
             if dataset_id == anchor_dataset_id:
                 out[dataset_id] = {str(s): str(s) for s in anchor_subjects}
                 continue
-            other_subjects = [
+            other_subjects = {
                 str(s).replace("sub-", "")
                 for s in (review.get("inventory") or {}).get("all_subjects", [])
-            ]
-            mapping: dict[str, str | None] = {}
-            for idx, anchor_sub in enumerate(anchor_subjects):
-                mapping[str(anchor_sub)] = other_subjects[idx] if idx < len(other_subjects) else None
-            out[dataset_id] = mapping
+            }
+            out[dataset_id] = {
+                str(anchor_sub): (
+                    str(anchor_sub) if str(anchor_sub) in other_subjects else None
+                )
+                for anchor_sub in anchor_subjects
+            }
         return out
 
     def _subject_mapping_effective(
@@ -6003,17 +6582,48 @@ class DashboardState:
         ci_mode = "disabled"
         ci_problem_note = None
         ci_allowed = bool(ci_requested)
+        plan_items: list[dict[str, Any]] = []
+        plan_blockers: list[str] = []
         if ci_requested:
             ci_mode = "single_source" if len(grouped) == 1 else "mixed_source"
             if ci_mode == "mixed_source":
                 ci_problem_note = (
-                    "This combined index would mix metrics derived from different datasets. "
-                    "The dashboard allows that plan, but it is scientifically fragile because "
-                    "participant correspondence, acquisition context, and state comparability may not match."
+                    "This combined index would mix metrics derived from different "
+                    "datasets, "
+                    "which is scientifically fragile: acquisition context and state "
+                    "comparability may not match. Participants are paired only by "
+                    "identical "
+                    "subject ID or by your explicit manual mapping, never by list "
+                    "position. "
+                    "Rows missing any component get an undefined (NaN) CI and are "
+                    "excluded "
+                    "from the per-subject summary."
                 )
+                if execution_mode == "hunter":
+                    plan_blockers.append(
+                        "A combined index across datasets cannot be assembled from a "
+                        "Hunter "
+                        "campaign build, because no metrics are computed locally. Tick "
+                        "'skip combined index' to only build the campaigns."
+                    )
+                for src_ds in sorted(set(metric_map.values()) - {anchor_dataset_id}):
+                    mapped = [
+                        a
+                        for a, b in (
+                            effective_subject_mapping.get(src_ds) or {}
+                        ).items()
+                        if b not in (None, "")
+                    ]
+                    if not mapped:
+                        plan_blockers.append(
+                            f"No {anchor_dataset_id} participant is matched to a "
+                            "participant "
+                            f"in {src_ds}. A combined index needs the same "
+                            "participants: map "
+                            "subjects explicitly or skip the combined index."
+                        )
 
-        plan_items: list[dict[str, Any]] = []
-        plan_blockers: list[str] = []
+        effective_dirs: dict[str, str] = {}
         for dataset_id, metrics in grouped.items():
             base = ds_index[dataset_id]
             run_payload = dict(payload)
@@ -6033,6 +6643,17 @@ class DashboardState:
             support_status = self._run_support_status(run_payload)
             if str(support_status.get("status")) == "blocked":
                 plan_blockers.append(f"{dataset_id}: {support_status.get('summary')}")
+            eff_txt = str(support_status.get("effective_out_dir") or "").strip()
+            if eff_txt:
+                eff_key = str(Path(eff_txt).resolve())
+                other = effective_dirs.get(eff_key)
+                if other is not None and other != dataset_id:
+                    plan_blockers.append(
+                        f"{other} and {dataset_id} would write to the same output "
+                        "directory "
+                        f"'{eff_key}'. Give one of them a different output directory."
+                    )
+                effective_dirs.setdefault(eff_key, dataset_id)
             plan_items.append(
                 {
                     "dataset_id": dataset_id,
@@ -6060,6 +6681,7 @@ class DashboardState:
             "ci_allowed": bool(ci_allowed),
             "ci_mode": ci_mode,
             "ci_problem_note": ci_problem_note,
+            "execution_note": HUNTER_BUILD_NOTE if execution_mode == "hunter" else None,
             "plan_ready": not bool(plan_blockers),
             "plan_blockers": plan_blockers,
             "dataset_reviews": dataset_reviews,
@@ -6217,6 +6839,12 @@ class DashboardState:
                 s = s[4:]
             if not s:
                 continue
+            if not is_safe_token(s):
+                raise ValueError(
+                    f"Invalid subject value {tok!r}: use letters, digits, '.', '_' or "
+                    "'-', "
+                    "starting with a letter or digit."
+                )
             if s in seen:
                 continue
             seen.add(s)
@@ -6349,11 +6977,13 @@ class DashboardState:
         lower = msg.lower()
         source_txt = str(source or "").strip()
 
+        # Unrecognised errors only offer the read-only setup check; nothing that
+        # modifies the environment is ever the default one-click fix.
         summary = "Operation failed."
         likely_cause = "The requested operation could not complete."
         recommended_fix = "Run Setup Check, then verify dataset path and run options."
-        fix_action = "run_setup_autofix"
-        fix_label = "Run setup auto-fix"
+        fix_action = "run_setup_check"
+        fix_label = "Run setup check"
 
         if "no dataset root found" in lower or "dataset path does not exist" in lower:
             summary = "Dataset path is missing."
@@ -6376,9 +7006,15 @@ class DashboardState:
         elif "importerror" in lower or "module is not available" in lower:
             summary = "Python dependencies are incomplete."
             likely_cause = "Required Python modules are missing in the current runtime."
-            recommended_fix = "Run setup auto-fix to install missing Python packages."
-            fix_action = "run_setup_autofix"
-            fix_label = "Install missing Python packages"
+            recommended_fix = (
+                "Update the pinned environment (conda env update -n "
+                "impact-synergy-clean "
+                "-f environment.yml). Auto-Fix Setup can pip-install the missing "
+                "packages "
+                "only after you confirm it."
+            )
+            fix_action = "run_setup_check"
+            fix_label = "Run setup check"
         elif "unsupported archive type" in lower:
             summary = "Unsupported archive format."
             likely_cause = "Only .zip, .tar, .tar.gz, or .tgz uploads are accepted."
@@ -6395,8 +7031,8 @@ class DashboardState:
             summary = "Run start failed."
             likely_cause = "Run settings or dataset readiness checks did not pass."
             recommended_fix = "Run setup check and MPC readiness check, then retry with a preset."
-            fix_action = "run_setup_autofix"
-            fix_label = "Run setup auto-fix"
+            fix_action = "run_setup_check"
+            fix_label = "Run setup check"
 
         return {
             "summary": summary,
@@ -6553,7 +7189,18 @@ class DashboardState:
             except Exception as exc:
                 actions.append(f"Failed to create {p}: {exc}")
 
-        install_python = self._payload_bool(payload, "install_python_packages", default=True)
+        # pip-installing into the pinned conda env changes the environment, so it
+        # only happens when the caller explicitly confirmed it (the UI asks first).
+        install_python = self._payload_bool(
+            payload, "install_python_packages", default=False
+        )
+        if missing_packages and not install_python:
+            actions.append(
+                "Missing Python packages were NOT installed: "
+                + ", ".join(sorted(set(missing_packages)))
+                + ". Update the environment (conda env update -n impact-synergy-clean "
+                "-f environment.yml) or confirm the pip install explicitly."
+            )
         if missing_packages and install_python:
             cmd = [sys.executable, "-m", "pip", "install", *sorted(set(missing_packages))]
             try:
@@ -6586,6 +7233,10 @@ class DashboardState:
             "report": after,
             "actions": actions,
             "message": self._last_setup_message,
+            "pip_install_skipped": (
+                sorted(set(missing_packages)) if not install_python else []
+            ),
+            "pip_install_target": sys.executable,
         }
 
     def _metric_structure_capability(
@@ -6680,7 +7331,13 @@ class DashboardState:
             "preprocessed_exists": bool(prep_root.exists()),
         }
 
-    def dataset_wizard(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def dataset_wizard(
+        self, payload: dict[str, Any], *, activate: bool = True
+    ) -> dict[str, Any]:
+        """
+        Profile a dataset. ``activate=False`` (used by plan reviews) leaves the
+        active selection, registry and monitoring paths untouched.
+        """
         resolved = self._resolve_selection_from_payload(payload)
         use_cache = self._payload_bool(payload, "use_cache", default=True)
         force_recompute = self._payload_bool(payload, "force_recompute", default=False)
@@ -6706,15 +7363,18 @@ class DashboardState:
                     "message": self._last_import_message,
                 }
 
-        self._set_active_selection(
-            dataset_id=dataset_id,
-            out_dir=out_dir,
-            data_origin=str(resolved["data_origin"]),
-            bids_root=bids_root,
-            modality_profile=str(resolved.get("modality_profile") or "auto"),
-            subjects=list(resolved["subjects"]),
-        )
-        inv = self._dataset_inventory
+        if activate:
+            self._set_active_selection(
+                dataset_id=dataset_id,
+                out_dir=out_dir,
+                data_origin=str(resolved["data_origin"]),
+                bids_root=bids_root,
+                modality_profile=str(resolved.get("modality_profile") or "auto"),
+                subjects=list(resolved["subjects"]),
+            )
+            inv = self._dataset_inventory
+        else:
+            inv = self._build_dataset_inventory_for_root(bids_root)
         modality_detected = str(inv.get("modality") or "unknown")
         has_desc = bool((bids_root / "dataset_description.json").exists())
         has_participants = bool((bids_root / "participants.tsv").exists())
@@ -6783,12 +7443,22 @@ class DashboardState:
         setup_report: dict[str, Any] | None = None
         msg = ""
         if action == "run_setup_autofix":
-            res = self.setup_autofix(payload)
+            # One-click error fixes never pip-install; that needs the explicit
+            # confirmation flow of the Auto-Fix Setup button.
+            res = self.setup_autofix(
+                {**dict(payload), "install_python_packages": False}
+            )
             setup_report = dict(res.get("report") or {})
             msg = str(res.get("message") or "Setup auto-fix executed.")
+        elif action == "run_setup_check":
+            res = self.setup_preflight(payload)
+            setup_report = dict(res.get("report") or {})
+            msg = str(res.get("message") or "Setup check executed.")
         elif action == "auto_detect_dataset":
             ds = str(self._active_selection.get("dataset_id") or self.cfg.dataset_id)
-            root = self._detect_dataset_root_for_id(ds)
+            root = self._detect_dataset_root_for_id(
+                ds, self._active_selection.get("data_origin") or self.cfg.data_origin
+            )
             if root is None:
                 raise FileNotFoundError(f"No dataset path could be auto-detected for '{ds}'.")
             self._set_active_selection(
@@ -6928,6 +7598,32 @@ class DashboardState:
             resolved["run_fmriprep"] = False
             notes.append("fMRIPrep was disabled automatically because dataset ds005620 is EEG.")
 
+        if bool(resolved.get("run_replication", False)):
+            if dataset_id == "ds003171":
+                # Mirrors run_pipeline's replication data lookup; without it the
+                # run would only fail at step 7 after hours of computation.
+                melb_candidates = (
+                    self._repo_root / "data" / "scratch" / "melbourne",
+                    self._repo_root / "data" / "scratch" / "melbourne_propofol",
+                    self._repo_root / "data" / "melbourne",
+                    self._repo_root / "data" / "melbourne_propofol",
+                )
+                if _first_existing_path(*melb_candidates) is None:
+                    raise ValueError(
+                        "Replication checks need the Melbourne propofol data at "
+                        "data/scratch/melbourne (or data/melbourne), which was not "
+                        "found. "
+                        "Untick 'run replication checks' or add the data first."
+                    )
+            else:
+                notes.append(
+                    f"Replication checks are only defined for ds003171; the option is "
+                    f"ignored for {dataset_id}."
+                )
+
+        if str(resolved.get("execution_mode") or "local") == "hunter":
+            notes.append(HUNTER_BUILD_NOTE)
+
         return notes
 
     def _resolve_selection_from_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -6938,9 +7634,17 @@ class DashboardState:
         data_origin = normalize_data_origin(
             payload.get("data_origin") or active.get("data_origin") or self.cfg.data_origin
         )
-        out_dir = Path(
-            payload.get("out_dir") or active.get("out_dir") or str(self.cfg.out_dir)
-        ).expanduser().resolve()
+        same_as_active = dataset_id == str(
+            active.get("dataset_id") or ""
+        ) and data_origin == str(active.get("data_origin") or "")
+        if payload.get("out_dir"):
+            out_dir = self._abs_user_path(payload.get("out_dir"))
+        elif same_as_active and active.get("out_dir"):
+            out_dir = Path(str(active["out_dir"])).expanduser().resolve()
+        else:
+            # Never inherit another dataset's effective directory (ds003171 has
+            # no per-dataset suffix, so that silently merged two datasets).
+            out_dir = self._default_out_dir_for(dataset_id, data_origin)
         provenance = resolve_dataset_provenance(
             repo_root=self._repo_root,
             out_dir=out_dir,
@@ -6953,26 +7657,37 @@ class DashboardState:
             payload.get("modality_profile") or active.get("modality_profile") or "auto"
         )
 
-        bids_raw = payload.get("bids_root") or active.get("bids_root")
+        bids_raw = payload.get("bids_root") or (
+            active.get("bids_root") if same_as_active else None
+        )
         bids_root: Path | None
         if bids_raw:
-            bids_root = Path(str(bids_raw)).expanduser().resolve()
+            bids_root = self._abs_user_path(bids_raw)
             if not bids_root.exists():
                 raise FileNotFoundError(f"Dataset path does not exist: {bids_root}")
         else:
-            bids_root = self._detect_dataset_root_for_id(dataset_id)
+            bids_root = self._detect_dataset_root_for_id(dataset_id, data_origin)
             if bids_root is None:
                 raise FileNotFoundError(
                     f"No dataset root found for '{dataset_id}'. Register a path or upload a dataset."
                 )
 
         defaults = DATASET_DEFAULTS.get(dataset_id, {})
-        sessions = self._token_list(payload.get("sessions"))
+        sessions = self._safe_cli_tokens(payload.get("sessions"), "session")
         if not sessions:
             sessions = [str(s) for s in defaults.get("sessions", ["awake", "deep"])]
-        condition = str(payload.get("condition") or defaults.get("condition") or "audio")
-        atlas = str(payload.get("atlas") or defaults.get("atlas") or "schaefer400")
-        subjects = self._normalize_subject_cli(payload.get("subjects") or active.get("subjects"))
+        condition = self._safe_cli_value(
+            payload.get("condition"),
+            "condition",
+            str(defaults.get("condition") or "audio"),
+        )
+        atlas = self._safe_cli_value(
+            payload.get("atlas"), "atlas", str(defaults.get("atlas") or "schaefer400")
+        )
+        subjects = self._normalize_subject_cli(
+            payload.get("subjects")
+            or (active.get("subjects") if same_as_active else None)
+        )
         metrics = self._metric_list(payload.get("mpc_metrics"))
         if not metrics:
             metrics = ["RAM", "PDI", "NAS", "IIM", "SRPI"]
@@ -7046,9 +7761,21 @@ class DashboardState:
             str(resolved["condition"]),
         ]
         sessions = [str(x) for x in resolved["sessions"]]
+        subjects = [str(x) for x in resolved["subjects"]]
+        # Defence in depth: no value may be parsed by run_pipeline as an option.
+        for tok in (
+            dataset_id,
+            resolved["atlas"],
+            resolved["condition"],
+            *sessions,
+            *subjects,
+        ):
+            if not is_safe_token(tok):
+                raise ValueError(
+                    f"Refusing unsafe run_pipeline argument value {tok!r}."
+                )
         if sessions:
             cmd.extend(["--sessions", *sessions])
-        subjects = [str(x) for x in resolved["subjects"]]
         if subjects:
             cmd.extend(["--subjects", *subjects])
         metrics = [str(x) for x in resolved["mpc_metrics"]]
@@ -7083,7 +7810,122 @@ class DashboardState:
         self._dataset_inventory = self._build_dataset_inventory()
         return cmd, resolved
 
+    def _persist_managed_run(self) -> None:
+        """Record the managed run so a restarted dashboard can re-attach to it."""
+        proc = self._managed_proc
+        if proc is None or isinstance(proc, _AdoptedProcess):
+            return
+        try:
+            create_time = float(psutil.Process(int(proc.pid)).create_time())
+        except psutil.Error:
+            return
+        record = {
+            "pid": int(proc.pid),
+            "pgid": self._managed_pgid,
+            "create_time": create_time,
+            "started_unix": self._managed_started_unix,
+            "log_file": self._managed_log_file,
+            "last_spec": self._managed_last_spec,
+            "queue_remaining": len(self._managed_queue),
+            "platform": os.name,
+        }
+        try:
+            with self._state_lock:
+                self._control_cache_dir.mkdir(parents=True, exist_ok=True)
+                self._write_json_atomic(self._managed_run_file, json_ready(record))
+        except OSError:
+            pass
+
+    def _clear_persisted_managed_run(self) -> None:
+        try:
+            self._managed_run_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _adopt_persisted_managed_run(self) -> None:
+        """
+        Re-attach to a pipeline run launched by an earlier dashboard session
+        (e.g. after the desktop launcher restarted the dashboard), so it can
+        still be paused/stopped instead of running on as an orphan.
+        """
+        if not self._managed_run_file.exists():
+            return
+        try:
+            rec = json.loads(self._managed_run_file.read_text(encoding="utf-8"))
+            if str(rec.get("platform") or os.name) != os.name:
+                raise ValueError("platform mismatch")
+            proc = _AdoptedProcess(int(rec["pid"]), float(rec["create_time"]))
+            cmdline = " ".join(psutil.Process(proc.pid).cmdline())
+            if "run_pipeline.py" not in cmdline or proc.poll() is not None:
+                raise ValueError("not a live pipeline run")
+            status = psutil.Process(proc.pid).status()
+        except Exception:
+            self._clear_persisted_managed_run()
+            return
+        self._managed_proc = proc  # type: ignore[assignment]
+        pgid = rec.get("pgid")
+        self._managed_pgid = int(pgid) if isinstance(pgid, int) else None
+        self._managed_adopted = True
+        self._managed_started_unix = rec.get("started_unix")
+        self._managed_log_file = rec.get("log_file")
+        spec = rec.get("last_spec")
+        self._managed_last_spec = dict(spec) if isinstance(spec, dict) else None
+        self._managed_status = (
+            "paused" if status == psutil.STATUS_STOPPED else "running"
+        )
+        dropped = int(rec.get("queue_remaining") or 0)
+        self._last_run_message = (
+            f"Re-attached to managed run pid={proc.pid} started by a previous "
+            "dashboard session."
+            + (
+                f" {dropped} queued follow-up run(s) from that session were not "
+                "restored."
+                if dropped
+                else ""
+            )
+        )
+
+    def _signal_managed(self, action: str) -> None:
+        """
+        Send pause/resume/terminate/kill to the managed run's process group.
+        POSIX uses process-group signals; Windows supports only stop.
+        """
+        proc = self._managed_proc
+        if proc is None:
+            raise RuntimeError("There is no managed run.")
+        if _IS_WINDOWS:
+            if action in {"pause", "resume"}:
+                raise RuntimeError(
+                    "Pause and resume are not supported on Windows. Use Stop instead."
+                )
+            if action == "terminate":
+                ctrl_break = getattr(signal, "CTRL_BREAK_EVENT", None)
+                try:
+                    if ctrl_break is not None and hasattr(proc, "send_signal"):
+                        proc.send_signal(ctrl_break)
+                    else:
+                        proc.terminate()
+                except Exception:
+                    proc.terminate()
+            else:
+                _kill_process_tree(int(proc.pid))
+            return
+        pgid = self._managed_pgid
+        if pgid is None:
+            raise RuntimeError("Managed process group is unavailable.")
+        sig = {
+            "pause": signal.SIGSTOP,
+            "resume": signal.SIGCONT,
+            "terminate": signal.SIGTERM,
+            "kill": signal.SIGKILL,
+        }[action]
+        os.killpg(pgid, sig)
+        if action == "terminate":
+            # A paused (SIGSTOP) group keeps SIGTERM pending until continued.
+            os.killpg(pgid, signal.SIGCONT)
+
     def _refresh_managed_process(self) -> None:
+        compose_context: dict[str, Any] | None = None
         with self._control_lock:
             proc = self._managed_proc
             if proc is None:
@@ -7091,8 +7933,11 @@ class DashboardState:
             rc = proc.poll()
             if rc is None:
                 return
-            self._managed_exit_code = int(rc)
-            if rc == 0 and self._managed_queue:
+            rc = int(rc)
+            self._managed_exit_code = None if rc == ADOPTED_EXIT_UNKNOWN else rc
+            stop_requested = bool(self._managed_stop_requested)
+            spec = dict(self._managed_last_spec or {})
+            if rc == 0 and self._managed_queue and not stop_requested:
                 nxt = self._managed_queue.pop(0)
                 self._set_active_selection(
                     dataset_id=str(nxt["resolved"]["dataset_id"]),
@@ -7109,43 +7954,83 @@ class DashboardState:
                     preflight_msg="Queued run.",
                 )
                 return
-            if self._managed_status not in {"stopped"}:
-                self._managed_status = "finished" if rc == 0 else "error"
-            mixed_context = None
-            if rc == 0:
-                mixed_context = (
-                    dict(self._managed_mixed_source_context)
-                    if isinstance(self._managed_mixed_source_context, dict)
-                    else None
-                )
             self._managed_proc = None
             self._managed_pgid = None
+            self._managed_adopted = False
+            self._clear_persisted_managed_run()
+            dropped = len(self._managed_queue)
+            self._managed_queue = []
+            mixed_context = self._managed_mixed_source_context
             self._managed_mixed_source_context = None
-            if rc != 0:
-                detail = self._summarize_run_failure(self._managed_log_file)
+            if stop_requested:
+                self._managed_status = "stopped"
+                self._last_run_message = "Managed run stopped."
+                return
+            if rc == ADOPTED_EXIT_UNKNOWN:
+                self._managed_status = "finished"
                 self._last_run_message = (
-                    f"Managed run exited with code {rc}. {detail}"
+                    "The re-attached run has ended. Its exit status is not visible to "
+                    "this dashboard session; check the run log"
+                    + (
+                        f" '{self._managed_log_file}'."
+                        if self._managed_log_file
+                        else "."
+                    )
                 )
-                self.record_error(self._last_run_message, source="managed-run")
                 return
-
-            if mixed_context is not None:
-                try:
-                    manifest = self._compose_mixed_source_ci(mixed_context)
-                    self._last_run_message = (
-                        "Managed run finished successfully. Combined index bundle saved to "
-                        f"'{manifest['out_dir']}'."
-                    )
-                except Exception as exc:
-                    self._managed_status = "error"
-                    self._last_run_message = (
-                        "Managed run finished, but combined index assembly failed: "
-                        f"{type(exc).__name__}: {exc}"
-                    )
-                    self.record_error(self._last_run_message, source="mixed-source-ci")
+            if rc != 0:
+                self._managed_status = "error"
+                detail = self._summarize_run_failure(self._managed_log_file)
+                msg = f"Managed run exited with code {rc}. {detail}"
+                if dropped:
+                    msg += f" {dropped} queued follow-up run(s) were cancelled."
+                self._last_run_message = msg
+                self.record_error(msg, source="managed-run")
                 return
+            self._managed_status = "finished"
+            if str(spec.get("execution_mode") or "") == "hunter":
+                campaign = (
+                    Path(str(spec.get("out_dir") or "."))
+                    / "cache"
+                    / "hunter_iim_campaign"
+                )
+                self._last_run_message = (
+                    "Hunter campaign build finished. It was built on this computer and "
+                    f"NOT submitted. Campaign folder: '{campaign}'. Copy it to HLRS "
+                    "Hunter "
+                    "and submit it there with qsub (PBS)."
+                )
+                return
+            if not isinstance(mixed_context, dict):
+                self._last_run_message = "Managed run finished successfully."
+                return
+            compose_context = dict(mixed_context)
+            self._last_run_message = (
+                "Per-dataset runs finished. Assembling the combined index bundle..."
+            )
 
-            self._last_run_message = "Managed run finished successfully."
+        # Heavy composition runs outside the control lock so status polls and
+        # stop requests are not blocked; the context was taken exactly once.
+        try:
+            manifest = self._compose_mixed_source_ci(compose_context)
+            status = "finished"
+            msg = (
+                "Managed run finished successfully. Combined index bundle saved to "
+                f"'{manifest['out_dir']}' ({manifest.get('ci_rows_defined', 0)} of "
+                f"{manifest.get('ci_rows_total', 0)} subject-session rows have a "
+                "defined CI)."
+            )
+        except Exception as exc:
+            status = "error"
+            msg = (
+                "Managed run finished, but combined index assembly failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.record_error(msg, source="mixed-source-ci")
+        with self._control_lock:
+            if self._managed_proc is None:
+                self._managed_status = status
+                self._last_run_message = msg
 
     def _launch_managed_process(
         self,
@@ -7159,7 +8044,19 @@ class DashboardState:
         log_dir = out_dir / "cache" / "dashboard_runs"
         log_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time()))
-        log_path = log_dir / f"{stamp}_{resolved['dataset_id']}.log"
+        log_path = (
+            log_dir / f"{stamp}_{self._clean_dataset_id(resolved['dataset_id'])}.log"
+        )
+        popen_kwargs: dict[str, Any] = {}
+        if _IS_WINDOWS:
+            # Own process group so CTRL_BREAK_EVENT reaches the run, not us.
+            popen_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+            )
+        else:
+            # New session => its own process group for pause/resume/stop.
+            # (start_new_session is thread-safe, unlike preexec_fn=os.setsid.)
+            popen_kwargs["start_new_session"] = True
         with log_path.open("ab") as fh:
             fh.write(
                 (
@@ -7172,15 +8069,24 @@ class DashboardState:
                 cwd=str(self._repo_root),
                 stdout=fh,
                 stderr=subprocess.STDOUT,
-                preexec_fn=os.setsid,
+                **popen_kwargs,
             )
         self._managed_proc = proc
-        self._managed_pgid = os.getpgid(proc.pid)
+        if _IS_WINDOWS:
+            self._managed_pgid = None
+        else:
+            try:
+                self._managed_pgid = os.getpgid(proc.pid)
+            except OSError:
+                self._managed_pgid = int(proc.pid)
         self._managed_started_unix = time.time()
         self._managed_status = "running"
+        self._managed_stop_requested = False
+        self._managed_adopted = False
         self._managed_exit_code = None
         self._managed_log_file = str(log_path)
         self._managed_last_spec = dict(json_ready(resolved))
+        self._persist_managed_run()
         extras = []
         guardrail_notes = [str(x) for x in (resolved.get("guardrail_notes") or []) if str(x).strip()]
         if preflight_msg:
@@ -7190,8 +8096,14 @@ class DashboardState:
         if queue_remaining > 0:
             extras.append(f"Queued follow-up runs: {queue_remaining}")
         extra_txt = (" " + " ".join(extras)) if extras else ""
+        verb = (
+            "Hunter campaign build started"
+            if str(resolved.get("execution_mode") or "") == "hunter"
+            else "Managed run started"
+        )
         self._last_run_message = (
-            f"Managed run started (pid={proc.pid}) for dataset '{resolved['dataset_id']}'.{extra_txt}"
+            f"{verb} (pid={proc.pid}) for dataset "
+            f"'{resolved['dataset_id']}'.{extra_txt}"
         )
         return {
             "ok": True,
@@ -7201,23 +8113,41 @@ class DashboardState:
             "queue_remaining": int(queue_remaining),
         }
 
+    def _check_origin_matches_path(self, bids_root: Path, data_origin: str) -> None:
+        """Data under test_objects is synthetic by convention; never label it real."""
+        if (
+            data_origin == REAL_DATA_ORIGIN
+            and self._infer_origin_from_path(bids_root) == DUMMY_DATA_ORIGIN
+        ):
+            raise ValueError(
+                f"'{bids_root}' is inside a test_objects (synthetic data) folder. "
+                "Register it as synthetic validation data, not as real study data."
+            )
+
     def register_dataset(self, payload: dict[str, Any]) -> dict[str, Any]:
         dataset_id = self._clean_dataset_id(payload.get("dataset_id"))
-        out_dir = payload.get("out_dir") or self._active_selection.get("out_dir") or str(self.cfg.out_dir)
         data_origin = normalize_data_origin(
             payload.get("data_origin") or self._active_selection.get("data_origin") or self.cfg.data_origin
         )
+        # The requested (base) output directory. Without an explicit value the
+        # dataset's own recorded base (or the dashboard base) is used, never the
+        # effective directory of whichever dataset happens to be active.
+        if payload.get("out_dir"):
+            out_dir = self._abs_user_path(payload.get("out_dir"))
+        else:
+            out_dir = self._default_out_dir_for(dataset_id, data_origin)
         modality_profile = str(payload.get("modality_profile") or "auto")
         bids_raw = payload.get("bids_root")
         bids_root: Path | None
         if bids_raw:
-            bids_root = Path(str(bids_raw)).expanduser().resolve()
+            bids_root = self._abs_user_path(bids_raw)
             if not bids_root.exists():
                 raise FileNotFoundError(f"Dataset path does not exist: {bids_root}")
         else:
-            bids_root = self._detect_dataset_root_for_id(dataset_id)
+            bids_root = self._detect_dataset_root_for_id(dataset_id, data_origin)
             if bids_root is None:
                 raise FileNotFoundError(f"No dataset path found for '{dataset_id}'.")
+        self._check_origin_matches_path(bids_root, data_origin)
 
         self._set_active_selection(
             dataset_id=dataset_id,
@@ -7226,6 +8156,7 @@ class DashboardState:
             bids_root=bids_root,
             modality_profile=modality_profile,
             subjects=[],
+            requested_out_dir=out_dir,
         )
         origin_label = display_data_origin_label(data_origin)
         self._last_dataset_message = (
@@ -7236,8 +8167,9 @@ class DashboardState:
             wiz = self.dataset_wizard(
                 {
                     "dataset_id": dataset_id,
+                    "data_origin": data_origin,
                     "bids_root": str(bids_root),
-                    "out_dir": str(Path(out_dir).resolve()),
+                    "out_dir": str(out_dir),
                     "modality_profile": modality_profile,
                     "use_cache": True,
                     "force_recompute": False,
@@ -7249,34 +8181,84 @@ class DashboardState:
         return {
             "ok": True,
             "dataset_id": dataset_id,
+            "data_origin": data_origin,
+            "library_key": library_key_for(dataset_id, data_origin),
             "dataset_root": str(bids_root),
-            "out_dir": str(Path(out_dir).resolve()),
+            "out_dir": str(self._active_selection["out_dir"]),
             "message": self._last_dataset_message,
         }
 
-    def _extract_archive_safe(self, archive_path: Path, target_dir: Path) -> None:
+    def _extract_archive_safe(
+        self,
+        archive_path: Path,
+        target_dir: Path,
+        *,
+        max_total_bytes: int | None = None,
+    ) -> None:
+        """
+        Extract a dataset archive after validating every member: no absolute or
+        escaping paths, only regular files/directories (no links or devices),
+        bounded member count and bounded total uncompressed size.
+        """
         target_dir = target_dir.resolve()
+        limit = int(
+            max_total_bytes
+            or getattr(self, "max_extract_bytes", DEFAULT_MAX_EXTRACT_BYTES)
+        )
+        try:
+            free_bytes = int(shutil.disk_usage(str(target_dir)).free)
+        except OSError:
+            free_bytes = None
+
+        def _check_totals(n_members: int, total: int) -> None:
+            if n_members > MAX_ARCHIVE_MEMBERS:
+                raise ValueError(
+                    f"Archive has {n_members} entries (limit {MAX_ARCHIVE_MEMBERS})."
+                )
+            if total > limit:
+                raise ValueError(
+                    f"Archive expands to {total / 1024**3:.1f} GiB, above the "
+                    f"{limit / 1024**3:.1f} GiB extraction limit."
+                )
+            if free_bytes is not None and total > max(0, free_bytes - 1024**3):
+                raise ValueError(
+                    f"Not enough free disk space to extract the archive "
+                    f"({total / 1024**3:.1f} GiB needed next to the dataset store)."
+                )
+
+        def _check_member_path(member: str) -> None:
+            out_path = target_dir / member
+            if not _is_within(out_path, target_dir, strict=True):
+                raise ValueError(f"Unsafe archive member path: {member}")
+
         name = archive_path.name.lower()
         if name.endswith(".zip"):
             with zipfile.ZipFile(archive_path, "r") as zf:
-                for info in zf.infolist():
-                    member = info.filename
-                    if not member:
-                        continue
-                    out_path = (target_dir / member).resolve()
-                    if not str(out_path).startswith(str(target_dir) + os.sep):
-                        raise ValueError(f"Unsafe archive member path: {member}")
-                zf.extractall(target_dir)
+                infos = [info for info in zf.infolist() if info.filename]
+                _check_totals(len(infos), sum(int(info.file_size) for info in infos))
+                for info in infos:
+                    _check_member_path(info.filename)
+                zf.extractall(target_dir, members=infos)
             return
         if name.endswith(".tar") or name.endswith(".tar.gz") or name.endswith(".tgz") or name.endswith(".tar.bz2"):
             with tarfile.open(archive_path, "r:*") as tf:
-                for member in tf.getmembers():
+                members = tf.getmembers()
+                for member in members:
                     if member.issym() or member.islnk():
                         raise ValueError(f"Symlink entries are not allowed in dataset archive: {member.name}")
-                    out_path = (target_dir / member.name).resolve()
-                    if not str(out_path).startswith(str(target_dir) + os.sep):
-                        raise ValueError(f"Unsafe archive member path: {member.name}")
-                tf.extractall(target_dir)
+                    if not (member.isfile() or member.isdir()):
+                        raise ValueError(
+                            "Only regular files and folders are allowed in a dataset "
+                            f"archive: {member.name}"
+                        )
+                    _check_member_path(member.name)
+                _check_totals(
+                    len(members), sum(int(m.size) for m in members if m.isfile())
+                )
+                extract_kwargs: dict[str, Any] = {}
+                if hasattr(tarfile, "data_filter"):
+                    extract_kwargs["filter"] = "data"
+                tf.extractall(target_dir, members=members, **extract_kwargs)
             return
         raise ValueError("Unsupported archive type. Use .zip, .tar, .tar.gz, or .tgz.")
 
@@ -7298,6 +8280,21 @@ class DashboardState:
             "Uploaded archive does not contain a recognizable BIDS root (missing dataset_description.json and sub-* folders)."
         )
 
+    def _managed_dataset_root(self, data_origin: str) -> Path:
+        if normalize_data_origin(data_origin) == DUMMY_DATA_ORIGIN:
+            root = self._repo_root / "test_objects" / "datasets"
+        else:
+            root = self._repo_root / "data" / "managed"
+        root.mkdir(parents=True, exist_ok=True)
+        return root.resolve()
+
+    def _upload_staging_dir(self, managed_root: Path) -> Path:
+        # Staging lives next to the dataset store (same volume => the final move
+        # is a rename, and large uploads do not fill the system temp disk).
+        staging = managed_root / ".impact_upload_tmp"
+        staging.mkdir(parents=True, exist_ok=True)
+        return staging
+
     def upload_dataset_stream(
         self,
         stream: Any,
@@ -7308,16 +8305,41 @@ class DashboardState:
         out_dir: str | None,
         data_origin: str,
         modality_profile: str,
+        replace_existing: bool = False,
+        max_upload_bytes: int | None = None,
     ) -> dict[str, Any]:
+        # Validate everything before reading a single byte of the body.
+        ds = self._clean_dataset_id(dataset_id)
+        origin = normalize_data_origin(data_origin)
+        limit = int(
+            max_upload_bytes
+            or getattr(self, "max_upload_bytes", DEFAULT_MAX_UPLOAD_BYTES)
+        )
         if content_length <= 0:
             raise ValueError("Upload body is empty.")
+        if content_length > limit:
+            raise ValueError(
+                f"Upload is {content_length / 1024**3:.2f} GiB, above the "
+                f"{limit / 1024**3:.2f} GiB limit (--max-upload-gb)."
+            )
         suffix = ""
         lname = str(filename or "").lower()
         for ext in (".tar.gz", ".tar.bz2", ".tgz", ".tar", ".zip"):
             if lname.endswith(ext):
                 suffix = ext
                 break
-        fd, tmp_name = tempfile.mkstemp(prefix="impact_upload_", suffix=(suffix or ".bin"))
+        if not suffix:
+            raise ValueError(
+                "Unsupported archive type. Use .zip, .tar, .tar.gz, or .tgz."
+            )
+        managed_root = self._managed_dataset_root(origin)
+        self._check_upload_destination(
+            managed_root, ds, replace_existing=replace_existing
+        )
+        staging = self._upload_staging_dir(managed_root)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix="upload_", suffix=suffix, dir=str(staging)
+        )
         tmp_path = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as fh:
@@ -7332,16 +8354,44 @@ class DashboardState:
                     raise ValueError("Upload stream ended before declared content-length.")
             return self.upload_dataset_archive(
                 archive_path=tmp_path,
-                dataset_id=dataset_id,
+                dataset_id=ds,
                 out_dir=out_dir,
-                data_origin=data_origin,
+                data_origin=origin,
                 modality_profile=modality_profile,
+                replace_existing=replace_existing,
             )
         finally:
             try:
                 tmp_path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+    def _check_upload_destination(
+        self,
+        managed_root: Path,
+        dataset_id: str,
+        *,
+        replace_existing: bool,
+    ) -> Path:
+        """
+        Return <managed_root>/<dataset_id> after verifying it is a strict child
+        of the managed store, is not a symlink, and -- if it exists -- that the
+        caller explicitly confirmed replacing it.
+        """
+        ds = self._clean_dataset_id(dataset_id)
+        dest = managed_root / ds
+        if dest.is_symlink():
+            raise ValueError(f"Refusing to replace '{dest}': it is a symbolic link.")
+        if dest.resolve().parent != managed_root.resolve() or not _is_within(
+            dest, managed_root, strict=True
+        ):
+            raise ValueError(f"Refusing to write outside the dataset store: '{dest}'.")
+        if dest.exists() and not replace_existing:
+            raise FileExistsError(
+                f"Dataset '{ds}' already exists at '{dest}'. Confirm the replacement "
+                "to overwrite it (the existing copy is deleted)."
+            )
+        return dest
 
     def upload_dataset_archive(
         self,
@@ -7351,26 +8401,45 @@ class DashboardState:
         out_dir: str | None,
         data_origin: str,
         modality_profile: str,
+        replace_existing: bool = False,
     ) -> dict[str, Any]:
         ds = self._clean_dataset_id(dataset_id)
         origin = normalize_data_origin(data_origin)
-        out_dir_eff = out_dir or str(self._active_selection.get("out_dir") or self.cfg.out_dir)
-        if origin == "dummy":
-            managed_root = self._repo_root / "test_objects" / "datasets"
+        if out_dir:
+            out_dir_eff = self._abs_user_path(out_dir)
         else:
-            managed_root = self._repo_root / "data" / "managed"
-        managed_root.mkdir(parents=True, exist_ok=True)
-        dest_root = (managed_root / ds).resolve()
+            out_dir_eff = self._default_out_dir_for(ds, origin)
+        managed_root = self._managed_dataset_root(origin)
+        dest_root = self._check_upload_destination(
+            managed_root, ds, replace_existing=replace_existing
+        )
+        staging = self._upload_staging_dir(managed_root)
 
-        with tempfile.TemporaryDirectory(prefix="impact_extract_") as tmp_dir:
+        with tempfile.TemporaryDirectory(
+            prefix="extract_", dir=str(staging)
+        ) as tmp_dir:
             tmp_root = Path(tmp_dir).resolve()
             extracted = tmp_root / "extracted"
             extracted.mkdir(parents=True, exist_ok=True)
             self._extract_archive_safe(archive_path, extracted)
             dataset_root = self._choose_dataset_root_from_extracted(extracted)
+            incoming = tmp_root / "incoming"
+            os.replace(dataset_root, incoming)
+            # Re-check right before touching the store (the tree may have changed
+            # while extracting), then swap via renames on the same volume.
+            dest_root = self._check_upload_destination(
+                managed_root, ds, replace_existing=replace_existing
+            )
+            backup: Path | None = None
             if dest_root.exists():
-                shutil.rmtree(dest_root)
-            shutil.copytree(dataset_root, dest_root)
+                backup = tmp_root / "replaced"
+                os.replace(dest_root, backup)
+            try:
+                os.replace(incoming, dest_root)
+            except Exception:
+                if backup is not None and not dest_root.exists():
+                    os.replace(backup, dest_root)
+                raise
 
         self._set_active_selection(
             dataset_id=ds,
@@ -7379,6 +8448,7 @@ class DashboardState:
             bids_root=dest_root,
             modality_profile=modality_profile,
             subjects=[],
+            requested_out_dir=out_dir_eff,
         )
         origin_label = display_data_origin_label(origin)
         self._last_dataset_message = (
@@ -7388,8 +8458,9 @@ class DashboardState:
             wiz = self.dataset_wizard(
                 {
                     "dataset_id": ds,
+                    "data_origin": origin,
                     "bids_root": str(dest_root),
-                    "out_dir": str(Path(out_dir_eff).resolve()),
+                    "out_dir": str(out_dir_eff),
                     "modality_profile": modality_profile,
                     "use_cache": True,
                     "force_recompute": False,
@@ -7401,8 +8472,10 @@ class DashboardState:
         return {
             "ok": True,
             "dataset_id": ds,
+            "data_origin": origin,
+            "library_key": library_key_for(ds, origin),
             "dataset_root": str(dest_root),
-            "out_dir": str(Path(out_dir_eff).resolve()),
+            "out_dir": str(self._active_selection["out_dir"]),
             "message": self._last_dataset_message,
         }
 
@@ -7671,30 +8744,55 @@ class DashboardState:
         }
 
     def _load_step2_for_mixed_source(self, out_dir: Path) -> pd.DataFrame:
+        """
+        Subject x session component values from one run's cache/step2_df.csv.
+
+        MPC components are computed per run and repeated across the theta grid,
+        so the subject-session value is the mean over that session's measured
+        runs. Undefined values stay NaN (an IIM value only counts when
+        IIM_defined is true); nothing is imputed.
+        """
         step2_path = Path(out_dir).resolve() / "cache" / "step2_df.csv"
         if not step2_path.exists():
             raise FileNotFoundError(f"Missing cached metric table for the combined index: {step2_path}")
         df = pd.read_csv(step2_path, dtype={"subject": str, "session": str})
-        if "subject" not in df.columns or "session" not in df.columns or "theta" not in df.columns:
+        if "subject" not in df.columns or "session" not in df.columns:
             raise ValueError(f"Invalid cached metric table for the combined index: {step2_path}")
         df["subject"] = df["subject"].astype(str).str.replace("^sub-", "", regex=True)
         df["session"] = df["session"].astype(str)
-        df["theta"] = pd.to_numeric(df["theta"], errors="coerce")
-        agg: dict[str, Any] = {"S": ("S", "mean")}
-        for col in ("RAM", "PDI", "NAS", "IIM", "SRPI", "IIM_raw", "IIM_raw_scaled"):
+        for col in MIXED_CI_COMPONENTS:
             if col in df.columns:
-                agg[col] = (col, "mean")
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            else:
+                df[col] = np.nan
         if "IIM_defined" in df.columns:
-            agg["IIM_defined"] = ("IIM_defined", "all")
-        if "IIM_undefined_reason" in df.columns:
-            agg["IIM_undefined_reason"] = ("IIM_undefined_reason", "first")
-        grouped = (
-            df.groupby(["subject", "session", "theta"], as_index=False)
-            .agg(**agg)
-        )
-        return grouped
+            iim_ok = (
+                df["IIM_defined"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .isin({"true", "1", "1.0", "yes"})
+            )
+            df.loc[~iim_ok, "IIM"] = np.nan
+        return df.groupby(["subject", "session"], as_index=False)[
+            list(MIXED_CI_COMPONENTS)
+        ].mean()
 
     def _compose_mixed_source_ci(self, context: dict[str, Any]) -> dict[str, Any]:
+        """
+        Combined index from metrics computed on different datasets.
+
+        - Participants are paired only through the explicit subject mapping
+          (identity by default; manual entries are user assertions); rows are
+          joined on (subject, session), never by list position.
+        - CI follows the three-valued contract: any missing component or an
+          invalid reference mean makes CI undefined (NaN, CI_defined=False,
+          CI_missing lists the reasons); undefined rows are never zero and are
+          excluded from summaries (counts are reported in the manifest).
+        - CI uses NAS directly (no HypergraphSynergy multiplier) and is
+          reference-normalised by the cohort high-state (awake) means unless an
+          external ``ci_reference_means`` mapping is supplied.
+        """
         plan = [dict(x) for x in (context.get("plan") or [])]
         if not plan:
             raise RuntimeError("Combined index context is missing plan items.")
@@ -7712,113 +8810,134 @@ class DashboardState:
             ds: self._load_step2_for_mixed_source(Path(item["out_dir"]))
             for ds, item in plan_by_dataset.items()
         }
-        anchor_df = run_frames[anchor_dataset_id].copy()
-        anchor_df = anchor_df.rename(columns={"subject": "anchor_subject", "S": "S_anchor"})
-        mixed = anchor_df[["anchor_subject", "session", "theta", "S_anchor"]].copy()
+        anchor_df = run_frames[anchor_dataset_id]
+        mixed = pd.DataFrame(
+            {
+                "subject": anchor_df["subject"].astype(str).tolist(),
+                "session": anchor_df["session"].astype(str).tolist(),
+            }
+        )
 
         source_cols: dict[str, str] = {}
         source_origins: dict[str, str] = {}
-        for metric in ("RAM", "PDI", "NAS", "IIM", "SRPI"):
+        for metric in MIXED_CI_COMPONENTS:
             src_ds = str(metric_map.get(metric) or anchor_dataset_id)
             if src_ds not in run_frames:
                 raise RuntimeError(f"Combined index source dataset missing for metric {metric}: {src_ds}")
             source_cols[metric] = src_ds
             source_origins[metric] = str(plan_by_dataset[src_ds].get("data_origin") or "real")
-            src = run_frames[src_ds].copy()
-            src = src.rename(columns={"subject": "source_subject", "S": f"S_source_{metric}"})
+            src = run_frames[src_ds]
+            lookup = {
+                (str(sub), str(ses)): val
+                for sub, ses, val in zip(src["subject"], src["session"], src[metric])
+            }
             mapping_for_ds = subject_mapping.get(src_ds) or {}
-            if src_ds == anchor_dataset_id:
-                map_df = pd.DataFrame(
-                    {"anchor_subject": mixed["anchor_subject"].drop_duplicates(), "source_subject": mixed["anchor_subject"].drop_duplicates()}
+            src_subjects: list[str | None] = []
+            values: list[float] = []
+            for anchor_sub, ses in zip(mixed["subject"], mixed["session"]):
+                if src_ds == anchor_dataset_id:
+                    src_sub: str | None = str(anchor_sub)
+                else:
+                    src_sub = mapping_for_ds.get(str(anchor_sub))
+                src_subjects.append(src_sub)
+                raw = lookup.get((str(src_sub), str(ses))) if src_sub else None
+                values.append(
+                    float(raw) if raw is not None and np.isfinite(raw) else np.nan
                 )
-            else:
-                map_df = pd.DataFrame(
-                    {
-                        "anchor_subject": list(mapping_for_ds.keys()),
-                        "source_subject": list(mapping_for_ds.values()),
-                    }
-                )
-            merged = mixed.merge(map_df, on="anchor_subject", how="left")
-            take_cols = ["source_subject", "session", "theta"]
-            if metric in src.columns:
-                take_cols.append(metric)
-            source_s_col = f"S_source_{metric}"
-            if source_s_col in src.columns:
-                take_cols.append(source_s_col)
-            if metric == "IIM":
-                for extra in ("IIM_defined", "IIM_undefined_reason"):
-                    if extra in src.columns:
-                        take_cols.append(extra)
-            src_take = src[take_cols].copy()
-            mixed = merged.merge(src_take, on=["source_subject", "session", "theta"], how="left")
-            mixed = mixed.drop(columns=["source_subject"])
+            mixed[metric] = values
+            mixed[f"{metric}_source_subject"] = src_subjects
 
-        nas_source_s_col = "S_source_NAS" if "S_source_NAS" in mixed.columns else "S_anchor"
-        nas_ci_vals = pd.to_numeric(mixed["NAS"], errors="coerce") * pd.to_numeric(
-            mixed[nas_source_s_col], errors="coerce"
-        ).clip(lower=0.0)
-        mixed["S"] = pd.to_numeric(mixed["S_anchor"], errors="coerce")
-        refs = {}
-        awake = mixed[mixed["session"] == "awake"]
-        ref_src = awake if not awake.empty else mixed
-        for metric in ("RAM", "PDI", "IIM", "SRPI"):
-            m = float(pd.to_numeric(ref_src[metric], errors="coerce").mean(skipna=True))
-            refs[metric] = 1e-12 if (not np.isfinite(m) or m <= 0) else m
-        m_nas = float(pd.to_numeric(nas_ci_vals.loc[ref_src.index], errors="coerce").mean(skipna=True))
-        refs["NAS"] = 1e-12 if (not np.isfinite(m_nas) or m_nas <= 0) else m_nas
+        ext_refs = context.get("ci_reference_means")
+        if isinstance(ext_refs, dict) and ext_refs:
+            ci_reference = "external"
+            refs = {}
+            for k in MIXED_CI_COMPONENTS:
+                try:
+                    refs[k] = float(ext_refs.get(k))
+                except (TypeError, ValueError):
+                    refs[k] = float("nan")
+        else:
+            ci_reference = "cohort_high_state"
+            high_state = mixed[mixed["session"] == MIXED_CI_HIGH_STATE_SESSION]
+            refs = {}
+            for k in MIXED_CI_COMPONENTS:
+                vals = pd.to_numeric(high_state[k], errors="coerce")
+                vals = vals[np.isfinite(vals)]
+                refs[k] = float(vals.mean()) if len(vals) else float("nan")
+        bad_refs = [
+            k for k in MIXED_CI_COMPONENTS if not np.isfinite(refs[k]) or refs[k] <= 0
+        ]
 
-        ci_vals = []
-        norms = {"RAM": [], "PDI": [], "NAS": [], "IIM": [], "SRPI": []}
-        for idx, row in mixed.iterrows():
-            nas_val = float(nas_ci_vals.loc[idx]) if idx in nas_ci_vals.index else np.nan
-            ci_details = compute_CI(
-                row.get("RAM", np.nan),
-                row.get("PDI", np.nan),
-                nas_val,
-                row.get("IIM", np.nan),
-                row.get("SRPI", np.nan),
+        ci_vals: list[float] = []
+        ci_defined: list[bool] = []
+        ci_missing: list[str] = []
+        norms: dict[str, list[float]] = {k: [] for k in MIXED_CI_COMPONENTS}
+        for _, row in mixed.iterrows():
+            missing = [k for k in MIXED_CI_COMPONENTS if not np.isfinite(row[k])]
+            missing += [f"{k}_reference" for k in bad_refs]
+            if missing:
+                ci_vals.append(np.nan)
+                ci_defined.append(False)
+                ci_missing.append(",".join(missing))
+                for k in MIXED_CI_COMPONENTS:
+                    norms[k].append(np.nan)
+                continue
+            details = compute_CI(
+                row["RAM"],
+                row["PDI"],
+                row["NAS"],
+                row["IIM"],
+                row["SRPI"],
                 references=refs,
-                defined={
-                    "RAM": np.isfinite(row.get("RAM", np.nan)),
-                    "PDI": np.isfinite(row.get("PDI", np.nan)),
-                    "NAS": np.isfinite(nas_val),
-                    "IIM": bool(row.get("IIM_defined", np.isfinite(row.get("IIM", np.nan)))),
-                    "SRPI": np.isfinite(row.get("SRPI", np.nan)),
-                },
+                defined={k: True for k in MIXED_CI_COMPONENTS},
                 return_details=True,
             )
-            ci_vals.append(ci_details["value"])
-            for metric in norms:
-                norms[metric].append(ci_details["normalized_components"][metric])
+            ci_vals.append(float(details["value"]))
+            ci_defined.append(True)
+            ci_missing.append("")
+            for k in MIXED_CI_COMPONENTS:
+                norms[k].append(float(details["normalized_components"][k]))
         mixed["CI"] = ci_vals
-        for metric, vals in norms.items():
-            mixed[f"{metric}_norm"] = vals
+        mixed["CI_defined"] = ci_defined
+        mixed["CI_missing"] = ci_missing
+        for k, vals in norms.items():
+            mixed[f"{k}_norm"] = vals
+        mixed["ci_reference"] = ci_reference
 
-        mixed["subject"] = mixed["anchor_subject"]
+        mixed["anchor_subject"] = mixed["subject"]
         mixed["dataset_id"] = str(context.get("primary_dataset_id") or anchor_dataset_id)
         mixed["data_origin"] = "mixed_source"
         mixed["dataset_role"] = "mixed_source_ci"
         mixed["provenance_label"] = "mixed_source_ci"
         mixed["mixed_source"] = True
-        for metric in ("RAM", "PDI", "NAS", "IIM", "SRPI"):
+        for metric in MIXED_CI_COMPONENTS:
             mixed[f"{metric}_source_dataset_id"] = source_cols[metric]
             mixed[f"{metric}_source_origin"] = source_origins[metric]
         mixed["CI_problem_note"] = str(context.get("ci_problem_note") or "")
 
-        df_mean = (
-            mixed.groupby(["subject", "session"], as_index=False)
-            .agg(
-                S=("S", "mean"),
-                CI=("CI", "mean"),
-                RAM=("RAM", "mean"),
-                PDI=("PDI", "mean"),
-                NAS=("NAS", "mean"),
-                IIM=("IIM", "mean"),
-                SRPI=("SRPI", "mean"),
-            )
-        )
-        for col in ("dataset_id", "data_origin", "dataset_role", "provenance_label"):
-            df_mean[col] = mixed[col].iloc[0]
+        # Summary rows: only defined CIs contribute (undefined rows are listed
+        # with CI = NaN, never averaged in as zeros).
+        mean_cols = [
+            "dataset_id",
+            "data_origin",
+            "dataset_role",
+            "provenance_label",
+            "subject",
+            "session",
+            "CI",
+            "CI_defined",
+            "CI_missing",
+            *MIXED_CI_COMPONENTS,
+            "ci_reference",
+        ]
+        df_mean = mixed[mean_cols].copy()
+
+        n_total = int(len(mixed))
+        n_defined = int(sum(ci_defined))
+        missing_counts = {
+            k: int(sum(1 for m in ci_missing if k in m.split(",")))
+            for k in MIXED_CI_COMPONENTS
+        }
         anchor_subjects = sorted(
             {
                 str(s)
@@ -7835,7 +8954,7 @@ class DashboardState:
                 "anchor_dataset_id": anchor_dataset_id,
                 "anchor_subject": str(anchor_subject),
             }
-            for metric in ("RAM", "PDI", "NAS", "IIM", "SRPI"):
+            for metric in MIXED_CI_COMPONENTS:
                 src_ds = source_cols[metric]
                 src_origin = source_origins[metric]
                 if src_ds == anchor_dataset_id:
@@ -7847,6 +8966,11 @@ class DashboardState:
                 row[f"{metric}_source_subject"] = (
                     None if source_subject in (None, "", "null") else str(source_subject)
                 )
+            sub_rows = mixed[mixed["subject"] == str(anchor_subject)]
+            row["CI_defined_sessions"] = int(sub_rows["CI_defined"].sum())
+            row["CI_undefined_sessions"] = int(
+                (~sub_rows["CI_defined"].astype(bool)).sum()
+            )
             subject_metric_summary.append(row)
         run_stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time()))
         out_dir = Path(plan_by_dataset[anchor_dataset_id]["out_dir"]).resolve() / "mixed_source_ci" / run_stamp
@@ -7858,19 +8982,43 @@ class DashboardState:
         (cache_dir / "step2_df_active.csv").write_text(mixed.to_csv(index=False), encoding="utf-8")
         (cache_dir / "step2_df_mean_active.csv").write_text(df_mean.to_csv(index=False), encoding="utf-8")
         manifest = {
-            "created_at_human": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time())),
+            "created_at_human": time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(time.time())
+            ),
             "anchor_dataset_id": anchor_dataset_id,
-            "primary_dataset_id": str(context.get("primary_dataset_id") or anchor_dataset_id),
+            "primary_dataset_id": str(
+                context.get("primary_dataset_id") or anchor_dataset_id
+            ),
             "metric_dataset_map": source_cols,
             "metric_source_origins": source_origins,
             "subject_mapping_effective": subject_mapping,
+            "subject_pairing": "identity_or_explicit_manual_mapping",
             "subject_metric_summary": subject_metric_summary,
             "ci_problem_note": str(context.get("ci_problem_note") or ""),
+            "ci_formula": (
+                "weighted geometric mean of reference-normalised RAM, PDI, NAS, IIM, "
+                "SRPI (NAS used directly)"
+            ),
+            "ci_reference": ci_reference,
+            "ci_reference_session": (
+                MIXED_CI_HIGH_STATE_SESSION
+                if ci_reference == "cohort_high_state"
+                else None
+            ),
+            "ci_reference_means": refs,
+            "ci_reference_invalid_components": bad_refs,
+            "ci_rows_total": n_total,
+            "ci_rows_defined": n_defined,
+            "ci_rows_excluded_undefined": int(n_total - n_defined),
+            "ci_missing_counts": missing_counts,
             "out_dir": str(out_dir),
             "step2_df_path": str(cache_dir / "step2_df.csv"),
             "step2_df_mean_path": str(cache_dir / "step2_df_mean.csv"),
-            "subject_metric_summary_path": str(cache_dir / "subject_metric_summary.csv"),
+            "subject_metric_summary_path": str(
+                cache_dir / "subject_metric_summary.csv"
+            ),
         }
+        manifest = json_ready(manifest)
         (cache_dir / "mixed_source_manifest.json").write_text(
             json.dumps(manifest, indent=2),
             encoding="utf-8",
@@ -7879,10 +9027,19 @@ class DashboardState:
         self._persist_control_cache()
         return manifest
 
-    def start_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _managed_run_active(self) -> bool:
         with self._control_lock:
+            return self._managed_proc is not None and self._managed_proc.poll() is None
+
+    def start_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # Planning, tree hashing and readiness checks can take a long time; they
+        # run outside _control_lock so status polls and stop requests stay
+        # responsive. _start_lock prevents two concurrent starts.
+        if not self._start_lock.acquire(blocking=False):
+            raise RuntimeError("A run start is already in progress.")
+        try:
             self._refresh_managed_process()
-            if self._managed_proc is not None and self._managed_proc.poll() is None:
+            if self._managed_run_active():
                 raise RuntimeError("A managed run is already active.")
             plan_preview = self.preview_run_plan(payload)
             if not bool(plan_preview.get("plan_ready", True)):
@@ -7910,28 +9067,41 @@ class DashboardState:
                 launch_queue.append({"cmd": list(cmd), "resolved": json_ready(resolved)})
 
             first = launch_queue.pop(0)
-            self._managed_queue = [dict(item) for item in launch_queue]
-            self._managed_plan = [dict(item["resolved"]) for item in [first, *launch_queue]]
-            self._managed_restart_payload = json.loads(json.dumps(json_ready(payload)))
-            self._last_mixed_source_result = None
-            if bool(plan_preview.get("ci_requested")) and str(plan_preview.get("ci_mode") or "") == "mixed_source":
-                self._managed_mixed_source_context = json_ready(dict(plan_preview))
-            else:
-                self._managed_mixed_source_context = None
-            self._set_active_selection(
-                dataset_id=str(first["resolved"]["dataset_id"]),
-                out_dir=Path(first["resolved"]["out_dir"]),
-                data_origin=str(first["resolved"]["data_origin"]),
-                bids_root=Path(first["resolved"]["bids_root"]),
-                modality_profile=str(first["resolved"]["modality_profile"]),
-                subjects=list(first["resolved"]["subjects"]),
-            )
-            return self._launch_managed_process(
-                cmd=first["cmd"],
-                resolved=first["resolved"],
-                queue_remaining=len(launch_queue),
-                preflight_msg=" | ".join(preflight_parts),
-            )
+            with self._control_lock:
+                self._refresh_managed_process()
+                if self._managed_proc is not None and self._managed_proc.poll() is None:
+                    raise RuntimeError("A managed run is already active.")
+                self._managed_queue = [dict(item) for item in launch_queue]
+                self._managed_plan = [
+                    dict(item["resolved"]) for item in [first, *launch_queue]
+                ]
+                self._managed_restart_payload = json.loads(
+                    json.dumps(json_ready(payload))
+                )
+                self._last_mixed_source_result = None
+                if (
+                    bool(plan_preview.get("ci_requested"))
+                    and str(plan_preview.get("ci_mode") or "") == "mixed_source"
+                ):
+                    self._managed_mixed_source_context = json_ready(dict(plan_preview))
+                else:
+                    self._managed_mixed_source_context = None
+                self._set_active_selection(
+                    dataset_id=str(first["resolved"]["dataset_id"]),
+                    out_dir=Path(first["resolved"]["out_dir"]),
+                    data_origin=str(first["resolved"]["data_origin"]),
+                    bids_root=Path(first["resolved"]["bids_root"]),
+                    modality_profile=str(first["resolved"]["modality_profile"]),
+                    subjects=list(first["resolved"]["subjects"]),
+                )
+                return self._launch_managed_process(
+                    cmd=first["cmd"],
+                    resolved=first["resolved"],
+                    queue_remaining=len(launch_queue),
+                    preflight_msg=" | ".join(preflight_parts),
+                )
+        finally:
+            self._start_lock.release()
 
     def pause_run(self) -> dict[str, Any]:
         with self._control_lock:
@@ -7940,9 +9110,7 @@ class DashboardState:
                 raise RuntimeError("There is no active run to pause.")
             if self._managed_status == "paused":
                 return {"ok": True, "message": "Managed run is already paused."}
-            if self._managed_pgid is None:
-                raise RuntimeError("Managed process group is unavailable.")
-            os.killpg(self._managed_pgid, signal.SIGSTOP)
+            self._signal_managed("pause")
             self._managed_status = "paused"
             self._last_run_message = "Managed run paused."
             return {"ok": True, "message": self._last_run_message}
@@ -7954,14 +9122,12 @@ class DashboardState:
                 raise RuntimeError("There is no paused run to resume.")
             if self._managed_status != "paused":
                 raise RuntimeError("Managed run is not paused.")
-            if self._managed_pgid is None:
-                raise RuntimeError("Managed process group is unavailable.")
-            os.killpg(self._managed_pgid, signal.SIGCONT)
+            self._signal_managed("resume")
             self._managed_status = "running"
             self._last_run_message = "Managed run resumed."
             return {"ok": True, "message": self._last_run_message}
 
-    def stop_run(self) -> dict[str, Any]:
+    def stop_run(self, *, grace_seconds: float = 8.0) -> dict[str, Any]:
         with self._control_lock:
             self._refresh_managed_process()
             proc = self._managed_proc
@@ -7971,27 +9137,46 @@ class DashboardState:
                 self._managed_queue = []
                 self._managed_mixed_source_context = None
                 self._managed_status = "stopped"
+                self._clear_persisted_managed_run()
                 self._last_run_message = "No active managed run to stop."
                 return {"ok": True, "message": self._last_run_message}
-            pgid = self._managed_pgid
-            if pgid is None:
-                raise RuntimeError("Managed process group is unavailable.")
-            try:
-                os.killpg(pgid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            deadline = time.time() + 8.0
-            while time.time() < deadline:
-                if proc.poll() is not None:
-                    break
-                time.sleep(0.2)
-            if proc.poll() is None:
-                os.killpg(pgid, signal.SIGKILL)
-            self._refresh_managed_process()
-            self._managed_status = "stopped"
+            # Cancel follow-ups first so an exit during shutdown cannot launch them.
+            self._managed_stop_requested = True
             self._managed_queue = []
             self._managed_mixed_source_context = None
-            self._last_run_message = "Managed run stopped."
+            self._managed_status = "stopping"
+            self._last_run_message = "Stopping managed run..."
+            try:
+                self._signal_managed("terminate")  # SIGTERM (+SIGCONT if paused)
+            except ProcessLookupError:
+                pass
+        # Wait outside the lock so status polls keep working during shutdown.
+        deadline = time.time() + max(0.0, float(grace_seconds))
+        while time.time() < deadline and proc.poll() is None:
+            time.sleep(0.1)
+        with self._control_lock:
+            if self._managed_proc is not None and self._managed_proc is not proc:
+                # A new run was started after this one exited; leave it alone.
+                return {"ok": True, "message": "Managed run stopped."}
+            forced = False
+            if proc.poll() is None:
+                forced = True
+                try:
+                    self._signal_managed("kill")
+                except (ProcessLookupError, RuntimeError):
+                    pass
+                if hasattr(proc, "wait"):
+                    try:
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
+            self._refresh_managed_process()
+            self._managed_status = "stopped"
+            self._last_run_message = (
+                "Managed run stopped (forced after the grace period)."
+                if forced
+                else "Managed run stopped."
+            )
             return {"ok": True, "message": self._last_run_message}
 
     def restart_run(self) -> dict[str, Any]:
@@ -8092,8 +9277,13 @@ class DashboardState:
         pid = None if proc is None else int(proc.pid)
         active = bool(proc is not None and proc.poll() is None)
         has_history = bool(self._managed_last_spec or self._managed_plan or self._managed_restart_payload)
-        can_pause = bool(active and self._managed_status == "running")
-        can_resume = bool(active and self._managed_status == "paused")
+        pause_supported = not _IS_WINDOWS
+        can_pause = bool(
+            active and self._managed_status == "running" and pause_supported
+        )
+        can_resume = bool(
+            active and self._managed_status == "paused" and pause_supported
+        )
         can_stop = bool(active)
         can_restart = bool(active or has_history)
         status_message = self._managed_status_message()
@@ -8117,9 +9307,15 @@ class DashboardState:
                 "plan_specs": list(self._managed_plan),
                 "mixed_source_context": self._managed_mixed_source_context,
                 "display_message": status_message,
+                "pause_supported": pause_supported,
+                "adopted": bool(self._managed_adopted),
+                "execution_mode": str(
+                    (self._managed_last_spec or {}).get("execution_mode") or "local"
+                ),
             },
             "active_selection": dict(self._active_selection),
-            "dataset_library": self.dataset_library(),
+            "base_out_dir": str(self._base_out_dir),
+            "dataset_library": self._cached_dataset_library(),
             "last_dataset_message": self._last_dataset_message,
             "last_run_message": status_message,
             "last_readiness_message": self._last_readiness_message,
@@ -8162,7 +9358,24 @@ class DashboardState:
                     if out_val is None:
                         continue
                     try:
-                        run_out = Path(out_val).resolve()
+                        run_out = Path(out_val)
+                        if not run_out.is_absolute():
+                            try:
+                                run_out = Path(p.cwd()) / run_out
+                            except (psutil.Error, OSError):
+                                pass
+                        run_out = run_out.resolve()
+                        if run_out != target_out:
+                            # CLI runs pass the base --out-dir; compare the
+                            # effective per-dataset directory instead.
+                            run_out = resolve_dataset_provenance(
+                                repo_root=self._repo_root,
+                                out_dir=run_out,
+                                dataset_id=str(dataset_val),
+                                data_origin=_extract_single_option(
+                                    cmd, "--data-origin", default=REAL_DATA_ORIGIN
+                                ),
+                            ).effective_out_dir
                     except Exception:
                         continue
                     if run_out != target_out:
@@ -8539,6 +9752,10 @@ class DashboardState:
         }
 
         fp = self._powermetrics_cache_file
+        if not fp.exists():
+            # Telemetry is machine-wide; the collector's documented default is
+            # <base --out-dir>/cache, not the per-dataset effective directory.
+            fp = self._base_out_dir / "cache" / "powermetrics_telemetry.json"
         if not fp.exists():
             self._powermetrics_cache = data
             return dict(data)
@@ -9305,6 +10522,34 @@ class DashboardState:
             "source": source,
         }
 
+    def _append_history_point(self, point: dict[str, Any]) -> None:
+        """
+        Append one chart point. Polls from several tabs within
+        HISTORY_MIN_INTERVAL_S collapse into one point, and once the buffer
+        exceeds history_points the older half is thinned 2:1, so memory and the
+        /api/status payload stay bounded while the whole run remains visible.
+        """
+        compact = {
+            k: (round(float(v), 3) if isinstance(v, float) and math.isfinite(v) else v)
+            for k, v in point.items()
+        }
+        compact["t"] = float(point["t"])
+        with self._history_lock:
+            if (
+                self.history
+                and compact["t"] - float(self.history[-1].get("t", 0.0))
+                < HISTORY_MIN_INTERVAL_S
+            ):
+                return
+            self.history.append(compact)
+            if len(self.history) > self._history_points:
+                half = len(self.history) // 2
+                self.history = self.history[:half][::2] + self.history[half:]
+
+    def _history_copy(self) -> list[dict[str, Any]]:
+        with self._history_lock:
+            return list(self.history)
+
     def snapshot(self) -> dict[str, Any]:
         self._refresh_managed_process()
         now = time.time()
@@ -9321,28 +10566,34 @@ class DashboardState:
 
         # Keep chart history aligned to the current run only.
         run_pid = int(pipeline["pid"]) if (pipeline.get("active") and pipeline.get("pid") is not None) else None
-        if run_pid is None:
-            self._history_run_pid = None
-            self._history_run_start_unix = None
-        else:
-            reset_history = False
-            if self._history_run_pid != run_pid:
-                reset_history = True
-            elif (
-                run_start is not None
-                and self._history_run_start_unix is not None
-                and abs(float(run_start) - float(self._history_run_start_unix)) > 5.0
-            ):
-                reset_history = True
-            if reset_history:
-                self.history.clear()
-                self._history_run_pid = run_pid
-                self._history_run_start_unix = (None if run_start is None else float(run_start))
+        with self._history_lock:
+            if run_pid is None:
+                self._history_run_pid = None
+                self._history_run_start_unix = None
+            else:
+                reset_history = False
+                if self._history_run_pid != run_pid:
+                    reset_history = True
+                elif (
+                    run_start is not None
+                    and self._history_run_start_unix is not None
+                    and abs(float(run_start) - float(self._history_run_start_unix))
+                    > 5.0
+                ):
+                    reset_history = True
+                if reset_history:
+                    self.history.clear()
+                    self._history_run_pid = run_pid
+                    self._history_run_start_unix = (
+                        None if run_start is None else float(run_start)
+                    )
 
-            # If start-time estimate shifted, prune points older than run start.
-            if run_start is not None and self.history:
-                rs = float(run_start)
-                self.history = [h for h in self.history if float(h.get("t", 0.0)) >= (rs - 1.0)]
+                # If start-time estimate shifted, prune points older than run start.
+                if run_start is not None and self.history:
+                    rs = float(run_start)
+                    self.history = [
+                        h for h in self.history if float(h.get("t", 0.0)) >= (rs - 1.0)
+                    ]
 
         dataset_ctx = self._dataset_context(pipeline.get("cmd_tokens") or [])
         run_config = self._run_configuration(pipeline.get("cmd_tokens") or [], dataset_ctx)
@@ -9407,7 +10658,7 @@ class DashboardState:
             "note": "Pipeline GPU telemetry is reported when an accelerator backend is active.",
         }
 
-        self.history.append(
+        self._append_history_point(
             {
                 "t": now,
                 "system_cpu_percent": system["cpu_percent"],
@@ -9420,7 +10671,9 @@ class DashboardState:
                 "pipeline_rss_upper_bound_gb": pipeline.get("rss_upper_bound_gb"),
                 "dashboard_cpu_percent": dashboard["cpu_percent"],
                 "dashboard_rss_gb": dashboard["rss_gb"],
-                "load_core_pct_1m": float((performance.get("load") or {}).get("core_pct_1m") or 0.0),
+                "load_core_pct_1m": float(
+                    (performance.get("load") or {}).get("core_pct_1m") or 0.0
+                ),
                 "swapouts_per_s": (performance.get("vm") or {}).get("swapouts_per_s"),
                 "pageouts_per_s": (performance.get("vm") or {}).get("pageouts_per_s"),
                 "temperature_c": performance.get("temperature_c"),
@@ -9433,9 +10686,12 @@ class DashboardState:
             "dataset_id": self.cfg.dataset_id,
             "out_dir": str(self.cfg.out_dir),
             "refreshed_at_unix": now,
-            "refreshed_at_human": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "refreshed_at_human": time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(now)
+            ),
             "run_active": pipeline["active"],
-            "run_error": bool(pipeline.get("run_error", False)) or bool(self._managed_status == "error"),
+            "run_error": bool(pipeline.get("run_error", False))
+            or bool(self._managed_status == "error"),
             "system": system,
             "pipeline": pipeline,
             "dashboard": dashboard,
@@ -9447,17 +10703,93 @@ class DashboardState:
             "checkpoints": checkpoints,
             "steps": steps,
             "progress": progress,
-            "history": list(self.history),
+            "history": self._history_copy(),
+            "history_points_max": self._history_points,
             "control": self.control_state_snapshot(),
         }
 
 
+def _split_host_port(value: str) -> tuple[str, int | None]:
+    parsed = urlparse("//" + str(value or "").strip())
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return "", None
+    return host, port
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
-    server_version = "IMPaCTDashboard/1.1"
+    server_version = "IMPaCTDashboard/1.2"
+
+    # -- request validation -------------------------------------------------
+    def _allowed_hosts(self) -> frozenset[str]:
+        return frozenset(getattr(self.server, "allowed_hosts", LOOPBACK_HOSTNAMES))
+
+    def _server_port(self) -> int:
+        return int(self.server.server_address[1])
+
+    def _host_ok(self) -> bool:
+        """Reject foreign Host headers (DNS-rebinding guard)."""
+        host, port = _split_host_port(str(self.headers.get("Host") or ""))
+        if not host or host not in self._allowed_hosts():
+            return False
+        return port is None or port == self._server_port()
+
+    def _origin_ok(self) -> bool:
+        """Browser POSTs must come from the dashboard's own origin."""
+        if (
+            str(self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            == "cross-site"
+        ):
+            return False
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True  # non-browser client; the CSRF token is still required
+        parsed = urlparse(str(origin).strip())
+        if (
+            parsed.scheme != "http"
+            or (parsed.hostname or "").lower() not in self._allowed_hosts()
+        ):
+            return False
+        try:
+            port = parsed.port or 80
+        except ValueError:
+            return False
+        return port == self._server_port()
+
+    def _csrf_ok(self) -> bool:
+        expected = str(getattr(self.server, "csrf_token", "") or "")
+        supplied = str(self.headers.get(CSRF_HEADER) or "")
+        return bool(expected) and hmac.compare_digest(
+            supplied.encode("utf-8"), expected.encode("utf-8")
+        )
+
+    def _reject(self, status: int, message: str) -> None:
+        sys.stderr.write(
+            f"[dashboard] rejected {self.command} {urlparse(self.path).path}: "
+            f"{message}\n"
+        )
+        self.close_connection = True
+        self._send_json({"ok": False, "error": message}, status=status)
+
+    def end_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        super().end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         state = self.server.state  # type: ignore[attr-defined]
+        if not self._host_ok():
+            self._reject(
+                403,
+                "Host header not allowed. Open the dashboard via "
+                "http://127.0.0.1:<port>.",
+            )
+            return
         if parsed.path == "/":
             self._send_html(HTML_PAGE)
             return
@@ -9487,6 +10819,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "Combined index provenance CSV path is missing."}, status=404)
                 return
             csv_path = Path(csv_path_txt).resolve()
+            bundle_dir = Path(str(manifest.get("out_dir") or "")).resolve()
+            if csv_path.name != "subject_metric_summary.csv" or not _is_within(
+                csv_path, bundle_dir
+            ):
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "Combined index provenance CSV path is invalid.",
+                    },
+                    status=404,
+                )
+                return
             if not csv_path.exists():
                 self._send_json(
                     {"ok": False, "error": f"Combined index provenance CSV is missing: {csv_path}"},
@@ -9541,14 +10885,52 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         state = self.server.state  # type: ignore[attr-defined]
+        # Security checks run before any body is read or any state is touched.
+        if not self._host_ok():
+            self._reject(403, "Host header not allowed.")
+            return
+        if not self._origin_ok():
+            self._reject(403, "Cross-origin request rejected.")
+            return
+        if not self._csrf_ok():
+            self._reject(
+                403, "Missing or invalid CSRF token. Reload the dashboard page."
+            )
+            return
         try:
             if parsed.path == "/api/dataset/upload":
-                clen = int(self.headers.get("Content-Length", "0") or "0")
+                raw_len = self.headers.get("Content-Length")
+                if raw_len is None:
+                    self._reject(411, "Content-Length is required for uploads.")
+                    return
+                try:
+                    clen = int(raw_len)
+                except ValueError:
+                    self._reject(400, "Invalid Content-Length.")
+                    return
+                max_upload = int(
+                    getattr(self.server, "max_upload_bytes", DEFAULT_MAX_UPLOAD_BYTES)
+                )
+                if clen > max_upload:
+                    self._reject(
+                        413,
+                        f"Upload is larger than the {max_upload / 1024**3:.2f} GiB "
+                        "limit "
+                        "(start the dashboard with --max-upload-gb to change it).",
+                    )
+                    return
                 filename = str(self.headers.get("X-Filename") or "").strip()
                 dataset_id = str(self.headers.get("X-Dataset-Id") or "").strip()
                 out_dir = str(self.headers.get("X-Out-Dir") or "").strip() or None
                 data_origin = str(self.headers.get("X-Data-Origin") or REAL_DATA_ORIGIN).strip()
                 modality_profile = str(self.headers.get("X-Modality-Profile") or "auto").strip()
+                replace_existing = str(
+                    self.headers.get("X-Replace-Existing") or ""
+                ).strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                }
                 if not filename:
                     raise ValueError("X-Filename header is required.")
                 if not dataset_id:
@@ -9561,10 +10943,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     out_dir=out_dir,
                     data_origin=data_origin,
                     modality_profile=modality_profile,
+                    replace_existing=replace_existing,
+                    max_upload_bytes=max_upload,
                 )
                 self._send_json(payload)
                 return
 
+            ctype = (
+                str(self.headers.get("Content-Type") or "")
+                .split(";", 1)[0]
+                .strip()
+                .lower()
+            )
+            raw_len = self.headers.get("Content-Length")
+            if raw_len not in (None, "", "0") and ctype != "application/json":
+                self._reject(415, "Content-Type must be application/json.")
+                return
+            try:
+                clen = int(raw_len or "0")
+            except ValueError:
+                self._reject(400, "Invalid Content-Length.")
+                return
+            if clen > int(getattr(self.server, "max_json_bytes", MAX_JSON_BODY_BYTES)):
+                self._reject(413, "JSON body is too large.")
+                return
             body = self._read_json_body()
 
             if parsed.path == "/api/dataset/register":
@@ -9613,17 +11015,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 state.record_error(exc, source=parsed.path)
             except Exception:
                 pass
-            self._send_json({"ok": False, "error": str(exc)}, status=400)
+            status = 409 if isinstance(exc, FileExistsError) else 400
+            self._send_json({"ok": False, "error": str(exc)}, status=status)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         # Keep output clean; dashboard is polled frequently.
         return
 
     def _send_html(self, html: str) -> None:
-        data = html.encode("utf-8")
+        nonce = secrets.token_urlsafe(18)
+        token = str(getattr(self.server, "csrf_token", "") or "")
+        page = html.replace("__IMPACT_CSP_NONCE__", nonce).replace(
+            "__IMPACT_CSRF_TOKEN__", token
+        )
+        data = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; "
+            f"script-src 'nonce-{nonce}'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src https://fonts.gstatic.com; "
+            "img-src 'self' data:; connect-src 'self'; "
+            "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        )
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -9632,6 +11049,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         clen = int(self.headers.get("Content-Length", "0") or "0")
         if clen <= 0:
             return {}
+        if clen > int(getattr(self.server, "max_json_bytes", MAX_JSON_BODY_BYTES)):
+            raise ValueError("JSON body is too large.")
         raw = self.rfile.read(clen)
         if not raw:
             return {}
@@ -9650,6 +11069,46 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def make_server(
+    state: DashboardState,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    *,
+    allow_remote: bool = False,
+    allowed_hosts: tuple[str, ...] | list[str] = (),
+    csrf_token: str | None = None,
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+    max_json_bytes: int = MAX_JSON_BODY_BYTES,
+) -> ThreadingHTTPServer:
+    """
+    Build the dashboard HTTP server. Non-loopback binds are refused unless
+    ``allow_remote`` is set; the Host/Origin allow-list always contains the
+    loopback names plus ``allowed_hosts`` (and the bind address when remote).
+    """
+    if not is_loopback_host(host) and not allow_remote:
+        raise ValueError(
+            f"Refusing to bind the dashboard to non-loopback address {host!r}. "
+            "It has no user authentication; use --allow-remote only on a trusted "
+            "network."
+        )
+    httpd = ThreadingHTTPServer((host, int(port)), DashboardHandler)
+    httpd.daemon_threads = True
+    allowed = {h for h in LOOPBACK_HOSTNAMES}
+    allowed |= {
+        str(h).strip().strip("[]").lower() for h in allowed_hosts if str(h).strip()
+    }
+    if allow_remote and str(host).strip() not in {"", "0.0.0.0", "::"}:
+        allowed.add(str(host).strip().strip("[]").lower())
+    httpd.state = state  # type: ignore[attr-defined]
+    token = csrf_token or secrets.token_urlsafe(32)
+    httpd.csrf_token = token  # type: ignore[attr-defined]
+    httpd.allowed_hosts = frozenset(allowed)  # type: ignore[attr-defined]
+    httpd.max_upload_bytes = int(max_upload_bytes)  # type: ignore[attr-defined]
+    httpd.max_json_bytes = int(max_json_bytes)  # type: ignore[attr-defined]
+    state.max_upload_bytes = int(max_upload_bytes)  # type: ignore[attr-defined]
+    return httpd
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="IMPaCT live progress dashboard")
     parser.add_argument("--out-dir", default="outputs/scratch", help="Pipeline output directory")
@@ -9661,15 +11120,49 @@ def main() -> None:
         help="Dataset provenance class used for default routing and labeling.",
     )
     parser.add_argument("--subject", default=None, help="Optional subject id filter (e.g. 02CB)")
-    parser.add_argument("--host", default="127.0.0.1", help="Host bind address")
+    parser.add_argument(
+        "--host", default="127.0.0.1", help="Host bind address (loopback by default)"
+    )
     parser.add_argument("--port", type=int, default=8765, help="HTTP port")
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help=(
+            "Allow binding to a non-loopback address. The dashboard has no user "
+            "authentication: anyone who can reach the port can start runs."
+        ),
+    )
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        help=(
+            "Extra Host header name accepted (repeatable), e.g. a LAN hostname "
+            "with --allow-remote."
+        ),
+    )
+    parser.add_argument(
+        "--max-upload-gb",
+        type=float,
+        default=DEFAULT_MAX_UPLOAD_BYTES / 1024**3,
+        help="Maximum dataset archive upload size in GiB.",
+    )
     parser.add_argument(
         "--history-points",
         type=int,
-        default=180,
-        help="Deprecated (kept for compatibility): charts now retain full timeline for current run.",
+        default=DEFAULT_HISTORY_POINTS,
+        help=(
+            "Maximum chart points kept for the current run (older points are thinned "
+            "so the whole run stays visible)."
+        ),
     )
     args = parser.parse_args()
+
+    if not is_loopback_host(args.host) and not args.allow_remote:
+        parser.error(
+            f"--host {args.host} is not a loopback address. The dashboard has no "
+            "authentication; add --allow-remote only if you really want to expose it."
+        )
 
     cfg = DashboardConfig(
         out_dir=Path(args.out_dir).resolve(),
@@ -9681,9 +11174,31 @@ def main() -> None:
     )
     state = DashboardState(cfg)
 
-    httpd = ThreadingHTTPServer((args.host, int(args.port)), DashboardHandler)
-    httpd.state = state  # type: ignore[attr-defined]
+    httpd = make_server(
+        state,
+        args.host,
+        int(args.port),
+        allow_remote=bool(args.allow_remote),
+        allowed_hosts=list(args.allowed_host or []),
+        max_upload_bytes=int(max(0.001, float(args.max_upload_gb)) * 1024**3),
+    )
 
+    def _handle_sigterm(signum: int, frame: Any) -> None:
+        # Shut down cleanly (managed runs keep running and are re-attached by
+        # the next dashboard session via outputs/dashboard_control/managed_run.json).
+        del signum, frame
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except (ValueError, OSError):
+        pass
+
+    if not is_loopback_host(args.host):
+        print(
+            f"[dashboard] WARNING: listening on non-loopback address {args.host}. "
+            "Anyone who can reach this port and the page can control runs."
+        )
     print(f"[dashboard] serving on http://{args.host}:{args.port}")
     print(
         f"[dashboard] out_dir={cfg.out_dir} dataset={cfg.dataset_id} "

@@ -2,8 +2,21 @@
 """
 Collect high-accuracy thermal telemetry via macOS powermetrics and write cache JSON.
 
-Run with sudo:
-  sudo -E conda run -n impact-synergy-clean python scripts/powermetrics_telemetry.py --out-dir outputs/scratch
+powermetrics needs root. Prefer the privilege-separated pipe mode, where only
+Apple's powermetrics binary runs as root and this script (parsing and file
+writes) runs as you:
+
+  sudo powermetrics -i 5000 --samplers thermal,cpu_power --show-plimits \\
+    | python scripts/powermetrics_telemetry.py --stdin --out-dir outputs/scratch
+
+Running this script itself as root also works (it only needs the standard
+library, so use the system interpreter rather than `sudo -E conda run ...`,
+which would hand your user environment to a root process):
+
+  sudo /usr/bin/python3 scripts/powermetrics_telemetry.py --out-dir outputs/scratch
+
+In that case every directory and file it creates is chowned back to the
+invoking user (SUDO_UID/SUDO_GID), so no root-owned files are left in the repo.
 """
 
 from __future__ import annotations
@@ -14,9 +27,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Iterator
 
 
 @functools.lru_cache(maxsize=1)
@@ -89,15 +103,21 @@ def _extract_first_power_w(text: str, patterns: list[str]) -> float | None:
 
 
 def _parse_powermetrics_output(raw: str) -> dict[str, Any]:
+    # CPU die temperature only: a bare "Die temperature" line counts, but GPU or
+    # ANE die temperatures are reported separately (ANE was previously
+    # mislabelled as the CPU temperature).
     cpu_temp_c = _extract_first_float(
         raw,
         [
             r"CPU(?:\s+die)?\s+temperature\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)\s*°?\s*C?",
             r"CPU temp(?:erature)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)\s*°?\s*C?",
             r"PECI CPU temperature\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)\s*°?\s*C?",
-            r"Die temperature\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)\s*°?\s*C?",
-            r"ANE(?:\s+die)?\s+temperature\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)\s*°?\s*C?",
+            r"^\s*Die temperature\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)\s*°?\s*C?",
         ],
+    )
+    ane_temp_c = _extract_first_float(
+        raw,
+        [r"ANE(?:\s+die)?\s+temperature\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)\s*°?\s*C?"],
     )
     cpu_speed_limit = _extract_first_float(
         raw,
@@ -134,7 +154,10 @@ def _parse_powermetrics_output(raw: str) -> dict[str, Any]:
 
     return {
         "cpu_temp_c": cpu_temp_c,
-        "cpu_speed_limit_pct": (None if cpu_speed_limit is None else round(cpu_speed_limit, 2)),
+        "ane_temp_c": ane_temp_c,
+        "cpu_speed_limit_pct": (
+            None if cpu_speed_limit is None else round(cpu_speed_limit, 2)
+        ),
         "cpu_power_w": cpu_power_w,
         "thermal_pressure": thermal_pressure,
     }
@@ -174,35 +197,17 @@ def _run_powermetrics(sample_ms: int, samplers: str) -> dict[str, Any]:
     }
 
 
-def _collect_once(sample_ms: int) -> dict[str, Any]:
-    started = time.time()
-    primary = _run_powermetrics(sample_ms=sample_ms, samplers="thermal,cpu_power")
-    ok = bool(primary["ok"])
-    err = str(primary["error"] or "")
-    raw = str(primary["raw"] or "")
-    selected_sampler = str(primary["samplers"])
-    selected_cmd = list(primary["cmd"])
-    selected_duration = float(primary["duration_s"])
-    parsed = _parse_powermetrics_output(raw)
-
-    # On some Apple Silicon models, temperature channels appear under SMC sampler.
-    if ok and parsed.get("cpu_temp_c") is None and ("smc" in _supported_samplers()):
-        alt = _run_powermetrics(sample_ms=sample_ms, samplers="smc,cpu_power")
-        if bool(alt["ok"]):
-            alt_raw = str(alt["raw"] or "")
-            alt_parsed = _parse_powermetrics_output(alt_raw)
-            if any(
-                alt_parsed.get(k) is not None
-                for k in ("cpu_temp_c", "cpu_speed_limit_pct", "cpu_power_w", "thermal_pressure")
-            ):
-                raw = alt_raw
-                parsed = alt_parsed
-                selected_sampler = str(alt["samplers"])
-                selected_cmd = list(alt["cmd"])
-            selected_duration += float(alt["duration_s"])
-        elif not err:
-            err = str(alt["error"] or "")
-
+def _build_payload(
+    *,
+    ok: bool,
+    err: str,
+    raw: str,
+    parsed: dict[str, Any],
+    selected_sampler: str,
+    selected_cmd: list[str],
+    started: float,
+    duration_s: float,
+) -> dict[str, Any]:
     note = ""
     if not ok:
         lraw = raw.lower()
@@ -227,7 +232,7 @@ def _collect_once(sample_ms: int) -> dict[str, Any]:
         "note": note,
         "timestamp_unix": time.time(),
         "collected_at_unix": started,
-        "duration_s": max(0.0, float(selected_duration)),
+        "duration_s": max(0.0, float(duration_s)),
         "euid": int(getattr(os, "geteuid", lambda: -1)()),
         "samplers": selected_sampler,
         "cmd": " ".join(selected_cmd),
@@ -236,11 +241,136 @@ def _collect_once(sample_ms: int) -> dict[str, Any]:
     }
 
 
+def _collect_once(sample_ms: int) -> dict[str, Any]:
+    started = time.time()
+    primary = _run_powermetrics(sample_ms=sample_ms, samplers="thermal,cpu_power")
+    ok = bool(primary["ok"])
+    err = str(primary["error"] or "")
+    raw = str(primary["raw"] or "")
+    selected_sampler = str(primary["samplers"])
+    selected_cmd = list(primary["cmd"])
+    selected_duration = float(primary["duration_s"])
+    parsed = _parse_powermetrics_output(raw)
+
+    # On some Apple Silicon models, temperature channels appear under SMC sampler.
+    if ok and parsed.get("cpu_temp_c") is None and ("smc" in _supported_samplers()):
+        alt = _run_powermetrics(sample_ms=sample_ms, samplers="smc,cpu_power")
+        if bool(alt["ok"]):
+            alt_raw = str(alt["raw"] or "")
+            alt_parsed = _parse_powermetrics_output(alt_raw)
+            if any(
+                alt_parsed.get(k) is not None
+                for k in (
+                    "cpu_temp_c",
+                    "cpu_speed_limit_pct",
+                    "cpu_power_w",
+                    "thermal_pressure",
+                )
+            ):
+                raw = alt_raw
+                parsed = alt_parsed
+                selected_sampler = str(alt["samplers"])
+                selected_cmd = list(alt["cmd"])
+            selected_duration += float(alt["duration_s"])
+        elif not err:
+            err = str(alt["error"] or "")
+
+    return _build_payload(
+        ok=ok,
+        err=err,
+        raw=raw,
+        parsed=parsed,
+        selected_sampler=selected_sampler,
+        selected_cmd=selected_cmd,
+        started=started,
+        duration_s=selected_duration,
+    )
+
+
+SAMPLE_MARKER = "*** Sampled system activity"
+
+
+def _iter_stdin_samples(lines: Iterable[str]) -> Iterator[str]:
+    """
+    Split a continuous `powermetrics` stream into per-sample text blocks
+    (each sample starts with '*** Sampled system activity').
+    """
+    buf: list[str] = []
+    for line in lines:
+        if line.startswith(SAMPLE_MARKER) and any(x.strip() for x in buf):
+            yield "".join(buf)
+            buf = []
+        buf.append(line)
+    if any(x.strip() for x in buf):
+        yield "".join(buf)
+
+
+def _cache_owner() -> tuple[int, int] | None:
+    """
+    Owner for files this collector creates. When running as root via sudo,
+    hand everything back to the invoking user so that no root-owned files or
+    folders are left in the repository (later non-root pipeline writes to
+    <out>/cache would otherwise fail).
+    """
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or int(geteuid()) != 0:
+        return None
+    try:
+        uid = int(os.environ["SUDO_UID"])
+        gid = int(os.environ.get("SUDO_GID", uid))
+    except (KeyError, ValueError):
+        return None
+    return uid, gid
+
+
+def _mkdirs_owned(path: Path, owner: tuple[int, int] | None) -> None:
+    missing: list[Path] = []
+    cur = path
+    while not cur.exists():
+        missing.append(cur)
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    for d in reversed(missing):
+        d.mkdir(exist_ok=True)
+        if owner is not None:
+            os.chown(d, owner[0], owner[1])
+
+
 def _write_cache(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    owner = _cache_owner()
+    _mkdirs_owned(path.parent, owner)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    if owner is not None:
+        os.chown(tmp, owner[0], owner[1])
     tmp.replace(path)
+
+
+def _run_stdin_mode(cache_file: Path, stream: Iterable[str]) -> int:
+    count = 0
+    for block in _iter_stdin_samples(stream):
+        started = time.time()
+        parsed = _parse_powermetrics_output(block)
+        payload = _build_payload(
+            ok=True,
+            err="",
+            raw=block,
+            parsed=parsed,
+            selected_sampler="stdin",
+            selected_cmd=["powermetrics", "(stdin)"],
+            started=started,
+            duration_s=0.0,
+        )
+        _write_cache(cache_file, payload)
+        count += 1
+        print(
+            f"[powermetrics] stdin sample {count}: temp={payload.get('cpu_temp_c')}C "
+            f"speed_limit={payload.get('cpu_speed_limit_pct')}% "
+            f"note={payload.get('note')}",
+            flush=True,
+        )
+    return count
 
 
 def main() -> None:
@@ -254,6 +384,14 @@ def main() -> None:
     parser.add_argument("--interval-sec", type=float, default=5.0, help="Collection interval in seconds.")
     parser.add_argument("--sample-ms", type=int, default=1000, help="powermetrics sample interval in ms.")
     parser.add_argument("--once", action="store_true", help="Collect once and exit.")
+    parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help=(
+            "Read a continuous powermetrics stream from stdin (run only powermetrics "
+            "under sudo and pipe it here) instead of invoking powermetrics."
+        ),
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir).resolve()
@@ -266,9 +404,23 @@ def main() -> None:
     sample_ms = max(200, int(args.sample_ms))
 
     print(f"[powermetrics] cache={cache_file}")
+    if args.stdin:
+        try:
+            _run_stdin_mode(cache_file, sys.stdin)
+        except KeyboardInterrupt:
+            print("[powermetrics] stopped by user.")
+        return
+
     print(f"[powermetrics] interval={interval_s:.1f}s sample={sample_ms}ms")
-    if int(getattr(os, "geteuid", lambda: -1)()) != 0:
+    euid = int(getattr(os, "geteuid", lambda: -1)())
+    if euid != 0:
         print("[powermetrics] warning: not running as root; powermetrics will likely fail.")
+    elif _cache_owner() is None:
+        print(
+            "[powermetrics] warning: running as root without SUDO_UID; created files "
+            "will be "
+            "root-owned. Prefer the --stdin pipe mode."
+        )
 
     try:
         while True:

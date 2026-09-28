@@ -20,12 +20,37 @@ import time
 import urllib.request
 import webbrowser
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, TOP, Button, Entry, Frame, Label, StringVar, Tk
+from tkinter import BOTH, END, LEFT, TOP, Button, Entry, Frame, Label, StringVar, Tk
 from tkinter.scrolledtext import ScrolledText
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD_SCRIPT = REPO_ROOT / "scripts" / "live_dashboard.py"
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def is_loopback_host(host: str) -> bool:
+    """The dashboard has no user authentication, so the launcher only binds loopback."""
+    return str(host or "").strip().strip("[]").lower() in LOOPBACK_HOSTS
+
+
+def dashboard_popen_kwargs() -> dict[str, object]:
+    """Run the dashboard in its own process group so Stop reaches all of it."""
+    kwargs: dict[str, object] = {
+        "cwd": str(REPO_ROOT),
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "bufsize": 1,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+        )
+    else:
+        # Thread-safe replacement for preexec_fn=os.setsid.
+        kwargs["start_new_session"] = True
+    return kwargs
 
 
 class DesktopLauncher:
@@ -42,7 +67,10 @@ class DesktopLauncher:
 
         self.proc: subprocess.Popen[str] | None = None
         self.proc_group: int | None = None
+        # Worker threads never touch Tk: they post log lines and events here and
+        # the Tk main loop applies them in _poll_log_queue (Tk is not thread-safe).
         self.log_q: queue.Queue[str] = queue.Queue()
+        self.event_q: queue.Queue[tuple[str, object]] = queue.Queue()
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -97,7 +125,22 @@ class DesktopLauncher:
             except queue.Empty:
                 break
             self._log(line.rstrip("\n"))
+        while True:
+            try:
+                kind, value = self.event_q.get_nowait()
+            except queue.Empty:
+                break
+            self._handle_event(kind, value)
         self.root.after(150, self._poll_log_queue)
+
+    def _handle_event(self, kind: str, value: object) -> None:
+        # Runs on the Tk main thread only.
+        if kind == "exited":
+            proc = value
+            if self.proc is proc:
+                self.proc = None
+                self.proc_group = None
+                self.status.set("Stopped")
 
     def _stream_proc(self, proc: subprocess.Popen[str]) -> None:
         assert proc.stdout is not None
@@ -105,9 +148,7 @@ class DesktopLauncher:
             self.log_q.put(line)
         rc = proc.wait()
         self.log_q.put(f"Dashboard process exited with code {rc}")
-        self.status.set("Stopped")
-        self.proc = None
-        self.proc_group = None
+        self.event_q.put(("exited", proc))
 
     def _wait_and_open(self) -> None:
         url = self._dashboard_url()
@@ -137,6 +178,14 @@ class DesktopLauncher:
             self.status.set("Error")
             self._log(f"Missing dashboard script: {DASHBOARD_SCRIPT}")
             return
+        if not is_loopback_host(host):
+            self.status.set("Error")
+            self._log(
+                f"Refusing to start on host '{host}': the dashboard has no user "
+                "authentication, so the launcher only binds 127.0.0.1/localhost. "
+                "Use scripts/live_dashboard.py --allow-remote deliberately if needed."
+            )
+            return
 
         cmd = [
             sys.executable,
@@ -151,18 +200,7 @@ class DesktopLauncher:
             str(port),
         ]
 
-        kwargs: dict[str, object] = {
-            "cwd": str(REPO_ROOT),
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.STDOUT,
-            "text": True,
-            "bufsize": 1,
-        }
-
-        if os.name == "posix":
-            kwargs["preexec_fn"] = os.setsid
-        elif os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+        kwargs = dashboard_popen_kwargs()
 
         try:
             proc = subprocess.Popen(cmd, **kwargs)
@@ -215,6 +253,11 @@ class DesktopLauncher:
         self.proc = None
         self.proc_group = None
         self._log("Dashboard process stopped.")
+        self._log(
+            "Pipeline runs started from the dashboard keep running in the background; "
+            "the next dashboard session re-attaches to them (pause/stop stay "
+            "available)."
+        )
 
     def restart(self) -> None:
         self.stop()
