@@ -76,45 +76,48 @@ candidates, target MPC roles, and pipeline support flags. CI should only be
 computed when RAM, PDI, NAS, IIM, and SRPI are explicitly defined for the run;
 missing components are not imputed.
 
-## Synthetic Validation Datasets
+## Synthetic Smoke-Test Objects
 
-The repository can generate compact real-data-derived synthetic datasets for
-software validation. They are derived from supported OpenNeuro source snapshots
-and exercise the full RAM, PDI, NAS, IIM, SRPI, and CI path without
-redistributing participant-level payloads.
+The repository can generate compact real-data-derived synthetic objects that
+exercise the RAM, PDI, NAS, IIM, SRPI and CI metric code. They are software
+smoke-test objects, not validation of the theory. The generator plants known
+structure on top of real OpenNeuro recordings. Validation reports smoke checks
+separately from known-answer checks, which record whether each metric recovers
+the planted direction. The arrays are deterministic transforms of individual
+CC0 recordings and keep the source subject IDs.
 
-Two setup paths are supported:
+There are two setup paths. You can download the open archive at
+https://doi.org/10.5281/zenodo.20786673, which was built with generator 1.x and
+has no planted ground truth. Or you can regenerate the objects from the
+OpenNeuro sources ds003171, ds005620, ds002547 and ds005479.
 
-- download the open archive at https://doi.org/10.5281/zenodo.20786673
-- regenerate the datasets locally from the OpenNeuro source snapshots listed above
-
-The archive contains `impact-synergy-real-derived-synthetic-test-objects.tar.gz`,
-`release_manifest.json`, and `SHA256SUMS.txt`. After downloading it, verify and
-extract the tarball so the selected root contains
-`test_objects/datasets/real_derived_synth_completed/` and
-`test_objects/runs/real_derived_synth_completed/`:
+The archive has one top-level folder, and its `SHA256SUMS.txt` lists the
+extracted files:
 
 ```bash
-export IMPACT_SYNTH_ROOT=/absolute/path/for/synthetic_package
-mkdir -p "$IMPACT_SYNTH_ROOT"
-shasum -a 256 -c SHA256SUMS.txt
-tar -xzf impact-synergy-real-derived-synthetic-test-objects.tar.gz -C "$IMPACT_SYNTH_ROOT"
+export IMPACT_SYNTH_DOWNLOAD=/absolute/path/to/downloaded/files
+export IMPACT_SYNTH_EXTRACT=/absolute/path/for/synthetic_package
+mkdir -p "$IMPACT_SYNTH_EXTRACT"
+tar -xzf "$IMPACT_SYNTH_DOWNLOAD/impact-synergy-real-derived-synthetic-test-objects.tar.gz" \
+  -C "$IMPACT_SYNTH_EXTRACT"
+export IMPACT_SYNTH_ROOT="$IMPACT_SYNTH_EXTRACT/impact-synergy-real-derived-synthetic-test-objects"
+(cd "$IMPACT_SYNTH_ROOT" && shasum -a 256 -c "$IMPACT_SYNTH_DOWNLOAD/SHA256SUMS.txt")
 conda run -n impact-synergy-clean python scripts/generate_real_derived_synth_completed.py \
   --validate-only
 ```
 
-To regenerate the datasets, download the source snapshots listed above, then run:
+To regenerate the objects from the sources, run:
 
 ```bash
+export IMPACT_SOURCE_ROOT=/absolute/path/to/openneuro_sources
 export IMPACT_SYNTH_ROOT=/absolute/path/to/impact-synth-output
-conda run -n impact-synergy-clean python scripts/inspect_real_sources_for_synth.py \
-  --source-root "$IMPACT_SOURCE_ROOT" \
-  --output-dir "$IMPACT_SYNTH_ROOT/test_objects/real_derived_synth_completed/reports"
+mkdir -p "$IMPACT_SYNTH_ROOT"
 conda run -n impact-synergy-clean python scripts/generate_real_derived_synth_completed.py \
   --source-root "$IMPACT_SOURCE_ROOT"
 ```
 
-See `docs/synthetic_data.md` for workflow details.
+See `docs/synthetic_data.md` for what is planted, the metric configuration used,
+and the report format.
 
 ## Running The Pipeline Locally
 

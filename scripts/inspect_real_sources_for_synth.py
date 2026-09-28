@@ -33,15 +33,13 @@ if str(SRC_ROOT) not in sys.path:
 from impact_pipeline.dataset_catalog import dataset_root_candidates, get_report_dataset
 
 
+# The three synthetic targets plus the one donor the generator actually reads
+# (ds005479 MID events). Other datasets can still be inspected via --datasets.
 DEFAULT_DATASETS = (
     "ds003171",
     "ds005620",
     "ds002547",
     "ds005479",
-    "ds004295",
-    "ds002336",
-    "ds002685",
-    "ds006623",
 )
 
 COMPLETE_DATASETS = {
@@ -61,6 +59,13 @@ EEG_EXTS = (".vhdr", ".set")
 RAW_BINARY_EXTS = (".eeg", ".fdt")
 TEXT_META_EXTS = (".tsv", ".json", ".bval", ".bvec", ".txt", ".md", ".csv")
 ATLAS_NODES = 64
+_SUBJECT_LABEL_RE = re.compile(r"sub-[A-Za-z0-9]+")
+
+
+def _trapezoid(y, x, axis=0):
+    """np.trapezoid on NumPy >= 2, np.trapz on older NumPy."""
+    fn = getattr(np, "trapezoid", None) or getattr(np, "trapz")
+    return fn(y, x, axis=axis)
 
 
 def _json_default(obj: Any) -> Any:
@@ -95,6 +100,11 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 
 
 def _source_dataset_candidates(dataset_id: str, repo_root: Path, source_root: Path | None) -> list[Path]:
+    """Candidate dataset roots.
+
+    An explicit ``source_root`` is authoritative: the repository's data folders
+    are only searched when no source root is configured (no silent fallback).
+    """
     candidates: list[Path] = []
     if source_root is not None:
         root = source_root.expanduser()
@@ -120,6 +130,7 @@ def _source_dataset_candidates(dataset_id: str, repo_root: Path, source_root: Pa
                     root / "data" / dataset_id,
                 ]
             )
+        return _unique_paths(candidates)
     candidates.extend(dataset_root_candidates(dataset_id, repo_root))
     return _unique_paths(candidates)
 
@@ -212,9 +223,56 @@ def _session_from_path(path: Path) -> str | None:
 
 def _subject_from_path(path: Path) -> str | None:
     for part in path.parts:
-        if part.startswith("sub-"):
+        if _SUBJECT_LABEL_RE.fullmatch(part):
             return part
     return None
+
+
+def _top_level_subjects(root: Path) -> list[str]:
+    """Subject folders directly under the dataset root (sub-<label>/)."""
+    return sorted(
+        p.name
+        for p in root.iterdir()
+        if p.is_dir() and _SUBJECT_LABEL_RE.fullmatch(p.name)
+    )
+
+
+def _derivative_subjects(root: Path) -> dict[str, int]:
+    out = {}
+    deriv = root / "derivatives"
+    if deriv.is_dir():
+        for pipeline in sorted(p for p in deriv.iterdir() if p.is_dir()):
+            out[pipeline.name] = len(_top_level_subjects(pipeline))
+    return out
+
+
+def _relativize(obj: Any, root: Path, label: str) -> Any:
+    """Replace absolute paths under ``root`` with '<label>/<relative path>'."""
+    prefix = str(root)
+    if isinstance(obj, dict):
+        return {k: _relativize(v, root, label) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_relativize(v, root, label) for v in obj]
+    if isinstance(obj, str) and obj.startswith(prefix):
+        rest = obj[len(prefix):]
+        if not rest:
+            return label
+        if rest[0] in "/\\":
+            return f"{label}/{rest.lstrip('/')}"
+    return obj
+
+
+def _display_root(
+    path: Path | None, repo_root: Path, source_root: Path | None
+) -> str | None:
+    """Dataset root relative to the source root (or repository); never absolute."""
+    if path is None:
+        return None
+    base = source_root if source_root is not None else repo_root
+    try:
+        return Path(path).resolve().relative_to(Path(base).resolve()).as_posix()
+    except ValueError:
+        return Path(path).name
 
 
 def _acf1(ts: np.ndarray) -> np.ndarray:
@@ -423,7 +481,9 @@ def _read_brainvision_segment(vhdr: Path, max_seconds: float = 30.0) -> dict[str
         bandpower = {}
         for name, (lo, hi) in bands.items():
             mask = (freqs >= lo) & (freqs < hi)
-            vals = np.trapz(psd[mask], freqs[mask], axis=0) if np.any(mask) else np.asarray([])
+            vals = np.asarray([])
+            if np.any(mask):
+                vals = _trapezoid(psd[mask], freqs[mask], axis=0)
             bandpower[name] = _numeric_summary(vals)
         row["bandpower"] = bandpower
     except Exception as exc:
@@ -482,11 +542,15 @@ def inspect_dataset(
     out: dict[str, Any] = {
         "dataset_id": dataset_id,
         "catalog": entry.to_record() if entry is not None else None,
-        "configured_source_root": str(source_root) if source_root is not None else None,
+        "source_root_configured": source_root is not None,
+        "paths_relative_to": (
+            "IMPACT_SOURCE_ROOT" if source_root is not None else "repository"
+        ),
         "source_root_candidates": [
-            str(path) for path in _source_dataset_candidates(dataset_id, repo_root, source_root)
+            _display_root(path, repo_root, source_root)
+            for path in _source_dataset_candidates(dataset_id, repo_root, source_root)
         ],
-        "local_root": str(local_root) if local_root else None,
+        "local_root": _display_root(local_root, repo_root, source_root),
         "available": bool(local_root and local_root.exists()),
         "marked_incomplete": bool(local_root and (local_root / "DOWNLOAD_INCOMPLETE.txt").exists()),
         "complete_snapshot_expected": dataset_id in COMPLETE_DATASETS,
@@ -518,10 +582,13 @@ def inspect_dataset(
         "npy": sum(p.suffix.lower() == ".npy" for p in files),
         "placeholders": sum(_is_annex_placeholder(p) for p in files),
     }
-    subjects = sorted({x for p in files if (x := _subject_from_path(p))})
+    # Count subjects from top-level sub-<label>/ folders only; derivative
+    # folders, reports (sub-01.html) and file names are not subjects.
+    subjects = _top_level_subjects(local_root)
     tasks = sorted({x for p in files if (x := _task_from_name(p.name))})
     out["subjects"] = subjects
     out["n_subjects"] = len(subjects)
+    out["derivative_subjects"] = _derivative_subjects(local_root)
     out["tasks"] = tasks
     out["n_tasks"] = len(tasks)
 
@@ -642,7 +709,62 @@ def inspect_dataset(
                 row["error"] = str(exc)
         npy_rows.append(row)
     out["npy_time_series"] = {"n_files": len(npy_files), "examples": npy_rows}
-    return out
+    return _relativize(out, local_root, local_root.name)
+
+
+def inspect_datasets(
+    dataset_ids,
+    *,
+    output_dir: Path,
+    source_root: Path | None = None,
+    max_nifti: int = 36,
+    max_eeg: int = 36,
+    repo_root: Path = REPO_ROOT,
+) -> dict[str, dict[str, Any]]:
+    """Inspect datasets and write <ds>_source_inspection.json plus a summary."""
+    output_dir = Path(output_dir).expanduser().resolve()
+    if source_root is not None:
+        source_root = Path(source_root).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    all_rows = {}
+    for dataset_id in dataset_ids:
+        print(f"inspect {dataset_id}", flush=True)
+        row = inspect_dataset(dataset_id, repo_root, max_nifti, max_eeg, source_root)
+        all_rows[dataset_id] = row
+        (output_dir / f"{dataset_id}_source_inspection.json").write_text(
+            json.dumps(row, indent=2, sort_keys=True, default=_json_default),
+            encoding="utf-8",
+        )
+    summary_path = output_dir / "source_inspection_summary.json"
+    previous = {}
+    if summary_path.exists():
+        previous = _read_json(summary_path).get("datasets", {})
+    summary = {
+        "source_root_configured": source_root is not None,
+        "datasets": {
+            **previous,
+            **{
+                ds: {
+                    "available": row.get("available"),
+                    "marked_incomplete": row.get("marked_incomplete"),
+                    "complete_snapshot_expected": row.get("complete_snapshot_expected"),
+                    "excluded_incomplete": row.get("excluded_incomplete"),
+                    "n_subjects": row.get("n_subjects"),
+                    "tasks": row.get("tasks"),
+                    "file_counts": row.get("file_counts"),
+                }
+                for ds, row in all_rows.items()
+            },
+        },
+        "target_datasets": ["ds003171", "ds002547", "ds005620"],
+        "generator_donors": ["ds005479"],
+        "excluded_incomplete": ["ds006623", "ds002685"],
+    }
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True, default=_json_default),
+        encoding="utf-8",
+    )
+    return all_rows
 
 
 def main() -> int:
@@ -666,35 +788,12 @@ def main() -> int:
 
     output_dir = Path(args.output_dir).expanduser().resolve()
     source_root = Path(args.source_root).expanduser().resolve() if args.source_root else None
-    output_dir.mkdir(parents=True, exist_ok=True)
-    all_rows = {}
-    for dataset_id in args.datasets:
-        print(f"inspect {dataset_id}", flush=True)
-        all_rows[dataset_id] = inspect_dataset(dataset_id, REPO_ROOT, args.max_nifti, args.max_eeg, source_root)
-        (output_dir / f"{dataset_id}_source_inspection.json").write_text(
-            json.dumps(all_rows[dataset_id], indent=2, sort_keys=True, default=_json_default),
-            encoding="utf-8",
-        )
-    summary = {
-        "configured_source_root": str(source_root) if source_root is not None else None,
-        "datasets": {
-            ds: {
-                "available": row.get("available"),
-                "marked_incomplete": row.get("marked_incomplete"),
-                "complete_snapshot_expected": row.get("complete_snapshot_expected"),
-                "excluded_incomplete": row.get("excluded_incomplete"),
-                "n_subjects": row.get("n_subjects"),
-                "tasks": row.get("tasks"),
-                "file_counts": row.get("file_counts"),
-            }
-            for ds, row in all_rows.items()
-        },
-        "target_datasets": ["ds003171", "ds002547", "ds005620"],
-        "excluded_incomplete": ["ds006623", "ds002685"],
-    }
-    (output_dir / "source_inspection_summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True, default=_json_default),
-        encoding="utf-8",
+    inspect_datasets(
+        args.datasets,
+        output_dir=output_dir,
+        source_root=source_root,
+        max_nifti=args.max_nifti,
+        max_eeg=args.max_eeg,
     )
     print(f"wrote source inspection reports -> {output_dir}")
     return 0
