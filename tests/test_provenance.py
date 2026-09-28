@@ -140,6 +140,17 @@ def test_package_version_falls_back_without_distribution_metadata(monkeypatch):
     assert impact_pipeline._resolve_version() == "0+unknown"
 
 
+def test_checkout_version_wins_over_an_unrelated_installed_wheel(monkeypatch):
+    from importlib import metadata
+
+    # A checkout run via PYTHONPATH next to an older installed wheel.
+    monkeypatch.setattr(metadata, "version", lambda _name: "0.9.0")
+    assert impact_pipeline._resolve_version() == _pyproject_version()
+    # No checkout next to the package (regular install): the metadata.
+    monkeypatch.setattr(impact_pipeline, "_version_from_pyproject", lambda: None)
+    assert impact_pipeline._resolve_version() == "0.9.0"
+
+
 def test_code_version_is_package_version_plus_commit(tmp_path, monkeypatch):
     base = impact_pipeline.__version__.split("+", 1)[0]
     sha = "a" * 40

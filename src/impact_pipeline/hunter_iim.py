@@ -987,6 +987,37 @@ def _prep_record(prep) -> dict:
     }
 
 
+def _undefined_prep_record(
+    prep, *, tpm_estimator, cut_mode, state_budget_policy, bearer_nodes
+) -> dict:
+    """
+    Provenance of an undefined problem. prepare_iim_problem can stop before it
+    resolves the estimator settings, so the requested ones are recorded (as in
+    compute_IIM's undefined payload); fields the preparation never reached are
+    left out rather than filled with defaults.
+    """
+    rec = {
+        key: val
+        for key, val in _prep_record(prep).items()
+        if key == "iim_algorithm_version" or key in prep
+    }
+    bearer = prep.get("bearer_nodes", bearer_nodes)
+    rec.update(
+        {
+            "tpm_estimator": str(tpm_estimator),
+            "cut_mode": str(cut_mode),
+            "bearer_nodes": (
+                None if bearer is None else sorted(int(x) for x in bearer)
+            ),
+            "state_budget_policy": str(
+                prep.get("state_budget_policy") or state_budget_policy
+            ),
+            "budget_adjustments": list(prep.get("budget_adjustments") or []),
+        }
+    )
+    return rec
+
+
 def _write_undefined_run(run_dir: Path, meta: dict, prep, profile) -> None:
     _json_dump(run_dir / "meta.json", meta)
     final_payload = {
@@ -1271,10 +1302,13 @@ def prepare_hunter_campaign(
         }
         if not bool(prep.get("defined", False)):
             meta.update(
-                {
-                    "iim_algorithm_version": IIM_ALGORITHM_VERSION,
-                    "budget_adjustments": list(prep.get("budget_adjustments") or []),
-                }
+                _undefined_prep_record(
+                    prep,
+                    tpm_estimator=iim_tpm_estimator,
+                    cut_mode=iim_cut_mode,
+                    state_budget_policy=iim_state_budget_policy,
+                    bearer_nodes=iim_settings["bearer_nodes"],
+                )
             )
             _write_undefined_run(run_dir, meta, prep, effective_profile)
             runs.append(meta)
@@ -1376,12 +1410,13 @@ def prepare_hunter_campaign(
                 _add_tasks(null_meta)
             else:
                 null_meta.update(
-                    {
-                        "iim_algorithm_version": IIM_ALGORITHM_VERSION,
-                        "budget_adjustments": list(
-                            null_prep.get("budget_adjustments") or []
-                        ),
-                    }
+                    _undefined_prep_record(
+                        null_prep,
+                        tpm_estimator=iim_tpm_estimator,
+                        cut_mode=iim_cut_mode,
+                        state_budget_policy="error",
+                        bearer_nodes=None,
+                    )
                 )
                 _write_undefined_run(null_dir, null_meta, null_prep, effective_profile)
             runs.append(null_meta)
@@ -2073,14 +2108,22 @@ def _task_label(stage: str, task: dict) -> str:
     return f"{task['run_key']}_{stage}_{int(task['task_index']):04d}"
 
 
-def _shard_hardware_backend(manifest):
-    """Backend of a shard job: the campaign's requested target (strict)."""
-    return configure_process_for_hardware(
-        (manifest.get("step2_context") or {}).get("hardware_target")
-        or manifest.get("hardware_target")
-        or (manifest.get("hardware_backend") or {}).get("requested")
-        or "cpu"
-    )
+def _shard_hardware_backend(manifest, hardware_target=None):
+    """
+    Backend of a shard job (strict): the job's own ``--hardware-target`` when
+    the caller passes it, else the campaign's requested target. The scheduler
+    scripts set the target per stage (PBS: the campaign target for both shard
+    stages; Slurm: phase-1 shards on the CPU partition with 'cpu'), so the
+    job's target must win over the campaign's.
+    """
+    if hardware_target is None:
+        hardware_target = (
+            (manifest.get("step2_context") or {}).get("hardware_target")
+            or manifest.get("hardware_target")
+            or (manifest.get("hardware_backend") or {}).get("requested")
+            or "cpu"
+        )
+    return configure_process_for_hardware(hardware_target)
 
 
 def _shard_psi_kernel(manifest, backend) -> str:
@@ -2092,10 +2135,10 @@ def _shard_psi_kernel(manifest, backend) -> str:
     return resolve_iim_psi_kernel(manifest.get("iim_psi_kernel") or "auto", backend)
 
 
-def run_phase1_shard(campaign_dir, task_index):
+def run_phase1_shard(campaign_dir, task_index, *, hardware_target=None):
     campaign_dir = Path(campaign_dir).resolve()
     manifest = _load_manifest(campaign_dir)
-    hardware_backend = _shard_hardware_backend(manifest)
+    hardware_backend = _shard_hardware_backend(manifest, hardware_target)
     psi_kernel = _shard_psi_kernel(manifest, hardware_backend)
     task = manifest["phase1_tasks"][int(task_index)]
     run_dir = _run_artifact_dir(campaign_dir, task["run_key"])
@@ -2232,10 +2275,12 @@ def run_phase1_reduce(campaign_dir, run_index):
     return payload
 
 
-def run_cut_shard(campaign_dir, task_index, *, require_phase1=None):
+def run_cut_shard(
+    campaign_dir, task_index, *, require_phase1=None, hardware_target=None
+):
     campaign_dir = Path(campaign_dir).resolve()
     manifest = _load_manifest(campaign_dir)
-    hardware_backend = _shard_hardware_backend(manifest)
+    hardware_backend = _shard_hardware_backend(manifest, hardware_target)
     psi_kernel = _shard_psi_kernel(manifest, hardware_backend)
     task = manifest["cut_tasks"][int(task_index)]
     run_dir = _run_artifact_dir(campaign_dir, task["run_key"])
@@ -2805,13 +2850,20 @@ def write_iim_results_table(campaign_dir, out_path=None) -> list[dict]:
 
 
 def run_packed_shard(
-    campaign_dir, stage: str, array_index: int, shards_per_node=None, env=None
+    campaign_dir,
+    stage: str,
+    array_index: int,
+    shards_per_node=None,
+    env=None,
+    *,
+    hardware_target=None,
 ):
     """
     Run the shard of a packed launch (``shards_per_node`` ranks per node).
     Ranks beyond the last task of a partially filled node exit without work.
     ``shards_per_node`` defaults to the packing the campaign was built with; a
     different explicit value would skip or duplicate tasks and is rejected.
+    ``hardware_target`` is the job's own target (see ``_shard_hardware_backend``).
     """
     campaign_dir = Path(campaign_dir).resolve()
     manifest = _load_manifest(campaign_dir)
@@ -2840,8 +2892,10 @@ def run_packed_shard(
         )
         return None
     if stage == PHASE1_STAGE:
-        return run_phase1_shard(campaign_dir, task_index)
-    return run_cut_shard(campaign_dir, task_index)
+        return run_phase1_shard(
+            campaign_dir, task_index, hardware_target=hardware_target
+        )
+    return run_cut_shard(campaign_dir, task_index, hardware_target=hardware_target)
 
 
 def campaign_status(campaign_dir) -> dict:

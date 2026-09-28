@@ -1514,6 +1514,8 @@ def _run_hunter_stage(
                     if hunter_shards_per_node is None
                     else int(hunter_shards_per_node)
                 ),
+                # The job's own target (Slurm phase-1 jobs run on CPU nodes).
+                hardware_target=hardware_target,
             )
             return None
         if hunter_task_index is None:
@@ -1522,9 +1524,13 @@ def _run_hunter_stage(
                 f"hunter {stage}."
             )
         if stage == "phase1-shard":
-            run_phase1_shard(campaign_dir, int(hunter_task_index))
+            run_phase1_shard(
+                campaign_dir, int(hunter_task_index), hardware_target=hardware_target
+            )
         else:
-            run_cut_shard(campaign_dir, int(hunter_task_index))
+            run_cut_shard(
+                campaign_dir, int(hunter_task_index), hardware_target=hardware_target
+            )
         return None
     if stage == "phase1-reduce":
         if hunter_run_index is None:

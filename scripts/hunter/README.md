@@ -101,9 +101,11 @@ bash <OUT>/cache/hunter_iim_campaign/pbs/00_submit_all.sh
 ## IIM on the APU (Ψ kernel)
 
 On `--hardware-target hunter-apu` (or `gpu`) the phase-1 and cut shards compute Ψ with
-the array-module kernel `impact_pipeline.iim_xp` on the device (CuPy); both stages
+the array-module kernel `impact_pipeline.iim_xp` on the device (CuPy); both PBS stages
 request the accelerator target. On `cpu` they use the numba/host kernel with worker
-processes and node-local SQLite kernel caches. The two kernels agree to ~1e-15
+processes and node-local SQLite kernel caches. Every shard runs on the
+`--hardware-target` of its own job (the optional Slurm backend keeps phase-1 shards on
+its CPU partition with `--hardware-target cpu`). The two kernels agree to ~1e-15
 (tests: 1e-10). Notes:
 
 - With the device kernel one process per APU does the work; `--hunter-workers-per-task`

@@ -29,17 +29,22 @@ def _version_from_pyproject() -> str | None:
 
 def _resolve_version() -> str:
     """
-    Installed distribution metadata (importlib.metadata) first; for a source
-    checkout used via PYTHONPATH (e.g. the HLRS Hunter venv route) the
-    pyproject.toml next to the package; '0+unknown' if neither is available.
+    Version of the code that is actually imported: the pyproject.toml next to
+    the package when it is imported from a source checkout (PYTHONPATH, e.g.
+    the HLRS Hunter venv route, or an editable install), else the installed
+    distribution metadata (importlib.metadata); '0+unknown' if neither is
+    available. The checkout comes first so that an unrelated installed wheel
+    of another version cannot mislabel a checkout run.
     """
+    declared = _version_from_pyproject()
+    if declared:
+        return declared
     try:
         from importlib import metadata as importlib_metadata
 
         return str(importlib_metadata.version(_DIST_NAME))
     except Exception:
-        pass
-    return _version_from_pyproject() or "0+unknown"
+        return "0+unknown"
 
 
 __version__ = _resolve_version()

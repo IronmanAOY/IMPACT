@@ -326,7 +326,6 @@ class _IIMKernelCacheMissError(RuntimeError):
     """Raised when lookup-only IIM aggregation hits a missing kernel cache key."""
 
 
-
 def _iim_encode_vals(vals, base):
     key = 0
     for v in vals:
@@ -6517,16 +6516,22 @@ def iim_stationary_distribution(tpm, tol: float = 1e-13, max_squarings: int = 64
     (rows renormalised after each squaring so rounding cannot accumulate).
     For an ergodic chain this is its unique stationary distribution, i.e. the
     limit of the empirical state frequencies that ``compute_IIM`` weights by.
+
+    Squaring stops once all rows of L^(2^j) agree within ``tol`` (the ergodic
+    limit has identical rows), otherwise after ``max_squarings`` (2^64 steps
+    by default; a reducible chain keeps distinct rows). A small change between
+    two squarings is not used as the stopping rule: a slow mode with spectral
+    gap eps changes L^(2^j) by only ~eps * 2^j per squaring long before it has
+    mixed (e.g. a two-state chain with switching rates 1e-14 / 3e-14).
     """
     t = np.asarray(tpm, dtype=float)
     n_states = int(t.shape[0])
     power = 0.5 * (np.eye(n_states) + t)
     for _ in range(int(max_squarings)):
-        nxt = power @ power
-        nxt /= nxt.sum(axis=1, keepdims=True)
-        done = float(np.max(np.abs(nxt - power))) <= float(tol)
-        power = nxt
-        if done:
+        power = power @ power
+        power /= power.sum(axis=1, keepdims=True)
+        spread = float(np.max(power.max(axis=0) - power.min(axis=0)))
+        if spread <= float(tol):
             break
     pi = np.full(n_states, 1.0 / n_states) @ power
     pi = np.clip(pi, 0.0, None)

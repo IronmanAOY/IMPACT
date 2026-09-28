@@ -286,6 +286,49 @@ def test_unavailable_surrogates_are_nan_with_the_local_reason(tmp_path):
     assert np.isnan(local["value"]) and np.isnan(hunter["value"])
 
 
+@pytest.mark.parametrize(
+    "bearer,t,reason",
+    [
+        ([3], 64, "insufficient_bearer_nodes"),  # one bearer node
+        ([2, 0, 1], 1, "insufficient_shape"),  # stops before the bearer check
+    ],
+)
+def test_undefined_runs_record_the_requested_estimator_settings(
+    tmp_path, bearer, t, reason
+):
+    # The problem is undefined before the estimator runs.
+    campaign_dir, manifest, paths = _campaign(
+        tmp_path, n_runs=1, t=t, iim_bearer_nodes=bearer,
+        iim_tpm_estimator="per_unit", iim_cut_mode="directional",
+    )
+    meta = manifest["runs"][0]
+    assert meta["defined"] is False
+    assert meta["undefined_reason"] == reason
+    assert manifest["phase1_tasks"] == [] and manifest["cut_tasks"] == []
+    hunter = _run_all(campaign_dir, manifest)[str(paths[0].resolve())]
+    local = _local(
+        paths[0], null_surrogates=K_NULL, bearer_nodes=bearer,
+        tpm_estimator="per_unit", cut_mode="directional",
+    )
+    assert local["undefined_reason"] == reason
+    for key in (
+        "defined",
+        "undefined_reason",
+        "tpm_estimator",
+        "cut_mode",
+        "bearer_nodes",
+        "iim_algorithm_version",
+        "IIM_null_undefined_reason",
+        "IIM_null_seed",
+        "IIM_null_n",
+    ):
+        assert hunter[key] == local[key], key
+    assert "selected_nodes" not in meta  # never reached, not filled with defaults
+    with open(campaign_dir / "iim_results.csv", encoding="utf-8") as fh:
+        (row,) = list(csv.DictReader(fh))
+    assert row["tpm_estimator"] == "per_unit" and row["cut_mode"] == "directional"
+
+
 def test_uncalibrated_campaign_keeps_the_null_schema(tmp_path):
     campaign_dir, manifest, paths = _campaign(tmp_path, n_null=0, n_runs=1)
     hunter = _run_all(campaign_dir, manifest)[str(paths[0].resolve())]
@@ -365,6 +408,91 @@ def test_psi_kernel_can_be_forced_back_to_the_host_kernel(
     )
     out = hunter_iim.run_phase1_shard(campaign_dir, 0)
     assert out["psi_kernel"] == "numba"
+
+
+def test_slurm_phase1_jobs_of_an_accelerator_campaign_run_on_cpu_nodes(
+    tmp_path, monkeypatch
+):
+    """
+    The optional Slurm backend runs phase-1 shards on its CPU partition with
+    --hardware-target cpu: the shard must honour the job's target instead of
+    requiring the campaign's accelerator there.
+    """
+    import importlib
+
+    from impact_pipeline.hardware_backend import HardwareBackendError
+
+    real_import = importlib.import_module
+
+    def no_cupy(name, *args, **kwargs):
+        if name == "cupy":
+            raise ImportError("no CuPy on the CPU partition")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", no_cupy)
+    monkeypatch.setenv("IMPACT_HUNTER_SCHEDULER", "slurm")
+    campaign_dir, manifest, _paths = _campaign(
+        tmp_path, target="gpu", n_runs=1, n_null=0, build_hardware_backend="cpu"
+    )
+    p1 = (campaign_dir / "slurm" / "01_phase1_shards.sbatch").read_text()
+    assert "--hardware-target cpu --hunter-stage phase1-shard" in p1
+    out = hunter_iim.run_phase1_shard(campaign_dir, 0, hardware_target="cpu")
+    assert out["psi_kernel"] == "numba"
+    assert "cpu" in out["timing"]["hardware_backend"]
+    packed = hunter_iim.run_packed_shard(
+        campaign_dir, "phase1-shard", 1, shards_per_node=1, hardware_target="cpu"
+    )
+    assert packed["psi_kernel"] == "numba"
+    # without an explicit job target the campaign's target is still strict
+    with pytest.raises(HardwareBackendError):
+        hunter_iim.run_phase1_shard(campaign_dir, 0)
+
+
+def test_run_pipeline_passes_the_job_target_to_the_shards(tmp_path, monkeypatch):
+    import run_pipeline
+
+    seen = []
+    monkeypatch.setattr(
+        run_pipeline,
+        "run_phase1_shard",
+        lambda campaign_dir, index, **kw: seen.append(("p1", index, kw)),
+    )
+    monkeypatch.setattr(
+        run_pipeline,
+        "run_cut_shard",
+        lambda campaign_dir, index, **kw: seen.append(("cut", index, kw)),
+    )
+    monkeypatch.setattr(
+        run_pipeline,
+        "run_packed_shard",
+        lambda campaign_dir, stage, index, spn, **kw: seen.append((stage, index, kw)),
+    )
+    bids = tmp_path / "bids"
+    bids.mkdir()
+    (bids / "dataset_description.json").write_text(
+        json.dumps({"Name": "tiny", "BIDSVersion": "1.8.0"})
+    )
+    common = dict(
+        dataset_id="ds003171",
+        bids_root_override=str(bids),
+        execution_mode="hunter",
+        hunter_campaign_dir=str(tmp_path / "campaign"),
+        hardware_target="cpu",
+        mpc_metrics=["IIM"],
+        compute_ci=False,
+    )
+    out = str(tmp_path / "out")
+    run_pipeline.main(out, hunter_stage="phase1-shard", hunter_task_index=2, **common)
+    run_pipeline.main(out, hunter_stage="cut-shard", hunter_task_index=3, **common)
+    run_pipeline.main(
+        out, hunter_stage="phase1-shard", hunter_array_index=1, **common
+    )
+    assert [kw.get("hardware_target") for _s, _i, kw in seen] == ["cpu"] * 3
+    assert [(s, i) for s, i, _kw in seen] == [
+        ("p1", 2),
+        ("cut", 3),
+        ("phase1-shard", 1),
+    ]
 
 
 # ---------------------------------------------------------------------------
