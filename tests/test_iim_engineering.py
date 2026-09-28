@@ -187,9 +187,11 @@ def test_checkpoint_is_not_reused_when_estimator_parameters_change(tmp_path):
 
 def test_temporary_kernel_cache_is_removed():
     tmp = tempfile.gettempdir()
-    before = set(glob.glob(os.path.join(tmp, "iim_kernel_cache_*")))
+    # Only this process's caches: other test runs on the machine share tempdir.
+    pattern = os.path.join(tmp, f"iim_kernel_cache_{os.getpid()}_*")
+    before = set(glob.glob(pattern))
     info = mm.compute_IIM(_ts(seed=1, t=120), bins=2, return_details=True)
-    after = set(glob.glob(os.path.join(tmp, "iim_kernel_cache_*")))
+    after = set(glob.glob(pattern))
     assert info["induced_partition_cache_disposal"] == "always"
     assert not os.path.exists(info["induced_partition_cache_path"])
     assert not (after - before)

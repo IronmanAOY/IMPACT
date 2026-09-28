@@ -1,9 +1,20 @@
 # pip constraints for the HLRS Hunter default stack HLRS/APU/2026.1
-# (CPE 25.09: cray-python 3.11.7 with Cray LibSci-linked numpy 1.24.4 and scipy 1.10.1).
+# (CPE 25.09: cray-python 3.11.7 with Cray LibSci-linked numpy 1.24.4 and scipy 1.10.1; ROCm 6.4.1).
 # Keeping these versions prevents pip from shadowing the system numpy/scipy in the
-# --system-site-packages venv. Use with: python3 -m pip install -c constraints-hunter.txt -r requirements-hunter.txt
+# --system-site-packages venv. Use with:
+#   python3 -m pip install -c constraints-hunter.txt -r requirements-hunter.txt
+# CuPy for this stack: 13.6.0 built from source (CUPY_INSTALL_USE_HIP=1 HCC_AMDGPU_TARGET=gfx942),
+# also installed with -c constraints-hunter.txt so it keeps numpy 1.24.4.
+# The pipeline itself runs from the checkout (run_pipeline.py puts <repo>/src on sys.path; the
+# self-test uses PYTHONPATH=<repo>/src), it is not pip-installed: pyproject.toml's scipy>=1.11 range
+# targets workstation installs and would conflict with scipy==1.10.1.
 #
-# Testing stack HLRS/APU/testing-2026.2 (CPE 26.03, cray-python 3.12.12): replace with
-#   numpy==2.3.5 and scipy==1.16.3, and use numba>=0.62 (numba 0.61.x requires numpy<2.3).
+# Alternative: testing stack HLRS/APU/testing-2026.2 (CPE 26.03, cray-python 3.12.12, ROCm 7.0.2)
+# [UNVERIFIED on Hunter]. Replace the two pins below with
+#   numpy==2.3.5
+#   scipy==1.16.3
+# and in requirements-hunter.txt use numba==0.62.1 (numba 0.61.x requires numpy<2.3; 0.62.1 allows
+# numpy<2.4) and cupy-rocm-7-0>=14.1 (wheel; needs numpy>=2). mne 1.6.1 predates NumPy 2: that
+# route needs mne>=1.7, which this pipeline has not been validated with (pyproject pins mne<1.7).
 numpy==1.24.4
 scipy==1.10.1

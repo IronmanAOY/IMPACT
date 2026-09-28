@@ -172,7 +172,9 @@ def test_hunter_slurm_scripts_embed_handoff_runtime(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _multi_run_campaign(tmp_path, *, phase1=3, cut=2, n_parts=4, max_nodes=4, bins=2):
+def _multi_run_campaign(
+    tmp_path, *, phase1=3, cut=2, n_parts=4, max_nodes=4, bins=2, **iim_options
+):
     data_dir = tmp_path / "prep"
     rng = np.random.RandomState(11)
     paths = []
@@ -208,6 +210,7 @@ def _multi_run_campaign(tmp_path, *, phase1=3, cut=2, n_parts=4, max_nodes=4, bi
         iim_max_mechanism_size=2,
         iim_max_purview_size=2,
         step2_context={"hardware_target": "cpu"},
+        **{f"iim_{key}": value for key, value in iim_options.items()},
     )
     return campaign_dir, manifest, paths
 
@@ -726,3 +729,46 @@ def test_main_hunter_end_to_end_matches_local_iim(tmp_path, monkeypatch):
     assert prov["status"] == "completed"
     assert prov["hunter_campaign"]["scheduler"]["scheduler"] == "pbs"
     assert (campaign / "timing_summary.json").exists()
+    # per-run IIM provenance table next to the step-2 outputs
+    table = pd.read_csv(out / "cache" / "hunter_iim_results.csv")
+    assert set(table["tpm_estimator"]) == {"node_shrinkage"}
+    assert set(table["iim_algorithm_version"]) == {mm.IIM_ALGORITHM_VERSION}
+    assert len(table) == len(manifest["runs"])
+
+
+@pytest.mark.parametrize(
+    "estimator,cut_mode",
+    [("per_unit", "directional"), ("node_laplace", "bidirectional")],
+)
+def test_campaign_estimator_options_match_direct_compute(tmp_path, estimator, cut_mode):
+    campaign_dir, manifest, paths = _multi_run_campaign(
+        tmp_path,
+        tpm_estimator=estimator,
+        cut_mode=cut_mode,
+        bearer_nodes=[0, 1, 2, 4],
+    )
+    _run_all_packed(campaign_dir, manifest)
+    hunter_iim.run_reduce_all(campaign_dir)
+    results = collect_iim_results_by_path(campaign_dir)
+    for p in paths:
+        hunter_info = results[str(p.resolve())]
+        direct = mm.compute_IIM(
+            np.load(p).T,
+            bins=2,
+            lag_trs=1,
+            n_parts=4,
+            max_nodes=4,
+            max_mechanism_size=2,
+            max_purview_size=2,
+            tpm_estimator=estimator,
+            cut_mode=cut_mode,
+            bearer_nodes=[0, 1, 2, 4],
+            return_details=True,
+        )
+        for key in ("raw", "canonical", "Psi_full", "Psi_mip_preserved"):
+            assert hunter_info[key] == pytest.approx(
+                direct[key], rel=1e-9, abs=1e-12
+            ), key
+        for key in ("tpm_estimator", "cut_mode", "selected_nodes", "bearer_nodes"):
+            assert hunter_info[key] == direct[key], key
+        assert hunter_info["n_cuts_evaluated"] == direct["n_cuts_evaluated"]

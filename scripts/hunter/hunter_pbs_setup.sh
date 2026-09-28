@@ -69,6 +69,15 @@ export ROCM_HOME="${ROCM_HOME:-${ROCM_PATH:-/opt/rocm}}"            # CuPy uses 
 # CUPY_ACCELERATORS defaults to "" on HIP. [VENDOR]
 # cupy.linalg.eigh on ROCm is checked against NumPy at first use and falls back to the CPU;
 # force a policy with IMPACT_EIGH_BACKEND=cpu|device|auto.
+# IIM Psi kernel: on --hardware-target hunter-apu the shards run the array-module (CuPy) kernel on
+# the APU (HLRS: GPU use is mandatory). Check it first with
+#   python3 -m impact_pipeline.hardware_selftest --target hunter-apu   (case iim_psi_xp_parity)
+# IMPACT_IIM_PSI_KERNEL=numba forces the host kernel (debugging only); IMPACT_IIM_XP_MAX_ELEMENTS
+# bounds the largest temporary array of the device kernel (default 8388608 float64 = 64 MB).
+# export IMPACT_IIM_XP_MAX_ELEMENTS=33554432
+# The generated jobs export IMPACT_REPO_ROOT (the checkout they run); set it here too if the package
+# was pip-installed non-editably and login-node commands must find the checkout:
+# export IMPACT_REPO_ROOT="${IMPACT_WS}/impact-synergy-pipeline"
 
 # ---- 6. Threads (one rank per APU = 24 cores; the job scripts set 1 thread per worker process) ---  [KB Affinity_and_Pinning]
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-22}"

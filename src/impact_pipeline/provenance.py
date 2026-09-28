@@ -218,14 +218,92 @@ def _git_output(repo_root: Path, *args: str) -> str | None:
     return proc.stdout.strip()
 
 
+REPO_ROOT_ENV = "IMPACT_REPO_ROOT"
+# A checkout root is recognised by the pipeline entry point the job scripts run.
+REPO_ROOT_MARKER = "run_pipeline.py"
+
+
+def package_version() -> str:
+    """Version of the impact_pipeline package (``impact_pipeline.__version__``)."""
+    from impact_pipeline import __version__
+
+    return str(__version__)
+
+
+def _is_repo_root(path: Path | str | None) -> bool:
+    return path is not None and (Path(path) / REPO_ROOT_MARKER).is_file()
+
+
+def resolve_repo_root(
+    explicit: Path | str | None = None,
+    env=None,
+    fallback: Path | str | None = None,
+    required: bool = True,
+) -> Path | None:
+    """
+    Root of the checkout that holds ``run_pipeline.py`` (Hunter job scripts cd
+    there and run it). Order: ``explicit`` (e.g. --repo-root) >
+    IMPACT_REPO_ROOT > the package-relative root (source checkout or editable
+    install) > ``fallback`` (e.g. run_pipeline.py's own directory) > the
+    current directory. An explicit or environment value that is not a
+    checkout is an error (no silent substitution). With a non-editable install
+    the package-relative root lies in site-packages and is skipped.
+    """
+    env = os.environ if env is None else env
+    for label, value in (
+        ("--repo-root", explicit),
+        (REPO_ROOT_ENV, str(env.get(REPO_ROOT_ENV) or "").strip() or None),
+    ):
+        if value is None:
+            continue
+        path = Path(value).expanduser().resolve()
+        if not _is_repo_root(path):
+            raise FileNotFoundError(
+                f"{label}={value!r} does not contain {REPO_ROOT_MARKER}; point it at "
+                "the impact-synergy-pipeline checkout."
+            )
+        return path
+    for candidate in (Path(__file__).resolve().parents[2], fallback, Path.cwd()):
+        if candidate is not None and _is_repo_root(candidate):
+            return Path(candidate).resolve()
+    if required:
+        raise FileNotFoundError(
+            f"Cannot locate the pipeline checkout ({REPO_ROOT_MARKER}): the package "
+            "is not in a source checkout (non-editable install?). Pass --repo-root "
+            f"or set {REPO_ROOT_ENV}."
+        )
+    return None
+
+
+def format_code_version(info: dict) -> str:
+    """
+    Code version string: package version + git commit, e.g.
+    '1.1.0+g<40-hex sha>[.dirty]'; without git metadata '1.1.0+<IMPACT_CODE_VERSION>',
+    else '1.1.0+unknown'.
+    """
+    pkg = str(info.get("package_version") or "0+unknown")
+    base = pkg.split("+", 1)[0]
+    if info.get("git_sha"):
+        text = f"{base}+g{info['git_sha']}"
+        if info.get("git_dirty"):
+            text += ".dirty"
+        return text
+    if info.get("declared_version"):
+        return f"{base}+{info['declared_version']}"
+    return f"{base}+unknown"
+
+
 def collect_code_version(repo_root: Path | str) -> dict[str, object]:
     """
-    Identify the code that produced a result: git commit (if the checkout is a
-    git work tree), dirty flag and branch. Deployments without git metadata
-    (e.g. a tarball copied to an HPC workspace) can set IMPACT_CODE_VERSION.
+    Identify the code that produced a result: package version, git commit (if
+    the checkout is a git work tree), dirty flag and branch, combined in
+    ``code_version`` (see ``format_code_version``). Deployments without git
+    metadata (e.g. a tarball copied to an HPC workspace) can set
+    IMPACT_CODE_VERSION.
     """
     root = Path(repo_root).resolve()
     out: dict[str, object] = {
+        "package_version": package_version(),
         "git_sha": None,
         "git_dirty": None,
         "git_branch": None,
@@ -244,6 +322,7 @@ def collect_code_version(repo_root: Path | str) -> dict[str, object]:
         out["git_branch"] = _git_output(root, "rev-parse", "--abbrev-ref", "HEAD")
     elif out["declared_version"]:
         out["source"] = CODE_VERSION_ENV
+    out["code_version"] = format_code_version(out)
     return out
 
 
@@ -264,6 +343,7 @@ def collect_runtime_versions(packages=RUNTIME_PACKAGES) -> dict[str, object]:
         if ver is not None:
             versions[name] = ver
     return {
+        "impact_pipeline_version": package_version(),
         "python": sys.version.split()[0],
         "python_executable": sys.executable,
         "platform": platform.platform(),

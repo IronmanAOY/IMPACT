@@ -15,6 +15,8 @@
 #   --hardware-target T      cpu|auto|gpu|hunter-apu (default: hunter-apu)
 #   --campaign-dir DIR       (default: <out-dir>/cache/hunter_iim_smoke)
 #   --python PY              interpreter (default: $IMPACT_HUNTER_PYTHON or python3)
+#   --null-surrogates K      add K circular-shift surrogate runs per run (IIM null calibration;
+#                            default 0; each surrogate costs one more IIM run)
 #   --submit                 qsub the smoke job (default: only print the command)
 # Output location: with --data-origin dummy, --out-dir is used only if it lies under
 # ${IMPACT_SYNTH_ROOT:-<repo>}/test_objects; otherwise the preprocessed inputs are read from and
@@ -31,8 +33,9 @@ OUT_DIR=""
 CAMPAIGN_DIR=""
 PY="${IMPACT_HUNTER_PYTHON:-python3}"
 SUBMIT=0
+NULL_SURROGATES=0
 
-usage() { sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -44,6 +47,7 @@ while [ $# -gt 0 ]; do
     --hardware-target) TARGET="${2:?}"; shift ;;
     --campaign-dir) CAMPAIGN_DIR="${2:?}"; shift ;;
     --python) PY="${2:?}"; shift ;;
+    --null-surrogates) NULL_SURROGATES="${2:?}"; shift ;;
     --submit) SUBMIT=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -89,6 +93,7 @@ fi
   --iim-max-purview-size 2 \
   --hunter-phase1-shards-per-run 1 \
   --hunter-cut-shards-per-run 1 \
+  --hunter-iim-null-surrogates "${NULL_SURROGATES}" \
   ${subject_args[@]+"${subject_args[@]}"}
 
 smoke="${CAMPAIGN_DIR}/pbs/90_smoke_all_in_one.pbs"

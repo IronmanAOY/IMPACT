@@ -62,6 +62,7 @@ from impact_pipeline.hunter_iim import (
     run_phase1_shard,
     run_reduce_all,
     summarize_campaign_timing,
+    write_iim_results_table,
 )
 from impact_pipeline.provenance import (
     PROVENANCE_COLUMNS,
@@ -71,6 +72,7 @@ from impact_pipeline.provenance import (
     collect_runtime_versions,
     is_test_object_origin,
     resolve_dataset_provenance,
+    resolve_repo_root,
     write_json,
 )
 from impact_pipeline.dataset_catalog import get_report_dataset
@@ -1377,6 +1379,8 @@ def _run_hunter_stage(
     atlas_robustness=True,
     ci_reference=None,
     replication_root=None,
+    hunter_iim_null_surrogates=0,
+    repo_root=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
@@ -1472,6 +1476,11 @@ def _run_hunter_stage(
             scheduler=hunter_scheduler,
             settings_overrides=hunter_settings_overrides,
             build_hardware_backend=build_hardware_backend,
+            # K circular-shift surrogate runs per real run (IIM null calibration).
+            iim_null_surrogates=int(hunter_iim_null_surrogates or 0),
+            # Checkout the jobs run: --repo-root > IMPACT_REPO_ROOT > package
+            # checkout > this script's directory (non-editable installs).
+            repo_root=resolve_repo_root(repo_root, fallback=root),
         )
         sched = manifest.get("scheduler") or {}
         log.info(
@@ -1503,6 +1512,8 @@ def _run_hunter_stage(
                     if hunter_shards_per_node is None
                     else int(hunter_shards_per_node)
                 ),
+                # The job's own target (Slurm phase-1 jobs run on CPU nodes).
+                hardware_target=hardware_target,
             )
             return None
         if hunter_task_index is None:
@@ -1511,9 +1522,13 @@ def _run_hunter_stage(
                 f"hunter {stage}."
             )
         if stage == "phase1-shard":
-            run_phase1_shard(campaign_dir, int(hunter_task_index))
+            run_phase1_shard(
+                campaign_dir, int(hunter_task_index), hardware_target=hardware_target
+            )
         else:
-            run_cut_shard(campaign_dir, int(hunter_task_index))
+            run_cut_shard(
+                campaign_dir, int(hunter_task_index), hardware_target=hardware_target
+            )
         return None
     if stage == "phase1-reduce":
         if hunter_run_index is None:
@@ -1553,6 +1568,10 @@ def _run_hunter_stage(
         return ctx_iim.get(key, fallback)
 
     iim_precomputed_by_path = collect_iim_results_by_path(campaign_dir)
+    # Per-run IIM with estimator/calibration provenance next to step-2 outputs.
+    write_iim_results_table(
+        campaign_dir, Path(ctx["cache_dir"]) / "hunter_iim_results.csv"
+    )
     df, df_mean, _df_S, _df_CI, df_stats_by_theta = run_s_ci(
         prep_out=Path(ctx["prep_out"]),
         bids_root=(None if ctx["bids_root"] is None else Path(ctx["bids_root"])),
@@ -1774,6 +1793,8 @@ def main(
     atlas_robustness=True,
     cli_argv=None,
     replication_root=None,
+    hunter_iim_null_surrogates=None,
+    repo_root=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
@@ -2134,6 +2155,8 @@ def main(
                 "cut_shards_per_run": hunter_cut_shards_per_run,
                 "workers_per_task": hunter_workers_per_task,
                 "shards_per_node": hunter_shards_per_node,
+                "iim_null_surrogates": int(hunter_iim_null_surrogates or 0),
+                "repo_root": (None if repo_root is None else str(repo_root)),
             }
         ),
     }
@@ -2288,6 +2311,8 @@ def main(
             run_parameters=run_parameters,
             atlas_robustness=atlas_robustness,
             ci_reference=ci_reference,
+            hunter_iim_null_surrogates=int(hunter_iim_null_surrogates or 0),
+            repo_root=repo_root,
         )
         _write_run_provenance_manifest(
             status="hunter_campaign_built",
@@ -2595,6 +2620,24 @@ if __name__ == '__main__':
         ),
     )
     parser.add_argument(
+        "--hunter-iim-null-surrogates",
+        type=int,
+        default=None,
+        help=(
+            "build-campaign: add K circular-shift surrogate runs per real run "
+            "(seeded as compute_IIM's null calibration); finalize then reports "
+            "IIM_null_mean/IIM_null_sd/IIM_z and the calibrated IIM (default 0)."
+        ),
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=None,
+        help=(
+            "Pipeline checkout the Hunter jobs cd into and run (default: "
+            "IMPACT_REPO_ROOT, the package's checkout, or this script's directory)."
+        ),
+    )
+    parser.add_argument(
         "--assume-tr",
         type=float,
         default=None,
@@ -2848,4 +2891,6 @@ if __name__ == '__main__':
         hunter_workers_per_task=args.hunter_workers_per_task,
         atlas_robustness=not args.no_atlas_robustness,
         cli_argv=sys.argv,
+        hunter_iim_null_surrogates=args.hunter_iim_null_surrogates,
+        repo_root=args.repo_root,
     )

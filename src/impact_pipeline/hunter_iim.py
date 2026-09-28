@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import csv
 import dataclasses
 import hashlib
 import json
@@ -26,26 +27,44 @@ from impact_pipeline.execution_profiles import (
     HunterSlurmProfile,
     normalize_hunter_scheduler,
 )
+from impact_pipeline import iim_xp
 from impact_pipeline.hardware_backend import (
     backend_summary,
     configure_process_for_hardware,
+    get_array_module,
     normalize_hardware_target,
 )
 from impact_pipeline.mpc_metrics import (
+    IIM_ALGORITHM_VERSION,
     _IIMDiskKernelCache,
-    _iim_build_cut_tpm,
+    _iim_build_cut_tpm_for_mode,
     _iim_build_phase1_chunks_adaptive,
     _iim_cut_to_key,
+    _iim_null_fields,
     _iim_phase1_chunk_contribution,
     _iim_phase_worker_init_static,
     _iim_phase_worker_run_chunk_for_tpm,
+    _resolve_null_seed,
+    iim_calibrated_value,
+    iim_null_calibration_fields,
+    iim_null_min_shift as _resolve_null_min_shift,
+    iim_null_surrogate_series,
     prepare_iim_problem,
+    resolve_iim_psi_kernel,
 )
-from impact_pipeline.provenance import collect_code_version
+from impact_pipeline.provenance import (
+    REPO_ROOT_ENV,
+    collect_code_version,
+    resolve_repo_root,
+)
 from impact_pipeline.synergy_ci import build_ci_run_specs
 
 log = logging.getLogger(__name__)
 
+# Package-relative checkout root (a source checkout or editable install).
+# Stages resolve the root with provenance.resolve_repo_root, which also honours
+# an explicit --repo-root and IMPACT_REPO_ROOT (needed for non-editable installs,
+# where this path points into site-packages).
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCALSCRATCH_ROOT = Path("/localscratch")
 PHASE1_STAGE = "phase1-shard"
@@ -448,7 +467,7 @@ def resolve_hunter_settings(
             "python_launcher": _python_launcher(env),
             "setup_file": setup_file,
             "inline_setup": _env_value("IMPACT_HUNTER_SETUP", env),
-            "repo_root": str(REPO_ROOT),
+            "repo_root": str(resolve_repo_root(overrides.get("repo_root"), env=env)),
             "shard_omp_threads": _int_setting(
                 {}, "shard_omp_threads", env, "IMPACT_HUNTER_SHARD_OMP_THREADS", 1
             ),
@@ -637,12 +656,15 @@ def _write_timing(campaign_dir: Path, stage: str, name: str, timing: dict) -> No
     )
 
 
+def _code_root() -> Path:
+    """Checkout used for the code version (IMPACT_REPO_ROOT is exported by the jobs)."""
+    root = resolve_repo_root(required=False)
+    return REPO_ROOT if root is None else root
+
+
 def _runtime_code_version() -> str:
-    info = collect_code_version(REPO_ROOT)
-    version = str(info.get("git_sha") or info.get("declared_version") or "unknown")
-    if info.get("git_dirty"):
-        version += "+dirty"
-    return version
+    """Package version + git SHA (or IMPACT_CODE_VERSION) of the running code."""
+    return str(collect_code_version(_code_root())["code_version"])
 
 
 def _problem_digest(prep) -> str:
@@ -940,6 +962,141 @@ def _load_problem(run_dir: Path):
     return meta, problem
 
 
+def _prep_record(prep) -> dict:
+    """Estimator, subsystem and budget provenance of a prepared IIM problem."""
+    return {
+        "iim_algorithm_version": IIM_ALGORITHM_VERSION,
+        "tpm_estimator": prep.get("tpm_estimator"),
+        "tpm_alpha": prep.get("tpm_alpha"),
+        "max_state_space": prep.get("max_state_space"),
+        "cut_mode": prep.get("cut_mode", "bidirectional"),
+        "bearer_nodes": prep.get("bearer_nodes"),
+        "selected_nodes": (
+            None
+            if prep.get("selected_nodes") is None
+            else [int(x) for x in prep["selected_nodes"]]
+        ),
+        "node_selection_rule": prep.get("node_selection_rule"),
+        "node_selection_degenerate": bool(prep.get("node_selection_degenerate", False)),
+        "bins_requested": prep.get("bins_requested"),
+        "state_budget_policy": prep.get("state_budget_policy"),
+        "budget_adjustments": list(prep.get("budget_adjustments") or []),
+        "n_states": prep.get("n_states"),
+        "n_states_observed": prep.get("n_states_observed"),
+        "n_transitions": prep.get("n_transitions"),
+    }
+
+
+def _undefined_prep_record(
+    prep, *, tpm_estimator, cut_mode, state_budget_policy, bearer_nodes
+) -> dict:
+    """
+    Provenance of an undefined problem. prepare_iim_problem can stop before it
+    resolves the estimator settings, so the requested ones are recorded (as in
+    compute_IIM's undefined payload); fields the preparation never reached are
+    left out rather than filled with defaults.
+    """
+    rec = {
+        key: val
+        for key, val in _prep_record(prep).items()
+        if key == "iim_algorithm_version" or key in prep
+    }
+    bearer = prep.get("bearer_nodes", bearer_nodes)
+    rec.update(
+        {
+            "tpm_estimator": str(tpm_estimator),
+            "cut_mode": str(cut_mode),
+            "bearer_nodes": (
+                None if bearer is None else sorted(int(x) for x in bearer)
+            ),
+            "state_budget_policy": str(
+                prep.get("state_budget_policy") or state_budget_policy
+            ),
+            "budget_adjustments": list(prep.get("budget_adjustments") or []),
+        }
+    )
+    return rec
+
+
+def _write_undefined_run(run_dir: Path, meta: dict, prep, profile) -> None:
+    _json_dump(run_dir / "meta.json", meta)
+    final_payload = {
+        "value": None,
+        "raw": None,
+        "canonical": None,
+        "clipped": None,
+        "iim_plus": None,
+        "defined": False,
+        "undefined_reason": str(prep.get("undefined_reason")),
+        "n_nodes_used": prep.get("n_nodes_used"),
+        "bins_used": prep.get("bins_used"),
+        "n_cuts_evaluated": 0,
+        "mip_cut": None,
+        "phase1_parallel_workers": profile.hunter_phase1_workers_per_task,
+        "phase1_chunk_size": int(profile.hunter_phase1_chunk_size),
+        "phase1_shared_memory": bool(profile.hunter_shared_memory),
+        "iim_algorithm_version": IIM_ALGORITHM_VERSION,
+        "budget_adjustments": list(prep.get("budget_adjustments") or []),
+    }
+    _json_dump(run_dir / "final_result.json", final_payload)
+
+
+def _register_defined_run(run_dir: Path, meta: dict, prep, profile, iim_bins) -> dict:
+    """Store a prepared problem and its shard plan; returns the updated meta."""
+    np.save(run_dir / "curr_obs.npy", prep["curr_obs"], allow_pickle=False)
+    np.save(run_dir / "tpm_full.npy", prep["tpm_full"], allow_pickle=False)
+    np.save(run_dir / "states_full.npy", prep["states_full"], allow_pickle=False)
+    _json_dump(run_dir / "mechanisms.json", [list(x) for x in prep["mechanisms_all"]])
+    _json_dump(run_dir / "purviews.json", [list(x) for x in prep["purviews_all"]])
+    _json_dump(
+        run_dir / "cuts.json",
+        [[list(A), list(B)] for A, B in prep["cuts_eval"]],
+    )
+    phase1_ranges = _split_evenly(
+        len(prep["mechanisms_all"]),
+        int(profile.hunter_phase1_shards_per_run),
+    )
+    cut_ranges = _split_evenly(
+        len(prep["cuts_eval"]),
+        int(profile.hunter_cut_shards_per_run),
+    )
+    bins_used = int(prep["bins_used"])
+    bins_reason = None
+    if bins_used != int(iim_bins):
+        bins_reason = (
+            f"requested bins={int(iim_bins)} exceed max_state_space="
+            f"{int(prep.get('max_state_space', 0))} (bins are reduced before nodes)"
+        )
+    meta.update(
+        {
+            "defined": True,
+            "n_regions_input": int(prep["n_regions_input"]),
+            "n_time_input": int(prep["n_time_input"]),
+            "n_nodes_used": int(prep["n_nodes_used"]),
+            "bins_used": bins_used,
+            "bins_reduction_reason": bins_reason,
+            "lag_trs": int(prep["lag_trs"]),
+            "max_mechanism_size_used": int(prep["max_mechanism_size_used"]),
+            "max_purview_size_used": int(prep["max_purview_size_used"]),
+            "n_cuts_evaluated": int(len(prep["cuts_eval"])),
+            "n_mechanisms": int(len(prep["mechanisms_all"])),
+            "n_purviews": int(len(prep["purviews_all"])),
+            "problem_digest": _problem_digest(prep),
+            "phase1_shards": [
+                {"task_index": int(i), "start": int(a), "stop": int(b)}
+                for i, (a, b) in enumerate(phase1_ranges)
+            ],
+            "cut_shards": [
+                {"task_index": int(i), "start": int(a), "stop": int(b)}
+                for i, (a, b) in enumerate(cut_ranges)
+            ],
+            **_prep_record(prep),
+        }
+    )
+    _json_dump(run_dir / "meta.json", meta)
+    return meta
+
+
 def prepare_hunter_campaign(
     *,
     data_dir,
@@ -962,6 +1119,17 @@ def prepare_hunter_campaign(
     scheduler=None,
     settings_overrides=None,
     build_hardware_backend=None,
+    iim_tpm_estimator="node_shrinkage",
+    iim_node_selection="variance",
+    iim_state_budget_policy="reduce_bins_first",
+    iim_cut_mode="bidirectional",
+    iim_bearer_nodes=None,
+    iim_null_surrogates=0,
+    iim_null_method="circular_shift",
+    iim_null_seed=None,
+    iim_null_min_shift=None,
+    iim_psi_kernel="auto",
+    repo_root=None,
 ):
     """
     Build a Hunter IIM campaign: one prepared IIM problem per unique run plus
@@ -972,6 +1140,21 @@ def prepare_hunter_campaign(
     preparation step itself, so a campaign can be built on a login node
     without an accelerator. Scheduler, shard and worker settings are resolved
     by :func:`resolve_hunter_settings` and frozen in the manifest.
+
+    Estimator settings (``iim_tpm_estimator``, ``iim_node_selection``,
+    ``iim_state_budget_policy``, ``iim_cut_mode``, ``iim_bearer_nodes``) are
+    passed to ``prepare_iim_problem`` exactly as compute_IIM would, and each
+    run's meta.json records the estimator, algorithm version, node selection
+    and every state-budget adjustment.
+
+    Surrogate calibration: with ``iim_null_surrogates`` = K > 0 every real run
+    gets K extra campaign runs holding its null surrogates, drawn exactly as
+    compute_IIM draws them (``iim_null_surrogate_series``: method
+    ``iim_null_method``, seed ``iim_null_seed`` (default 0, compute_IIM's
+    default ``rng``), minimum shift ``iim_null_min_shift``), prepared with the
+    same bins, lag, cut sample and mechanism/purview sizes. The reducer then
+    computes IIM_null_mean/IIM_null_sd/IIM_z and the calibrated canonical value
+    with the same function as compute_IIM(null_surrogates=K).
     """
     campaign_dir = Path(campaign_dir).resolve()
     requested_target = normalize_hardware_target(hardware_target)
@@ -979,12 +1162,19 @@ def prepare_hunter_campaign(
         hardware_backend = configure_process_for_hardware(requested_target)
     else:
         hardware_backend = configure_process_for_hardware(build_hardware_backend)
+    if int(iim_null_surrogates) < 0:
+        raise ValueError("iim_null_surrogates must be >= 0")
+    resolve_iim_psi_kernel(iim_psi_kernel, "cpu")  # validates the name at build time
+    overrides = dict(settings_overrides or {})
+    if repo_root is not None:
+        overrides["repo_root"] = str(repo_root)
     effective_profile, scheduler_settings = resolve_hunter_settings(
         execution_profile,
         scheduler=scheduler,
-        overrides=settings_overrides,
+        overrides=overrides,
     )
-    code_version = collect_code_version(REPO_ROOT)
+    code_root = Path(scheduler_settings["repo_root"])
+    code_version = collect_code_version(code_root)
     kernel_code_version = _runtime_code_version()
     run_specs = build_ci_run_specs(
         str(data_dir),
@@ -1010,13 +1200,42 @@ def prepare_hunter_campaign(
             }
         )
 
+    iim_settings = {
+        "tpm_estimator": str(iim_tpm_estimator),
+        "node_selection": str(iim_node_selection),
+        "state_budget_policy": str(iim_state_budget_policy),
+        "cut_mode": str(iim_cut_mode),
+        "bearer_nodes": (
+            None
+            if iim_bearer_nodes is None
+            else [int(x) for x in np.asarray(iim_bearer_nodes).reshape(-1)]
+        ),
+        "psi_kernel": str(iim_psi_kernel),
+        "null_surrogates": int(iim_null_surrogates),
+        "null_method": str(iim_null_method),
+        "null_seed": _resolve_null_seed(iim_null_seed, 0),
+        "null_min_shift": (
+            None if iim_null_min_shift is None else int(iim_null_min_shift)
+        ),
+    }
     runs = []
     phase1_tasks = []
     cut_tasks = []
-    for run_index, spec in enumerate(unique_specs):
+
+    def _add_tasks(meta):
+        for shard in meta["phase1_shards"]:
+            phase1_tasks.append({"run_key": str(meta["run_key"]), **shard})
+        for shard in meta["cut_shards"]:
+            cut_tasks.append({"run_key": str(meta["run_key"]), **shard})
+
+    for spec_index, spec in enumerate(unique_specs):
         ts_path = Path(spec["ts_path"])
+        run_index = len(runs)
         run_digest = hashlib.sha1(str(ts_path).encode("utf-8")).hexdigest()[:12]
-        run_key = f"run-{run_index:04d}_{_sanitize_token(spec['subject'])}_{_sanitize_token(spec['session'])}_{run_digest}"
+        run_key = (
+            f"run-{spec_index:04d}_{_sanitize_token(spec['subject'])}_"
+            f"{_sanitize_token(spec['session'])}_{run_digest}"
+        )
         run_dir = _run_artifact_dir(campaign_dir, run_key)
         run_dir.mkdir(parents=True, exist_ok=True)
         # A rebuild into an existing campaign directory invalidates the reduced
@@ -1042,6 +1261,12 @@ def prepare_hunter_campaign(
             max_mechanism_size=iim_max_mechanism_size,
             max_purview_size=iim_max_purview_size,
             hardware_backend=hardware_backend,
+            tpm_estimator=str(iim_tpm_estimator),
+            node_selection=str(iim_node_selection),
+            state_budget_policy=str(iim_state_budget_policy),
+            bearer_nodes=iim_bearer_nodes,
+            cut_mode=str(iim_cut_mode),
+            log_label=run_key,
         )
 
         meta = {
@@ -1071,89 +1296,133 @@ def prepare_hunter_campaign(
             "iim_max_purview_size": (
                 None if iim_max_purview_size is None else int(iim_max_purview_size)
             ),
+            "iim_settings": dict(iim_settings),
+            "is_null_surrogate": False,
+            "iim_null": None,
         }
         if not bool(prep.get("defined", False)):
-            _json_dump(run_dir / "meta.json", meta)
-            final_payload = {
-                "value": None,
-                "raw": None,
-                "canonical": None,
-                "clipped": None,
-                "iim_plus": None,
-                "defined": False,
-                "undefined_reason": str(prep.get("undefined_reason")),
-                "n_nodes_used": prep.get("n_nodes_used"),
-                "bins_used": prep.get("bins_used"),
-                "n_cuts_evaluated": 0,
-                "mip_cut": None,
-                "phase1_parallel_workers": (
-                    effective_profile.hunter_phase1_workers_per_task
-                ),
-                "phase1_chunk_size": int(effective_profile.hunter_phase1_chunk_size),
-                "phase1_shared_memory": bool(effective_profile.hunter_shared_memory),
-            }
-            _json_dump(run_dir / "final_result.json", final_payload)
+            meta.update(
+                _undefined_prep_record(
+                    prep,
+                    tpm_estimator=iim_tpm_estimator,
+                    cut_mode=iim_cut_mode,
+                    state_budget_policy=iim_state_budget_policy,
+                    bearer_nodes=iim_settings["bearer_nodes"],
+                )
+            )
+            _write_undefined_run(run_dir, meta, prep, effective_profile)
             runs.append(meta)
             continue
 
-        np.save(run_dir / "curr_obs.npy", prep["curr_obs"], allow_pickle=False)
-        np.save(run_dir / "tpm_full.npy", prep["tpm_full"], allow_pickle=False)
-        np.save(run_dir / "states_full.npy", prep["states_full"], allow_pickle=False)
-        _json_dump(run_dir / "mechanisms.json", [list(x) for x in prep["mechanisms_all"]])
-        _json_dump(run_dir / "purviews.json", [list(x) for x in prep["purviews_all"]])
-        _json_dump(
-            run_dir / "cuts.json",
-            [[list(A), list(B)] for A, B in prep["cuts_eval"]],
-        )
-
-        phase1_ranges = _split_evenly(
-            len(prep["mechanisms_all"]),
-            int(effective_profile.hunter_phase1_shards_per_run),
-        )
-        cut_ranges = _split_evenly(
-            len(prep["cuts_eval"]),
-            int(effective_profile.hunter_cut_shards_per_run),
-        )
-        bins_used = int(prep["bins_used"])
-        bins_reason = None
-        if bins_used != int(iim_bins):
-            bins_reason = (
-                f"requested bins={int(iim_bins)} exceed max_state_space="
-                f"{int(prep.get('max_state_space', 0))} (bins are reduced before nodes)"
-            )
-        meta.update(
-            {
-                "defined": True,
-                "selected_nodes": list(prep["selected_nodes"]),
-                "n_regions_input": int(prep["n_regions_input"]),
-                "n_time_input": int(prep["n_time_input"]),
-                "n_nodes_used": int(prep["n_nodes_used"]),
-                "bins_used": bins_used,
-                "bins_reduction_reason": bins_reason,
-                "tpm_alpha": prep.get("tpm_alpha"),
-                "max_state_space": prep.get("max_state_space"),
-                "max_mechanism_size_used": int(prep["max_mechanism_size_used"]),
-                "max_purview_size_used": int(prep["max_purview_size_used"]),
-                "n_cuts_evaluated": int(len(prep["cuts_eval"])),
-                "n_mechanisms": int(len(prep["mechanisms_all"])),
-                "n_purviews": int(len(prep["purviews_all"])),
-                "problem_digest": _problem_digest(prep),
-                "phase1_shards": [
-                    {"task_index": int(i), "start": int(a), "stop": int(b)}
-                    for i, (a, b) in enumerate(phase1_ranges)
-                ],
-                "cut_shards": [
-                    {"task_index": int(i), "start": int(a), "stop": int(b)}
-                    for i, (a, b) in enumerate(cut_ranges)
-                ],
-            }
-        )
-        _json_dump(run_dir / "meta.json", meta)
-        for shard in meta["phase1_shards"]:
-            phase1_tasks.append({"run_key": str(run_key), **shard})
-        for shard in meta["cut_shards"]:
-            cut_tasks.append({"run_key": str(run_key), **shard})
+        meta = _register_defined_run(run_dir, meta, prep, effective_profile, iim_bins)
         runs.append(meta)
+        _add_tasks(meta)
+
+        n_null = int(iim_null_surrogates)
+        if n_null <= 0:
+            continue
+        # Null surrogates: extra runs, drawn and prepared exactly as in
+        # compute_IIM(null_surrogates=K) for this run.
+        null_seed = int(iim_settings["null_seed"])
+        null_min_shift = _resolve_null_min_shift(
+            iim_null_min_shift, iim_lag_trs, prep["ts_selected"].shape[1]
+        )
+        null_info = {
+            "n_surrogates": n_null,
+            "method": str(iim_null_method),
+            "seed": null_seed,
+            "min_shift": int(null_min_shift),
+            "run_keys": [],
+            "unavailable_reason": None,
+        }
+        try:
+            surrogates = iim_null_surrogate_series(
+                prep["ts_selected"],
+                n_null,
+                method=str(iim_null_method),
+                seed=null_seed,
+                min_shift=null_min_shift,
+            )
+        except ValueError as exc:
+            surrogates = []
+            null_info["unavailable_reason"] = f"surrogates_unavailable: {exc}"
+        for k, surr in enumerate(surrogates):
+            null_key = f"{run_key}__null{k:03d}"
+            null_dir = _run_artifact_dir(campaign_dir, null_key)
+            null_dir.mkdir(parents=True, exist_ok=True)
+            for name in _DERIVED_RESULT_FILES:
+                with contextlib.suppress(FileNotFoundError):
+                    (null_dir / name).unlink()
+            np.save(null_dir / "surrogate_ts.npy", surr, allow_pickle=False)
+            null_prep = prepare_iim_problem(
+                surr,
+                bins=int(prep["bins_used"]),
+                lag_trs=int(iim_lag_trs),
+                n_parts=iim_n_parts,
+                rng=0,
+                partition_mode="all",
+                max_mechanism_size=int(prep["max_mechanism_size_used"]),
+                max_purview_size=int(prep["max_purview_size_used"]),
+                tpm_alpha=float(prep["tpm_alpha"]),
+                max_state_space=int(prep["max_state_space"]),
+                hardware_backend=hardware_backend,
+                tpm_estimator=str(iim_tpm_estimator),
+                node_selection="index",
+                state_budget_policy="error",
+                cut_mode=str(iim_cut_mode),
+                log_label=null_key,
+            )
+            null_meta = {
+                "run_index": int(len(runs)),
+                "run_key": null_key,
+                "subject": str(spec["subject"]),
+                "session": str(spec["session"]),
+                "ts_path": None,
+                "ts_path_input": None,
+                "surrogate_ts_path": str(null_dir / "surrogate_ts.npy"),
+                "dataset_id": step2_context.get("dataset_id"),
+                "data_origin": step2_context.get("data_origin"),
+                "dataset_role": step2_context.get("dataset_role"),
+                "provenance_label": step2_context.get("provenance_label"),
+                "defined": bool(null_prep.get("defined", False)),
+                "undefined_reason": null_prep.get("undefined_reason"),
+                "created_unix": float(time.time()),
+                "iim_bins": int(prep["bins_used"]),
+                "iim_lag_trs": int(iim_lag_trs),
+                "iim_n_parts": (None if iim_n_parts is None else int(iim_n_parts)),
+                "iim_max_timepoints": meta["iim_max_timepoints"],
+                "iim_max_nodes": None,
+                "iim_max_mechanism_size": int(prep["max_mechanism_size_used"]),
+                "iim_max_purview_size": int(prep["max_purview_size_used"]),
+                "iim_settings": dict(iim_settings),
+                "is_null_surrogate": True,
+                "null_of": str(run_key),
+                "null_index": int(k),
+                "null_method": str(iim_null_method),
+                "null_seed": null_seed,
+                "null_min_shift": int(null_min_shift),
+                "iim_null": None,
+            }
+            if bool(null_prep.get("defined", False)):
+                null_meta = _register_defined_run(
+                    null_dir, null_meta, null_prep, effective_profile, prep["bins_used"]
+                )
+                _add_tasks(null_meta)
+            else:
+                null_meta.update(
+                    _undefined_prep_record(
+                        null_prep,
+                        tpm_estimator=iim_tpm_estimator,
+                        cut_mode=iim_cut_mode,
+                        state_budget_policy="error",
+                        bearer_nodes=None,
+                    )
+                )
+                _write_undefined_run(null_dir, null_meta, null_prep, effective_profile)
+            runs.append(null_meta)
+            null_info["run_keys"].append(null_key)
+        meta["iim_null"] = null_info
+        _json_dump(run_dir / "meta.json", meta)
 
     manifest = {
         "created_unix": float(time.time()),
@@ -1177,6 +1446,9 @@ def prepare_hunter_campaign(
         "cut_requires_phase1": scheduler_settings["scheduler"] != "pbs",
         "code_version": code_version,
         "kernel_code_version": kernel_code_version,
+        "iim_algorithm_version": IIM_ALGORITHM_VERSION,
+        "iim_settings": iim_settings,
+        "iim_psi_kernel": str(iim_psi_kernel),
         "runs": runs,
         "phase1_tasks": phase1_tasks,
         "cut_tasks": cut_tasks,
@@ -1231,7 +1503,10 @@ def _runtime_preamble(
     if settings.get("inline_setup"):
         lines.append(str(settings["inline_setup"]).rstrip())
     lines.append("set -u")
-    lines.append(f"cd {shlex.quote(str(settings.get('repo_root') or REPO_ROOT))}")
+    repo_root = shlex.quote(str(settings.get("repo_root") or REPO_ROOT))
+    lines.append(f"cd {repo_root}")
+    # The checkout the jobs run (code version and paths also for non-editable installs).
+    lines.append(f"export {REPO_ROOT_ENV}={repo_root}")
     if not uses_conda:
         lines.append("# The setup above pins the interpreter; skip the conda check.")
         lines.append("export IMPACT_SKIP_ENV_CHECK=1")
@@ -1366,8 +1641,10 @@ def _write_hunter_pbs_scripts(campaign_dir: Path, manifest) -> dict:
         uses_conda=uses_conda,
         shard_threads=settings.get("shard_omp_threads", 1),
     )
-    # Phase-1 Psi is CPU-only; cut shards build cut TPMs on the requested target.
-    cmd_p1 = _stage_command(manifest, campaign_dir, "cpu")
+    # Phase-1 and cut shards both run on the requested target: on an
+    # accelerator (hunter-apu) the Psi kernels run on the APU via CuPy (HLRS:
+    # using the GPU cores is mandatory on Hunter).
+    cmd_p1 = _stage_command(manifest, campaign_dir, target)
     cmd_cut = _stage_command(manifest, campaign_dir, target)
     written = {}
 
@@ -1831,9 +2108,38 @@ def _task_label(stage: str, task: dict) -> str:
     return f"{task['run_key']}_{stage}_{int(task['task_index']):04d}"
 
 
-def run_phase1_shard(campaign_dir, task_index):
+def _shard_hardware_backend(manifest, hardware_target=None):
+    """
+    Backend of a shard job (strict): the job's own ``--hardware-target`` when
+    the caller passes it, else the campaign's requested target. The scheduler
+    scripts set the target per stage (PBS: the campaign target for both shard
+    stages; Slurm: phase-1 shards on the CPU partition with 'cpu'), so the
+    job's target must win over the campaign's.
+    """
+    if hardware_target is None:
+        hardware_target = (
+            (manifest.get("step2_context") or {}).get("hardware_target")
+            or manifest.get("hardware_target")
+            or (manifest.get("hardware_backend") or {}).get("requested")
+            or "cpu"
+        )
+    return configure_process_for_hardware(hardware_target)
+
+
+def _shard_psi_kernel(manifest, backend) -> str:
+    """
+    Psi kernel of a shard: the array-module kernel (CuPy) on accelerator
+    targets so the Psi work runs on the GPU/APU, the numba kernel on the CPU
+    (overridable by the campaign's iim_psi_kernel or IMPACT_IIM_PSI_KERNEL).
+    """
+    return resolve_iim_psi_kernel(manifest.get("iim_psi_kernel") or "auto", backend)
+
+
+def run_phase1_shard(campaign_dir, task_index, *, hardware_target=None):
     campaign_dir = Path(campaign_dir).resolve()
     manifest = _load_manifest(campaign_dir)
+    hardware_backend = _shard_hardware_backend(manifest, hardware_target)
+    psi_kernel = _shard_psi_kernel(manifest, hardware_backend)
     task = manifest["phase1_tasks"][int(task_index)]
     run_dir = _run_artifact_dir(campaign_dir, task["run_key"])
     meta, problem = _load_problem(run_dir)
@@ -1852,28 +2158,45 @@ def run_phase1_shard(campaign_dir, task_index):
     start = _timing_start()
     shard_mechanisms = problem["mechanisms_all"][int(task["start"]):int(task["stop"])]
     profile = manifest["execution_profile"]
-    with _kernel_cache_scope(campaign_dir, _task_label("p1", task)) as cache_dir:
-        kernel_cache_path = None if cache_dir is None else cache_dir / "kernel.sqlite3"
-        psi_partial = _compute_psi_for_problem(
-            tpm=problem["tpm_full"],
-            curr_obs=problem["curr_obs"],
-            states_full=problem["states_full"],
-            base=int(meta["bins_used"]),
-            mechanisms=shard_mechanisms,
-            purviews=problem["purviews_all"],
-            cut_mask_a=None,
-            phase1_parallel_workers=profile["hunter_phase1_workers_per_task"],
-            phase1_chunk_size=profile["hunter_phase1_chunk_size"],
-            phase1_shared_memory=profile["hunter_shared_memory"],
-            kernel_cache_path=(
-                None if kernel_cache_path is None else str(kernel_cache_path)
-            ),
+    if psi_kernel == "xp":
+        # Psi on the device (CuPy on hunter-apu); no process pool or SQLite cache.
+        xp = get_array_module(hardware_backend)
+        psi_partial = iim_xp.psi_contribution(
+            shard_mechanisms,
+            problem["purviews_all"],
+            int(meta["bins_used"]),
+            xp.asarray(problem["tpm_full"], dtype=xp.float64),
+            problem["curr_obs"],
+            problem["states_full"],
+            xp=xp,
         )
+    else:
+        with _kernel_cache_scope(campaign_dir, _task_label("p1", task)) as cache_dir:
+            kernel_cache_path = (
+                None if cache_dir is None else cache_dir / "kernel.sqlite3"
+            )
+            psi_partial = _compute_psi_for_problem(
+                tpm=problem["tpm_full"],
+                curr_obs=problem["curr_obs"],
+                states_full=problem["states_full"],
+                base=int(meta["bins_used"]),
+                mechanisms=shard_mechanisms,
+                purviews=problem["purviews_all"],
+                cut_mask_a=None,
+                phase1_parallel_workers=profile["hunter_phase1_workers_per_task"],
+                phase1_chunk_size=profile["hunter_phase1_chunk_size"],
+                phase1_shared_memory=profile["hunter_shared_memory"],
+                kernel_cache_path=(
+                    None if kernel_cache_path is None else str(kernel_cache_path)
+                ),
+            )
     timing = _timing_finish(
         start,
         stage=PHASE1_STAGE,
         task_index=int(task_index),
         n_mechanisms=len(shard_mechanisms),
+        hardware_backend=backend_summary(hardware_backend),
+        psi_kernel=psi_kernel,
     )
     payload = {
         "status": "complete",
@@ -1884,6 +2207,7 @@ def run_phase1_shard(campaign_dir, task_index):
         "stop": int(task["stop"]),
         "n_mechanisms": int(len(shard_mechanisms)),
         "psi_partial": float(psi_partial),
+        "psi_kernel": psi_kernel,
         "identity": identity,
         "timing": timing,
     }
@@ -1927,11 +2251,14 @@ def run_phase1_reduce(campaign_dir, run_index):
 
     partials = []
     versions = []
+    kernels = set()
     for shard in run_meta["phase1_shards"]:
         shard_path = run_dir / "phase1_shards" / f"shard_{int(shard['task_index']):04d}.json"
         rec = _shard_record(shard_path, run_meta, shard, "Phase1 shard")
         partials.append(float(rec["psi_partial"]))
         versions.append((rec.get("identity") or {}).get("code_version"))
+        if rec.get("psi_kernel"):
+            kernels.add(str(rec["psi_kernel"]))
     code_version = _check_single_code_version(versions, run_meta["run_key"])
 
     psi_full = float(math.fsum(partials)) if partials else 0.0
@@ -1942,19 +2269,19 @@ def run_phase1_reduce(campaign_dir, run_index):
         "n_shards": int(len(partials)),
         "problem_digest": run_meta.get("problem_digest"),
         "code_version": code_version,
+        "psi_kernels": sorted(kernels),
     }
     _json_dump(run_dir / "phase1_result.json", payload)
     return payload
 
 
-def run_cut_shard(campaign_dir, task_index, *, require_phase1=None):
+def run_cut_shard(
+    campaign_dir, task_index, *, require_phase1=None, hardware_target=None
+):
     campaign_dir = Path(campaign_dir).resolve()
     manifest = _load_manifest(campaign_dir)
-    hardware_backend = configure_process_for_hardware(
-        (manifest.get("step2_context") or {}).get("hardware_target")
-        or (manifest.get("hardware_backend") or {}).get("requested")
-        or "cpu"
-    )
+    hardware_backend = _shard_hardware_backend(manifest, hardware_target)
+    psi_kernel = _shard_psi_kernel(manifest, hardware_backend)
     task = manifest["cut_tasks"][int(task_index)]
     run_dir = _run_artifact_dir(campaign_dir, task["run_key"])
     meta, problem = _load_problem(run_dir)
@@ -1996,22 +2323,55 @@ def run_cut_shard(campaign_dir, task_index, *, require_phase1=None):
     static_cache = {}
     obs_state_cache = {}
     profile = manifest["execution_profile"]
+    cut_mode = str(meta.get("cut_mode") or "bidirectional")
+    base = int(meta["bins_used"])
+    n_nodes = int(problem["states_full"].shape[1])
+    xp = None
+    xp_workspace = None
+    tpm_full_xp = None
+    if psi_kernel == "xp":
+        # Cut TPMs and their Psi on the device (CuPy on hunter-apu); the
+        # purview marginalisers are shared by all cuts of the shard.
+        xp = get_array_module(hardware_backend)
+        xp_workspace = iim_xp.IIMXpWorkspace(xp, problem["states_full"], base)
+        tpm_full_xp = xp.asarray(problem["tpm_full"], dtype=xp.float64)
     with _kernel_cache_scope(campaign_dir, _task_label("cut", task)) as cache_dir:
         for local_idx, (A, B) in enumerate(shard_cuts):
             cut_key = _iim_cut_to_key(A, B)
             if cut_key in cut_scores:
                 continue
+            if psi_kernel == "xp":
+                psi_cut = iim_xp.psi_contribution(
+                    problem["mechanisms_all"],
+                    problem["purviews_all"],
+                    base,
+                    iim_xp.cut_tpm(
+                        tpm_full_xp, n_nodes, base, A, B, cut_mode=cut_mode, xp=xp
+                    ),
+                    problem["curr_obs"],
+                    problem["states_full"],
+                    xp=xp,
+                    workspace=xp_workspace,
+                )
+                cut_scores[cut_key] = float(psi_cut)
+                _json_dump(
+                    partial_path, {"identity": identity, "cut_scores": cut_scores}
+                )
+                continue
             cut_mask_a = 0
             for nn in A:
                 cut_mask_a |= 1 << int(nn)
-            tpm_cut = _iim_build_cut_tpm(
+            tpm_cut = _iim_build_cut_tpm_for_mode(
                 problem["tpm_full"],
                 problem["states_full"],
-                int(meta["bins_used"]),
+                base,
                 A,
                 B,
+                cut_mode=cut_mode,
                 hardware_backend=hardware_backend,
             )
+            # A fresh cache per cut: within one cut the induced-partition keys
+            # only memoise, so this is valid for both cut modes.
             kernel_cache_path = (
                 None
                 if cache_dir is None
@@ -2057,6 +2417,7 @@ def run_cut_shard(campaign_dir, task_index, *, require_phase1=None):
         n_cuts=len(shard_cuts),
         resumed_cuts=int(resumed_cuts),
         hardware_backend=backend_summary(hardware_backend),
+        psi_kernel=psi_kernel,
     )
     payload = {
         "status": "complete",
@@ -2068,6 +2429,7 @@ def run_cut_shard(campaign_dir, task_index, *, require_phase1=None):
         "cut_scores": cut_scores,
         "best_cut": best_cut,
         "best_psi": (None if not np.isfinite(best_psi) else float(best_psi)),
+        "psi_kernel": psi_kernel,
         "identity": identity,
         "timing": timing,
     }
@@ -2078,24 +2440,123 @@ def run_cut_shard(campaign_dir, task_index, *, require_phase1=None):
     return payload
 
 
+def _run_provenance_fields(run_meta) -> dict:
+    """Estimator/subsystem provenance of a run (as in compute_IIM details)."""
+    out = {
+        key: run_meta.get(key)
+        for key in (
+            "iim_algorithm_version",
+            "tpm_estimator",
+            "tpm_alpha",
+            "cut_mode",
+            "bearer_nodes",
+            "selected_nodes",
+            "node_selection_rule",
+            "node_selection_degenerate",
+            "bins_requested",
+            "state_budget_policy",
+            "budget_adjustments",
+            "n_states",
+            "n_states_observed",
+            "n_transitions",
+        )
+        if key in run_meta
+    }
+    out.setdefault("iim_algorithm_version", IIM_ALGORITHM_VERSION)
+    if "lag_trs" in run_meta or "iim_lag_trs" in run_meta:
+        out["lag_trs"] = run_meta.get("lag_trs", run_meta.get("iim_lag_trs"))
+    out["is_null_surrogate"] = bool(run_meta.get("is_null_surrogate", False))
+    if out["is_null_surrogate"]:
+        out["null_of"] = run_meta.get("null_of")
+        out["null_index"] = run_meta.get("null_index")
+    return out
+
+
+def _run_null_plan(run_meta) -> dict:
+    """
+    Null-calibration plan of a run: number of surrogates, method, seed and
+    minimum shift exactly as compute_IIM resolves them (surrogate runs are not
+    calibrated themselves).
+    """
+    settings = dict(run_meta.get("iim_settings") or {})
+    null_info = run_meta.get("iim_null") or {}
+    n_null = 0
+    if not bool(run_meta.get("is_null_surrogate", False)):
+        n_null = int(
+            null_info.get("n_surrogates", settings.get("null_surrogates", 0)) or 0
+        )
+    min_shift = null_info.get("min_shift")
+    if min_shift is None and run_meta.get("n_time_input") is not None:
+        min_shift = _resolve_null_min_shift(
+            settings.get("null_min_shift"),
+            int(run_meta.get("iim_lag_trs", 1)),
+            int(run_meta["n_time_input"]),
+        )
+    return {
+        "n_surrogates": n_null,
+        "method": str(
+            null_info.get("method", settings.get("null_method", "circular_shift"))
+        ),
+        "seed": _resolve_null_seed(null_info.get("seed", settings.get("null_seed")), 0),
+        "min_shift": min_shift,
+        "requested_min_shift": settings.get("null_min_shift"),
+        "run_keys": list(null_info.get("run_keys") or []),
+        "unavailable_reason": null_info.get("unavailable_reason"),
+    }
+
+
+def _undefined_null_fields(plan) -> dict:
+    """Null schema of an undefined result (compute_IIM._undefined_payload)."""
+    return _iim_null_fields(
+        None,
+        psi_full=np.nan,
+        delta_psi=np.nan,
+        meta={
+            "IIM_null_method": plan["method"],
+            "IIM_null_seed": int(plan["seed"]),
+            "IIM_null_min_shift": (
+                None
+                if plan["requested_min_shift"] is None
+                else int(plan["requested_min_shift"])
+            ),
+            "IIM_null_failed": 0,
+            "IIM_null_undefined_reason": (
+                "observed_iim_undefined" if plan["n_surrogates"] > 0 else None
+            ),
+        },
+    )
+
+
 def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
+    """
+    Final IIM of one run from its phase-1 result and cut shards. For a real run
+    with surrogate runs (``iim_null``) the surrogate runs are reduced first and
+    the null-calibration fields (IIM_null_mean/sd, IIM_z, IIM_excess,
+    canonical_calibrated) are computed with the same function as
+    compute_IIM(null_surrogates=K); ``value`` is then the calibrated value.
+    """
     campaign_dir = Path(campaign_dir).resolve()
     manifest = _load_manifest(campaign_dir)
     run_meta = manifest["runs"][int(run_index)]
     run_dir = _run_artifact_dir(campaign_dir, run_meta["run_key"])
+    plan = _run_null_plan(run_meta)
+    provenance = _run_provenance_fields(run_meta)
     if not bool(run_meta.get("defined", False)):
         final_path = run_dir / "final_result.json"
         if final_path.exists():
-            return _json_load(final_path)
-        payload = {
-            "value": None,
-            "raw": None,
-            "canonical": None,
-            "clipped": None,
-            "iim_plus": None,
-            "defined": False,
-            "undefined_reason": run_meta.get("undefined_reason"),
-        }
+            payload = _json_load(final_path)
+        else:
+            payload = {
+                "value": None,
+                "raw": None,
+                "canonical": None,
+                "clipped": None,
+                "iim_plus": None,
+                "defined": False,
+                "undefined_reason": run_meta.get("undefined_reason"),
+            }
+        for key, val in {**provenance, **_undefined_null_fields(plan)}.items():
+            payload.setdefault(key, val)
         _json_dump(final_path, payload)
         return payload
 
@@ -2126,6 +2587,8 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
             "n_nodes_used": int(run_meta["n_nodes_used"]),
             "bins_used": int(run_meta["bins_used"]),
             "n_cuts_evaluated": int(run_meta["n_cuts_evaluated"]),
+            **provenance,
+            **_undefined_null_fields(plan),
             **build_fields,
         }
         _json_dump(run_dir / "final_result.json", payload)
@@ -2135,11 +2598,14 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
     best_cut = None
     n_scored = 0
     versions = [phase1.get("code_version")]
+    kernels = set()
     for shard in run_meta["cut_shards"]:
         shard_path = run_dir / "cut_shards" / f"shard_{int(shard['task_index']):04d}.json"
         rec = _shard_record(shard_path, run_meta, shard, "Cut shard")
         versions.append((rec.get("identity") or {}).get("code_version"))
         n_scored += len(rec.get("cut_scores") or {})
+        if rec.get("psi_kernel"):
+            kernels.add(str(rec["psi_kernel"]))
         psi = rec.get("best_psi")
         if psi is None:
             continue
@@ -2156,6 +2622,7 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
     build_fields["code_version"] = _check_single_code_version(
         versions, run_meta["run_key"]
     )
+    kernels.update(str(k) for k in (phase1.get("psi_kernels") or []))
 
     if not np.isfinite(best_psi):
         payload = {
@@ -2171,6 +2638,8 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
             "n_nodes_used": int(run_meta["n_nodes_used"]),
             "bins_used": int(run_meta["bins_used"]),
             "n_cuts_evaluated": int(run_meta["n_cuts_evaluated"]),
+            **provenance,
+            **_undefined_null_fields(plan),
             **build_fields,
         }
         _json_dump(run_dir / "final_result.json", payload)
@@ -2178,8 +2647,36 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
 
     raw = float((float(psi_full) - float(best_psi)) / (float(psi_full) + 1e-12))
     canonical = float(np.clip(raw, 0.0, 1.0))
-    selected = canonical if bool(clamp) else raw
-    value = float(float(scale) * float(selected))
+    delta_psi = float(psi_full - best_psi)
+    null_results = []
+    if plan["n_surrogates"] > 0:
+        index_by_key = {
+            str(r["run_key"]): i for i, r in enumerate(manifest.get("runs", []))
+        }
+        for key in plan["run_keys"]:
+            if key not in index_by_key:
+                raise RuntimeError(
+                    f"Surrogate run {key} of {run_meta['run_key']} is missing from "
+                    "the campaign manifest; rebuild the campaign."
+                )
+            null_results.append(
+                run_cut_reduce(
+                    campaign_dir, index_by_key[key], clamp=clamp, scale=scale
+                )
+            )
+    null_fields, _stats = iim_null_calibration_fields(
+        delta_psi,
+        psi_full,
+        null_results,
+        n_requested=plan["n_surrogates"],
+        method=plan["method"],
+        seed=plan["seed"],
+        min_shift=plan["min_shift"],
+        unavailable_reason=plan["unavailable_reason"],
+    )
+    value = iim_calibrated_value(
+        null_fields, canonical, raw, plan["n_surrogates"], clamp=clamp, scale=scale
+    )
     payload = {
         "value": value,
         "raw": raw,
@@ -2221,6 +2718,9 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
         "induced_partition_cache_enabled": False,
         "induced_partition_cache_path": None,
         "induced_partition_cache_stats": None,
+        "psi_kernel": (",".join(sorted(kernels)) if kernels else None),
+        **provenance,
+        **null_fields,
         "defined": True,
         "undefined_reason": None,
         **build_fields,
@@ -2260,19 +2760,110 @@ def run_reduce_all(campaign_dir):
     campaign_dir = Path(campaign_dir).resolve()
     p1 = run_phase1_reduce_all(campaign_dir)
     final = run_cut_reduce_all(campaign_dir)
+    write_iim_results_table(campaign_dir)
     timing = _timing_finish(start, stage="reduce-all", n_runs=len(final))
     _write_timing(campaign_dir, "reduce-all", "reduce_all", timing)
     return {"phase1": p1, "final": final, "timing": timing}
 
 
+# Columns of the per-run IIM results table (step-2 IIM output of a campaign).
+IIM_RESULTS_COLUMNS = (
+    "run_key",
+    "subject",
+    "session",
+    "ts_path",
+    "defined",
+    "undefined_reason",
+    "value",
+    "raw",
+    "canonical",
+    "Psi_full",
+    "Psi_mip_preserved",
+    "Delta_Psi",
+    "IIM_null_n",
+    "IIM_null_mean",
+    "IIM_null_sd",
+    "IIM_z",
+    "IIM_null_p",
+    "IIM_excess",
+    "canonical_calibrated",
+    "IIM_null_method",
+    "IIM_null_seed",
+    "IIM_null_min_shift",
+    "IIM_null_failed",
+    "IIM_null_undefined_reason",
+    "iim_algorithm_version",
+    "tpm_estimator",
+    "cut_mode",
+    "psi_kernel",
+    "bearer_nodes",
+    "selected_nodes",
+    "node_selection_rule",
+    "node_selection_degenerate",
+    "bins_requested",
+    "bins_used",
+    "state_budget_policy",
+    "budget_adjustments",
+    "n_states_observed",
+    "n_transitions",
+    "code_version",
+)
+
+
+def write_iim_results_table(campaign_dir, out_path=None) -> list[dict]:
+    """
+    Per-run IIM results with estimator/calibration provenance (tpm_estimator,
+    algorithm version, node selection, budget adjustments, null fields) as
+    ``iim_results.json`` / ``iim_results.csv`` in the campaign directory, and
+    optionally as CSV at ``out_path`` (e.g. next to the step-2 outputs).
+    Surrogate runs are not listed; they enter through the null fields.
+    """
+    campaign_dir = Path(campaign_dir).resolve()
+    manifest = _load_manifest(campaign_dir)
+    rows = []
+    for run_meta in manifest.get("runs", []):
+        if bool(run_meta.get("is_null_surrogate", False)):
+            continue
+        run_dir = _run_artifact_dir(campaign_dir, run_meta["run_key"])
+        final_path = run_dir / "final_result.json"
+        result = _json_load(final_path) if final_path.exists() else {}
+        rec = {**run_meta, **result}
+        rows.append({col: rec.get(col) for col in IIM_RESULTS_COLUMNS})
+    _json_dump(campaign_dir / "iim_results.json", rows)
+
+    def _cell(value):
+        if isinstance(value, (list, tuple, dict)):
+            return json.dumps(value)
+        return "" if value is None else value
+
+    targets = [campaign_dir / "iim_results.csv"]
+    if out_path is not None:
+        targets.append(Path(out_path))
+    for target in targets:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(IIM_RESULTS_COLUMNS))
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({k: _cell(v) for k, v in row.items()})
+    return rows
+
+
 def run_packed_shard(
-    campaign_dir, stage: str, array_index: int, shards_per_node=None, env=None
+    campaign_dir,
+    stage: str,
+    array_index: int,
+    shards_per_node=None,
+    env=None,
+    *,
+    hardware_target=None,
 ):
     """
     Run the shard of a packed launch (``shards_per_node`` ranks per node).
     Ranks beyond the last task of a partially filled node exit without work.
     ``shards_per_node`` defaults to the packing the campaign was built with; a
     different explicit value would skip or duplicate tasks and is rejected.
+    ``hardware_target`` is the job's own target (see ``_shard_hardware_backend``).
     """
     campaign_dir = Path(campaign_dir).resolve()
     manifest = _load_manifest(campaign_dir)
@@ -2301,8 +2892,10 @@ def run_packed_shard(
         )
         return None
     if stage == PHASE1_STAGE:
-        return run_phase1_shard(campaign_dir, task_index)
-    return run_cut_shard(campaign_dir, task_index)
+        return run_phase1_shard(
+            campaign_dir, task_index, hardware_target=hardware_target
+        )
+    return run_cut_shard(campaign_dir, task_index, hardware_target=hardware_target)
 
 
 def campaign_status(campaign_dir) -> dict:
@@ -2403,6 +2996,10 @@ def collect_iim_results_by_path(campaign_dir):
     manifest = _load_manifest(campaign_dir)
     out = {}
     for run_meta in manifest.get("runs", []):
+        is_null = bool(run_meta.get("is_null_surrogate", False))
+        if is_null or not run_meta.get("ts_path"):
+            # Surrogate runs only feed the calibration of their real run.
+            continue
         run_dir = _run_artifact_dir(campaign_dir, run_meta["run_key"])
         final_path = run_dir / "final_result.json"
         if not final_path.exists():

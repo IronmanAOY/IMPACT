@@ -169,3 +169,31 @@ def test_selftest_reports_missing_accelerator(monkeypatch):
     monkeypatch.setattr(importlib, "import_module", no_cupy)
     assert hardware_selftest.main(["--target", "hunter-apu"]) == 2
     assert hardware_selftest.main(["--target", "cpu", "--size", "16"]) == 0
+
+
+def test_selftest_runs_the_iim_psi_kernel_on_the_device(fake_rocm, capsys):
+    import impact_pipeline
+
+    fake_rocm()
+    report = hardware_selftest.run_selftest(target="hunter-apu", size=32)
+    case = next(c for c in report["cases"] if c["name"] == "iim_psi_xp_parity")
+    assert case["ok"] is True and case["rel_err"] < 1e-10
+    assert case["psi_full_xp"] == pytest.approx(case["psi_full_numba"], rel=1e-10)
+    # the shards of this target use the array-module (device) Psi kernel
+    assert case["psi_kernel_for_target"] == "xp"
+    assert report["iim_psi_kernel"] == "xp"
+    version = impact_pipeline.__version__.split("+", 1)[0]
+    assert report["code_version"].startswith(version + "+")
+    assert hardware_selftest.main(["--target", "hunter-apu", "--size", "32"]) == 0
+    out = capsys.readouterr().out
+    assert "iim_psi_xp_parity" in out and "IIM Psi kernel for this target: xp" in out
+
+
+def test_selftest_detects_wrong_device_psi_numerics(fake_rocm):
+    fake_rocm()
+    cp = sys.modules["cupy"]
+    cp.log = lambda x: np.log(x) * (1.0 + 1e-6)  # subtly wrong device math
+    report = hardware_selftest.run_selftest(target="hunter-apu", size=32)
+    failed = {c["name"] for c in report["cases"] if not c["ok"]}
+    assert failed == {"iim_psi_xp_parity"}
+    assert report["all_ok"] is False
