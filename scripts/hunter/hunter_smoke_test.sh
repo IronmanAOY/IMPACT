@@ -16,6 +16,10 @@
 #   --campaign-dir DIR       (default: <out-dir>/cache/hunter_iim_smoke)
 #   --python PY              interpreter (default: $IMPACT_HUNTER_PYTHON or python3)
 #   --submit                 qsub the smoke job (default: only print the command)
+# Output location: with --data-origin dummy, --out-dir is used only if it lies under
+# ${IMPACT_SYNTH_ROOT:-<repo>}/test_objects; otherwise the preprocessed inputs are read from and
+# the results written to test_objects/runs/<dataset> there. With real, use a separate --out-dir
+# (a copy or symlink of preprocessed/): finalize overwrites <out-dir>/cache/step2_*.
 set -eo pipefail
 
 DATASET_ID=ds003171
@@ -28,7 +32,7 @@ CAMPAIGN_DIR=""
 PY="${IMPACT_HUNTER_PYTHON:-python3}"
 SUBMIT=0
 
-usage() { sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
