@@ -231,6 +231,15 @@ def test_optional_modes_are_detected_by_signature():
     assert kw["mode"] == "agency" and used == {"mode": "agency", "events": "dataframe"}
 
 
+def test_pdi_provenance_does_not_claim_events_it_did_not_pass():
+    # compute_PDI accepts ``events`` (labelled mode='repertoire'), but the
+    # bench never passes them to PDI, so the recorded modes must not say so.
+    s = g.simulate_family_a(None, SMALL, seed=3)
+    res = export.run_in_memory(s, metrics=("PDI",), null_surrogates=2)
+    assert "events" not in res["estimator_modes"]["PDI"]
+    assert res["estimator_modes"]["PDI"] == export.OPTIONAL_MODES["PDI"]
+
+
 def test_evidence_verdict_degrades_without_evidence_layer(monkeypatch):
     import sys
 

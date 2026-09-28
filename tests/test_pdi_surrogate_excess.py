@@ -81,24 +81,40 @@ def test_repertoire_entropy_of_pattern_switching_falls_below_linear_gaussian():
             assert d["components"]["repertoire_entropy"] < 0.0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Construct does not behave as intended: the paper-1 spec expects "
-        "multistable pattern switching to exceed spectrum-matched linear "
-        "Gaussian surrogates, but entropy-type repertoire features are maximal "
-        "for the Gaussian null, and the aggregate excess is of either sign "
-        "across seeds (see the repertoire-entropy test)."
-    ),
-)
-def test_multistable_switching_exceeds_spectrum_matched_linear_gaussian():
+def test_negative_result_surrogate_excess_is_not_a_differentiation_score():
+    """
+    Documented negative result (was a strict xfail in wave 1).
+
+    The paper-1 v1 spec expected multistable pattern switching to exceed
+    spectrum-matched linear Gaussian surrogates. It cannot: for fixed auto-
+    and cross-spectra a linear Gaussian process maximises entropy and entropy
+    rate, so entropy-type repertoire statistics of structured dynamics fall
+    *below* such a null, and the aggregate excess has either sign across
+    seeds. mode='surrogate_excess' is therefore not a positive "more
+    differentiated than chance" score. mode='repertoire' (count of recurring,
+    distinguishable states; tests/test_pdi_repertoire.py) replaces it and
+    detects the same multistability.
+    """
     zs = [
         mm.compute_PDI(_pattern_switching(seed, k), null_seed=seed, **EXCESS)["PDI_z"]
         for seed in range(3)
         for k in (6, 12)
     ]
     print("PDI surrogate excess, pattern switching: z", np.round(zs, 2))
-    assert all(z > 1.645 for z in zs)
+    # Not reliably above the Gaussian null, and clearly below it for some seeds.
+    assert not all(z > 1.645 for z in zs)
+    assert min(zs) < -1.645
+    # The construct-grounded replacement on the same data: >= 4 recurring,
+    # separated states and more than 1.5 bits above circular-shift surrogates.
+    for seed in range(3):
+        d = mm.compute_PDI(
+            _pattern_switching(seed, 6),
+            mode="repertoire",
+            null_seed=seed,
+            null_surrogates=9,
+            return_details=True,
+        )
+        assert d["n_states"] >= 4 and d["value"] > 1.5
 
 
 def test_continuous_effective_dimensionality_is_preserved_by_fourier_surrogates():

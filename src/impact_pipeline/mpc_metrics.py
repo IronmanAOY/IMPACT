@@ -3356,7 +3356,7 @@ def _subset_baseline_nodes(baseline_ts, idx, n_full):
     return _one(arr)
 
 
-PDI_MODES = ("legacy", "surrogate_excess")
+PDI_MODES = ("legacy", "surrogate_excess", "repertoire")
 PDI_EXCESS_COMPONENTS = (
     "repertoire_entropy",
     "lz_diversity",
@@ -3364,6 +3364,18 @@ PDI_EXCESS_COMPONENTS = (
 )
 PDI_EXCESS_SURROGATES = ("fourier", "iaaft")
 PDI_EXCESS_DEFAULT_SURROGATES = 19
+# mode='repertoire' (repertoire of distinguishable states)
+PDI_REPERTOIRE_VARIANTS = ("labelled", "unlabelled")
+PDI_REPERTOIRE_FEATURES = ("mean", "power")
+PDI_REPERTOIRE_NULLS = ("circular_shift", "fourier", "both")
+PDI_REPERTOIRE_CRITERIA = ("separation", "prediction_strength")
+PDI_REPERTOIRE_DEFAULT_SURROGATES = 19
+PDI_REPERTOIRE_MIN_STATE_WINDOWS = 3
+PDI_REPERTOIRE_MIN_STATE_SEGMENTS = 2
+PDI_REPERTOIRE_PS_THRESHOLD = 0.8
+_PDI_REPERTOIRE_VALLEY_BANDWIDTH = 0.1
+_PDI_REPERTOIRE_KMEANS_INIT = 8
+_PDI_REPERTOIRE_KMEANS_ITER = 100
 
 
 def _pdi_global_state_features(x, n_components):
@@ -3506,6 +3518,853 @@ def _pdi_surrogate_excess(
     return out
 
 
+def _pdi_window_patterns(x, window, features):
+    """
+    Short-window multivariate patterns of a node x time run: nodes are
+    z-scored over the run and cut into non-overlapping windows of ``window``
+    samples (a trailing partial window is dropped). ``'mean'``: window mean of
+    every node (slow signals: BOLD, rates); ``'power'``: log mean square
+    (amplitude states of oscillatory signals, e.g. band-limited EEG).
+    Returns an ``n_windows x n_nodes`` array.
+    """
+    n_nodes, n_time = x.shape
+    sd = x.std(axis=1, keepdims=True)
+    z = (x - x.mean(axis=1, keepdims=True)) / np.maximum(sd, 1e-12)
+    z = np.where(sd > 1e-12, z, 0.0)
+    n_win = n_time // int(window)
+    seg = z[:, : n_win * int(window)].reshape(n_nodes, n_win, int(window))
+    if features == "power":
+        pat = np.log(np.mean(seg * seg, axis=2) + 1e-12)
+    else:
+        pat = seg.mean(axis=2)
+    return np.ascontiguousarray(pat.T)
+
+
+def _pdi_label_key(v):
+    """Canonical state name of a label (``2.0`` and ``2`` name the same state)."""
+    if isinstance(v, (bool, np.bool_)):
+        return str(bool(v))
+    if isinstance(v, (int, np.integer)):
+        return str(int(v))
+    if isinstance(v, (float, np.floating)) and float(v).is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
+def _pdi_is_missing_label(v):
+    """
+    Unlabelled sample or event: None, NaN, an empty or 'n/a' string
+    (:func:`_is_missing_label`), or a pandas missing scalar (``pd.NA`` of
+    nullable string/integer columns, ``pd.NaT``).
+    """
+    if type(v).__name__ in ("NAType", "NaTType"):
+        return True
+    return _is_missing_label(v)
+
+
+def _pdi_label_codes(state_labels, n_time):
+    """
+    Per-sample state codes of a label vector (-1 = unlabelled: None, NaN,
+    ``pd.NA`` or empty) and the state names in order of first appearance.
+    """
+    arr = np.asarray(state_labels, dtype=object).reshape(-1)
+    if arr.size != int(n_time):
+        raise ValueError(
+            f"state_labels must have one entry per sample ({n_time}), got {arr.size}"
+        )
+    codes = np.full(int(n_time), -1, dtype=np.int64)
+    index = {}
+    names = []
+    for i, v in enumerate(arr):
+        if _pdi_is_missing_label(v):
+            continue
+        key = _pdi_label_key(v)
+        if key not in index:
+            index[key] = len(names)
+            names.append(key)
+        codes[i] = index[key]
+    return codes, names
+
+
+def _pdi_event_rows(events, columns):
+    """
+    Rows ``(onset, duration, label)`` of an events table given as a DataFrame,
+    a mapping of columns or a list of row mappings. Missing columns raise.
+    """
+    from collections.abc import Mapping
+
+    if hasattr(events, "columns") and hasattr(events, "__getitem__"):
+        missing = [c for c in columns if c not in list(events.columns)]
+        if missing:
+            raise ValueError(f"events lacks required column(s) {missing}")
+        cols = [list(events[c]) for c in columns]
+        return list(zip(*cols))
+    if isinstance(events, Mapping):
+        missing = [c for c in columns if c not in events]
+        if missing:
+            raise ValueError(f"events lacks required column(s) {missing}")
+        cols = [list(events[c]) for c in columns]
+        if len({len(c) for c in cols}) > 1:
+            raise ValueError("events columns must have equal lengths")
+        return list(zip(*cols))
+    if isinstance(events, (list, tuple)):
+        rows = []
+        for row in events:
+            if not isinstance(row, Mapping):
+                raise TypeError("events rows must be mappings")
+            missing = [c for c in columns if c not in row]
+            if missing:
+                raise ValueError(f"events row lacks required column(s) {missing}")
+            rows.append(tuple(row[c] for c in columns))
+        return rows
+    raise TypeError(
+        "events must be a DataFrame, a mapping of columns or a list of row mappings"
+    )
+
+
+def _pdi_labels_from_events(events, n_time, tr, label_column, delay):
+    """
+    Per-sample state codes from an events table: sample ``i`` (time
+    ``i * tr``) carries the label of every event with
+    ``onset + delay <= i * tr < onset + delay + duration``, compared with a
+    tolerance of ``1e-6 * tr`` (decimal onsets such as 7.2 s at TR 0.72 s
+    fall on the sample grid; without it ``10 * 0.72 < 7.2`` in floating
+    point shifts the event by one sample and creates spurious conflicts).
+    Events without a finite onset, a positive duration or a label are
+    skipped (counted); samples claimed by events with different labels are
+    left unlabelled (counted), never assigned to either.
+    """
+    rows = _pdi_event_rows(events, ("onset", "duration", label_column))
+    t = np.arange(int(n_time), dtype=float) * float(tr)
+    tol = 1e-6 * float(tr)
+    codes = np.full(int(n_time), -1, dtype=np.int64)
+    conflict = np.zeros(int(n_time), dtype=bool)
+    index = {}
+    names = []
+    n_used = 0
+    n_skipped = 0
+    for onset, dur, lab in rows:
+        try:
+            onset = float(onset)
+            dur = float(dur)
+        except (TypeError, ValueError):
+            n_skipped += 1
+            continue
+        if not (np.isfinite(onset) and np.isfinite(dur)) or dur <= 0:
+            n_skipped += 1
+            continue
+        if _pdi_is_missing_label(lab):
+            n_skipped += 1
+            continue
+        key = _pdi_label_key(lab)
+        if key not in index:
+            index[key] = len(names)
+            names.append(key)
+        code = index[key]
+        start = onset + float(delay)
+        m = (t >= start - tol) & (t < start + dur - tol)
+        conflict |= m & (codes >= 0) & (codes != code)
+        codes[m & (codes < 0)] = code
+        n_used += 1
+    codes[conflict] = -1
+    info = {
+        "n_events_used": int(n_used),
+        "n_events_skipped": int(n_skipped),
+        "n_conflict_samples": int(conflict.sum()),
+    }
+    return codes, names, info
+
+
+def _pdi_label_segments(y, win_idx=None, gap=0):
+    """
+    Runs (visits) of a label sequence: ``(labels, lengths)``. A new run
+    starts where the label changes and, when the window positions
+    ``win_idx`` are given, where more than ``gap`` unused windows separate two
+    consecutive labelled windows (two blocks of the same condition with an
+    unlabelled rest between them are two visits, not one).
+    """
+    y = np.asarray(y).reshape(-1)
+    if y.size == 0:
+        return y[:0], np.zeros(0, dtype=np.int64)
+    new = y[1:] != y[:-1]
+    if win_idx is not None:
+        new = new | (np.diff(np.asarray(win_idx).reshape(-1)) > int(gap) + 1)
+    starts = np.concatenate([[0], np.flatnonzero(new) + 1])
+    lengths = np.diff(np.concatenate([starts, [y.size]]))
+    return y[starts], lengths
+
+
+def _pdi_segment_permutation(y, rng, lengths=None):
+    """
+    Block permutation of a label sequence: the runs (``lengths``, default
+    the maximal runs of equal labels) are re-ordered at random (each run
+    keeps its label and length), so label counts and the dwell-time
+    distribution are kept and only the alignment of labels with the data is
+    destroyed.
+    """
+    y = np.asarray(y).reshape(-1)
+    if lengths is None:
+        lengths = _pdi_label_segments(y)[1]
+    segs = np.split(y, np.cumsum(np.asarray(lengths, dtype=np.int64))[:-1])
+    order = rng.permutation(len(segs))
+    return np.concatenate([segs[i] for i in order])
+
+
+def _pdi_lda_predict(x_tr, y_tr, x_te, n_states):
+    """
+    Multiclass shrinkage LDA (pooled within-class covariance with Ledoit-Wolf
+    shrinkage toward the scaled identity, equal priors), fitted on
+    ``(x_tr, y_tr)`` after standardising every feature with training
+    statistics. States with fewer than 2 training windows are not modelled.
+    Returns the predicted state codes of ``x_te`` (-1 if no state can be
+    modelled).
+    """
+    classes = [c for c in range(int(n_states)) if int(np.sum(y_tr == c)) >= 2]
+    if not classes:
+        return np.full(x_te.shape[0], -1, dtype=np.int64)
+    if len(classes) == 1:
+        return np.full(x_te.shape[0], classes[0], dtype=np.int64)
+    keep = np.isin(y_tr, classes)
+    x_tr = x_tr[keep]
+    y_tr = y_tr[keep]
+    mu = x_tr.mean(axis=0)
+    sd = x_tr.std(axis=0)
+    sd = np.where(sd > 1e-12, sd, 1.0)
+    xt = (x_tr - mu) / sd
+    xe = (x_te - mu) / sd
+    cls = np.asarray(classes, dtype=np.int64)
+    means = np.stack([xt[y_tr == c].mean(axis=0) for c in cls])
+    resid = xt - means[np.searchsorted(cls, y_tr)]
+    n, p = resid.shape
+    dof = float(max(1, n - cls.size))
+    s_cov = (resid.T @ resid) / dof
+    target = float(np.trace(s_cov)) / float(p)
+    if (not np.isfinite(target)) or target <= 1e-12:
+        # No within-state variability: nearest state mean.
+        d2 = np.sum((xe[:, None, :] - means[None, :, :]) ** 2, axis=2)
+        return cls[np.argmin(d2, axis=1)]
+    shrink = _ledoit_wolf_shrinkage(resid)
+    sigma = (1.0 - shrink) * s_cov + shrink * target * np.eye(p)
+    try:
+        w = np.linalg.solve(sigma, means.T)
+    except np.linalg.LinAlgError:
+        w = np.linalg.pinv(sigma) @ means.T
+    b = -0.5 * np.sum(means * w.T, axis=1)
+    return cls[np.argmax(xe @ w + b, axis=1)]
+
+
+def _pdi_cv_decode(pat, y, win_idx, n_states, n_folds, gap):
+    """
+    Held-out state predictions of a time-blocked, purged cross-validation:
+    the labelled windows (in time order) are cut into ``n_folds`` contiguous
+    blocks; each block is predicted by a shrinkage LDA trained on the other
+    blocks minus every window within ``gap`` windows of the test block (so
+    autocorrelation across the block edge cannot leak). Returns the confusion
+    matrix ``n_states x (n_states + 1)``; the last column counts windows that
+    could not be predicted.
+    """
+    n = int(y.size)
+    pred = np.full(n, -1, dtype=np.int64)
+    for te in np.array_split(np.arange(n), int(n_folds)):
+        if te.size == 0:
+            continue
+        lo = win_idx[te[0]]
+        hi = win_idx[te[-1]]
+        train = (win_idx < lo - gap) | (win_idx > hi + gap)
+        if not np.any(train):
+            continue
+        pred[te] = _pdi_lda_predict(pat[train], y[train], pat[te], n_states)
+    conf = np.zeros((int(n_states), int(n_states) + 1), dtype=float)
+    col = np.where(pred >= 0, pred, int(n_states))
+    np.add.at(conf, (y, col), 1.0)
+    return conf
+
+
+def _pdi_mutual_information_bits(conf):
+    """
+    Mutual information (bits) between true and decoded states from a
+    confusion matrix: ``(I_miller_madow, I_plugin, bias)``. The Miller-Madow
+    correction subtracts ``(m_xy - m_x - m_y + 1) / (2 N ln 2)`` (``m`` =
+    occupied cells / margins), the first-order plug-in bias.
+    """
+    conf = np.asarray(conf, dtype=float)
+    n = float(conf.sum())
+    if n <= 0:
+        return float("nan"), float("nan"), float("nan")
+    p = conf / n
+    pr = p.sum(axis=1)
+    pc = p.sum(axis=0)
+    nz = p > 0
+    outer = np.outer(pr, pc)
+    plug = float(np.sum(p[nz] * np.log2(p[nz] / outer[nz])))
+    m_xy = int(np.sum(nz))
+    m_x = int(np.sum(pr > 0))
+    m_y = int(np.sum(pc > 0))
+    bias = float(m_xy - m_x - m_y + 1) / (2.0 * n * math.log(2.0))
+    return plug - bias, plug, bias
+
+
+def _pdi_repertoire_labelled(
+    pat, codes, names, window, n_folds, gap, n_null, seed, undefined, extra
+):
+    """
+    PDI ``mode='repertoire'``, labelled variant: information (bits) about the
+    declared state/context carried by short-window multivariate patterns.
+
+    ``pat`` are the window patterns, ``codes`` the per-sample state codes.
+    A window is used when all its samples carry the same label. States with
+    fewer than ``PDI_REPERTOIRE_MIN_STATE_WINDOWS`` windows or fewer than
+    ``PDI_REPERTOIRE_MIN_STATE_SEGMENTS`` separate visits (a state visited
+    once cannot be cross-validated apart from slow drift) are dropped and
+    reported. A visit is a run of the label; runs separated by more than
+    ``gap`` unused (unlabelled or mixed) windows, e.g. an unlabelled rest
+    between two blocks of the same condition, are separate visits. ``I`` is
+    the Miller-Madow-corrected mutual information of the time-blocked CV
+    confusion matrix; the null re-orders the visits (block permutation) and
+    re-runs the whole CV.
+    """
+    n_win = pat.shape[0]
+    if n_win == 0:
+        return undefined("insufficient_windows")
+    lab = codes[: n_win * window].reshape(n_win, window)
+    pure = np.all(lab == lab[:, :1], axis=1) & (lab[:, 0] >= 0)
+    n_labelled_samples = int(np.sum(codes >= 0))
+    extra = dict(extra)
+    extra.update(
+        {
+            "n_windows_total": int(n_win),
+            "n_windows_dropped_mixed": int(np.sum(~pure & np.any(lab >= 0, axis=1))),
+            "n_labelled_samples": n_labelled_samples,
+        }
+    )
+    win_idx = np.flatnonzero(pure)
+    if win_idx.size == 0:
+        return undefined("no_labelled_windows", extra)
+    y_all = lab[pure, 0]
+    dropped = {}
+    keep = np.ones(win_idx.size, dtype=bool)
+    while True:
+        seg_lab, _ = _pdi_label_segments(y_all[keep], win_idx[keep], gap)
+        changed = False
+        for c in range(len(names)):
+            if names[c] in dropped:
+                continue
+            n_c = int(np.sum(y_all[keep] == c))
+            n_seg = int(np.sum(seg_lab == c))
+            reason = None
+            if n_c < PDI_REPERTOIRE_MIN_STATE_WINDOWS:
+                reason = f"fewer_than_{PDI_REPERTOIRE_MIN_STATE_WINDOWS}_windows"
+            elif n_seg < PDI_REPERTOIRE_MIN_STATE_SEGMENTS:
+                reason = f"fewer_than_{PDI_REPERTOIRE_MIN_STATE_SEGMENTS}_visits"
+            if reason is not None:
+                dropped[names[c]] = reason
+                keep &= y_all != c
+                changed = True
+        if not changed:
+            break
+    kept_codes = [c for c in range(len(names)) if names[c] not in dropped]
+    extra["dropped_states"] = dropped
+    if len(kept_codes) < 2:
+        return undefined("fewer_than_two_states", extra)
+    remap = np.full(len(names), -1, dtype=np.int64)
+    remap[kept_codes] = np.arange(len(kept_codes))
+    win_idx = win_idx[keep]
+    y = remap[y_all[keep]]
+    x = pat[win_idx]
+    n_states = len(kept_codes)
+    folds = int(min(int(n_folds), y.size // 2))
+    if folds < 2:
+        return undefined("insufficient_windows", extra)
+    conf = _pdi_cv_decode(x, y, win_idx, n_states, folds, gap)
+    i_mm, i_plug, bias = _pdi_mutual_information_bits(conf)
+    counts = np.bincount(y, minlength=n_states).astype(float)
+    p_lab = counts / counts.sum()
+    h_lab = float(-np.sum(p_lab[p_lab > 0] * np.log2(p_lab[p_lab > 0])))
+    seg_lab, seg_len = _pdi_label_segments(y, win_idx, gap)
+    rng = np.random.RandomState(seed)
+    null = []
+    for _ in range(int(n_null)):
+        yp = _pdi_segment_permutation(y, rng, seg_len)
+        null.append(
+            _pdi_mutual_information_bits(
+                _pdi_cv_decode(x, yp, win_idx, n_states, folds, gap)
+            )[0]
+        )
+    stats = _null_calibration_stats(i_mm, null)
+    if stats["null_n"] < 2:
+        return undefined("insufficient_surrogates", extra)
+    diag = np.diag(conf[:, :n_states])
+    recall = np.where(counts > 0, diag / np.maximum(counts, 1.0), np.nan)
+    kept_names = [names[c] for c in kept_codes]
+    null_fields = _metric_null_fields(
+        "PDI", stats, "block_label_permutation", seed, False
+    )
+    out = {
+        "value": float(null_fields["PDI_excess"]),
+        "raw": float(i_mm),
+        "defined": True,
+        "undefined_reason": None,
+        "I_bits": float(i_mm),
+        "I_bits_plugin": float(i_plug),
+        "miller_madow_bias_bits": float(bias),
+        "excess_bits": float(null_fields["PDI_excess"]),
+        "effective_states": float(2.0 ** max(i_mm, 0.0)),
+        "null_effective_states": float(2.0 ** max(stats["null_mean"], 0.0)),
+        "label_entropy_bits": h_lab,
+        "n_states": int(n_states),
+        "states": kept_names,
+        "accuracy": float(np.sum(diag) / conf.sum()),
+        "balanced_accuracy": float(np.nanmean(recall)),
+        "confusion": conf[:, :n_states].astype(int).tolist(),
+        "n_unpredicted_windows": int(conf[:, n_states].sum()),
+        "n_windows": int(y.size),
+        "n_windows_per_state": {n: int(v) for n, v in zip(kept_names, counts)},
+        "n_visits_per_state": {
+            n: int(np.sum(seg_lab == i)) for i, n in enumerate(kept_names)
+        },
+        "n_folds": int(folds),
+        "gap_windows": int(gap),
+    }
+    out.update(extra)
+    out.update(null_fields)
+    return out
+
+
+def _pdi_kmeans_solutions(x, k, rng, n_init=_PDI_REPERTOIRE_KMEANS_INIT):
+    """
+    Lloyd k-means with k-means++ seeding from ``n_init`` starts: the distinct
+    local optima (partitions) as ``[(inertia, centroids, labels), ...]``,
+    lowest inertia first.
+    """
+    n = x.shape[0]
+    sq = np.sum(x * x, axis=1)
+    sols = []
+    for _ in range(int(n_init)):
+        c = np.empty((int(k), x.shape[1]))
+        c[0] = x[rng.randint(n)]
+        d2 = np.sum((x - c[0]) ** 2, axis=1)
+        for j in range(1, int(k)):
+            tot = float(d2.sum())
+            idx = rng.randint(n) if tot <= 0 else rng.choice(n, p=d2 / tot)
+            c[j] = x[idx]
+            d2 = np.minimum(d2, np.sum((x - c[j]) ** 2, axis=1))
+        lab = None
+        for _ in range(_PDI_REPERTOIRE_KMEANS_ITER):
+            dist = sq[:, None] - 2.0 * (x @ c.T) + np.sum(c * c, axis=1)[None, :]
+            new = np.argmin(dist, axis=1)
+            if lab is not None and np.array_equal(new, lab):
+                break
+            lab = new
+            for j in range(int(k)):
+                m = lab == j
+                if np.any(m):
+                    c[j] = x[m].mean(axis=0)
+        dist = sq[:, None] - 2.0 * (x @ c.T) + np.sum(c * c, axis=1)[None, :]
+        lab = np.argmin(dist, axis=1)
+        inertia = float(np.sum(dist[np.arange(n), lab]))
+        # canonical labels (order of first appearance) identify the partition
+        _, first = np.unique(lab, return_index=True)
+        order = np.argsort(first, kind="mergesort")
+        canon = np.empty(int(k), dtype=np.int64)
+        canon[np.unique(lab)[order]] = np.arange(order.size)
+        key = canon[lab]
+        if any(np.array_equal(key, other[3]) for other in sols):
+            continue
+        sols.append((inertia, c.copy(), lab.copy(), key))
+    sols.sort(key=lambda sol: sol[0])
+    return [(sol[0], sol[1], sol[2]) for sol in sols]
+
+
+def _pdi_kmeans(x, k, rng, n_init=_PDI_REPERTOIRE_KMEANS_INIT):
+    """Best (lowest-inertia) k-means solution: ``(centroids, labels)``."""
+    _, c, lab = _pdi_kmeans_solutions(x, k, rng, n_init)[0]
+    return c, lab
+
+
+def _pdi_nearest_centroid(x, c):
+    dist = np.sum(x * x, axis=1)[:, None] - 2.0 * (x @ c.T)
+    dist += np.sum(c * c, axis=1)[None, :]
+    return np.argmin(dist, axis=1)
+
+
+def _pdi_half_blocks(n_win, n_blocks, gap):
+    """
+    Two interleaved halves of contiguous time blocks (A B A B ...): returns
+    ``(half, block)`` per window; the first ``gap`` windows of every block
+    after the first are purged (``-1``) so that no two windows of different
+    halves are adjacent in time.
+    """
+    half = np.full(int(n_win), -1, dtype=np.int64)
+    block = np.full(int(n_win), -1, dtype=np.int64)
+    for b, chunk in enumerate(np.array_split(np.arange(int(n_win)), int(n_blocks))):
+        if b > 0:
+            chunk = chunk[int(gap):]
+        half[chunk] = b % 2
+        block[chunk] = b
+    return half, block
+
+
+def _pdi_partition_check(c, x_test, block_test, valley, min_dwell):
+    """
+    Held-out distinguishability of the states defined by centroids ``c``
+    (fitted on the other half): the held-out windows ``x_test`` are assigned
+    to the nearest centroid and the partition passes when
+      - every state recurs: at least ``PDI_REPERTOIRE_MIN_STATE_WINDOWS``
+        held-out windows;
+      - every state persists: mean held-out dwell (consecutive windows of the
+        same block in the same state) of at least ``min_dwell`` windows;
+      - every pair of states is separated by a density valley: the held-out
+        windows of the two states are projected on the axis joining their
+        centroids (``t = 0`` and ``1``; the decision boundary is ``t = 0.5``)
+        and, with per-state Gaussian-kernel densities (bandwidth 0.1, each
+        normalised to unit mass, i.e. equal priors), the summed density of
+        both states at the boundary is at most ``valley`` times the smaller
+        density of a state at its own held-out mean.
+    Anchoring each state at its held-out mean (not the fitted centroid) keeps
+    merged neighbouring states (a cluster holding two close sub-states in
+    other proportions in the held-out half) from failing spuriously; a
+    curved continuum (arcs of a ring) still fails because an arc's mean lies
+    between its folds. Returns ``(passed, worst_valley_ratio, min_dwell)``.
+    """
+    k = c.shape[0]
+    lab = _pdi_nearest_centroid(x_test, c)
+    counts = np.bincount(lab, minlength=int(k))
+    if int(counts.min()) < PDI_REPERTOIRE_MIN_STATE_WINDOWS:
+        return False, float("nan"), float("nan")
+    same = block_test[1:] == block_test[:-1]
+    a = lab[:-1][same]
+    b = lab[1:][same]
+    dwell = float("inf")
+    for i in range(int(k)):
+        m = a == i
+        if not np.any(m):
+            return False, float("nan"), float("nan")
+        p_stay = float(np.mean(b[m] == i))
+        dwell = min(dwell, 1.0 / max(1.0 - p_stay, 1e-12))
+    if dwell < float(min_dwell):
+        return False, float("nan"), float(dwell)
+    bw = _PDI_REPERTOIRE_VALLEY_BANDWIDTH
+
+    def _kde(tt, at):
+        return np.mean(np.exp(-0.5 * ((tt[:, None] - at[None, :]) / bw) ** 2), axis=0)
+
+    worst = 0.0
+    for i in range(int(k)):
+        for j in range(i + 1, int(k)):
+            u = c[j] - c[i]
+            uu = float(u @ u)
+            if uu <= 1e-24:
+                return False, float("inf"), float(dwell)
+            t_i = ((x_test[lab == i] - c[i]) @ u) / uu
+            t_j = ((x_test[lab == j] - c[i]) @ u) / uu
+            g_i = _kde(t_i, np.asarray([np.mean(t_i), 0.5]))
+            g_j = _kde(t_j, np.asarray([0.5, np.mean(t_j)]))
+            peak = min(float(g_i[0]), float(g_j[1]))
+            ratio = float((g_i[1] + g_j[0]) / max(peak, 1e-300))
+            worst = max(worst, ratio)
+            if worst > float(valley):
+                return False, float(worst), float(dwell)
+    return True, float(worst), float(dwell)
+
+
+def _pdi_separation_check(x_fit, x_test, block_test, k, rng, valley, min_dwell):
+    """
+    One direction of the held-out criterion for ``k`` states: every distinct
+    k-means solution on ``x_fit`` (lowest inertia first) is checked on
+    ``x_test`` with :func:`_pdi_partition_check`; the direction passes if one
+    of them does (the question is whether ``k`` distinguishable states
+    exist, not whether the lowest-inertia local optimum shows them). Returns
+    the first passing ``(True, valley, dwell)``, otherwise the failing
+    solution with the smallest valley ratio.
+    """
+    best = None
+    for _, c, _ in _pdi_kmeans_solutions(x_fit, k, rng):
+        res = _pdi_partition_check(c, x_test, block_test, valley, min_dwell)
+        if res[0]:
+            return res
+        # keep the failure with the smallest finite valley ratio (diagnostics)
+        if best is None or (np.isfinite(res[1]) and not res[1] >= best[1]):
+            best = res
+    return best
+
+
+def _pdi_prediction_strength(x_a, x_b, k, rng):
+    """
+    Prediction strength (Tibshirani & Walther 2005) of ``k`` clusters with
+    training set ``x_a`` and test set ``x_b``: the smallest, over test
+    clusters, fraction of within-cluster pairs that the training centroids
+    also put together (0 if a test cluster has fewer than
+    ``PDI_REPERTOIRE_MIN_STATE_WINDOWS`` windows).
+    """
+    c_a, _ = _pdi_kmeans(x_a, k, rng)
+    _, lab_b = _pdi_kmeans(x_b, k, rng)
+    pred = _pdi_nearest_centroid(x_b, c_a)
+    ps = 1.0
+    for j in range(int(k)):
+        m = lab_b == j
+        n_j = int(m.sum())
+        if n_j < PDI_REPERTOIRE_MIN_STATE_WINDOWS:
+            return 0.0
+        cnt = np.bincount(pred[m], minlength=int(k)).astype(float)
+        ps = min(ps, float(np.sum(cnt * (cnt - 1.0)) / (n_j * (n_j - 1.0))))
+    return float(ps)
+
+
+def _pdi_count_states(
+    x, window, features, n_components, n_blocks, gap, max_states, criterion,
+    valley, min_dwell, seed, describe=False,
+):
+    """
+    Number of recurring, distinguishable states of one node x time run
+    (unlabelled repertoire variant). Windows are reduced to their leading
+    ``n_components`` principal components and split into two interleaved
+    halves of time blocks. For every ``k = 2..K`` (``K`` capped at
+    ``max_states`` and at the number of states that can each recur
+    ``PDI_REPERTOIRE_MIN_STATE_WINDOWS`` times per half) k-means partitions
+    are fitted on one half and checked on the other, in both directions
+    (:func:`_pdi_separation_check`, one seeded generator per ``k``); the
+    estimate is the largest ``k`` that passes (1 if none): too large a ``k``
+    splits a state (no valley between the parts), too small a ``k`` can merge
+    states and still pass, so the largest passing ``k`` is the count.
+    ``criterion='prediction_strength'`` replaces the check by the mean
+    prediction strength of both directions >= ``PDI_REPERTOIRE_PS_THRESHOLD``.
+    Returns a dict with
+    ``n_states``, ``bits = log2(n_states)``, ``k_max``, ``n_components``,
+    ``n_windows`` and (``describe=True``) per-k diagnostics and the
+    occupancy of the states.
+    """
+    pat = _pdi_window_patterns(x, window, features)
+    pat = pat - pat.mean(axis=0, keepdims=True)
+    out = {"n_windows": int(pat.shape[0]), "n_states": 1, "bits": 0.0}
+    _, s, vt = np.linalg.svd(pat, full_matrices=False)
+    if s.size == 0 or not np.isfinite(s).all() or s[0] <= 1e-12:
+        out.update({"n_components": 0, "k_max": 1, "undefined_reason": "no_variance"})
+        return out
+    rank = int(np.sum(s > max(pat.shape) * np.finfo(float).eps * s[0]))
+    r = int(max(1, min(int(n_components), rank)))
+    xr = pat @ vt[:r].T
+    half, block = _pdi_half_blocks(xr.shape[0], n_blocks, gap)
+    x_a, x_b = xr[half == 0], xr[half == 1]
+    b_a, b_b = block[half == 0], block[half == 1]
+    n_half = min(x_a.shape[0], x_b.shape[0])
+    k_max = int(min(int(max_states), n_half // PDI_REPERTOIRE_MIN_STATE_WINDOWS))
+    out.update({"n_components": r, "k_max": k_max, "undefined_reason": None})
+    if k_max < 2:
+        out["undefined_reason"] = "insufficient_windows"
+        return out
+    k_hat = 1
+    per_k = []
+    for k in range(2, k_max + 1):
+        # one generator per k: the decision at k does not depend on the others
+        rng = np.random.RandomState((int(seed) * 1009 + k) % (2**32))
+        if criterion == "prediction_strength":
+            ps = 0.5 * (
+                _pdi_prediction_strength(x_a, x_b, k, rng)
+                + _pdi_prediction_strength(x_b, x_a, k, rng)
+            )
+            passed = bool(ps >= PDI_REPERTOIRE_PS_THRESHOLD)
+            per_k.append({"k": k, "passed": passed, "prediction_strength": float(ps)})
+        else:
+            ok_ab, v_ab, d_ab = _pdi_separation_check(
+                x_a, x_b, b_b, k, rng, valley, min_dwell
+            )
+            ok_ba, v_ba, d_ba = (False, float("nan"), float("nan"))
+            if ok_ab:
+                ok_ba, v_ba, d_ba = _pdi_separation_check(
+                    x_b, x_a, b_a, k, rng, valley, min_dwell
+                )
+            passed = bool(ok_ab and ok_ba)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                per_k.append(
+                    {
+                        "k": k,
+                        "passed": passed,
+                        "valley_ratio": float(np.nanmax([v_ab, v_ba])),
+                        "min_dwell_windows": float(np.nanmin([d_ab, d_ba])),
+                    }
+                )
+        if passed:
+            k_hat = k
+    out["n_states"] = int(k_hat)
+    out["bits"] = float(np.log2(k_hat))
+    if describe:
+        out["per_k"] = per_k
+        if k_hat > 1:
+            _, lab = _pdi_kmeans(xr, k_hat, np.random.RandomState(int(seed) % (2**32)))
+            occ = np.bincount(lab, minlength=k_hat) / float(lab.size)
+        else:
+            occ = np.ones(1)
+        nz = occ[occ > 0]
+        out["state_occupancy"] = [float(v) for v in occ]
+        out["state_entropy_bits"] = float(-np.sum(nz * np.log2(nz)))
+    return out
+
+
+def _pdi_repertoire_unlabelled(
+    x, window, features, n_components, n_blocks, gap, max_states, criterion,
+    valley, min_dwell, null, n_null, seed, null_min_shift, undefined, extra,
+):
+    """
+    PDI ``mode='repertoire'``, unlabelled variant: ``log2`` of the number of
+    recurring, distinguishable multi-node states (:func:`_pdi_count_states`)
+    as signed excess over surrogates. ``'circular_shift'`` surrogates shift
+    every node independently (each node's spectrum and marginal kept,
+    recurrence of coordinated multi-node states destroyed); ``'fourier'``
+    surrogates share random phases across nodes (all linear auto- and
+    cross-spectral structure kept, non-Gaussian multimodality destroyed);
+    ``'both'`` reports the smaller excess (intersection-union: a state count
+    must beat both nulls).
+    """
+    obs = _pdi_count_states(
+        x, window, features, n_components, n_blocks, gap, max_states, criterion,
+        valley, min_dwell, seed, describe=True,
+    )
+    extra = dict(extra)
+    extra.update(
+        {
+            "n_windows": int(obs["n_windows"]),
+            "n_components": int(obs["n_components"]),
+            "max_states_tested": int(obs["k_max"]),
+        }
+    )
+    if obs["undefined_reason"] is not None:
+        return undefined(obs["undefined_reason"], extra)
+    families = ("circular_shift", "fourier") if null == "both" else (null,)
+    rng = np.random.RandomState(seed)
+    per_family = {}
+    for fam in families:
+        vals = []
+        for _ in range(int(n_null)):
+            try:
+                if fam == "circular_shift":
+                    surr = _surrogate_timeseries(
+                        x, "circular_shift", rng, min_shift=null_min_shift
+                    )
+                else:
+                    surr = _phase_randomized_surrogate(x, rng)
+            except ValueError:
+                return undefined("surrogates_unavailable", extra)
+            vals.append(
+                _pdi_count_states(
+                    surr, window, features, n_components, n_blocks, gap,
+                    max_states, criterion, valley, min_dwell,
+                    int(rng.randint(0, 2**31 - 1)),
+                )["bits"]
+            )
+        stats = _null_calibration_stats(obs["bits"], vals)
+        if stats["null_n"] < 2:
+            return undefined("insufficient_surrogates", extra)
+        per_family[fam] = stats
+    binding = min(families, key=lambda f: per_family[f]["excess"])
+    null_fields = _metric_null_fields("PDI", per_family[binding], binding, seed, False)
+    out = {
+        "value": float(null_fields["PDI_excess"]),
+        "raw": float(obs["bits"]),
+        "defined": True,
+        "undefined_reason": None,
+        "n_states": int(obs["n_states"]),
+        "state_bits": float(obs["bits"]),
+        "excess_bits": float(null_fields["PDI_excess"]),
+        "n_states_at_cap": bool(obs["n_states"] == obs["k_max"]),
+        "state_occupancy": obs["state_occupancy"],
+        "state_entropy_bits": obs["state_entropy_bits"],
+        "per_k": obs["per_k"],
+        "null_families": {
+            f: {
+                "null_mean_bits": float(st["null_mean"]),
+                "null_sd_bits": float(st["null_sd"]),
+                "null_n": int(st["null_n"]),
+                "excess_bits": float(st["excess"]),
+                "z": float(st["z"]),
+                "p": float(st["p"]),
+            }
+            for f, st in per_family.items()
+        },
+        "binding_null": binding,
+    }
+    out.update(extra)
+    out.update(null_fields)
+    return out
+
+
+def _pdi_repertoire(
+    ts, state_labels, events, tr, label_column, label_delay, window, features,
+    n_folds, gap, n_components, max_states, null, criterion, valley, min_dwell,
+    n_null, seed, null_min_shift, return_details, extra,
+):
+    """Dispatch of PDI ``mode='repertoire'`` (arguments already validated)."""
+    nan = float("nan")
+    extra = dict(extra)
+    extra.update(
+        {
+            "window_samples": int(window),
+            "window_sec": float(window) * float(tr) if tr is not None else None,
+            "features": features,
+            "n_surrogates_requested": int(n_null),
+        }
+    )
+    labelled = extra["variant"] == "labelled"
+    method = "block_label_permutation" if labelled else null
+
+    def _undefined(reason, more=None):
+        out = {"value": nan, "raw": nan, "defined": False, "undefined_reason": reason}
+        out.update(extra)
+        out.update(more or {})
+        out.update(_metric_null_fields("PDI", None, method, seed, False))
+        return out
+
+    x = np.asarray(ts, dtype=float)
+    n_nodes, n_time = x.shape
+    if labelled:
+        if state_labels is not None:
+            codes, names = _pdi_label_codes(state_labels, n_time)
+            extra["label_source"] = "state_labels"
+        else:
+            codes, names, info = _pdi_labels_from_events(
+                events, n_time, tr, label_column, label_delay
+            )
+            extra.update(
+                {
+                    "label_source": "events",
+                    "label_column": label_column,
+                    "label_delay_sec": float(label_delay),
+                }
+            )
+            extra.update(info)
+    else:
+        extra.update(
+            {
+                "null": null,
+                "criterion": criterion,
+                "valley_threshold": float(valley),
+                "min_dwell_windows": float(min_dwell),
+                "n_blocks": int(n_folds),
+                "gap_windows": int(gap),
+            }
+        )
+    if n_nodes < 2:
+        res = _undefined("insufficient_regions")
+    elif n_time < 2 * int(window):
+        res = _undefined("insufficient_timepoints")
+    elif not np.all(np.isfinite(x)):
+        res = _undefined("non_finite_timeseries")
+    elif float(np.max(x.std(axis=1))) <= 1e-12:
+        res = _undefined("no_variance")
+    elif labelled:
+        res = _pdi_repertoire_labelled(
+            _pdi_window_patterns(x, window, features), codes, names, int(window),
+            int(n_folds), int(gap), n_null, seed, _undefined, extra,
+        )
+    else:
+        res = _pdi_repertoire_unlabelled(
+            x, int(window), features, int(n_components), int(n_folds), int(gap),
+            int(max_states), criterion, float(valley), float(min_dwell), null,
+            n_null, seed, null_min_shift, _undefined, extra,
+        )
+    return res if return_details else float(res["value"])
+
+
 def compute_PDI(
     ts: np.ndarray,
     bins: int = 10,
@@ -3530,9 +4389,24 @@ def compute_PDI(
     excess_components: int = 5,
     excess_weights: tuple = (1.0, 1.0, 1.0),
     excess_surrogate: str = "fourier",
+    state_labels=None,
+    events=None,
+    tr: float | None = None,
+    repertoire_label_column: str = "trial_type",
+    repertoire_label_delay: float = 0.0,
+    repertoire_window: int = 5,
+    repertoire_features: str = "mean",
+    repertoire_folds: int = 6,
+    repertoire_gap: int = 1,
+    repertoire_components: int = 10,
+    repertoire_max_states: int = 12,
+    repertoire_null: str = "circular_shift",
+    repertoire_criterion: str = "separation",
+    repertoire_valley: float = 0.4,
+    repertoire_min_dwell: float = 2.5,
 ) -> float:
     """
-    Composite measurable Phenomenal Differentiation Index (PDI).
+    Composite measurable Pattern Differentiation Index (PDI).
 
     PDI is operationalized from EEG/fMRI timeseries as a baseline-referenced
     composition of four observable dimensions:
@@ -3601,7 +4475,7 @@ def compute_PDI(
         Seed of the surrogate generator (default 0).
     null_min_shift : int or None, optional
         Minimum shift for ``null_method='circular_shift'``.
-    mode : {'legacy', 'surrogate_excess'}, optional
+    mode : {'legacy', 'surrogate_excess', 'repertoire'}, optional
         ``'legacy'`` (default): the baseline-referenced composite above.
         ``'surrogate_excess'``: global-state differentiation beyond the
         spectrum (see ``_pdi_global_state_features``): repertoire entropy of
@@ -3614,7 +4488,51 @@ def compute_PDI(
         rest baseline is used (``baseline_ts`` is ignored and recorded as
         such). The number of surrogates is ``null_surrogates`` (0 selects
         ``PDI_EXCESS_DEFAULT_SURROGATES`` = 19; 1 is rejected) and the seed
-        ``null_seed``.
+        ``null_seed``. Not a valid positive differentiation score (negative
+        result, see Notes).
+        ``'repertoire'``: differentiation as the repertoire of
+        distinguishable states the system occupies (Tononi & Edelman 1998;
+        Mensen et al. 2017; Boly et al. 2015), in bits, from short-window
+        multivariate patterns (non-overlapping windows of
+        ``repertoire_window`` samples of the z-scored nodes). Two variants,
+        selected by the inputs:
+
+        - labelled (``state_labels`` or ``events`` given): cross-validated
+          multiclass shrinkage-LDA decoding of the declared state/context of
+          each window (time-blocked folds, purged by ``repertoire_gap``
+          windows at every test-block edge) and the Miller-Madow-corrected
+          mutual information ``I(state; decoded state)`` of the pooled CV
+          confusion matrix; the null re-runs the whole CV with the label runs
+          block-permuted (run order shuffled, run lengths and label counts
+          kept, so label autocorrelation is respected). Details report
+          ``I_bits``, ``effective_states = 2**I``, the null mean/sd and the
+          excess. Windows whose samples carry different labels, and states
+          with fewer than ``PDI_REPERTOIRE_MIN_STATE_WINDOWS`` = 3 windows or
+          fewer than ``PDI_REPERTOIRE_MIN_STATE_SEGMENTS`` = 2 separate visits,
+          are not used (reported in ``dropped_states``). A visit (label run,
+          the permutation unit) ends where the label changes or where more
+          than ``repertoire_gap`` unused windows follow, e.g. at an
+          unlabelled rest between two blocks of the same condition.
+        - unlabelled (no labels): the number of recurring, distinguishable
+          multi-node states ``K_hat``, estimated by k-means on the windows'
+          leading ``repertoire_components`` principal components and a
+          held-out criterion: the partition at ``k`` is fitted on one half of
+          interleaved time blocks and checked on the other half, in both
+          directions, and ``K_hat`` is the largest ``k`` that passes. With
+          ``repertoire_criterion='separation'`` (default) every state must
+          recur (>= 3 held-out windows), persist (mean held-out dwell >=
+          ``repertoire_min_dwell`` windows) and be separated from every other
+          state by a density valley (``repertoire_valley``; see
+          ``_pdi_partition_check``). The value
+          is the excess of ``log2(K_hat)`` over surrogates (``repertoire_null``).
+
+        PDI is the signed excess (bits) over the null (``PDI_excess``; not
+        clipped, ``PDI_calibrated`` equals it); ``raw`` is the observed
+        ``I`` or ``log2(K_hat)``. ``baseline_ts`` is ignored (recorded), as
+        is ``null_method``. ``null_surrogates`` is the number of permutations
+        or surrogates per null family (0 selects
+        ``PDI_REPERTOIRE_DEFAULT_SURROGATES`` = 19; 1 is rejected), seeded by
+        ``null_seed``; ``null_min_shift`` is the minimum circular shift.
     bearer_nodes : sequence of int or None, optional
         Declared bearer: PDI uses only these rows of ``ts`` (and of every
         baseline run, which must have the same number of nodes as ``ts``).
@@ -3628,6 +4546,81 @@ def compute_PDI(
     excess_surrogate : {'fourier', 'iaaft'}, optional
         ``'fourier'`` (default): multivariate phase randomisation;
         ``'iaaft'``: additionally amplitude-adjusted to each node's marginal.
+    state_labels : sequence or None, optional
+        ``mode='repertoire'``, labelled variant: one state/context label per
+        sample of ``ts`` (numbers or strings; None, NaN, ``pd.NA``, '' or
+        'n/a' = unlabelled). Mutually exclusive with ``events``.
+    events : DataFrame, mapping of columns, list of row mappings or None
+        ``mode='repertoire'``, labelled variant: events table with ``onset``
+        and ``duration`` (seconds) and the label column
+        ``repertoire_label_column``; sample ``i`` (time ``i * tr``) is
+        labelled by events with ``onset + repertoire_label_delay <= i * tr <
+        onset + repertoire_label_delay + duration`` (to within ``1e-6 * tr``,
+        so decimal onsets on the sample grid are not shifted by floating-point
+        rounding). Samples claimed by events
+        with different labels stay unlabelled; events without a positive
+        duration or a label are skipped (both counted in the details).
+    tr : float or None, optional
+        Sampling interval in seconds; required with ``events`` (no default is
+        assumed), otherwise only used to report ``window_sec``.
+    repertoire_label_column : str, optional
+        Events column holding the state label (default ``'trial_type'``).
+    repertoire_label_delay : float, optional
+        Delay (s) added to event onsets, e.g. the haemodynamic lag for BOLD
+        (default 0: no delay is assumed).
+    repertoire_window : int, optional
+        Window length in samples (default 5). Must be shorter than about half
+        the typical state duration and long enough to average noise.
+    repertoire_features : {'mean', 'power'}, optional
+        Window pattern: node means (default) or log mean squares.
+    repertoire_folds : int, optional
+        Labelled: number of time-blocked CV folds; unlabelled: number of
+        contiguous time blocks alternately assigned to the two halves
+        (default 6).
+    repertoire_gap : int, optional
+        Windows purged at every fold/block edge (default 1).
+    repertoire_components : int, optional
+        Unlabelled: principal components of the window patterns used for
+        clustering (default 10; capped at the rank).
+    repertoire_max_states : int, optional
+        Unlabelled: largest number of states tested (default 12; also capped
+        so that every state can recur 3 times per half). ``n_states_at_cap``
+        flags an estimate at the cap (a lower bound).
+    repertoire_null : {'circular_shift', 'fourier', 'both'}, optional
+        Unlabelled null: independent circular shifts of the nodes (default;
+        keeps every node's spectrum and marginal, destroys the recurrence of
+        coordinated multi-node states, so combinations of independent
+        multistable nodes are not counted), multivariate Fourier surrogates
+        (keep the linear cross-spectral structure, destroy multimodality) or
+        both (the smaller excess is reported).
+    repertoire_criterion : {'separation', 'prediction_strength'}, optional
+        Unlabelled held-out criterion. ``'prediction_strength'``
+        (Tibshirani & Walther 2005, threshold 0.8) is kept as a comparator
+        only: it rewards any reproducible partition, including cuts of a
+        continuum (a one-dimensional Gaussian or a hypersynchronous
+        oscillator scores >= 2 "states").
+    repertoire_valley : float, optional
+        Separation criterion: largest allowed ratio of the held-out density of
+        two states at their decision boundary to the density of each state at
+        its own held-out mean (per-state densities, equal weights; see
+        ``_pdi_partition_check``). Default 0.4: two equal-variance Gaussian
+        states pass from a separation of d' ~ 3.85 (pairwise Bayes error
+        below ~3%; d' = 3 gives 0.70, d' = 3.5 gives 0.52, d' = 4.5 gives
+        0.25). Cuts of a continuum score higher: uniform ~1, Gaussian > 1,
+        arcs of a ring or sphere >= 0.67, except thirds of a ring at
+        0.49-0.54, the lowest found, which the default rejects with a
+        margin.
+    repertoire_min_dwell : float, optional
+        Separation criterion: smallest allowed mean dwell of a state in
+        consecutive windows (default 2.5). Excludes the phases of a fast
+        deterministic cycle, which a sampled noise-free oscillation visits as
+        a discrete lattice of patterns without ever dwelling in one. An arc
+        of consecutive lattice points dwells exactly as many windows as it
+        has points, so splitting a lattice of ``P`` windows per cycle in two
+        gives a shorter arc of ``floor(P / 2)`` windows; the default rejects
+        ``P <= 5`` with a margin (``P = 4``, e.g. a 3 Hz oscillation sampled
+        at 20 Hz with 5-sample windows, dwells exactly 2 windows, so a
+        threshold of 2 was decided by block-edge effects).
 
     Returns
     -------
@@ -3645,7 +4638,58 @@ def compute_PDI(
     dimensionality excesses take either sign, and the aggregate is about 0
     for linear Gaussian data but of either sign for multistable switching
     (tests/test_pdi_surrogate_excess.py). It is not a positive "more
-    differentiated than chance" score.
+    differentiated than chance" score. Negative result: the Gaussian null is
+    the maximum-(differential-)entropy process for the given spectra, so
+    structure beyond the spectra (multistability, pattern switching) lowers
+    rather than raises entropy-type statistics relative to it; the binarised
+    repertoire-entropy excess of pattern switching was negative in every
+    test case and the aggregate z ranged from -6.8 to +9.2 across seeds. An
+    excess over such a null therefore cannot index differentiation.
+    ``mode='repertoire'`` replaces it with a count of distinguishable states,
+    which a Gaussian null does not maximise.
+
+    ``mode='repertoire'`` limitations. Window length: states shorter than
+    about 2.5 windows are not counted (dwell criterion, mixed-label windows
+    are dropped), and windows that are too short do not average the noise.
+    Exactly periodic, noise-free oscillations whose period is commensurate
+    with the window grid visit a finite lattice of window patterns: the
+    default dwell rule rejects every split of a lattice of up to 5 windows
+    per cycle (e.g. the MPC-Bench hypersynchronous generator, 3 Hz at 20 Hz
+    sampling), but a slower lattice (>= 6 windows per cycle) can be split
+    into two separated, persisting "states" (up to +1 bit), and
+    circular-shift surrogates of such signals count lattice states as well
+    (excess down to about -1.6 bits); phase diffusion (0.05 rad per sample in
+    the tests) removes the lattice.
+    Number of states vs recording length: a state must recur in both halves
+    (unlabelled; >= 3 windows in each) or be visited at least twice
+    (labelled), so at most about ``n_windows / 6`` states are estimable
+    without labels, and every state needs several visits in each half (a
+    12-state system needs far more than 2000 samples at a 45-sample dwell);
+    the labelled permutation null grows with ``(K - 1)**2`` over the number
+    of label runs (the effective sample size of autocorrelated labels, not
+    the number of windows), so ``I`` is only interpretable with many visits
+    per state, and the plug-in ``I`` is at most the label entropy (reported;
+    ``<= log2(K)``; the Miller-Madow term can add ``(K - 1) / (2 N ln 2)``
+    bits for a perfect decoder). SNR:
+    states closer than the separation criterion's resolution (d' of about
+    3.85 after window averaging) merge, so the unlabelled count is
+    conservative and falls with noise; the labelled ``I`` degrades
+    gradually. Slow drifts that never recur are not states (both halves must
+    contain them), but a slow oscillation between two recurring
+    configurations is. The circular-shift null keeps every node's own
+    multistability, and a split along one bistable node is itself a
+    recurring pair of separated states: the unlabelled excess counts
+    coordinated states beyond node-level multistability (a coordinated
+    two-state system scores between 0 and 1 bit when many nodes switch, and
+    down to about -1 bit when only a few, e.g. 3 of 16, switch; independent
+    multistable nodes score about 0 on average, with either sign).
+    ``n_states`` is an integer, so the null SD can be 0 (then ``PDI_z`` is
+    NaN; the excess is still defined). The excess in bits, not ``PDI_z``, is
+    the construct-scale quantity: the labelled null SD is small (about 0.01
+    bits), so negligible excesses can have large z. The clustering geometry
+    is Euclidean on z-scored nodes (not affine-invariant): volume
+    conduction, a common reference or a dominant global signal change it, so
+    scalp-EEG use needs validation on forward-modelled data first.
 
     With ``clip_negative=True`` (default), the output is non-negative and
     increases when observed differentiation exceeds baseline with good temporal
@@ -3682,6 +4726,8 @@ def compute_PDI(
     mode_norm = str(mode).strip().lower()
     if mode_norm not in PDI_MODES:
         raise ValueError(f"mode must be one of {PDI_MODES}")
+    if mode_norm != "repertoire" and (state_labels is not None or events is not None):
+        raise ValueError("state_labels and events are only used by mode='repertoire'")
     bearer_idx = _resolve_bearer_nodes(bearer_nodes, ts.shape[0])
     if bearer_idx is not None:
         baseline_ts = _subset_baseline_nodes(baseline_ts, bearer_idx, ts.shape[0])
@@ -3712,6 +4758,75 @@ def compute_PDI(
                 "mode": mode_norm,
                 "surrogate_method": excess_surrogate,
                 "n_surrogates_requested": n_surr,
+                "baseline_ignored": baseline_ts is not None,
+                "bearer_nodes": None if bearer_idx is None else bearer_idx.tolist(),
+            },
+        )
+    if mode_norm == "repertoire":
+        if state_labels is not None and events is not None:
+            raise ValueError("give either state_labels or events, not both")
+        if events is not None:
+            if tr is None:
+                raise ValueError(
+                    "tr (sampling interval in seconds) is required to place events "
+                    "on samples"
+                )
+        if tr is not None and not (np.isfinite(float(tr)) and float(tr) > 0):
+            raise ValueError("tr must be a positive number of seconds")
+        if not np.isfinite(float(repertoire_label_delay)):
+            raise ValueError("repertoire_label_delay must be finite")
+        if int(repertoire_window) < 1 or int(repertoire_window) != repertoire_window:
+            raise ValueError("repertoire_window must be an integer >= 1")
+        if repertoire_features not in PDI_REPERTOIRE_FEATURES:
+            raise ValueError(
+                f"repertoire_features must be one of {PDI_REPERTOIRE_FEATURES}"
+            )
+        if int(repertoire_folds) < 2:
+            raise ValueError("repertoire_folds must be >= 2")
+        if int(repertoire_gap) < 0:
+            raise ValueError("repertoire_gap must be >= 0")
+        if int(repertoire_components) < 1:
+            raise ValueError("repertoire_components must be >= 1")
+        if int(repertoire_max_states) < 2:
+            raise ValueError("repertoire_max_states must be >= 2")
+        if repertoire_null not in PDI_REPERTOIRE_NULLS:
+            raise ValueError(f"repertoire_null must be one of {PDI_REPERTOIRE_NULLS}")
+        if repertoire_criterion not in PDI_REPERTOIRE_CRITERIA:
+            raise ValueError(
+                f"repertoire_criterion must be one of {PDI_REPERTOIRE_CRITERIA}"
+            )
+        if not 0.0 < float(repertoire_valley) <= 1.0:
+            raise ValueError("repertoire_valley must be in (0, 1]")
+        if not float(repertoire_min_dwell) >= 1.0:
+            raise ValueError("repertoire_min_dwell must be >= 1")
+        n_surr = int(null_surrogates) or PDI_REPERTOIRE_DEFAULT_SURROGATES
+        if n_surr < 2:
+            raise ValueError("mode='repertoire' needs null_surrogates >= 2")
+        labelled = state_labels is not None or events is not None
+        return _pdi_repertoire(
+            ts,
+            state_labels=state_labels,
+            events=events,
+            tr=None if tr is None else float(tr),
+            label_column=repertoire_label_column,
+            label_delay=float(repertoire_label_delay),
+            window=int(repertoire_window),
+            features=repertoire_features,
+            n_folds=int(repertoire_folds),
+            gap=int(repertoire_gap),
+            n_components=int(repertoire_components),
+            max_states=int(repertoire_max_states),
+            null=repertoire_null,
+            criterion=repertoire_criterion,
+            valley=float(repertoire_valley),
+            min_dwell=float(repertoire_min_dwell),
+            n_null=n_surr,
+            seed=null_seed_eff,
+            null_min_shift=null_min_shift,
+            return_details=return_details,
+            extra={
+                "mode": mode_norm,
+                "variant": "labelled" if labelled else "unlabelled",
                 "baseline_ignored": baseline_ts is not None,
                 "bearer_nodes": None if bearer_idx is None else bearer_idx.tolist(),
             },
