@@ -69,8 +69,28 @@ unchanged unless listed under "Changed".
   K = 0 the legacy modes are `NO_NULL_CALIBRATION` and with B = 0 every
   component is `NO_SAMPLING_SE`, so every verdict is `UNDETERMINED`.
 - **Protocols** (`protocols/`): `mpc_default_v1.json` (default for empirical
-  data) and the provisional MPC-Bench protocol `mpc_bench_v1.json`, with their
-  rationale and hashes.
+  data) and the MPC-Bench protocols `mpc_bench_v1.json` (all five principles)
+  and `mpc_bench_v1_anchored.json` (necessity set NAS, IIM, SRPI), frozen at
+  the local tag `mpcbench-freeze-v1` with their rationale and hashes. The bench
+  reference anchor (development positive control, seeds 900-919) follows an
+  anchor rule: a principle is anchored only if its mean excess over the null is
+  credibly positive (one-sided 95% t bound); RAM and PDI are not, so they are
+  `INVALID_ANCHORS` on the bench.
+- **Preregistration of the MPC-Bench hypotheses** (`docs/preregistration/`):
+  HC1-HC10 with decision rules, the calibration decisions and development
+  findings, and the confirmatory run plan (`scripts/mpcbench_confirmatory.sh`);
+  not registered publicly yet. `scripts/bench_hypotheses.py` evaluates the
+  hypotheses on the confirmatory runs (refuses development records, records
+  without the freeze tag and unfrozen protocol hashes);
+  `scripts/calibrate_bench.py` produces the development calibration evidence
+  (development records only); `scripts/iim_validation.py` compares the sampled
+  IIM with the exact TPMs of family B; `impact_pipeline.bench.analysis` holds the
+  shared construct-scale helpers. The bench runner, the reference and the null
+  calibration apply the protocol's declared estimator options (e.g. the IIM cut
+  mode); bench records keep the jackknife replicates (`se_replicates`) and the
+  IIM grain and cut mode; `null_calibration.py` has a development / confirmatory
+  seed policy (`--confirmatory --freeze-tag`). Default jackknife groups are
+  G = 10 (was 5) in the bench scripts, as in the frozen protocol.
 - **Null calibration of PDI, NAS and IIM** (`null_surrogates=K`): excess over
   surrogates, z-score, one-sided p-value and calibrated value. IIM reports the
   integration mass `Delta_Psi` (bits) and `canonical_calibrated`, which is about

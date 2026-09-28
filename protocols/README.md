@@ -15,13 +15,33 @@ describes the fields.
 | File | Use | SHA-256 |
 |---|---|---|
 | `mpc_default_v1.json` | default protocol for empirical data (`run_pipeline.py --protocol`) | `383eb310cf4479d3260bc5f43f8972bd0b12104a221579fea17c40e410357267` |
-| `mpc_bench_v1.json` | MPC-Bench protocol (`run_bench.py`, `null_calibration.py`; their default) | `02a841a9db55b2a68ce33f6df60895249fa54bf3292323db236884b855ed2e7b` |
-| `mpc_bench_v1_reference_summary.json` | how the bench reference anchor was computed (seeds, n, SD per principle, code) | — |
+| `mpc_bench_v1.json` | MPC-Bench protocol, all five principles (frozen at `mpcbench-freeze-v1`; `run_bench.py`, `null_calibration.py`; their default) | `855f6a444b77030d33faa68fcb45e8576b931d2d681cf215d4dacdb57a6b2520` |
+| `mpc_bench_v1_anchored.json` | the same with the necessity set restricted to the anchored principles (NAS, IIM, SRPI); verdict-level hypotheses of the preregistration | `780581f57d24251fc8ed8c39565f0a89a96740908f2ada3f65f8961cf1543f4c` |
+| `mpc_bench_v1_reference_summary.json` | how the bench reference anchor was computed (seeds, n, mean, SD, SE and lower bound per principle, the anchor rule, code) | — |
 
 `tests/test_protocols.py` checks that the hashes in this table are the hashes
-of the files.
+of the files, and `scripts/bench_hypotheses.py` refuses bench protocols whose
+hashes differ from the frozen ones. The choices below were made on
+development data only (seeds 0-999, family A; family B for IIM); the
+evidence and the decision rules are in the
+[preregistration](../docs/preregistration/MPC_BENCH_PREREGISTRATION.md),
+section 4.
 
-## `mpc_default_v1.json`
+## Cutoffs and alpha (all three protocols)
+
+`(z, delta) = (0.25, 0.10)` for every principle and `alpha = 0.05`
+(one-sided), unchanged from the initial defaults of spec V2-2 because the
+development runs met the preregistered conditions for keeping them: no
+false PRESENT of an anchored principle on the development null systems and
+no false ABSENT anywhere (see the preregistration for the rates). `z` is the
+smallest effect of interest for presence (a quarter of the nominal positive
+control's excess over its null); `delta < z` keeps "absent" (negligible, a
+tenth of it) distinct from "weak". At the bench's precision ABSENT is
+reached only when an estimate sits at its null with a small SE (null
+systems), which makes the exclusion rule abstain on most single-deficit
+systems (a development finding, not a tuning target).
+
+## `mpc_default_v1.json` (unchanged at the freeze)
 
 - **Necessity set**: all five principles (RAM, PDI, NAS, IIM, SRPI).
 - **Channels**: one untyped `default` channel for PDI, NAS, IIM and SRPI. RAM
@@ -32,12 +52,14 @@ of the files.
   declared channel is ABSENT (strong-Kleene OR), so under this protocol RAM
   can be PRESENT (through `default`) but never ABSENT: an unresponsive
   behavioural record cannot exclude consciousness while perturbational and
-  endogenous responsiveness are unmeasured (spec V2-3). Dropping these
-  channels in a derived protocol is a substantive decision that has to be
-  justified.
+  endogenous responsiveness are unmeasured (spec V2-3). This stance was
+  confirmed at the freeze: behavioural non-response does not establish the
+  absence of responsiveness and adaptation (covert responsiveness,
+  dreaming, paralysis), so a necessity-only rule must not exclude on it.
+  Dropping these channels in a derived protocol is a substantive decision
+  that has to be justified.
 - **Cutoffs**: `(z, delta) = (0.25, 0.10)` for every principle, `alpha =
-  0.05`: the initial construct-scale defaults of spec V2-2, to be justified
-  by the MPC-Bench dose-response before the freeze.
+  0.05`, as the bench protocol.
 - **Null families**: RAM `onset_jitter` (rigid event-train shift), PDI
   `circular_shift` (the repertoire estimator's state-count null), NAS
   `block_circular_shift` (capacity mode), IIM `circular_shift`. SRPI is not
@@ -56,7 +78,9 @@ of the files.
     `require_explicit_goals`) and `update='prediction_error'` where the run
     logs choices and rewards; runs without that log use
     `update_fallback='feedback_magnitude'` (declared here, recorded per row
-    in `RAM_estimator` and `RAM_mode_reason`);
+    in `RAM_estimator` and `RAM_mode_reason`). The fallback estimator is not
+    registered in `predictions/registry.yaml`, so its rows are refused by
+    `run_predictions.py` (a decision recorded there);
   - PDI: `mode='repertoire'` (unlabelled repertoire of distinguishable
     states; the window is in samples, so modality-specific windows need a
     derived protocol; scalp EEG needs the forward-model validation of the
@@ -64,39 +88,76 @@ of the files.
   - NAS: `mode='capacity'` (declare `workspace_nodes` in a derived protocol
     when the hub set is known);
   - IIM: calibrated Delta_Psi with the `node_shrinkage` TPM and
-    `cut_mode='bidirectional'` (`'directional'` is available);
+    `cut_mode='bidirectional'` (kept: on the development bench the
+    directional mode showed no dose-response to the recurrent loops, see the
+    preregistration; `'directional'` is available);
   - SRPI: `mode='agency'` where the run has self_caused/other_caused events,
-    otherwise `mode_fallback='legacy'` (recorded in `SRPI_mode_reason`).
+    otherwise `mode_fallback='legacy'` (recorded in `SRPI_mode_reason`; not
+    registered either).
 - **Bearer nodes**: all nodes of the run.
+- Recommended sampling settings for empirical runs: `--null-surrogates 19`
+  and `--bootstrap-se 100` (moving-block bootstrap; `se_df = 99`, so the
+  Student-t quantile is within 1% of the normal one; the Monte-Carlo
+  relative error of the SE is about 7%); on Hunter
+  `--hunter-iim-bootstrap-se 100` (IIM cost grows with `1 + B`).
 
-## `mpc_bench_v1.json` (provisional)
+## `mpc_bench_v1.json` (frozen)
 
-The bench protocol mirrors the bench's estimator modes
-(`bench.export.OPTIONAL_MODES`) and the null families its runner records.
-The bench has no cohort, so its reference is `external`: the mean excess over
-its own null of the nominal positive control (witness `PC_nominal`, family A)
-on development reference seeds 900-907, computed by
-`scripts/bench_reference.py` (see `mpc_bench_v1_reference_summary.json`).
-These anchors come from development seeds and are not results.
+- **Necessity set**: all five principles; **channels**: `default` only (the
+  bench agent's responsiveness mechanism is behavioural by construction).
+- **Estimator modes** (what the bench computes; the runner applies the
+  protocol's declared options and refuses modes it does not compute): RAM
+  `update='prediction_error'`, PDI `mode='repertoire'`, NAS
+  `mode='capacity'`, SRPI `mode='agency'`, IIM `cut_mode='bidirectional'`,
+  `tpm_estimator='node_shrinkage'`. The IIM grain is the generators'
+  declared one: 4 macro nodes (the means of the periphery modules; the
+  workspace hub is excluded so IIM does not measure the workspace loop),
+  2 bins, a lag of 2 samples (0.1 s, one unit time constant); 16 states and
+  256 transitions for about 11,900 samples per run.
+- **Null families**: RAM `onset_jitter`, PDI `circular_shift`, NAS
+  `block_circular_shift`, IIM `circular_shift`, SRPI
+  `yoked_label_permutation`; K = 19 surrogates per run (bench runs), for
+  which the Monte-Carlo error of the null mean contributes about 5% (NAS)
+  or less of the variance of `c` on the development positive control.
+- **Reference**: `external`, scale `excess`: the mean excess over its own
+  null of the nominal positive control (`PC_nominal`, family A) on
+  development reference seeds 900-919 (n = 20), computed by
+  `scripts/bench_reference.py` with the **anchor rule**: a principle gets an
+  anchor only if the one-sided 95% Student-t lower bound of that mean excess
+  is positive. NAS (0.0706, SE 0.0023), IIM (0.0094, SE 0.0016) and SRPI
+  (0.164, SE 0.012) are anchored. RAM (mean 0.0050, SE 0.0041) and PDI (0: the
+  unlabelled repertoire counts one state on every reference seed) are not,
+  so their evidence is UNDEFINED (`INVALID_ANCHORS`) on the bench and a
+  bench verdict with all five principles is never `MPC_CONSISTENT`. These
+  are development values, not results.
+- **Sampling SE**: the delete-a-group jackknife with G = 10 groups (`se_df =
+  9`, Student-t bounds): on the development positive control its SE is 0.6
+  to 0.9 times the between-seed SD of the estimate (the latter also
+  includes network variability).
+- Family C (held out) is judged with this protocol and its own reference
+  (the mean excess of its `PC_nominal` on confirmatory seeds 19000-19019,
+  same anchor rule), everything else unchanged
+  (`bench.analysis.protocol_for_family`).
 
-Provisional parts, to be finalised in the calibration phase:
+## `mpc_bench_v1_anchored.json` (frozen)
 
-- the cutoffs `(0.25, 0.10)` are placeholders;
-- on the reference seeds the PDI repertoire estimate of the positive control
-  equals its null (one distinguishable state at the default window), so the
-  PDI anchor is 0 and PDI evidence is UNDEFINED (`INVALID_ANCHORS`); the RAM
-  anchor is within about one SE of 0, so RAM evidence is effectively never
-  determinate. Both need construct work on development data before the
-  bench can produce MPC_CONSISTENT verdicts with PDI or RAM in `N`.
+`mpc_bench_v1.json` with the necessity set `{NAS, IIM, SRPI}`, the principles
+with a valid construct scale on the bench (and name
+`mpc-bench-v1-anchored`). The verdict-level hypotheses of the
+preregistration use it, because with RAM and PDI in `N` every bench verdict
+is `UNDETERMINED` or `EXCLUDED` by construction. It is not a claim that RAM
+and PDI are unnecessary.
 
-Regenerate the reference (development seeds only; family C and seeds >= 10000
-are refused):
+## Regenerate the reference
+
+Development seeds only (family C and seeds >= 10000 are refused):
 
 ```bash
-python scripts/bench_reference.py --run --family A --seeds 900-907 \
-    --null-surrogates 19 --se-groups 0 --workers 4 \
-    --work-dir outputs/paper1_mpcbench/reference_A \
-    --template protocols/mpc_bench_v1.json --out protocols/mpc_bench_v1.json
+python scripts/bench_reference.py --run --family A --seeds 900-919 \
+    --null-surrogates 19 --se-groups 10 --workers 4 \
+    --work-dir outputs/paper1_mpcbench/dev/reference_A/run \
+    --template protocols/mpc_bench_v1.json --out protocols/mpc_bench_v1.json \
+    --name mpc-bench-v1
 ```
 
 ## Use
@@ -106,10 +167,9 @@ python run_pipeline.py --dataset-id ds003171 \
     --bids-root /data/openneuro/ds003171 --out-dir outputs/ds003171 \
     --protocol protocols/mpc_default_v1.json --null-surrogates 19 --bootstrap-se 100
 python scripts/run_bench.py factorial --seeds 0-19 --null-surrogates 19 \
-    --se-groups 5 --protocol protocols/mpc_bench_v1.json --out outputs/bench/factorial_A
+    --se-groups 10 --protocol protocols/mpc_bench_v1.json --out outputs/bench/factorial_A
 python scripts/null_calibration.py --protocol protocols/mpc_bench_v1.json --out out/null
 ```
 
-Before the freeze: finalise the cutoffs and the bench reference, then record
-the hash of the frozen protocol in `predictions/registry.yaml`
-(`protocols[].hash`).
+The paper-2 registry (`predictions/registry.yaml`) stays a draft; its
+protocol hash is filled at its own freeze.

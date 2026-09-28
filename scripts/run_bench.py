@@ -21,7 +21,7 @@ Examples:
     python scripts/run_bench.py whole_brain --observations source,eeg,bold \
         --seeds 10000-10004 --confirmatory --freeze-tag <tag> \
         --out <workspace>/bench/whole_brain
-Add ``--se-groups 5`` for jackknife component SEs (needed by the v2 rule
+Add ``--se-groups 10`` (the frozen protocol's G) for jackknife component SEs (needed by the v2 rule
 audit, scripts/benchmark_attribution_rules.py, and by determinate verdicts).
 Verdicts use ``--protocol`` (default: protocols/mpc_bench_v1.json with its
 positive-control reference anchor, see scripts/bench_reference.py).

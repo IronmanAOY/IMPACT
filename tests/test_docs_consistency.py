@@ -15,6 +15,8 @@ DOCS = (
     "docs/synthetic_data.md",
     "scripts/hunter/README.md",
     "protocols/README.md",
+    "docs/preregistration/README.md",
+    "docs/preregistration/MPC_BENCH_PREREGISTRATION.md",
 )
 _FENCE = re.compile(r"```.*?```", flags=re.S)
 _LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
@@ -127,6 +129,8 @@ USER_DOCS = (
     "docs/HLRS_HUNTER_RUNBOOK.md",
     "scripts/hunter/README.md",
     "protocols/README.md",
+    "docs/preregistration/README.md",
+    "docs/preregistration/MPC_BENCH_PREREGISTRATION.md",
 )
 _FENCED = re.compile(r"```[a-z]*\n(.*?)```", flags=re.S)
 

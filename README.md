@@ -283,9 +283,9 @@ separate oracle file.
 
 ```bash
 python scripts/run_bench.py --help
-python scripts/run_bench.py witnesses --seeds 0-9 --null-surrogates 19 --se-groups 5 \
+python scripts/run_bench.py witnesses --seeds 0-9 --null-surrogates 19 --se-groups 10 \
     --out outputs/bench_witnesses --workers 8
-python scripts/run_bench.py factorial --seeds 0-19 --null-surrogates 19 --se-groups 5 \
+python scripts/run_bench.py factorial --seeds 0-19 --null-surrogates 19 --se-groups 10 \
     --out outputs/bench_factorial --workers 8
 python scripts/run_bench.py sweep --knobs eta,g_b --levels 10 --seeds 0-9 --out outputs/bench_sweep
 python scripts/run_bench.py timing --seeds 0
@@ -329,6 +329,10 @@ files, with `--out` pointing to the manuscript folder.
 | `scripts/null_calibration.py` | false-PRESENT rates on null families under a protocol (`--protocol`, `--se-groups`; `--status-rule legacy_v1` is a diagnostic only) |
 | `scripts/bench_reference.py` | positive-control reference anchor of the bench protocol |
 | `scripts/benchmark_attribution_rules.py` | rule audit of MPC-Bench on estimated statuses |
+| `scripts/calibrate_bench.py` | development calibration of the bench protocol: reference anchors, construct-scale dose-response, null false-PRESENT rates of candidate cutoffs, SE checks, entry criteria (development records only) |
+| `scripts/iim_validation.py` | IIM against the exact TPMs of family B (both cut modes, run lengths, coupling sweep) |
+| `scripts/bench_hypotheses.py` | the preregistered hypotheses HC1-HC10 on the confirmatory bench runs ([preregistration](docs/preregistration/README.md)) |
+| `scripts/mpcbench_confirmatory.sh` | the preregistered confirmatory run plan (frozen code only) |
 | `scripts/run_predictions.py` | evaluates the hypothesis registry `predictions/registry.yaml` (refuses unregistered estimators, protocol hashes and datasets) |
 | `scripts/figures/fig*.py` | one script per figure (`synthetic_inputs.py` writes test inputs) |
 

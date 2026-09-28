@@ -753,14 +753,19 @@ def run_tasks(
     ``confirmatory=True`` requires provenance whose ``code_version`` came from
     :func:`confirmatory_guard` (frozen, clean code). ``protocol``
     (``evidence.Protocol``, dict or JSON path) is the verdict protocol; its
-    hash is recorded in the manifest and in every verdict.
+    hash is recorded in the manifest and in every verdict. The protocol's
+    declared estimator options (e.g. the IIM ``cut_mode``) are added to
+    ``params`` (:func:`impact_pipeline.bench.export.protocol_params`), so the
+    estimates are computed as the protocol declares.
     """
     proto_dict = proto_hash = None
     if protocol is not None:
+        from impact_pipeline.bench.export import protocol_params
         from impact_pipeline.evidence import resolve_protocol
 
         proto = resolve_protocol(protocol)
         proto_dict, proto_hash = proto.to_dict(), proto.hash
+        params = protocol_params(proto, params)
     check_seed_policy(tasks, confirmatory)
     prov = provenance if provenance is not None else collect_provenance()
     if confirmatory and not (prov.get("code_version") or {}).get("confirmatory"):
@@ -851,6 +856,7 @@ def run_tasks(
             "se_groups": int(se_groups),
             "protocol": proto_dict,
             "protocol_hash": proto_hash,
+            "estimator_params_effective": params or {},
         }
     )
     (out / MANIFEST).write_text(

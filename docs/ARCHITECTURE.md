@@ -53,7 +53,7 @@ calls the public estimators and the evidence layer like any other user.
 | `impact_pipeline.bench.*` | MPC-Bench: generators (families A, B, C), patchwork, whole-brain Hopf model and forward models, adversarial constructions, manipulation checks, witnesses, export and in-memory runner, factorial, sweeps, runner, reference anchor (`reference`), rival rules, rule audit, LZ76, Gaussian Φ_R |
 | `impact_pipeline.necessity` | NCA ceilings, symmetric three-outcome necessity criteria, verdict-level summaries (paper-2 hypotheses) |
 | `protocols/`, `predictions/` | declared MPC protocols (JSON, hashed); the paper-2 hypothesis registry and its schema |
-| `scripts/run_bench.py`, `bench_reference.py`, `benchmark_attribution_rules.py`, `null_calibration.py`, `necessity_power.py`, `simulate_rule_recovery.py`, `audit_aggregation.py`, `definedness_audit.py`, `run_predictions.py`, `figures/` | MPC-Bench runs, bench reference, rule audit, null calibration, power and recovery simulations, aggregation audit, definedness audit, registry evaluation, figures |
+| `scripts/run_bench.py`, `bench_reference.py`, `benchmark_attribution_rules.py`, `null_calibration.py`, `calibrate_bench.py`, `iim_validation.py`, `bench_hypotheses.py`, `mpcbench_confirmatory.sh`, `necessity_power.py`, `simulate_rule_recovery.py`, `audit_aggregation.py`, `definedness_audit.py`, `run_predictions.py`, `figures/` | MPC-Bench runs, bench reference, rule audit, null calibration, development calibration, family-B IIM validation, the preregistered hypotheses HC1-HC10 and their run plan, power and recovery simulations, aggregation audit, definedness audit, registry evaluation, figures |
 | `scripts/live_dashboard.py`, `impact_desktop_app.py` | browser dashboard and desktop launcher |
 | `scripts/generate_real_derived_synth_completed.py`, `inspect_real_sources_for_synth.py` | real-data-derived synthetic smoke-test objects |
 | `scripts/download_data.sh`, `download_atlases.sh`, `fetch_fmriprep*.sh`, `run_all.sh` | data, atlases, fMRIPrep, end-to-end local run |
@@ -214,7 +214,7 @@ unchanged `src/` and `scripts/`, and records the tag and commit.
 | evidence layer | `test_evidence.py`, `test_evidence_properties.py`, `test_verdict_wiring.py`, `test_nulls.py` |
 | CI and statistics | `test_ci_assembly.py`, `test_ci_undefined.py`, `test_analysis_bootstrap.py`, `test_model_comparison.py` |
 | Hunter | `test_hunter_pbs.py`, `test_hunter_iim.py`, `test_hunter_calibration.py`, `test_hunter_scripts.py`, `test_hardware_selftest.py`, `test_iim_xp_kernel.py` |
-| MPC-Bench | `test_bench_generators.py`, `test_bench_export.py`, `test_bench_rules.py`, `test_bench_audit.py`, `test_bench_reference.py`, `test_bench_runner_v2.py`, `test_phiid_gaussian.py` |
+| MPC-Bench | `test_bench_generators.py`, `test_bench_export.py`, `test_bench_rules.py`, `test_bench_audit.py`, `test_bench_reference.py`, `test_bench_runner_v2.py`, `test_bench_calibration.py`, `test_phiid_gaussian.py` |
 | protocols, analysis and registry | `test_protocols.py`, `test_analysis_scripts.py`, `test_necessity.py`, `test_predictions_registry.py`, `test_definedness_audit.py`, `test_figures.py` |
 | preprocessing, events, orchestration | `test_preprocessing_fmri.py`, `test_preprocessing_eeg.py`, `test_event_parsing.py`, `test_run_pipeline_orchestration.py`, `test_tr_fallback.py` |
 | dashboard, packaging, synthetic objects | `test_dashboard_security.py`, `test_dashboard_run_plan.py`, `test_packaging_infra.py`, `test_synthetic_generator.py` |

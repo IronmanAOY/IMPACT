@@ -478,6 +478,62 @@ def _merged_params(params: Optional[dict]) -> dict:
     return out
 
 
+# Mode keys of the optional construct revisions: the bench fixes them
+# (``OPTIONAL_MODES``); a protocol may declare them but not change them.
+_BENCH_MODE_KEYS = {"RAM": ("update",), "PDI": ("mode",), "NAS": ("mode",),
+                    "SRPI": ("mode",)}
+# Protocol options that describe the empirical pipeline only (per-run mode
+# fallbacks and strict contracts the bench always meets): not estimator
+# arguments of the bench.
+_PIPELINE_ONLY_OPTIONS = {
+    "RAM": ("update_fallback", "require_explicit_feedback", "require_explicit_goals"),
+    "SRPI": ("mode_fallback",),
+}
+
+
+def protocol_params(protocol, params: Optional[dict] = None) -> dict:
+    """
+    Estimator parameters of a bench run under ``protocol`` (``evidence.Protocol``,
+    dict, JSON path or None): the protocol's declared estimator options
+    (``Protocol.estimators``) are added to ``params``, so the bench computes
+    what the protocol declares (e.g. the IIM ``cut_mode``). A declared mode
+    must equal the bench's fixed mode (``OPTIONAL_MODES``), options that only
+    concern the empirical pipeline are skipped, and an option given in both
+    ``params`` and the protocol with different values raises ``ValueError``.
+    Returns the merged ``params`` dict (``params`` itself when the protocol
+    declares no estimator options).
+    """
+    from impact_pipeline import evidence as ev
+
+    proto = ev.resolve_protocol(protocol)
+    if proto is None or not proto.estimators:
+        return params
+    out = {k: dict(v or {}) for k, v in (params or {}).items()}
+    for principle, opts in proto.estimators.items():
+        opts = proto.estimator_options(principle)
+        for key in _BENCH_MODE_KEYS.get(principle, ()):
+            if key in opts:
+                want = OPTIONAL_MODES.get(principle, {}).get(key)
+                if opts[key] != want:
+                    raise ValueError(
+                        f"protocol declares {principle} {key}={opts[key]!r}; the "
+                        f"bench computes {key}={want!r}"
+                    )
+        block = out.setdefault(principle, {})
+        for key, val in opts.items():
+            if key in _BENCH_MODE_KEYS.get(principle, ()) or key in (
+                _PIPELINE_ONLY_OPTIONS.get(principle, ())
+            ):
+                continue
+            if key in block and block[key] != val:
+                raise ValueError(
+                    f"{principle} option {key!r} differs between the params "
+                    f"({block[key]!r}) and the protocol ({val!r})"
+                )
+            block[key] = val
+    return out
+
+
 def _accepts(fn, name: str) -> bool:
     try:
         return name in inspect.signature(fn).parameters
@@ -791,6 +847,9 @@ def run_in_memory(
         c["se"] = se
         c["se_method"] = f"jackknife_delete_group_{n_groups}"
         c["se_n"] = n_ok
+        # the delete-a-group replicate statistics (NaN = failed replicate),
+        # kept for the verdict-stability analysis
+        c["se_replicates"] = [float(r) for r in replicates]
         c["se_seconds"] = round(time.perf_counter() - t0, 4)
 
     def _no_events(principle, view):
@@ -1025,6 +1084,9 @@ def run_in_memory(
         out["estimator_modes"]["IIM"] = {
             "grain": meta.get("iim_grain"),
             "n_macro_nodes": int(macro.shape[0]),
+            "cut_mode": str(iim_kw.get("cut_mode", "bidirectional")),
+            "bins": int(iim_kw["bins"]),
+            "lag_trs": int(iim_kw["lag_trs"]),
         }
         if k_null > 0:
             est = float(d.get("Delta_Psi", np.nan))
@@ -1173,6 +1235,10 @@ def _protocol_reference(proto, principle: str, channel: str) -> dict:
     return {}
 
 
+def _nan_if_none(v) -> float:
+    return float("nan") if v is None else float(v)
+
+
 def _se_df_of(c: dict) -> Optional[float]:
     """Degrees of freedom of a component's sampling SE: its own ``se_df``, or
     ``se_n - 1`` for the delete-a-group jackknife (``se_n`` valid groups)."""
@@ -1248,9 +1314,10 @@ def evidence_verdict(
         items[principle] = [
             ev.ComponentEvidence(
                 principle=principle,
-                estimate=float(c["estimate"]),
-                null_mean=float(c["null_mean"]),
-                null_sd=float(c["null_sd"]),
+                # records read back from JSON carry None for NaN
+                estimate=_nan_if_none(c.get("estimate")),
+                null_mean=_nan_if_none(c.get("null_mean")),
+                null_sd=_nan_if_none(c.get("null_sd")),
                 se=0.0 if se is None else float(se),
                 se_df=_se_df_of(c),
                 channel=channel,

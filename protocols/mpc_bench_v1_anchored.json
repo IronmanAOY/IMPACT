@@ -58,10 +58,8 @@
       "mode": "agency"
     }
   },
-  "name": "mpc-bench-v1",
+  "name": "mpc-bench-v1-anchored",
   "necessity_set": [
-    "RAM",
-    "PDI",
     "NAS",
     "IIM",
     "SRPI"

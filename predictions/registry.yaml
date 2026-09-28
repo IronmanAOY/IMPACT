@@ -100,6 +100,10 @@ estimators:
       Rescorla-Wagner prediction-error U. Runs without a choice/reward log use the
       protocol's declared fallback (compute_RAM:feedback_magnitude); results from an
       unregistered fallback estimator are refused unless it is registered too.
+      Decision at the paper-1 freeze (2026-09-28): the fallback is deliberately not
+      registered (its U is undefined for +-1 feedback and it was not validated on
+      MPC-Bench), so fallback rows stay refused; registering it needs its own
+      validation.
   - principle: PDI
     estimator: "compute_PDI:repertoire"
     version: null
@@ -124,7 +128,10 @@ estimators:
     note: >-
       Runs without self_caused/other_caused events use the protocol's declared
       legacy fallback (compute_SRPI:legacy), which must be registered separately to
-      contribute confirmatory results.
+      contribute confirmatory results. Decision at the paper-1 freeze (2026-09-28):
+      the legacy fallback is deliberately not registered (hard zeros, one-sided
+      reactivity; the motivating failure of SRPI-agency), so fallback rows stay
+      refused.
 
 datasets:
   - id: ds003171

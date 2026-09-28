@@ -721,8 +721,10 @@ anchor is not finite, the component is UNDEFINED (`INVALID_ANCHORS`).
     $c + q\,\mathrm{se}_c < \delta_j$. This includes estimates credibly below
     the null: there is no asymmetry that favours non-falsification;
   - **UNDEFINED** otherwise (`INCONCLUSIVE`).
-- Initial protocol defaults: $z_j = 0.25$, $\delta_j = 0.10$, $\alpha = 0.05$,
-  to be justified by MPC-Bench dose-response runs.
+- Protocol values (frozen at `mpcbench-freeze-v1`, all shipped protocols):
+  $z_j = 0.25$, $\delta_j = 0.10$, $\alpha = 0.05$, kept after the MPC-Bench
+  development runs (dose-response, null systems); the evidence is in the
+  [preregistration](preregistration/MPC_BENCH_PREREGISTRATION.md), section 4.
 - UNDEFINED reasons, in order: not defined (the estimator's reason), a
   non-finite estimate, `NO_NULL_CALIBRATION` (no null mean),
   `DEGENERATE_NULL` ($K > 0$ without a finite null SD $\ge 0$),

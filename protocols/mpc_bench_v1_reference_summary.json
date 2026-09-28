@@ -1,51 +1,64 @@
 {
+  "anchor_alpha": 0.05,
+  "anchor_rule": "excess scale: anchor only when the one-sided (1 - alpha) Student-t lower bound of the positive control's mean excess is > 0",
   "code_git_sha": [
-    "b027c83f3ab957f1ed8252925d7478c443f5389f"
+    "1abff4e35d1bd46d80d9b1f4f706c0f8da182a1d"
   ],
   "families": [
     "A"
   ],
   "min_n": 2,
+  "no_anchor": [
+    "RAM",
+    "PDI"
+  ],
   "null_surrogates": [
     19
   ],
   "per_principle": {
     "IIM": {
-      "mean": 0.009964834769798925,
-      "n": 8,
-      "sd": 0.007125293886880987,
-      "se": 0.002519171812680299
+      "lower_bound": 0.006582557137269704,
+      "mean": 0.009395145040549686,
+      "n": 20,
+      "sd": 0.007274325838388533,
+      "se": 0.0016265887065119908
     },
     "NAS": {
-      "mean": 0.06930563338774284,
-      "n": 8,
-      "sd": 0.011118512607709928,
-      "se": 0.0039309878308099065
+      "lower_bound": 0.06669070149017249,
+      "mean": 0.07059490897510279,
+      "n": 20,
+      "sd": 0.010097631918610734,
+      "se": 0.0022578991381785223
     },
     "PDI": {
+      "anchor": "none (positive-control excess not credibly above its null: mean 0, se 0, one-sided 0.95 lower bound 0)",
+      "lower_bound": 0.0,
       "mean": 0.0,
-      "n": 8,
+      "n": 20,
       "sd": 0.0,
       "se": 0.0
     },
     "RAM": {
-      "mean": 0.004070956231083789,
-      "n": 8,
-      "sd": 0.014133674407405334,
-      "se": 0.004997008508279535
+      "anchor": "none (positive-control excess not credibly above its null: mean 0.00501782, se 0.0041414, one-sided 0.95 lower bound -0.0021432)",
+      "lower_bound": -0.0021432040539730926,
+      "mean": 0.0050178230768639105,
+      "n": 20,
+      "sd": 0.018520894805279048,
+      "se": 0.004141397978872668
     },
     "SRPI": {
-      "mean": 0.1727803622179402,
-      "n": 8,
-      "sd": 0.020011390550226917,
-      "se": 0.007075094979518924
+      "lower_bound": 0.14401120939133985,
+      "mean": 0.16436844616154844,
+      "n": 20,
+      "sd": 0.05265086053418193,
+      "se": 0.011773090322829168
     }
   },
-  "protocol_hash": "02a841a9db55b2a68ce33f6df60895249fa54bf3292323db236884b855ed2e7b",
+  "protocol_hash": "855f6a444b77030d33faa68fcb45e8576b931d2d681cf215d4dacdb57a6b2520",
   "protocol_path": "protocols/mpc_bench_v1.json",
   "scale": "excess",
   "se_groups": [
-    0
+    10
   ],
   "seeds": [
     900,
@@ -55,7 +68,22 @@
     904,
     905,
     906,
-    907
+    907,
+    908,
+    909,
+    910,
+    911,
+    912,
+    913,
+    914,
+    915,
+    916,
+    917,
+    918,
+    919
+  ],
+  "splits": [
+    "development"
   ],
   "witness": "PC_nominal"
 }

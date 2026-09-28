@@ -20,21 +20,31 @@ bench protocol as an ``external`` reference (``evidence.Protocol``):
 ``se[P]`` is the SD of the per-seed values over ``sqrt(n)`` (``n >= 2``). A
 principle with fewer than ``min_n`` finite values gets no anchor: its
 evidence is then UNDEFINED (``INVALID_ANCHORS``), never judged against a
-made-up reference. A mean excess ``<= 0`` is recorded as computed; the
-evidence layer then reports ``INVALID_ANCHORS`` for that principle.
+made-up reference. On the ``excess`` scale an anchor must also be credibly
+above the null (anchor-validity rule, fixed at the code freeze): the
+one-sided ``1 - alpha`` Student-``t`` lower bound of the mean excess (``n - 1``
+degrees of freedom) must be positive. A positive control whose estimator
+does not show its mechanism above the null cannot define the unit of the
+construct scale (``c`` would be a ratio of noise to noise), so such a
+principle gets no anchor either (recorded in the summary with the mean, SE
+and bound) and its evidence is ``INVALID_ANCHORS``.
 
 Reference seeds are development seeds (0-999; by convention the block
 ``REFERENCE_SEED_BLOCK`` = 900-999, which the other development designs do not
 use by default) of the development families (A); family C and confirmatory
-seeds are refused, so the anchor never touches held-out data.
+seeds are refused, so the anchor never touches held-out data. The
+confirmatory analysis anchors a held-out family on its own positive control
+(``bench.analysis.family_reference``: confirmatory reference seeds
+``CONFIRMATORY_REFERENCE_SEED_BLOCK``, disjoint from the evaluation seeds)
+with the same rule (``allow_confirmatory=True``).
 
 CLI (``python -m impact_pipeline.bench.reference`` or
 ``scripts/bench_reference.py``)::
 
     # run the positive control on reference seeds (resumable) and write the
     # protocol with its reference
-    python scripts/bench_reference.py --run --family A --seeds 900-907 \\
-        --null-surrogates 19 --se-groups 5 --workers 4 \\
+    python scripts/bench_reference.py --run --family A --seeds 900-919 \\
+        --null-surrogates 19 --se-groups 10 --workers 4 \\
         --work-dir outputs/bench/reference_A \\
         --template protocols/mpc_bench_v1.json --out protocols/mpc_bench_v1.json
     # or from existing run_bench results of PC_nominal
@@ -57,6 +67,8 @@ from impact_pipeline.bench.generators import PRINCIPLES
 
 REFERENCE_WITNESS = "PC_nominal"
 REFERENCE_SEED_BLOCK = (900, 999)
+CONFIRMATORY_REFERENCE_SEED_BLOCK = (19000, 19999)
+DEFAULT_ANCHOR_ALPHA = 0.05
 REFERENCE_FAMILIES = ("A",)
 SCALES = ("excess", "estimate")
 REFERENCE_SUMMARY = "reference_summary.json"
@@ -87,7 +99,9 @@ def reference_tasks(
     )
 
 
-def _reference_records(records: Iterable[dict]) -> List[dict]:
+def _reference_records(
+    records: Iterable[dict], allow_confirmatory: bool = False
+) -> List[dict]:
     rows = [
         r
         for r in records
@@ -102,9 +116,26 @@ def _reference_records(records: Iterable[dict]) -> List[dict]:
             if r.get("split", "development") != "development"
         }
     )
-    if held:
+    if held and not allow_confirmatory:
         raise ValueError(f"confirmatory/held-out records cannot anchor: {held}")
+    if allow_confirmatory:
+        splits = {r.get("split", "development") for r in rows}
+        if len(splits) > 1:
+            raise ValueError(
+                "a reference mixes development and confirmatory records: "
+                f"{sorted(splits)}"
+            )
     return rows
+
+
+def anchor_lower_bound(mean: float, se: float, n: int, alpha: float) -> float:
+    """One-sided ``1 - alpha`` Student-t lower bound of a mean excess
+    (``n - 1`` degrees of freedom; NaN for ``n < 2``)."""
+    from scipy.stats import t as t_dist
+
+    if int(n) < 2 or not (math.isfinite(mean) and math.isfinite(se)):
+        return float("nan")
+    return float(mean - t_dist.ppf(1.0 - float(alpha), int(n) - 1) * se)
 
 
 def check_modes(records: Sequence[dict], estimators: Optional[dict]) -> None:
@@ -128,15 +159,22 @@ def reference_from_records(
     scale: str = "excess",
     principles: Sequence[str] = PRINCIPLES,
     min_n: int = 2,
+    alpha: float = DEFAULT_ANCHOR_ALPHA,
+    allow_confirmatory: bool = False,
 ) -> tuple:
     """
     External reference (``evidence.Protocol`` layout) from positive-control
-    records, and a summary (per principle: n, mean, sd, the seeds used).
-    Returns ``(reference, summary)``.
+    records, and a summary (per principle: n, mean, sd, se, the one-sided
+    lower bound of the mean excess and the seeds used). On the ``excess``
+    scale a principle whose mean excess is not credibly positive (lower bound
+    at ``alpha`` <= 0) gets no anchor (module docstring). Returns
+    ``(reference, summary)``.
     """
     if scale not in SCALES:
         raise ValueError(f"scale must be one of {SCALES}")
-    rows = _reference_records(records)
+    if not 0.0 < float(alpha) < 0.5:
+        raise ValueError("alpha must be in (0, 0.5)")
+    rows = _reference_records(records, allow_confirmatory=allow_confirmatory)
     values, ses, per = {}, {}, {}
     for p in principles:
         vals = []
@@ -156,11 +194,20 @@ def reference_from_records(
             continue
         mean = float(arr.mean())
         sd = float(arr.std(ddof=1))
+        se = sd / math.sqrt(n)
+        lower = anchor_lower_bound(mean, se, n, alpha)
+        per[p].update(mean=mean, sd=sd, se=se, lower_bound=lower)
+        if scale == "excess" and not (lower > 0):
+            per[p]["anchor"] = (
+                "none (positive-control excess not credibly above its null: "
+                f"mean {mean:.6g}, se {se:.6g}, one-sided {1 - float(alpha):g} "
+                f"lower bound {lower:.6g})"
+            )
+            continue
         values[p] = mean
-        ses[p] = sd / math.sqrt(n)
-        per[p].update(mean=mean, sd=sd, se=ses[p])
+        ses[p] = se
     if not values:
-        raise ValueError("no principle has a finite reference value")
+        raise ValueError("no principle has a valid reference anchor")
     seeds = sorted(int(r.get("seed")) for r in rows)
     null_k = sorted({int(r.get("null_surrogates", 0)) for r in rows})
     se_groups = sorted({int(r.get("se_groups", 0)) for r in rows})
@@ -179,6 +226,9 @@ def reference_from_records(
         f"bench {rows[0].get('bench_version')}, "
         f"generators {rows[0].get('generator_version')}, code {','.join(code)}; "
         + ", ".join(f"{p} n={per[p]['n']}" for p in principles)
+        + f"; anchor rule: mean excess with a positive one-sided "
+        f"{1 - float(alpha):g} t lower bound; no anchor: "
+        + (",".join(p for p in principles if p not in values) or "none")
     )
     reference = {
         "kind": "external",
@@ -193,6 +243,13 @@ def reference_from_records(
         "seeds": seeds,
         "scale": scale,
         "min_n": int(min_n),
+        "anchor_alpha": float(alpha),
+        "anchor_rule": (
+            "excess scale: anchor only when the one-sided (1 - alpha) Student-t "
+            "lower bound of the positive control's mean excess is > 0"
+        ),
+        "no_anchor": [p for p in principles if p not in values],
+        "splits": sorted({str(r.get("split", "development")) for r in rows}),
         "null_surrogates": null_k,
         "se_groups": se_groups,
         "per_principle": per,
@@ -244,15 +301,21 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("--run", action="store_true", help="run the positive control")
     src.add_argument("--results", default=None, help="existing run_bench results")
     ap.add_argument("--family", default="A")
-    ap.add_argument("--seeds", default="900-907")
+    ap.add_argument("--seeds", default="900-919")
     ap.add_argument("--null-surrogates", type=int, default=19)
-    ap.add_argument("--se-groups", type=int, default=5)
+    ap.add_argument("--se-groups", type=int, default=10)
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--config", default=None, help="generator config (JSON/path)")
     ap.add_argument("--params", default=None, help="estimator overrides (JSON/path)")
     ap.add_argument("--work-dir", default=None, help="run_bench output (--run)")
     ap.add_argument("--scale", default="excess", choices=SCALES)
     ap.add_argument("--min-n", type=int, default=2)
+    ap.add_argument(
+        "--alpha",
+        type=float,
+        default=None,
+        help="anchor-validity level (default: the template protocol's alpha)",
+    )
     ap.add_argument("--template", required=True, help="protocol JSON template")
     ap.add_argument("--out", required=True, help="protocol JSON to write")
     ap.add_argument("--name", default=None, help="protocol name")
@@ -273,12 +336,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         RB.check_seed_policy(tasks, confirmatory=False)
         prov = RB.collect_provenance(vars(args))
+        from impact_pipeline.bench.export import protocol_params
+
         RB.run_tasks(
             tasks,
             args.work_dir,
             n_workers=args.workers,
             null_surrogates=args.null_surrogates,
-            params=RB._json_arg(args.params),
+            # the template's estimator options (e.g. the IIM cut mode) apply
+            params=protocol_params(template, RB._json_arg(args.params)),
             provenance=prov,
             markers=False,
             se_groups=args.se_groups,
@@ -289,8 +355,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         records = _read_records(args.results)
     rows = _reference_records(records)
     check_modes(rows, template.to_dict()["estimators"])
+    alpha = float(template.alpha if args.alpha is None else args.alpha)
     reference, summary = reference_from_records(
-        rows, scale=args.scale, min_n=args.min_n
+        rows, scale=args.scale, min_n=args.min_n, alpha=alpha
     )
     proto = protocol_with_reference(template, reference, name=args.name)
     out = Path(args.out)

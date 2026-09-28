@@ -16,11 +16,12 @@ REPO = Path(__file__).resolve().parents[1]
 PROTOCOLS = REPO / "protocols"
 DEFAULT = PROTOCOLS / "mpc_default_v1.json"
 BENCH = PROTOCOLS / "mpc_bench_v1.json"
+ANCHORED = PROTOCOLS / "mpc_bench_v1_anchored.json"
 
 
 def test_protocols_load_and_their_hashes_are_documented():
     readme = (PROTOCOLS / "README.md").read_text(encoding="utf-8")
-    for path in (DEFAULT, BENCH):
+    for path in (DEFAULT, BENCH, ANCHORED):
         proto = E.Protocol.from_json(path)
         # canonical: the file is the protocol's own serialisation
         assert json.loads(path.read_text()) == proto.to_dict()
@@ -90,17 +91,44 @@ def test_bench_protocol_matches_the_bench_runner():
     from impact_pipeline.bench.reference import check_modes
 
     p = E.Protocol.from_json(BENCH)
-    assert "provisional" in p.name
-    assert {q: p.estimator_options(q) for q in p.estimators} == {
+    assert p.name == "mpc-bench-v1" and p.necessity_set == E.PRINCIPLES
+    est = {q: p.estimator_options(q) for q in p.estimators}
+    assert est["IIM"] == {
+        "cut_mode": "bidirectional", "tpm_estimator": "node_shrinkage"}
+    assert {q: v for q, v in est.items() if q != "IIM"} == {
         q: dict(v) for q, v in export.OPTIONAL_MODES.items()}
     check_modes([{"estimator_modes": export.OPTIONAL_MODES}], p.to_dict()["estimators"])
+    # the declared options are what the bench computes (IIM options pass through)
+    assert export.protocol_params(p)["IIM"] == est["IIM"]
     assert p.null_families["RAM"] == export.EVENT_NULL_KINDS["RAM"]
     assert p.null_families["SRPI"] == "yoked_label_permutation"
     assert p.null_families["NAS"] == "block_circular_shift"
+    assert all(p.cutoff_for(q) == (0.25, 0.10) for q in E.PRINCIPLES)
+    assert p.alpha == 0.05
     ref = p.reference
     assert ref["kind"] == "external" and ref["scale"] == "excess"
-    assert set(ref["values"]) == set(E.PRINCIPLES)
-    assert "development seeds 900-907" in ref["source"]
+    # anchor rule: RAM and PDI are not credibly above their nulls on the
+    # development positive control, so they have no anchor
+    assert set(ref["values"]) == {"NAS", "IIM", "SRPI"}
+    assert "development seeds 900-919 (n=20)" in ref["source"]
+    summary = json.loads((PROTOCOLS / "mpc_bench_v1_reference_summary.json")
+                         .read_text())
+    assert summary["no_anchor"] == ["RAM", "PDI"]
+    for q, v in ref["values"].items():
+        assert summary["per_principle"][q]["lower_bound"] > 0
+        assert v == pytest.approx(summary["per_principle"][q]["mean"])
+
+
+def test_anchored_bench_protocol_differs_only_in_the_necessity_set():
+    from impact_pipeline.bench.analysis import same_except_reference
+
+    full = E.Protocol.from_json(BENCH)
+    anch = E.Protocol.from_json(ANCHORED)
+    assert anch.necessity_set == tuple(sorted(
+        full.reference["values"], key=E.PRINCIPLES.index))
+    assert anch.name == "mpc-bench-v1-anchored"
+    assert same_except_reference(full, anch.replace(necessity_set=full.necessity_set))
+    assert anch.reference == full.reference
 
 
 def test_default_protocol_runs_through_the_pipeline(tmp_path):

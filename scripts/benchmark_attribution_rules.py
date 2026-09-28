@@ -22,7 +22,7 @@ Examples:
     # development smoke run (families A/B designs, dev seeds only)
     python scripts/benchmark_attribution_rules.py --run --designs factorial \
         --cells b11111,b01111,b10111,b11011,b11101,b11110 --seeds 0-1 \
-        --null-surrogates 19 --se-groups 5 --workers 4 --out outputs/bench/audit_dev
+        --null-surrogates 19 --se-groups 10 --workers 4 --out outputs/bench/audit_dev
     # audit existing results
     python scripts/benchmark_attribution_rules.py --results outputs/bench/factorial_A \
         --out outputs/bench/audit_factorial_A
@@ -144,7 +144,7 @@ def build_parser():
     ap.add_argument("--config", default=None)
     ap.add_argument("--metrics", default=",".join(A.PRINCIPLES))
     ap.add_argument("--null-surrogates", type=int, default=19)
-    ap.add_argument("--se-groups", type=int, default=5)
+    ap.add_argument("--se-groups", type=int, default=10)
     ap.add_argument(
         "--protocol",
         default=None,

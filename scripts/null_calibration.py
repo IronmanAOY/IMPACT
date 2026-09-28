@@ -62,7 +62,7 @@ Example::
     python scripts/null_calibration.py --out outputs/null_calibration \
         --protocol protocols/mpc_bench_v1.json \
         --kinds ar1,pink,surrogate_iid,surrogate_linear --T 1200,2400 \
-        --nodes 8,16 --replicates 100 --null-surrogates 19 --se-groups 5 \
+        --nodes 8,16 --replicates 100 --null-surrogates 19 --se-groups 10 \
         --workers 8
 """
 from __future__ import annotations
@@ -558,18 +558,47 @@ def summarise(rep: pd.DataFrame, alpha=0.05, z_present=1.645) -> tuple:
     return rates, pd.DataFrame(vsum)
 
 
+def seed_policy(seed, confirmatory=False, freeze_tag=None):
+    """
+    Development / confirmatory split of the replicate seed base (spec v2,
+    V2-6): development calibrations use a base in 0-999; a confirmatory
+    calibration uses a base >= 10000 and runs only on the frozen code
+    (``bench.run_bench.confirmatory_guard`` with the freeze tag). Returns the
+    code identity (the guard's record for a confirmatory run, else None).
+    """
+    seed = int(seed)
+    if confirmatory:
+        if seed < 10000:
+            raise ValueError("a confirmatory calibration uses --seed >= 10000")
+        from impact_pipeline.bench.run_bench import confirmatory_guard
+
+        return confirmatory_guard(REPO_ROOT, freeze_tag)
+    if not 0 <= seed <= 999:
+        raise ValueError(
+            "a development calibration uses --seed 0-999 (>= 10000 is "
+            "confirmatory: pass --confirmatory after the code freeze)"
+        )
+    return None
+
+
 def run(out_dir, *, kinds=("ar1", "pink", "surrogate_iid", "surrogate_linear"),
         n_times=(1200,), n_nodes=(8,), replicates=20, null_surrogates=19,
         metrics=PRINCIPLES, seed=0, dt=0.05, iim_macro_nodes=4, ar_coef=0.5,
-        pink_beta=1.0, params=None, protocol=None, se_groups=5,
-        status_rule="v2", workers=1, srpi_agency_fix=True) -> dict:
+        pink_beta=1.0, params=None, protocol=None, se_groups=10,
+        status_rule="v2", workers=1, srpi_agency_fix=True, confirmatory=False,
+        freeze_tag=None) -> dict:
     """Run the calibration; the protocol's alpha sets the rate criteria."""
     if status_rule not in STATUS_RULES:
         raise ValueError(f"status_rule must be one of {STATUS_RULES}")
+    guard = seed_policy(seed, confirmatory, freeze_tag)
     if int(se_groups) == 1 or int(se_groups) < 0:
         raise ValueError("se_groups must be 0 (off) or >= 2")
     proto = resolve_calibration_protocol(protocol)
     alpha = float(proto.alpha)
+    # the protocol's declared estimator options (e.g. the IIM cut mode) apply
+    from impact_pipeline.bench.export import protocol_params
+
+    params = protocol_params(proto, params)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     bad = sorted(set(kinds) - set(NULL_KINDS))
@@ -604,7 +633,7 @@ def run(out_dir, *, kinds=("ar1", "pink", "surrogate_iid", "surrogate_linear"),
         from impact_pipeline.bench import export as bench_export
         from impact_pipeline.provenance import collect_code_version
 
-        prov = collect_code_version(REPO_ROOT)
+        prov = guard if guard is not None else collect_code_version(REPO_ROOT)
         est_params = {"defaults": bench_export.BENCH_ESTIMATOR_PARAMS,
                       "optional_modes": bench_export.OPTIONAL_MODES,
                       "overrides": params}
@@ -627,6 +656,7 @@ def run(out_dir, *, kinds=("ar1", "pink", "surrogate_iid", "surrogate_linear"),
                    "applicability": {k: list(v) for k, v in NULL_KINDS.items()}},
         "estimator_params": est_params,
         "seed": int(seed),
+        "split": "confirmatory" if confirmatory else "development",
         "workers": int(workers),
         "seconds": round(time.time() - t0, 2),
         "provenance": prov,
@@ -663,13 +693,17 @@ def main(argv=None) -> int:
     ap.add_argument("--protocol", default=None,
                     help="evidence.Protocol JSON with an external reference anchor "
                          f"(default {DEFAULT_PROTOCOL.relative_to(REPO_ROOT)})")
-    ap.add_argument("--se-groups", type=int, default=5,
+    ap.add_argument("--se-groups", type=int, default=10,
                     help="jackknife groups of the sampling SE (0 = none: every "
                          "component UNDEFINED with NO_SAMPLING_SE)")
     ap.add_argument("--status-rule", choices=STATUS_RULES, default="v2",
                     help="legacy_v1: the superseded null-SD rule (diagnostic only)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=1)
+    ap.add_argument("--confirmatory", action="store_true",
+                    help="confirmatory calibration (--seed >= 10000, frozen code)")
+    ap.add_argument("--freeze-tag", default=None,
+                    help="code-freeze tag (required with --confirmatory)")
     ap.add_argument("--no-srpi-agency-fix", action="store_true",
                     help="keep the bench runner's SRPI result even when it lacks "
                          "agency events")
@@ -688,6 +722,7 @@ def main(argv=None) -> int:
         se_groups=args.se_groups, status_rule=args.status_rule,
         workers=args.workers,
         srpi_agency_fix=not args.no_srpi_agency_fix,
+        confirmatory=args.confirmatory, freeze_tag=args.freeze_tag,
     )
     cols = ["null_kind", "n_time", "n_nodes", "principle", "n", "false_present_rate",
             "undefined_rate", "expected_rate_exchangeable_v1"]
