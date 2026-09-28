@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronmanAOY/impact-synergy-pipeline/predictions/registry.schema.json",
+  "title": "IMPaCT paper-2 executable hypothesis registry",
+  "description": "Schema of predictions/registry.yaml. Validated by scripts/run_predictions.py (built-in validator for the keywords used here; jsonschema, when installed, is run as a cross-check).",
+  "type": "object",
+  "required": ["registry_version", "status", "freeze_tag", "defaults", "protocols", "estimators", "datasets", "hypotheses"],
+  "additionalProperties": false,
+  "properties": {
+    "registry_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "status": {"enum": ["draft", "frozen"]},
+    "freeze_tag": {"type": ["string", "null"], "minLength": 1},
+    "created": {"type": "string"},
+    "description": {"type": "string"},
+    "spec_refs": {"type": "array", "items": {"type": "string"}},
+    "verdict_names": {
+      "type": "object",
+      "required": ["excluded", "consistent", "undetermined"],
+      "additionalProperties": false,
+      "properties": {
+        "excluded": {"const": "EXCLUDED"},
+        "consistent": {"const": "MPC_CONSISTENT"},
+        "undetermined": {"const": "UNDETERMINED"},
+        "v1_aliases": {
+          "type": "object",
+          "additionalProperties": {"enum": ["EXCLUDED", "MPC_CONSISTENT", "UNDETERMINED"]}
+        }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "required": ["alpha", "tau", "epsilon", "missing"],
+      "additionalProperties": false,
+      "properties": {
+        "alpha": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.2},
+        "tau": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "epsilon": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "missing": {"enum": ["determinate", "worst_case"]},
+        "sensitivity_missing": {"enum": ["determinate", "worst_case"]},
+        "ci_method": {"const": "clopper_pearson_one_sided"},
+        "null_band": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.1}
+      }
+    },
+    "protocols": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "hash", "hash_algorithm", "necessity_set"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "hash_algorithm": {"enum": ["canonical_json_sha256", "evidence.Protocol"]},
+          "necessity_set": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": {"enum": ["RAM", "PDI", "NAS", "IIM", "SRPI"]}
+          },
+          "spec": {"type": "object"},
+          "note": {"type": "string"}
+        }
+      }
+    },
+    "estimators": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["principle", "estimator", "version", "registration"],
+        "additionalProperties": false,
+        "properties": {
+          "principle": {"enum": ["RAM", "PDI", "NAS", "IIM", "SRPI"]},
+          "estimator": {"type": "string", "minLength": 1},
+          "version": {"type": ["string", "null"], "minLength": 1},
+          "registration": {"enum": ["pending_validation", "registered", "withdrawn"]},
+          "applicability_entry": {"type": ["string", "null"]},
+          "note": {"type": "string"}
+        }
+      }
+    },
+    "datasets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "prior_access", "role"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+          "prior_access": {"enum": ["exploratory_calibration", "metadata_only", "never_accessed"]},
+          "role": {"enum": ["calibration", "exploratory", "confirmatory"]},
+          "modality": {"enum": ["fmri", "eeg", "meg", "ieeg", "mixed", "unknown"]},
+          "access_log": {"type": ["string", "null"]},
+          "note": {"type": "string"}
+        }
+      }
+    },
+    "hypotheses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "level", "counts_for_stance", "statistic", "decision"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^H(0|[1-9][0-9]*)$"},
+          "title": {"type": "string", "minLength": 1},
+          "level": {"enum": ["measurement", "verdict", "component", "auxiliary", "comparative"]},
+          "counts_for_stance": {"type": "boolean"},
+          "statistic": {
+            "enum": [
+              "null_false_present_rate",
+              "excluded_rate_report_positive",
+              "aggregation_exponent",
+              "absent_rate_report_positive",
+              "reason_rate_report_positive",
+              "coverage",
+              "selective_accuracy_gap"
+            ]
+          },
+          "decision": {"enum": ["null_band", "symmetric_upper_lower", "symmetric_necessity", "auxiliary_report", "non_inferiority"]},
+          "principle": {"enum": ["RAM", "PDI", "NAS", "IIM", "SRPI"]},
+          "necessity_set": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": {"enum": ["RAM", "PDI", "NAS", "IIM", "SRPI"]}
+          },
+          "reason_code": {"type": "string", "minLength": 1},
+          "population": {"enum": ["report_positive", "report_negative", "all"]},
+          "tau": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+          "epsilon": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+          "kappa": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+          "margin": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+          "alpha": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.2},
+          "missing": {"enum": ["determinate", "worst_case"]},
+          "variation_floor": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+          "minimum_n": {"type": "integer", "minimum": 1},
+          "minimum_n_source": {"type": "string"},
+          "power_assumptions": {
+            "type": "object",
+            "required": ["tau", "alpha", "pi_nec", "pi_viol", "pi_unconscious", "label_noise", "base_rate", "coverage", "sensitivity", "false_absent", "target_power"],
+            "additionalProperties": false,
+            "properties": {
+              "tau": {"type": "number"},
+              "alpha": {"type": "number"},
+              "pi_nec": {"type": "number", "minimum": 0, "maximum": 1},
+              "pi_viol": {"type": "number", "minimum": 0, "maximum": 1},
+              "pi_unconscious": {"type": "number", "minimum": 0, "maximum": 1},
+              "label_noise": {"type": "number", "minimum": 0, "maximum": 1},
+              "base_rate": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+              "coverage": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+              "sensitivity": {"type": "number", "minimum": 0, "maximum": 1},
+              "false_absent": {"type": "number", "minimum": 0, "maximum": 1},
+              "target_power": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}
+            }
+          },
+          "comparators": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9_]+$"}},
+          "outcome_column": {"type": "string"},
+          "n_boot": {"type": "integer", "minimum": 100},
+          "seed": {"type": "integer", "minimum": 0},
+          "prediction": {"type": "string"},
+          "falsified_if": {"type": "string"},
+          "supported_if": {"type": "string"},
+          "note": {"type": "string"}
+        }
+      }
+    }
+  }
+}
