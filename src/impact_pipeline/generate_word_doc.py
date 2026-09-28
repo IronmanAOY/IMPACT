@@ -5,6 +5,15 @@ from typing import Optional, Union
 from docx.shared import Inches
 from docx import Document
 import matplotlib.pyplot as plt
+
+from impact_pipeline.analysis_bootstrap import (
+    definedness_summary,
+    holm_adjust,
+    paired_session_test,
+    paired_tests_table,
+)
+
+_SUPERSCRIPTS = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
 # ---------- formatting ----------
 
 def fmt(x, decimals=3, sci_below=1e-4, sci_above=1e5):
@@ -55,14 +64,20 @@ def _group_descriptives(series):
 def _safe_row_by_theta(df_stats_by_theta, target_theta, tol=1e-6):
     if df_stats_by_theta is None or df_stats_by_theta.empty:
         return None
-    idx = df_stats_by_theta.index
+    idx = df_stats_by_theta.index.to_numpy(dtype=float)
     nearest = float(idx[np.argmin(np.abs(idx - target_theta))])
     if abs(nearest - target_theta) <= max(tol, 1e-9):
         return df_stats_by_theta.loc[nearest]
-    return df_stats_by_theta.loc[nearest]
+    return None
 
 
 def _best_theta_from_stats(df_stats_by_theta: Optional[pd.DataFrame]) -> float:
+    """
+    θ with the largest |mean_diff_S| (descriptive only).
+
+    Not used for inference: selecting θ by the observed effect and reporting its
+    uncorrected p-value inflates false positives (report all θ with Holm instead).
+    """
     if df_stats_by_theta is None or df_stats_by_theta.empty:
         return np.nan
     if "mean_diff_S" not in df_stats_by_theta.columns:
@@ -154,24 +169,28 @@ def _save_paired_metric_plot(
     return True
 
 
-def _theta_diff_table(df: pd.DataFrame, scale: float = 1.0) -> pd.DataFrame:
+def _theta_diff_table(
+    df: pd.DataFrame, scale: float = 1.0, sessions=("awake", "deep")
+) -> pd.DataFrame:
     """
-    Build per-theta paired awake-deep S summary.
+    Build per-theta paired sessions[0] − sessions[1] S summary.
     """
+    s0, s1 = str(sessions[0]), str(sessions[1])
     rows = []
     for theta, subdf in df.groupby('theta'):
         sub_mean = (
-            subdf.groupby(['subject', 'session'], as_index=False)['S']
+            subdf.assign(session=subdf['session'].astype(str))
+            .groupby(['subject', 'session'], as_index=False)['S']
             .mean()
         )
         piv = sub_mean.pivot(index='subject', columns='session', values='S')
-        if not {'awake', 'deep'}.issubset(set(piv.columns)):
+        if not {s0, s1}.issubset(set(piv.columns)):
             continue
-        paired = piv[['awake', 'deep']].dropna()
+        paired = piv[[s0, s1]].dropna()
         if paired.empty:
             continue
-        a = paired['awake'].to_numpy(dtype=float) * scale
-        d = paired['deep'].to_numpy(dtype=float) * scale
+        a = paired[s0].to_numpy(dtype=float) * scale
+        d = paired[s1].to_numpy(dtype=float) * scale
         diff = a - d
         n = int(np.isfinite(diff).sum())
         sem = float(np.nanstd(diff, ddof=1) / np.sqrt(n)) if n > 1 else np.nan
@@ -186,33 +205,257 @@ def _theta_diff_table(df: pd.DataFrame, scale: float = 1.0) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _iim_plot_spec(agg: pd.DataFrame):
+    """(column, filename, title, y label, scale) for the IIM figure actually plotted."""
+    # Use raw signed IIM (native units) for plots to preserve directionality/magnitude.
+    raw_title = "Integrated Information Metric (IIM raw signed)"
+    raw_label = "IIM raw (signed, unitless)"
+    if 'IIM_raw' in agg.columns:
+        return ("IIM_raw", "iim_curve.png", raw_title, raw_label, 1.0)
+    if 'IIM_raw_scaled' in agg.columns:
+        # Backward-compatible fallback for legacy tables.
+        return (
+            "IIM_raw_scaled", "iim_curve.png", raw_title, raw_label, 1.0
+        )
+    return (
+        "IIM", "iim_curve.png", "Integrated Information Metric (IIM canonical)",
+        "IIM canonical (0-1)", 1.0,
+    )
+
+
 def _save_threshold_difference_plot(
     df: pd.DataFrame,
     out_path: str,
     scale: float = 1.0,
-) -> float:
+    sessions=("awake", "deep"),
+) -> bool:
     """
-    Save θ-scan plot and return θ* with largest |awake-deep mean difference|.
+    Save the descriptive θ-scan plot of the paired sessions[0]−sessions[1] S
+    difference.
+
+    No θ is selected or marked: S is an exploratory legacy statistic and θ
+    selection by the largest difference would bias any inference at that θ.
+    Returns False (and writes nothing) when no paired θ summary is available.
     """
-    ttab = _theta_diff_table(df, scale=scale)
+    ttab = _theta_diff_table(df, scale=scale, sessions=sessions)
     if ttab.empty:
-        return np.nan
+        return False
 
+    s0, s1 = str(sessions[0]), str(sessions[1])
     ttab = ttab.sort_values('theta')
-    thetas = ttab['theta'].to_numpy(dtype=float)
-    means = ttab['mean_diff'].to_numpy(dtype=float)
-    sems = ttab['sem_diff'].to_numpy(dtype=float)
-    i_star = int(np.nanargmax(np.abs(means)))
-    theta_star = float(thetas[i_star])
-
     fig, ax = plt.subplots(figsize=(6.0, 4.0))
-    ax.errorbar(thetas, means, yerr=sems, marker='o')
-    ax.axvline(theta_star, linestyle='--')
-    ax.set(xlabel='θ', ylabel='Mean S_awake–S_deep')
+    ax.errorbar(ttab['theta'], ttab['mean_diff'], yerr=ttab['sem_diff'], marker='o')
+    ax.axhline(0.0, color="#888888", linewidth=0.8)
+    ax.set(xlabel='θ', ylabel=f'Mean S_{s0}–S_{s1} (exploratory)')
     fig.tight_layout()
     fig.savefig(out_path, dpi=160)
     plt.close(fig)
-    return theta_star
+    return True
+
+
+def _label_from_scale(name, scale):
+    """Axis/label text such as 'S×10³' or 'CI×10⁻⁹' for pure powers of ten."""
+    if scale == 1.0:
+        return name
+    try:
+        exp = int(round(np.log10(scale)))
+        if np.isclose(scale, 10.0 ** exp):
+            sup = str(exp).translate(_SUPERSCRIPTS)
+            return f"{name}×10{sup}"
+    except Exception:
+        pass
+    return f"{name}×{scale:g}"
+
+
+def _stat_line(label, st, scale=1.0, decimals=3, err="SEM"):
+    """One paired-test sentence from a paired_session_test dict."""
+    e_a = st.get('sem_a') if err == "SEM" else st.get('sd_a')
+    e_b = st.get('sem_b') if err == "SEM" else st.get('sd_b')
+
+    def sc(v):
+        return v * scale if v is not None and np.isfinite(v) else np.nan
+
+    def desc(ses, mean, e):
+        return f"{ses} {fmt(sc(mean), decimals)} ± {fmt(sc(e), decimals)} ({err})"
+
+    p_holm = st.get('p_holm')
+    holm_txt = f", p_Holm={fmt(p_holm, decimals=4)}" if p_holm is not None else ""
+    excl = int(st.get('n_subjects_excluded') or 0)
+    excl_txt = (
+        f" ({excl} subject(s) without a defined value in both sessions excluded)"
+        if excl else ""
+    )
+    df_txt = st.get('df')
+    df_txt = int(df_txt) if df_txt is not None and np.isfinite(df_txt) else "na"
+    return (
+        f"{label}: n_pairs={int(st.get('n_pairs') or 0)}{excl_txt}; "
+        f"{desc(st.get('session_a', 'awake'), st.get('mean_a'), e_a)} vs "
+        f"{desc(st.get('session_b', 'deep'), st.get('mean_b'), e_b)}; "
+        f"t({df_txt})={fmt(st.get('t'))}, p={fmt(st.get('p'), decimals=4)}{holm_txt}, "
+        f"dz={fmt(st.get('dz'))}."
+    )
+
+
+def _auc_line(name, s0, s1, res, extra=""):
+    return (
+        f"{name} AUC (P({name}_{s1} > {name}_{s0})) = {fmt(res.get('auc'))}, "
+        f"subject-bootstrap 95% CI [{fmt(res.get('lo'))}, {fmt(res.get('hi'))}], "
+        f"two-sided paired permutation p={fmt(res.get('p'), decimals=4)}{extra}."
+    )
+
+
+def _motion_paragraphs(motion):
+    """Render motion_covariate_analysis output (one-row DataFrame or dict)."""
+    if motion is None:
+        return []
+    if isinstance(motion, pd.DataFrame):
+        if motion.empty:
+            return ["Motion covariate analysis: no result."]
+        motion = motion.iloc[0].to_dict()
+    if not isinstance(motion, dict):
+        kind = type(motion).__name__
+        return [f"Motion covariate analysis: unsupported result type {kind}."]
+    if 'skipped' in motion:
+        return [f"Motion covariate analysis: skipped ({motion['skipped']})"]
+    lines = []
+    sessions = sorted(k[len('coef_'):] for k in motion if k.startswith('coef_'))
+    for ses in sessions:
+        coef = motion.get(f'coef_{ses}')
+        pval = motion.get(f'p_{ses}')
+        if isinstance(coef, (list, tuple)):
+            coef = coef[0] if coef else np.nan
+        if isinstance(pval, (list, tuple)):
+            pval = pval[0] if pval else np.nan
+        n_txt = f", n={motion.get(f'n_{ses}')}" if f'n_{ses}' in motion else ""
+        lines.append(
+            f"Motion (FD) within {ses}: coef={fmt(coef)}, "
+            f"p={fmt(pval, decimals=4)}{n_txt}."
+        )
+    if 'delta_intercept' in motion:
+        lines.append(
+            "FD-adjusted state contrast "
+            f"({motion.get('delta_sessions', 'awake-deep')}): "
+            f"intercept={fmt(motion.get('delta_intercept'))}, "
+            f"p={fmt(motion.get('p_delta_intercept'), decimals=4)}; "
+            f"ΔFD coef={fmt(motion.get('delta_fd_coef'))}, "
+            f"p={fmt(motion.get('p_delta_fd_coef'), decimals=4)}; "
+            f"n_pairs={motion.get('n_pairs', 'na')}."
+        )
+    excl = []
+    if motion.get('n_rows_undefined_score'):
+        excl.append(f"{motion['n_rows_undefined_score']} row(s) with undefined score")
+    if motion.get('n_subject_sessions_missing_fd'):
+        n_fd = motion['n_subject_sessions_missing_fd']
+        excl.append(f"{n_fd} subject-session(s) without mean_fd.txt")
+    if excl:
+        lines.append("Motion analysis exclusions: " + "; ".join(excl) + ".")
+    return lines
+
+
+def _ci_definedness_line(ci_ref, dfn):
+    missing = dfn.get('missing_component_row_counts')
+    missing_txt = f" (missing components: {missing})" if missing else ""
+    # One row per run when definedness does not vary with θ (CI never does).
+    unit = "runs" if dfn.get('count_unit') == "run" else "rows"
+    return (
+        f"CI reference: {ci_ref or 'unknown'} (each component divided by the "
+        "reference mean; NAS enters directly, S is not part of CI). "
+        f"{unit.capitalize()} with defined CI: {dfn.get('n_rows_defined', 'na')}/"
+        f"{dfn.get('n_rows', 'na')}; "
+        f"undefined {unit} excluded: {dfn.get('n_rows_undefined', 'na')}"
+        f"{missing_txt}; "
+        "subjects with defined CI in both sessions: "
+        f"{dfn.get('n_subjects_complete_pairs', 'na')}."
+    )
+
+
+def _atlas_paragraphs(atlas_results, s0, s1):
+    lines = []
+    for name, r in atlas_results.items():
+        is_dict = isinstance(r, dict)
+        if is_dict and ("roughness" not in r) and ("skipped" in r or "reason" in r):
+            reason = r.get('skipped', r.get('reason'))
+            lines.append(f"Atlas {name}: skipped ({reason}).")
+            continue
+        if not (is_dict and ("roughness" in r)):
+            try:
+                lines.append(
+                    f"Atlas {name}: metric roughness {s0}={fmt(r[s0], decimals=3)}, "
+                    f"{s1}={fmt(r[s1], decimals=3)}."
+                )
+            except Exception:
+                lines.append(f"Atlas {name}: {r}")
+            continue
+        rough = r.get("roughness") or {}
+        if isinstance(rough, dict) and rough:
+            items = ", ".join(f"{k}={fmt(v, decimals=3)}" for k, v in rough.items())
+            lines.append(f"Atlas {name}: within-subject S roughness across θ {items}.")
+        else:
+            lines.append(f"Atlas {name}: S roughness not available.")
+        metrics = r.get("metrics") if isinstance(r.get("metrics"), dict) else {}
+        for m in ("S", "PDI", "NAS", "IIM", "IIM_raw", "CI", "RAM", "SRPI"):
+            st = metrics.get(m)
+            if not isinstance(st, dict) or int(st.get("n") or 0) <= 0:
+                continue
+            lines.append(
+                f"Atlas {name} {m}: n={int(st.get('n'))}; "
+                f"mean_{s0}={fmt(st.get('mean_a', np.nan), decimals=4)}, "
+                f"mean_{s1}={fmt(st.get('mean_b', np.nan), decimals=4)}, "
+                f"Δ({s0}−{s1})={fmt(st.get('delta_a_minus_b', np.nan), decimals=4)}, "
+                f"t={fmt(st.get('t', np.nan))}, "
+                f"p={fmt(st.get('p', np.nan), decimals=4)}, "
+                f"p_Holm={fmt(st.get('p_holm', np.nan), decimals=4)}, "
+                f"dz={fmt(st.get('d_paired', np.nan))}."
+            )
+        notes = r.get("notes")
+        if isinstance(notes, list) and notes:
+            lines.append(f"Atlas {name} notes: {' '.join(str(x) for x in notes)}")
+    return lines
+
+
+def _model_comparison_paragraphs(mc):
+    lines = []
+    for m, res in mc.items():
+        try:
+            ci_txt = ""
+            ci = res.get('delta_auc_ci')
+            if isinstance(ci, (list, tuple)) and len(ci) == 2:
+                ci_txt = (
+                    f", subject-bootstrap 95% CI [{fmt(ci[0], decimals=3)}, "
+                    f"{fmt(ci[1], decimals=3)}]"
+                )
+            note = f" ({res['note']})" if res.get('note') else ""
+            score = res.get('score', 'S')
+            auc_txt = ""
+            if 'auc_score' in res and 'auc_metric' in res:
+                auc_txt = (
+                    f"AUC_{score}={fmt(res['auc_score'], decimals=3)}, "
+                    f"AUC_{m}={fmt(res['auc_metric'], decimals=3)}; "
+                )
+            disc_txt = ""
+            if 'delta_discrimination' in res:
+                dci = res.get('delta_discrimination_ci')
+                dci_txt = ""
+                if isinstance(dci, (list, tuple)) and len(dci) == 2:
+                    dci_txt = (
+                        f" [{fmt(dci[0], decimals=3)}, {fmt(dci[1], decimals=3)}]"
+                    )
+                disc_txt = (
+                    " Discriminability Δ|AUC−0.5|="
+                    f"{fmt(res['delta_discrimination'], decimals=3)}{dci_txt}, "
+                    f"p={fmt(res.get('p_discrimination', np.nan), decimals=4)}, "
+                    "p_Holm="
+                    f"{fmt(res.get('p_discrimination_holm', np.nan), decimals=4)}."
+                )
+            lines.append(
+                f"{score} vs {m}: {auc_txt}"
+                f"signed ΔAUC={fmt(res['delta_auc'], decimals=3)}{ci_txt}, "
+                f"p={fmt(res['p_val'], decimals=4)}, "
+                f"p_Holm={fmt(res.get('p_holm', np.nan), decimals=4)}.{disc_txt}{note}"
+            )
+        except Exception:
+            lines.append(f"Model {m}: {res}")
+    return lines
 
 
 # ---------- main API ----------
@@ -221,7 +464,7 @@ def create_doc(
     path: str,
     df: pd.DataFrame,
     df_stats_by_theta: pd.DataFrame,
-    motion: dict,
+    motion,
     atlas_results: dict,
     mc: dict,
     theta_results: Optional[dict] = None,
@@ -229,413 +472,292 @@ def create_doc(
     use_sem: bool = True,
     S_SCALE: float = 1e3,
     RAM_SCALE: float = 1e3,
-    CI_SCALE: float = 1.0,      # <-- NEW: scale applied to CI for display
+    CI_SCALE: float = 1.0,      # scale applied to CI for display
     LABEL_S: Optional[str] = None, # if None, auto from S_SCALE
     LABEL_RAM: Optional[str] = None,
     LABEL_CI: Optional[str] = None,
     repl: Optional[Union[dict, pd.DataFrame]] = None,
+    stats: Optional[dict] = None,
+    modality: Optional[str] = None,
+    sessions=("awake", "deep"),
 ):
     """
     Build the Word report directly from the long 'df' produced by compute_synergy_ci
-    and the other pipeline outputs. No external df_stats bundle required.
+    and the other pipeline outputs.
 
     Parameters
     ----------
-    df : DataFrame with columns:
-        ['subject','session','theta','S','CI','RAM','PDI','NAS','IIM','SRPI']
-        (RAM/PDI/NAS/IIM/SRPI repeat across theta → we will average per subject×session)
-    df_stats_by_theta : DataFrame indexed by theta with columns ['t_S','p_S','d_S']
-    motion : dict returned by motion_covariate_analysis(...)
+    df : DataFrame with columns ['subject','session','theta','S','CI','CI_defined',
+        'CI_missing','CI_reference','RAM','PDI','NAS','IIM','SRPI'] (metrics repeat
+        across theta; they are averaged per subject×session over defined rows only).
+    df_stats_by_theta : DataFrame indexed by theta with ['t_S','p_S','d_S']
+        (optionally 'mean_diff_S', 'p_S_holm').
+    motion : DataFrame (one row) or dict returned by motion_covariate_analysis(...)
     atlas_results : dict from atlas_check(...)
     mc : dict from compare_models(...)
-    theta_results : dict(theta -> {'auc_S','p_S','auc_CI','p_CI'}), optional
-    fig_dir : folder with figures like 'supp_theta_curve.png' (and optionally 'ram_curve.png')
-    """
+    theta_results : dict(theta -> {'auc_S','p_S'(,'p_S_holm')}), optional
+    stats : dict from run_pipeline step 4 (CI definedness, bootstrap/permutation,
+        Holm families)
+    modality : 'fmri' / 'eeg' (report title)
 
-  # ---------- derive per-subject/session means ----------
+    Inference rules: S (HypergraphSynergy) is an exploratory legacy statistic; it is
+    summarised as the θ-grid average and per θ with Holm correction (no θ is selected
+    post hoc). CI rows that are undefined are excluded (never treated as zero) and
+    the exclusions are reported. Component tests are Holm-corrected as one family.
+    """
+    s0, s1 = str(sessions[0]), str(sessions[1])
+    pair = (s0, s1)
+    stats = dict(stats or {})
+    err_label = "SEM" if use_sem else "SD"
+
+    # ---------- derive per-subject/session means (defined rows only) ----------
     agg_map = dict(S=('S', 'mean'))
     for metric in ('CI', 'RAM', 'PDI', 'NAS', 'IIM', 'SRPI', 'IIM_raw', 'IIM_raw_scaled'):
         if metric in df.columns:
             agg_map[metric] = (metric, 'mean')
     agg = (df.groupby(['subject', 'session']).agg(**agg_map).reset_index())
 
-    def metric_block(metric, scale=1.0):
-        if metric not in agg.columns:
-            return {
-                'n': 0,
-                'mean_a': np.nan, 'sd_a': np.nan, 'sem_a': np.nan,
-                'mean_d': np.nan, 'sd_d': np.nan, 'sem_d': np.nan,
-                't': np.nan, 'p': np.nan, 'd': np.nan, 'df': 0
-            }
-        a = agg.loc[agg.session=='awake', metric] * scale
-        d = agg.loc[agg.session=='deep',  metric] * scale
-        n_a, mean_a, sd_a, sem_a = _group_descriptives(a)
-        n_d, mean_d, sd_d, sem_d = _group_descriptives(d)
-        piv = agg.pivot(index='subject', columns='session', values=metric)
-        if {'awake', 'deep'}.issubset(set(piv.columns)):
-            t, p, d_eff, dfree = _paired_stats(piv['awake'], piv['deep'])
-        else:
-            t, p, d_eff, dfree = (np.nan, np.nan, np.nan, 0)
-        return {
-            'n': min(n_a, n_d),
-            'mean_a': mean_a, 'sd_a': sd_a, 'sem_a': sem_a,
-            'mean_d': mean_d, 'sd_d': sd_d, 'sem_d': sem_d,
-            't': t, 'p': p, 'd': d_eff, 'df': dfree
-        }
-
-    S_stats   = metric_block('S',   S_SCALE)
-    CI_stats  = metric_block('CI',  CI_SCALE) if 'CI' in agg.columns else None
-    RAM_stats = metric_block('RAM', RAM_SCALE) if 'RAM' in agg.columns else None
-
-    err_label = "SEM" if use_sem else "SD"
-    pick_err  = (lambda stats, which: stats['sem_'+which] if use_sem else stats['sd_'+which])
-
-    # labels (auto if not passed)
-    def _label_from_scale(name, scale):
-        if scale == 1.0:
-            return name
-        # build like "name×10³" if scale is a pure power of 10, else "name×<scale>"
-        try:
-            exp = int(round(np.log10(scale)))
-            if np.isclose(scale, 10**exp):
-                return f"{name}×10^{exp}".replace('^', '⁰¹²³⁴⁵⁶⁷⁸⁹'[exp] if 0 <= exp <= 9 else f"^{exp}")
-        except Exception:
-            pass
-        return f"{name}×{scale:g}"
-
-    label_S   = LABEL_S   or _label_from_scale("S",   S_SCALE)
+    label_S = LABEL_S or _label_from_scale("S", S_SCALE)
     label_RAM = LABEL_RAM or _label_from_scale("RAM", RAM_SCALE)
-    label_CI  = LABEL_CI  or _label_from_scale("CI",  CI_SCALE)
+    label_CI = LABEL_CI or _label_from_scale("CI", CI_SCALE)
 
-    theta_star = _best_theta_from_stats(df_stats_by_theta)
-    if not np.isfinite(theta_star):
-        theta_tbl = _theta_diff_table(df, scale=1.0)
-        if not theta_tbl.empty:
-            arr_m = theta_tbl["mean_diff"].to_numpy(dtype=float)
-            if np.isfinite(arr_m).any():
-                theta_arr = theta_tbl["theta"].to_numpy(dtype=float)
-                theta_star = float(theta_arr[int(np.nanargmax(np.abs(arr_m)))])
+    plot_specs = [
+        ("S", "s_curve.png", "Synergy S (exploratory, θ-grid mean)", label_S, S_SCALE),
+        ("CI", "ci_curve.png", "Consciousness Index (CI)", label_CI, CI_SCALE),
+        ("RAM", "ram_curve.png", "Responsiveness-Adaptation Metric (RAM)",
+         label_RAM, RAM_SCALE),
+        ("PDI", "pdi_curve.png", "Phenomenal Differentiation Index (PDI)", "PDI", 1.0),
+        ("NAS", "nas_curve.png", "Network Activation Synchrony (NAS)", "NAS", 1.0),
+        ("SRPI", "srpi_curve.png", "Self-Referential Processing Index (SRPI)",
+         "SRPI", 1.0),
+    ]
+    plot_specs.insert(5, _iim_plot_spec(agg))
+    plot_specs = [spec for spec in plot_specs if spec[0] in agg.columns]
 
     # Generate per-metric session plots for the report when a figure directory
     # is provided. These are data-driven and use subject-level paired values.
+    # Only figures drawn by this call are embedded, so a stale file from an earlier
+    # run (e.g. the step-2 θ plot that marks a selected θ) is never reported.
+    made_figs = set()
     if fig_dir:
         os.makedirs(fig_dir, exist_ok=True)
-        theta_fig_path = os.path.join(fig_dir, 'supp_theta_curve.png')
-        theta_star_from_fig = _save_threshold_difference_plot(df, theta_fig_path, scale=1.0)
-        if np.isfinite(theta_star_from_fig):
-            theta_star = float(theta_star_from_fig)
-
-        agg_s = agg
-        if 'theta' in df.columns and np.isfinite(theta_star):
-            theta_vals = np.sort(df['theta'].dropna().astype(float).unique())
-            if theta_vals.size:
-                theta_use = float(theta_vals[np.argmin(np.abs(theta_vals - theta_star))])
-                sub_s = df[np.isclose(df['theta'].astype(float), theta_use)]
-                if not sub_s.empty:
-                    agg_s = (
-                        sub_s.groupby(['subject', 'session'], as_index=False)
-                        .agg(S=('S', 'mean'))
-                    )
-
-        metric_plot_specs = []
-        if 'S' in agg.columns:
-            metric_plot_specs.append(("S", "s_curve.png", "Synergy (S)", label_S, S_SCALE))
-        if 'CI' in agg.columns:
-            metric_plot_specs.append(("CI", "ci_curve.png", "Consciousness Index (CI)", label_CI, CI_SCALE))
-        if 'RAM' in agg.columns:
-            metric_plot_specs.append(("RAM", "ram_curve.png", "Responsiveness-Adaptation Metric (RAM)", label_RAM, RAM_SCALE))
-        if 'PDI' in agg.columns:
-            metric_plot_specs.append(("PDI", "pdi_curve.png", "Phenomenal Differentiation Index (PDI)", "PDI", 1.0))
-        if 'NAS' in agg.columns:
-            metric_plot_specs.append(("NAS", "nas_curve.png", "Network Activation Synchrony (NAS)", "NAS", 1.0))
-        if 'SRPI' in agg.columns:
-            metric_plot_specs.append(("SRPI", "srpi_curve.png", "Self-Referential Processing Index (SRPI)", "SRPI", 1.0))
-        # Use raw signed IIM (native units) for plots to preserve directionality/magnitude.
-        if 'IIM_raw' in agg.columns:
-            metric_plot_specs.append(
-                ("IIM_raw", "iim_curve.png", "Integrated Information Metric (IIM raw signed)", "IIM raw (signed, unitless)", 1.0)
-            )
-        elif 'IIM_raw_scaled' in agg.columns:
-            # Backward-compatible fallback for legacy tables.
-            metric_plot_specs.append(
-                ("IIM_raw_scaled", "iim_curve.png", "Integrated Information Metric (IIM raw signed)", "IIM raw (signed, unitless)", 1.0)
-            )
-        else:
-            metric_plot_specs.append(
-                ("IIM", "iim_curve.png", "Integrated Information Metric (IIM canonical)", "IIM canonical (0-1)", 1.0)
-            )
-
-        for metric, filename, title, ylabel, scale in metric_plot_specs:
-            agg_src = agg_s if metric == "S" else agg
-            _save_paired_metric_plot(
-                agg=agg_src,
+        theta_png = os.path.join(fig_dir, 'supp_theta_curve.png')
+        if _save_threshold_difference_plot(df, theta_png, scale=1.0, sessions=pair):
+            made_figs.add(theta_png)
+        for metric, filename, title, ylabel, scale in plot_specs:
+            fig_path = os.path.join(fig_dir, filename)
+            if _save_paired_metric_plot(
+                agg=agg,
                 metric=metric,
-                out_path=os.path.join(fig_dir, filename),
+                out_path=fig_path,
                 title=title,
                 y_label=ylabel,
                 scale=scale,
-                sessions=('awake', 'deep'),
-            )
-
-    # % difference for S (scaled)
-    pct_all = safe_pct(S_stats['mean_a'] - S_stats['mean_d'], S_stats['mean_d'])
-
-    row_star = _safe_row_by_theta(df_stats_by_theta, theta_star) if np.isfinite(theta_star) else None
-
-    def means_err_for_theta(theta, scale=S_SCALE):
-        sub = df[np.isclose(df['theta'], theta)]
-        theta_used = theta
-        if sub.empty and 'theta' in df.columns:
-            theta_vals = np.sort(df['theta'].dropna().astype(float).unique())
-            if theta_vals.size:
-                theta_used = float(theta_vals[np.argmin(np.abs(theta_vals - theta))])
-                sub = df[np.isclose(df['theta'], theta_used)]
-        a = sub.loc[sub.session=='awake', 'S'] * scale
-        d = sub.loc[sub.session=='deep',  'S'] * scale
-        _, ma, sda, sema = _group_descriptives(a)
-        _, md, sdd, semd = _group_descriptives(d)
-        ea = sema if use_sem else sda
-        ed = semd if use_sem else sdd
-        return theta_used, ma, ea, md, ed
-
-    if np.isfinite(theta_star):
-        theta_used, m_star_a, e_star_a, m_star_d, e_star_d = means_err_for_theta(float(theta_star))
-        pct_star = safe_pct(m_star_a - m_star_d, m_star_d)
-    else:
-        theta_used = np.nan
-        m_star_a = e_star_a = m_star_d = e_star_d = np.nan
-        pct_star = "na"
+                sessions=pair,
+            ):
+                made_figs.add(fig_path)
 
     # ---------- build document ----------
     doc = Document()
-    doc.add_heading("Empirical Validation of Synergy & MPC Metrics in fMRI", level=1)
+    modality_txt = None
+    if modality:
+        modality_txt = {"fmri": "fMRI", "eeg": "EEG"}.get(str(modality).lower())
+    title = "Empirical Validation of MPC Metrics and CI"
+    doc.add_heading(title + (f" ({modality_txt})" if modality_txt else ""), level=1)
 
-    # 1) Main effects: Synergy
-    theta_detail = (
-        f"\nThreshold-specific analysis at θ*={fmt(theta_used,decimals=2)} "
-        f"(largest |awake−deep| mean S difference): "
-        f"awake {fmt(m_star_a)}±{fmt(e_star_a)} ({err_label}) vs "
-        f"deep {fmt(m_star_d)}±{fmt(e_star_d)} ({err_label}); "
-        f"t={fmt(getattr(row_star,'t_S',np.nan))}, "
-        f"p={fmt(getattr(row_star,'p_S',np.nan),decimals=4)}, "
-        f"d={fmt(getattr(row_star,'d_S',np.nan))}; Δ={pct_star}."
-        if np.isfinite(theta_used)
-        else "\nThreshold-specific analysis: θ* could not be identified from available data."
-    )
+    # 1) Primary: CI (three-valued; undefined rows excluded)
+    if 'CI' in agg.columns:
+        doc.add_heading("Consciousness Index (CI)", level=2)
+        ci_ref = None
+        if 'CI_reference' in df.columns and df['CI_reference'].notna().any():
+            ci_ref = str(df['CI_reference'].dropna().iloc[0])
+        dfn = stats.get('ci_definedness') or definedness_summary(df, sessions=pair)
+        doc.add_paragraph(_ci_definedness_line(ci_ref, dfn))
+        ci_test = stats.get('ci_test') or paired_session_test(agg, 'CI', pair)
+        doc.add_paragraph(_stat_line(label_CI, ci_test, scale=CI_SCALE, err=err_label))
+        auc_ci = stats.get('auc_CI')
+        if isinstance(auc_ci, dict):
+            n_used = auc_ci.get('n_subjects_used', 'na')
+            extra = f" (n_subjects={n_used})"
+            doc.add_paragraph(_auc_line("CI", s0, s1, auc_ci, extra))
 
+    # 2) MPC components (one Holm family)
+    comp_tab = stats.get('components')
+    if isinstance(comp_tab, pd.DataFrame):
+        comp_rows = comp_tab.to_dict('records')
+    else:
+        comps = [m for m in ('RAM', 'PDI', 'NAS', 'IIM', 'SRPI') if m in agg.columns]
+        comp_rows = paired_tests_table(agg, comps, pair).to_dict('records')
+    if comp_rows:
+        doc.add_heading(
+            "MPC components (paired, Holm-corrected across components)", level=2
+        )
+        comp_labels = {
+            'RAM': (label_RAM, RAM_SCALE, 3),
+            'PDI': ('PDI', 1.0, 4),
+            'NAS': ('NAS', 1.0, 4),
+            'IIM': ('IIM canonical (0-1)', 1.0, 4),
+            'SRPI': ('SRPI', 1.0, 4),
+        }
+        for st in comp_rows:
+            lab, sc, dec = comp_labels.get(st['metric'], (st['metric'], 1.0, 4))
+            line = _stat_line(lab, st, scale=sc, decimals=dec, err=err_label)
+            doc.add_paragraph(line)
+    raw_cols = [c for c in ('IIM_raw', 'IIM_raw_scaled') if c in agg.columns]
+    iim_raw_col = raw_cols[0] if raw_cols else None
+    if iim_raw_col is not None:
+        st_raw = paired_session_test(agg, iim_raw_col, pair)
+        lab = "IIM raw (signed, unitless; supplementary, not in the Holm family)"
+        doc.add_paragraph(_stat_line(lab, st_raw, decimals=4, err=err_label))
+
+    # 3) Exploratory legacy statistic S
+    doc.add_heading("Exploratory legacy statistic S (HypergraphSynergy)", level=2)
+    s_test = stats.get('s_test') or paired_session_test(agg, 'S', pair)
     doc.add_paragraph(
-        f"In n={S_stats['n']} subjects, average {label_S} differed by {pct_all} between awake "
-        f"({fmt(S_stats['mean_a'])} ± {fmt(pick_err(S_stats,'a'))} [{err_label}]) and deep "
-        f"({fmt(S_stats['mean_d'])} ± {fmt(pick_err(S_stats,'d'))} [{err_label}]); "
-        f"t({S_stats['df']})={fmt(S_stats['t'])}, p={fmt(S_stats['p'], decimals=4)}, d={fmt(S_stats['d'])}."
-        + theta_detail
+        "S is not part of CI and is reported as an exploratory statistic. "
+        "Headline summary: S averaged over the pre-declared θ grid; per-θ results "
+        "are Holm-corrected across θ and no θ is selected post hoc."
     )
-
-    # 2) CI and RAM (if present in this run)
-    if CI_stats is not None:
-        doc.add_paragraph(
-            f"{label_CI}: awake {fmt(CI_stats['mean_a'])} ± {fmt(pick_err(CI_stats,'a'))} ({err_label}) vs "
-            f"deep {fmt(CI_stats['mean_d'])} ± {fmt(pick_err(CI_stats,'d'))} ({err_label}); "
-            f"t({CI_stats['df']})={fmt(CI_stats['t'])}, p={fmt(CI_stats['p'],decimals=4)}, d={fmt(CI_stats['d'])}."
-        )
-    if RAM_stats is not None:
-        doc.add_paragraph(
-            f"{label_RAM}: awake {fmt(RAM_stats['mean_a'])} ± {fmt(pick_err(RAM_stats,'a'))} ({err_label}) vs "
-            f"deep {fmt(RAM_stats['mean_d'])} ± {fmt(pick_err(RAM_stats,'d'))} ({err_label}); "
-            f"t({RAM_stats['df']})={fmt(RAM_stats['t'])}, p={fmt(RAM_stats['p'],decimals=4)}, d={fmt(RAM_stats['d'])}."
-        )
-
-    # 3) MPC components snapshot (subset-aware)
-    metric_labels = {
-        'PDI': 'PDI',
-        'NAS': 'NAS',
-        'IIM': 'IIM canonical (0-1)',
-        'SRPI': 'SRPI',
-    }
-    metric_order = [m for m in ('PDI', 'NAS', 'IIM', 'SRPI') if m in agg.columns]
-    for metric in metric_order:
-        label = metric_labels.get(metric, metric)
-        st = metric_block(metric, scale=1.0)
-        doc.add_paragraph(
-            f"{label}: awake {fmt(st['mean_a'],decimals=4)} ± {fmt(pick_err(st,'a'),decimals=4)} ({err_label}) vs "
-            f"deep {fmt(st['mean_d'],decimals=4)} ± {fmt(pick_err(st,'d'),decimals=4)} ({err_label}); "
-            f"t({st['df']})={fmt(st['t'])}, p={fmt(st['p'],decimals=4)}, d={fmt(st['d'])}."
-        )
-    if 'IIM_raw' in agg.columns:
-        st_raw = metric_block('IIM_raw', scale=1.0)
-        doc.add_paragraph(
-            f"IIM raw (signed, unitless): awake {fmt(st_raw['mean_a'],decimals=4)} ± "
-            f"{fmt(pick_err(st_raw,'a'),decimals=4)} ({err_label}) vs "
-            f"deep {fmt(st_raw['mean_d'],decimals=4)} ± {fmt(pick_err(st_raw,'d'),decimals=4)} ({err_label}); "
-            f"t({st_raw['df']})={fmt(st_raw['t'])}, p={fmt(st_raw['p'],decimals=4)}, d={fmt(st_raw['d'])}."
-        )
-    elif 'IIM_raw_scaled' in agg.columns:
-        st_raw = metric_block('IIM_raw_scaled', scale=1.0)
-        doc.add_paragraph(
-            f"IIM raw (signed, unitless): awake {fmt(st_raw['mean_a'],decimals=4)} ± "
-            f"{fmt(pick_err(st_raw,'a'),decimals=4)} ({err_label}) vs "
-            f"deep {fmt(st_raw['mean_d'],decimals=4)} ± {fmt(pick_err(st_raw,'d'),decimals=4)} ({err_label}); "
-            f"t({st_raw['df']})={fmt(st_raw['t'])}, p={fmt(st_raw['p'],decimals=4)}, d={fmt(st_raw['d'])}."
-        )
-
-    # 4) Motion
-    if isinstance(motion, dict):
-        if 'skipped' in motion:
-            doc.add_paragraph(f"Motion covariate analysis: skipped ({motion['skipped']})")
-        else:
-            coefs = ", ".join(fmt(c) for c in motion.get('coef_awake', []))
-            pvals = ", ".join(fmt(p, decimals=4) for p in motion.get('p_awake', []))
-            doc.add_paragraph(f"Motion covariates (awake): coefs=[{coefs}]; p-values=[{pvals}].")
-
-    # 5) Atlas robustness
-    if isinstance(atlas_results, dict):
-        for name, r in atlas_results.items():
-            if isinstance(r, dict) and ("roughness" in r):
-                rough = r.get("roughness") or {}
-                if isinstance(rough, dict) and rough:
-                    rough_items = ", ".join(
-                        f"{k}={fmt(v,decimals=3)}" for k, v in rough.items()
-                    )
-                    doc.add_paragraph(f"Atlas {name}: S roughness {rough_items}.")
-                else:
-                    doc.add_paragraph(f"Atlas {name}: S roughness not available.")
-
-                metrics = r.get("metrics") if isinstance(r.get("metrics"), dict) else {}
-                metric_order = ("S", "PDI", "NAS", "IIM", "IIM_raw", "CI", "RAM", "SRPI")
-                for m in metric_order:
-                    st = metrics.get(m)
-                    if not isinstance(st, dict):
-                        continue
-                    n = int(st.get("n") or 0)
-                    if n <= 0:
-                        continue
-                    doc.add_paragraph(
-                        f"Atlas {name} {m}: n={n}; "
-                        f"mean_awake={fmt(st.get('mean_a', np.nan),decimals=4)}, "
-                        f"mean_deep={fmt(st.get('mean_b', np.nan),decimals=4)}, "
-                        f"Δ(awake−deep)={fmt(st.get('delta_a_minus_b', np.nan),decimals=4)}, "
-                        f"t={fmt(st.get('t', np.nan))}, "
-                        f"p={fmt(st.get('p', np.nan),decimals=4)}, "
-                        f"d={fmt(st.get('d_paired', np.nan))}."
-                    )
-                notes = r.get("notes")
-                if isinstance(notes, list) and notes:
-                    doc.add_paragraph(f"Atlas {name} notes: {' '.join(str(x) for x in notes)}")
-            else:
-                try:
-                    doc.add_paragraph(f"Atlas {name}: metric roughness awake={fmt(r['awake'],decimals=3)}, deep={fmt(r['deep'],decimals=3)}.")
-                except Exception:
-                    doc.add_paragraph(f"Atlas {name}: {r}")
-
-    # 6) Synergy by θ
+    doc.add_paragraph(
+        _stat_line(f"{label_S} (θ-grid mean)", s_test, scale=S_SCALE, err=err_label)
+    )
+    auc_s = stats.get('auc_S')
+    if isinstance(auc_s, dict):
+        doc.add_paragraph(_auc_line("S", s0, s1, auc_s))
     if df_stats_by_theta is not None and not df_stats_by_theta.empty:
-        doc.add_heading("Synergy by θ", level=2)
-        for theta, row in df_stats_by_theta.sort_index().iterrows():
+        doc.add_heading("S by θ (Holm across θ)", level=3)
+        tab = df_stats_by_theta.sort_index()
+        if 'p_S_holm' in tab.columns:
+            p_holm = tab['p_S_holm'].to_numpy(dtype=float)
+        elif 'p_S' in tab.columns:
+            p_holm = holm_adjust(tab['p_S'].to_numpy(dtype=float))
+        else:
+            p_holm = np.full(len(tab), np.nan)
+        for (theta, row), ph in zip(tab.iterrows(), p_holm):
             mean_diff_str = ""
-            if "mean_diff_S" in df_stats_by_theta.columns:
+            if "mean_diff_S" in tab.columns:
                 mean_diff_str = f", mean_diff_S={fmt(getattr(row, 'mean_diff_S', np.nan))}"
             doc.add_paragraph(
-                f"θ={fmt(theta,decimals=2)}: t_S={fmt(row.t_S)}, p_S={fmt(row.p_S,decimals=4)}, "
-                f"d_S={fmt(row.d_S)}{mean_diff_str}"
+                f"θ={fmt(theta, decimals=2)}: t_S={fmt(getattr(row, 't_S', np.nan))}, "
+                f"p_S={fmt(getattr(row, 'p_S', np.nan), decimals=4)}, "
+                f"p_Holm={fmt(ph, decimals=4)}, "
+                f"dz_S={fmt(getattr(row, 'd_S', np.nan))}{mean_diff_str}"
             )
 
-    # 7) Permutation-Test AUC by θ
+    # Permutation-test AUC of S by θ (two-sided, paired, Holm across θ)
     if isinstance(theta_results, dict) and len(theta_results):
-        doc.add_heading("Permutation-Test AUC by θ", level=2)
-        for theta in sorted(theta_results):
+        doc.add_heading(
+            "Permutation-test AUC of S by θ (two-sided, within-subject, Holm across θ)",
+            level=3,
+        )
+        thetas_sorted = sorted(theta_results)
+        p_raw = [theta_results[t].get('p_S', np.nan) for t in thetas_sorted]
+        p_adj = holm_adjust([np.nan if p is None else p for p in p_raw])
+        for theta, ph in zip(thetas_sorted, p_adj):
             res = theta_results[theta]
+            ph = res.get('p_S_holm', ph)
             doc.add_paragraph(
-                f"θ={fmt(theta,decimals=2)}: AUC_S={fmt(res.get('auc_S',np.nan),decimals=3)}, "
-                f"p_S={fmt(res.get('p_S',np.nan),decimals=4)}; "
-                f"AUC_CI={fmt(res.get('auc_CI',np.nan),decimals=3)}, "
-                f"p_CI={fmt(res.get('p_CI',np.nan),decimals=4)}"
+                f"θ={fmt(theta, decimals=2)}: "
+                f"AUC_S={fmt(res.get('auc_S', np.nan), decimals=3)}, "
+                f"p_S={fmt(res.get('p_S', np.nan), decimals=4)}, "
+                f"p_Holm={fmt(ph, decimals=4)}"
             )
 
-    # 8) Model comparisons
-    if isinstance(mc, dict):
-        for m, res in mc.items():
-            try:
-                doc.add_paragraph(f"Model {m}: ΔAUC={fmt(res['delta_auc'],decimals=3)}, p={fmt(res['p_val'],decimals=3)}.")
-            except Exception:
-                doc.add_paragraph(f"Model {m}: {res}")
-                
-    # 8b) Independent replication
+    # 4) Motion
+    motion_lines = _motion_paragraphs(motion)
+    if motion_lines:
+        doc.add_heading("Motion covariates", level=2)
+        for line in motion_lines:
+            doc.add_paragraph(line)
+
+    # 5) Atlas robustness
+    if isinstance(atlas_results, dict) and atlas_results:
+        doc.add_heading("Atlas robustness", level=2)
+        for line in _atlas_paragraphs(atlas_results, s0, s1):
+            doc.add_paragraph(line)
+
+    # 6) Model comparisons
+    if isinstance(mc, dict) and mc:
+        doc.add_heading(
+            "Comparison with baseline metrics (ΔAUC, paired DeLong, Holm)", level=2
+        )
+        for line in _model_comparison_paragraphs(mc):
+            doc.add_paragraph(line)
+
+    # 7) Independent replication
     if repl is not None:
-        doc.add_heading("Independent Replication", level=2)
+        doc.add_heading("Independent Replication (exploratory)", level=2)
 
         def _write_rep_row(metric_name, stats_tuple):
             t, p, d_eff, dfree, mean_a, mean_d, err_a, err_d, n = stats_tuple
             doc.add_paragraph(
-                f"{metric_name}: n={n}; awake {mean_a:.4f}±{err_a:.4f} ({err_label}) vs "
-                f"deep {mean_d:.4f}±{err_d:.4f} ({err_label}); "
-                f"t({dfree})={t:.2f}, p={p:.4f}, d={d_eff:.2f}."
+                f"{metric_name}: n={n}; "
+                f"{s0} {fmt(mean_a, 4)}±{fmt(err_a, 4)} ({err_label}) vs "
+                f"{s1} {fmt(mean_d, 4)}±{fmt(err_d, 4)} ({err_label}); "
+                f"t({dfree})={fmt(t)}, p={fmt(p, decimals=4)}, dz={fmt(d_eff)}."
             )
 
         if isinstance(repl, dict):
-            # Try a compact dict schema; fallbacks are safe-printed if keys differ
             dataset = repl.get('dataset', 'independent dataset')
             doc.add_paragraph(f"Dataset: {dataset}")
-            if {'delta_S','ci','cohend'}.issubset(repl.keys()):
-                lo, hi = repl['ci'] if isinstance(repl['ci'], (list, tuple)) and len(repl['ci'])==2 else (np.nan, np.nan)
+            if {'delta_S', 'ci', 'cohend'}.issubset(repl.keys()):
+                ci = repl['ci']
+                ok = isinstance(ci, (list, tuple)) and len(ci) == 2
+                lo, hi = ci if ok else (np.nan, np.nan)
+                kind = repl.get('ci_kind', '95% CI')
                 doc.add_paragraph(
-                    f"ΔS={repl['delta_S']:.3f} (95% CI [{lo:.3f}–{hi:.3f}]), "
-                    f"Cohen’s d={repl['cohend']:.2f}."
+                    f"ΔS={fmt(repl['delta_S'])} ({kind}: [{fmt(lo)}, {fmt(hi)}]), "
+                    f"dz={fmt(repl['cohend'])}, n_pairs={repl.get('n_pairs', 'na')}."
                 )
             else:
-                doc.add_paragraph(f"(Replication summary keys not recognized — got: {list(repl.keys())})")
+                doc.add_paragraph(
+                    "(Replication summary keys not recognized — got: "
+                    f"{list(repl.keys())})"
+                )
 
         elif isinstance(repl, pd.DataFrame):
-            # Compute paired stats on replication as we did for the main set
-            rep = (repl.groupby(['subject','session'])
-                        .agg(S=('S','mean'), CI=('CI','mean'))
-                        .reset_index())
+            agg_rep = {'S': ('S', 'mean')}
+            if 'CI' in repl.columns:
+                agg_rep['CI'] = ('CI', 'mean')
+            rep = (repl.groupby(['subject', 'session'])
+                       .agg(**agg_rep)
+                       .reset_index())
 
             def _paired_block(metric):
-                piv = rep.pivot(index='subject', columns='session', values=metric)
-                t, p, d_eff, dfree = _paired_stats(piv['awake'], piv['deep'])
-                a = rep.loc[rep.session=='awake', metric]
-                d = rep.loc[rep.session=='deep',  metric]
-                n_a, mean_a, sd_a, sem_a = _group_descriptives(a)
-                n_d, mean_d, sd_d, sem_d = _group_descriptives(d)
-                n = min(n_a, n_d)
-                err_a = sem_a if use_sem else sd_a
-                err_d = sem_d if use_sem else sd_d
-                return t, p, d_eff, dfree, mean_a, mean_d, err_a, err_d, n
+                st = paired_session_test(rep, metric, pair)
+                err_a = st['sem_a'] if use_sem else st['sd_a']
+                err_d = st['sem_b'] if use_sem else st['sd_b']
+                dfree = int(st['df']) if np.isfinite(st['df']) else 0
+                return (st['t'], st['p'], st['dz'], dfree, st['mean_a'], st['mean_b'],
+                        err_a, err_d, st['n_pairs'])
 
             _write_rep_row('Synergy (S)', _paired_block('S'))
-            _write_rep_row('Consciousness Index (CI)', _paired_block('CI'))
+            if 'CI' in rep.columns:
+                _write_rep_row('Consciousness Index (CI)', _paired_block('CI'))
 
         else:
             doc.add_paragraph(f"(Unsupported replication object type: {type(repl)})")
 
-
-    # 9) Figures
+    # 8) Figures
     if fig_dir:
         theta_fig = os.path.join(fig_dir, 'supp_theta_curve.png')
-        if os.path.exists(theta_fig):
-            doc.add_heading("Supplementary: Synergy difference across θ", level=2)
+        if theta_fig in made_figs:
+            doc.add_heading(
+                "Supplementary: S difference across θ (exploratory, descriptive)",
+                level=2,
+            )
             doc.add_picture(theta_fig, width=Inches(5.0))
         else:
-            doc.add_paragraph(f"(Could not find θ-curve at {theta_fig})")
+            doc.add_paragraph(
+                "(θ-curve not drawn: no subjects with S in both "
+                f"{s0} and {s1})"
+            )
 
-        figure_specs = []
-        if 'S' in agg.columns:
-            figure_specs.append(("s_curve.png", "Supplementary: Synergy (S)"))
-        if 'CI' in agg.columns:
-            figure_specs.append(("ci_curve.png", "Supplementary: Consciousness Index (CI)"))
-        if 'RAM' in agg.columns:
-            figure_specs.append(("ram_curve.png", "Supplementary: Responsiveness-Adaptation Metric (RAM)"))
-        if 'PDI' in agg.columns:
-            figure_specs.append(("pdi_curve.png", "Supplementary: Phenomenal Differentiation Index (PDI)"))
-        if 'NAS' in agg.columns:
-            figure_specs.append(("nas_curve.png", "Supplementary: Network Activation Synchrony (NAS)"))
-        if ('IIM_raw_scaled' in agg.columns) or ('IIM' in agg.columns):
-            figure_specs.append(("iim_curve.png", "Supplementary: Integrated Information Metric (IIM raw signed)"))
-        if 'SRPI' in agg.columns:
-            figure_specs.append(("srpi_curve.png", "Supplementary: Self-Referential Processing Index (SRPI)"))
-        for filename, heading in figure_specs:
+        headings = {"S": "Synergy S (exploratory)"}
+        for metric, filename, title, _ylabel, _scale in plot_specs:
             fig_path = os.path.join(fig_dir, filename)
-            if os.path.exists(fig_path):
+            if fig_path in made_figs:
+                heading = f"Supplementary: {headings.get(metric, title)}"
                 doc.add_heading(heading, level=2)
                 doc.add_picture(fig_path, width=Inches(5.0))
 
