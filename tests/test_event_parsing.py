@@ -31,10 +31,15 @@ def test_self_nonself_patterns_have_a_single_source():
         ("my_name", "self"),
         ("own-name", "self"),
         ("SelfName", "self"),
+        ("MyName", "self"),
         ("nonself", "nonself"),
         ("non-self", "nonself"),
         ("other_name", "nonself"),
         ("stranger", "nonself"),
+        ("OtherName", "nonself"),  # camelCase counterpart of "SelfName"
+        ("othername", "nonself"),
+        ("NonSelf", "nonself"),
+        ("SelfOther", None),
         ("self_other", None),  # ambiguous: neither class
         ("name", None),
         ("time", None),
@@ -48,6 +53,18 @@ def test_self_nonself_classification_uses_whole_tokens(label, expected):
     s, n = ep.classify_self_nonself(pd.Series([label]))
     got = "self" if bool(s.iloc[0]) else ("nonself" if bool(n.iloc[0]) else None)
     assert got == expected
+
+
+def test_camel_case_self_and_other_labels_are_both_classified(tmp_path):
+    rows = [
+        {"onset": 1.0 + 2.0 * i, "duration": 0.1, "trial_type": lab}
+        for i, lab in enumerate(["SelfName", "OtherName"] * 3)
+    ]
+    fn = _write(tmp_path / "ev.tsv", rows)
+    compute = rs._events_to_ram_bundle(fn)
+    ready_self, ready_non = rd._events_to_srpi_onsets(rd._read_events_table(fn))
+    assert compute["self_onsets"] == ready_self == [1.0, 5.0, 9.0]
+    assert compute["nonself_onsets"] == ready_non == [3.0, 7.0, 11.0]
 
 
 def test_readiness_and_compute_parse_the_same_events_identically(tmp_path):

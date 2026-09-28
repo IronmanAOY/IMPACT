@@ -92,6 +92,47 @@ def test_fmri_magnitude_and_latency_recovered_on_true_time_axis(tr):
     assert fir["latency_seconds"] == pytest.approx(5.0, abs=max(0.6, 0.5 * tr))
 
 
+@pytest.mark.parametrize("goal_amp,fb_amp", [(1.0, 0.0), (0.0, 1.0), (1.0, 1.0)])
+def test_fmri_magnitude_not_confounded_by_goal_and_feedback_responses(goal_amp, fb_amp):
+    # RAM requires goal and feedback events; their hemodynamic responses
+    # overlap the stimulus response (goal 2 s before, feedback 6 s after).
+    # Unmodelled, they biased M to 1.67 (goal) / 0.63 (feedback) for a true 1.0.
+    rng = np.random.RandomState(0)
+    tr, n_tp = 2.0, 300
+    goal = 10.0 + 20.0 * np.arange(28) + rng.uniform(0.0, 3.0, 28)
+    stim, fb = goal + 2.0, goal + 8.0
+    ones = [np.ones(10)] * goal.size
+    ts = _bold(tr, n_tp, stim, ones)
+    ts += goal_amp * _bold(tr, n_tp, goal, ones) + fb_amp * _bold(tr, n_tp, fb, ones)
+    ts += 0.1 * rng.randn(10, n_tp)
+    bundle = {
+        "onsets": stim.tolist(),
+        "goal_onsets": goal.tolist(),
+        "feedback_onsets": fb.tolist(),
+        "feedback_values": rng.rand(goal.size).tolist(),
+    }
+    d = mm.compute_RAM(ts, tr=tr, stimulus_onsets=bundle, magnitude_scale=1.0,
+                       return_details=True, quality_null_samples=5)
+    assert d["magnitude_term"] == pytest.approx(1.0, rel=0.05)
+
+
+def test_magnitude_undefined_when_stimuli_coincide_with_other_events():
+    rng = np.random.RandomState(1)
+    on = np.arange(4.0, 190.0, 2.5)
+    ts = rng.randn(6, 400)
+    bundle = {
+        "onsets": on.tolist(),
+        "goal_onsets": on.tolist(),  # label matching both patterns
+        "feedback_onsets": (on + 1.0).tolist(),
+        "feedback_values": rng.rand(on.size).tolist(),
+    }
+    d = mm.compute_RAM(ts, tr=0.5, stimulus_onsets=bundle, response_model="boxcar",
+                       latency_method="hrf_peak", response_window_sec=0.5,
+                       return_details=True, **FAST)
+    assert np.isnan(d["value"])
+    assert d["undefined_reason"] == "magnitude_design_rank_deficient"
+
+
 def test_goal_alignment_null_and_coupled_fmri_with_overlapping_responses():
     # Goal cue 2 s before the stimulus: the BOLD responses overlap heavily.
     g_coupled, g_shuffled = [], []
@@ -358,3 +399,52 @@ def test_zero_weight_component_does_not_make_ram_undefined():
     )
     assert np.isnan(d0["components"]["goal_alignment"])
     assert np.isfinite(d0["value"])
+
+
+def test_rank_deficient_beta_series_design_makes_ram_undefined():
+    rng = np.random.RandomState(0)
+    tr, n_tp = 2.0, 150
+    # Fast design: three event types every 3 s -> more trial-wise regressors
+    # (277) than samples (150). Minimum-norm betas are not measurements; the
+    # old behaviour here was a defined RAM = 0.0.
+    goal = np.arange(4.0, 280.0, 3.0)
+    fast = {
+        "onsets": (goal + 1.0).tolist(),
+        "goal_onsets": goal.tolist(),
+        "feedback_onsets": (goal + 2.0).tolist(),
+        "feedback_values": rng.rand(goal.size).tolist(),
+    }
+    ts = rng.randn(50, n_tp)
+    d = mm.compute_RAM(ts, tr=tr, stimulus_onsets=fast, return_details=True, **FAST)
+    assert np.isnan(d["value"])
+    assert d["undefined_reason"] == "trialwise_design_rank_deficient"
+
+    # Some goal events at the same onsets as their stimuli (e.g. a label
+    # matching both patterns): those trial-wise amplitudes cannot be separated.
+    on = np.arange(10.0, 280.0, 14.0)
+    goal_on = on - 3.0
+    goal_on[:2] = on[:2]
+    same = {
+        "onsets": on.tolist(),
+        "goal_onsets": goal_on.tolist(),
+        "feedback_onsets": (on + 6.0).tolist(),
+        "feedback_values": rng.rand(on.size).tolist(),
+    }
+    d = mm.compute_RAM(ts, tr=tr, stimulus_onsets=same, return_details=True, **FAST)
+    assert np.isnan(d["value"])
+    assert d["undefined_reason"] == "trialwise_design_rank_deficient"
+
+    # A separable design on the same data stays defined.
+    ok = dict(same, goal_onsets=(on - 3.0).tolist())
+    d = mm.compute_RAM(ts, tr=tr, stimulus_onsets=ok, return_details=True, **FAST)
+    assert d["undefined_reason"] is None and np.isfinite(d["value"])
+
+
+def test_non_finite_timeseries_is_undefined_with_reason():
+    ts, tr, bundle, kw = _feedback_fixture()
+    ts = ts.copy()
+    ts[3, 10] = np.nan
+    d = mm.compute_RAM(ts, tr=tr, stimulus_onsets=bundle, **kw)
+    # Previously NaN (via M) with undefined_reason None.
+    assert np.isnan(d["value"])
+    assert d["undefined_reason"] == "non_finite_timeseries"

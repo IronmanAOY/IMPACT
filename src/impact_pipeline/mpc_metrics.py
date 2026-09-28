@@ -1698,7 +1698,9 @@ def _lsa_hrf_design(onsets_by_type, tr, n_tp):
     nearby events are separated by the model instead of leaking into each
     other's windows. Events whose modelled response peak lies outside the run
     (regressor maximum < 0.5) are dropped. Returns ``(pinv, keep_masks,
-    slices)`` with one boolean mask and one column slice per event type.
+    slices, full_rank)`` with one boolean mask and one column slice per event
+    type; ``full_rank`` is ``False`` when the trial-wise amplitudes are not
+    identifiable (more events than samples, or coinciding events).
     """
     frame_times = np.arange(int(n_tp), dtype=float) * float(tr)
     cols = []
@@ -1719,7 +1721,8 @@ def _lsa_hrf_design(onsets_by_type, tr, n_tp):
         start += n_keep
     cols.append(np.ones(int(n_tp), dtype=float))
     design = np.column_stack(cols)
-    return np.linalg.pinv(design), keep_masks, slices
+    full_rank = int(np.linalg.matrix_rank(design)) == int(design.shape[1])
+    return np.linalg.pinv(design), keep_masks, slices, full_rank
 
 
 def _quality_patterns(z, spec):
@@ -1949,7 +1952,10 @@ def compute_RAM(
         peak-normalised canonical (Glover) HRFs placed at the exact onset
         times and sampled at the frame times ``k * tr`` (so a response of
         unit peak amplitude has weight 1). ``'boxcar'`` and ``'stick'`` are
-        intended for high-sampling-rate modalities such as EEG.
+        intended for high-sampling-rate modalities such as EEG. Goal and
+        feedback events are modelled with the same response model as
+        nuisance regressors, so M is the stimulus amplitude only; RAM is
+        undefined when this design is rank-deficient.
     response_boxcar_width_sec : float, optional
         Width of the post-stimulus boxcar regressor when
         ``response_model='boxcar'``. Defaults to ``response_window_sec``.
@@ -2160,6 +2166,9 @@ def compute_RAM(
 
     if stim_idx.size == 0:
         return _undefined("missing_stimulus_events")
+    if not np.all(np.isfinite(ts)):
+        # M, T and the quality terms would be NaN or silently zero-filled.
+        return _undefined("non_finite_timeseries")
     log.debug(
         (
             "[compute_RAM] ts shape: %d regions x %d timepoints, tr=%.6f, "
@@ -2178,37 +2187,61 @@ def compute_RAM(
 
     # 2) create stimulus-response regressor on the true time axis (every
     # in-range event, including events that share a sample).
-    stim_all_s = _in_range_onset_seconds(event_bundle["onsets"], tr=tr, n_tp=n_tp)
-    if response_model_norm == "hrf":
-        reg = _hrf_regressor(stim_all_s, tr=tr, n_tp=n_tp)
-        default_latency = hrf_peak_sec
-    elif response_model_norm == "boxcar":
+    width_samples = 1
+    if response_model_norm == "boxcar":
         width_sec = (
             float(response_window_sec)
             if response_boxcar_width_sec is None
             else float(response_boxcar_width_sec)
         )
         width_samples = max(1, int(round(width_sec / float(tr))))
-        reg = np.zeros(n_tp, dtype=float)
-        for idx in np.rint(stim_all_s / float(tr)).astype(np.int64).tolist():
+
+    def _model_regressor(onsets_sec):
+        if response_model_norm == "hrf":
+            return _hrf_regressor(onsets_sec, tr=tr, n_tp=n_tp)
+        out = np.zeros(n_tp, dtype=float)
+        starts = np.rint(np.asarray(onsets_sec) / float(tr)).astype(np.int64)
+        for idx in starts.tolist():
             end = min(n_tp, int(idx) + width_samples)
             if end > int(idx):
-                reg[int(idx):end] += 1.0
-        reg /= float(width_samples)
+                out[int(idx):end] += 1.0
+        return out / float(width_samples)
+
+    stim_all_s = _in_range_onset_seconds(event_bundle["onsets"], tr=tr, n_tp=n_tp)
+    if response_model_norm == "hrf":
+        reg = _model_regressor(stim_all_s)
+        default_latency = hrf_peak_sec
+    elif response_model_norm == "boxcar":
+        reg = _model_regressor(stim_all_s)
         default_latency = 0.5 * float(width_samples) * float(tr)
     else:
         reg = stick.astype(float, copy=True)
         default_latency = float("nan")
-    # design matrix: stimulus regressor + intercept
-    X = np.vstack([reg, np.ones(n_tp)]).T  # shape (n_tp × 2)
+    # Annotated goal and feedback events are modelled as nuisance regressors
+    # (same response model) so that their responses -- which overlap the
+    # stimulus response for fMRI -- do not leak into the stimulus amplitude.
+    nuisance = []
+    for key in ("goal_onsets", "feedback_onsets"):
+        on = _in_range_onset_seconds(event_bundle[key], tr=tr, n_tp=n_tp)
+        col = _model_regressor(on) if on.size else None
+        if col is not None and np.any(col != 0.0):
+            nuisance.append(col)
+    # design matrix: stimulus regressor + nuisance event regressors + intercept
+    X = np.column_stack([reg] + nuisance + [np.ones(n_tp)])
+    magnitude_reason = None
+    if int(np.linalg.matrix_rank(X)) < int(X.shape[1]):
+        # e.g. stimulus events coinciding with goal/feedback events: the
+        # stimulus amplitude is not identifiable (RAM undefined, see below).
+        magnitude_reason = "magnitude_design_rank_deficient"
+        abs_mean_beta = nan
+    else:
+        # 3) solve for betas via pseudo-inverse: betas shape
+        # (n_cols × n_regions); transpose ts so rows are time samples
+        betas = accelerated_pinv_dot(X, ts.T, backend=backend)
+        stim_betas = betas[0, :]  # first row corresponds to stimulus regressor
 
-    # 3) solve for betas via pseudo-inverse: betas shape (2 × n_regions)
-    # transpose ts so rows correspond to time samples
-    betas = accelerated_pinv_dot(X, ts.T, backend=backend)
-    stim_betas = betas[0, :]  # first row corresponds to stimulus regressor
-
-    # use mean absolute β as amplitude (M), with optional scale factor
-    abs_mean_beta = float(np.mean(np.abs(stim_betas))) * float(magnitude_scale)
+        # use mean absolute β as amplitude (M), with optional scale factor
+        abs_mean_beta = float(np.mean(np.abs(stim_betas))) * float(magnitude_scale)
     details["magnitude_term"] = abs_mean_beta
 
     # 4) estimate latency T (seconds, >= 0 by construction; never clipped)
@@ -2270,11 +2303,15 @@ def compute_RAM(
 
     # 6) trial-wise response patterns (fixed event sets, re-usable on surrogates)
     if estimate == "glm":
-        pinv, keep_masks, slices = _lsa_hrf_design(
+        pinv, keep_masks, slices, full_rank = _lsa_hrf_design(
             [stim_onsets_s, goal_onsets_s, [] if fb_from_stim else fb_onsets_s],
             tr=tr,
             n_tp=n_tp,
         )
+        if not full_rank:
+            # Minimum-norm betas of a rank-deficient beta-series design are not
+            # trial-wise measurements; G/F/U would be computed on artefacts.
+            return _undefined("trialwise_design_rank_deficient")
         stim_used = stim_idx[keep_masks[0]]
         goal_used = goal_idx[keep_masks[1]]
         fb_keep = keep_masks[0] if fb_from_stim else keep_masks[2]
@@ -2386,6 +2423,8 @@ def compute_RAM(
         details["components"][name] = float(val)
         details["component_undefined_reasons"][name] = reason
 
+    if magnitude_reason is not None:
+        return _undefined(magnitude_reason)
     undefined_weighted = [
         reasons[i] or f"{names[i]}_undefined"
         for i in range(3)
@@ -2409,6 +2448,8 @@ def compute_RAM(
         return _undefined(latency_reason or "latency_undefined")
 
     ram_value = float(speed_term * quality_term)
+    if not np.isfinite(ram_value):
+        return _undefined("non_finite_result")
     details["value"] = ram_value
     if not return_details:
         return ram_value

@@ -34,14 +34,16 @@ FEEDBACK_RE = re.compile(
     re.I,
 )
 
-# Self/non-self tokens are matched as whole tokens, where '_', '-', spaces and
-# punctuation separate tokens ("self_name" -> self; "unknown", "time",
-# "mother" -> no match).
+# Self/non-self tokens are matched as whole tokens, where '_', '-', spaces,
+# punctuation and camelCase boundaries separate tokens ("self_name",
+# "SelfName" -> self; "OtherName" -> non-self; "unknown", "time", "mother" ->
+# no match).
 _TOK_L = r"(?<![a-z0-9])"
 _TOK_R = r"(?![a-z0-9])"
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 NONSELF_RE = re.compile(
-    rf"{_TOK_L}(?:non[-_ ]?self|other|others|another|stranger|strangers|"
-    rf"third[-_ ]?person){_TOK_R}",
+    rf"{_TOK_L}(?:non[-_ ]?self|other|others|othername|another|stranger|"
+    rf"strangers|third[-_ ]?person){_TOK_R}",
     re.I,
 )
 SELF_RE = re.compile(
@@ -176,7 +178,8 @@ def _text_series(df: pd.DataFrame, cols_l: Dict[str, str], keys) -> pd.Series:
     for k in keys:
         if k in cols_l:
             txt = txt.str.cat(df[cols_l[k]].astype(str), sep=" ", na_rep="")
-    return txt.str.lower()
+    # Case is kept: classify_self_nonself needs camelCase token boundaries.
+    return txt
 
 
 def classify_self_nonself(labels: pd.Series) -> Tuple[pd.Series, pd.Series]:
@@ -186,9 +189,12 @@ def classify_self_nonself(labels: pd.Series) -> Tuple[pd.Series, pd.Series]:
     A label is non-self when it contains a non-self token ("non-self",
     "other", "stranger", ...); it is self when it contains a self token and no
     non-self token. Labels carrying both kinds of token (e.g. "self_other")
-    are ambiguous and assigned to neither class.
+    are ambiguous and assigned to neither class. camelCase boundaries split
+    tokens, so "SelfName"/"OtherName" are classified like "self_name"/
+    "other_name".
     """
-    txt = labels.astype(str).str.lower()
+    txt = labels.astype(str).str.replace(_CAMEL_BOUNDARY_RE, " ", regex=True)
+    txt = txt.str.lower()
     has_nonself = txt.str.contains(NONSELF_RE, regex=True, na=False)
     # "non-self" must not also count as a self token.
     txt_wo_nonself = txt.str.replace(_NONSELF_SELF_TOKEN_RE, " ", regex=True)
