@@ -6,7 +6,9 @@
 #   DATASET_ID  ds003171 (fMRI, default) or ds005620 (EEG)
 #   SNAPSHOT    defaults to the snapshot pinned in scripts/download_data.sh
 #
-# Environment:
+#   --dry-run   print every command instead of running it (may appear anywhere)
+#
+# Environment (relative paths are resolved against the current directory):
 #   IMPACT_CONDA_ENV          conda env name (default impact-synergy-clean)
 #   IMPACT_PYTHON             python to use instead of `conda run -n <env> python`
 #   IMPACT_DATA_ROOT          folder holding the BIDS datasets (default <repo>/data/scratch)
@@ -18,19 +20,41 @@
 # requested here.
 set -euo pipefail
 
+usage() { sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
 DRY_RUN=0
-if [ "${1:-}" = "--dry-run" ]; then
-  DRY_RUN=1
+POSITIONAL=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1 ;;
+    -h|--help) usage; exit 0 ;;
+    -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    *) POSITIONAL+=("$1") ;;
+  esac
   shift
+done
+if [ "${#POSITIONAL[@]}" -gt 2 ]; then
+  usage >&2
+  exit 2
 fi
+
+CALLER_DIR="$(pwd)"
+abs_from_caller() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "${CALLER_DIR}" "$1" ;;
+  esac
+}
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
-DATASET_ID="${1:-ds003171}"
-SNAPSHOT="${2:-}"
+DATASET_ID="${POSITIONAL[0]:-ds003171}"
+SNAPSHOT="${POSITIONAL[1]:-}"
 CONDA_ENV="${IMPACT_CONDA_ENV:-impact-synergy-clean}"
-OUT_DIR="${IMPACT_OUT_DIR:-${REPO_ROOT}/outputs/scratch}"
-BIDS_ROOT="${IMPACT_DATA_ROOT:-${REPO_ROOT}/data/scratch}/${DATASET_ID}"
+OUT_DIR="$(abs_from_caller "${IMPACT_OUT_DIR:-${REPO_ROOT}/outputs/scratch}")"
+DATA_ROOT="$(abs_from_caller "${IMPACT_DATA_ROOT:-${REPO_ROOT}/data/scratch}")"
+BIDS_ROOT="${DATA_ROOT}/${DATASET_ID}"
 FMRIPREP_DIR="${BIDS_ROOT}/derivatives/fmriprep"
 
 run() {
@@ -43,7 +67,10 @@ run() {
 }
 
 if [ -n "${IMPACT_PYTHON:-}" ]; then
-  PYTHON_CMD=("${IMPACT_PYTHON}")
+  case "${IMPACT_PYTHON}" in
+    */*) PYTHON_CMD=("$(abs_from_caller "${IMPACT_PYTHON}")") ;;
+    *) PYTHON_CMD=("${IMPACT_PYTHON}") ;;  # a command name looked up in PATH
+  esac
 elif [ "${CONDA_DEFAULT_ENV:-}" = "${CONDA_ENV}" ]; then
   PYTHON_CMD=(python)
 else
@@ -66,10 +93,11 @@ case "${DATASET_ID}" in
   *) echo "Unsupported DATASET_ID=${DATASET_ID} (use ds003171 or ds005620)" >&2; exit 2 ;;
 esac
 
+# `--` keeps a snapshot or path that starts with '-' from being read as an option.
 if [ "${DRY_RUN}" -eq 1 ]; then
-  bash scripts/download_data.sh --dry-run "${DATASET_ID}" "${SNAPSHOT}" "${BIDS_ROOT}"
+  bash scripts/download_data.sh --dry-run -- "${DATASET_ID}" "${SNAPSHOT}" "${BIDS_ROOT}"
 else
-  bash scripts/download_data.sh "${DATASET_ID}" "${SNAPSHOT}" "${BIDS_ROOT}"
+  bash scripts/download_data.sh -- "${DATASET_ID}" "${SNAPSHOT}" "${BIDS_ROOT}"
 fi
 
 if [ "${DATASET_ID}" = "ds003171" ]; then

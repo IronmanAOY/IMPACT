@@ -15,6 +15,7 @@
 #               fetched later with `datalad get` / `git annex get`)
 #   --jobs N    parallel annex downloads (default 4)
 #   --dry-run   print the commands instead of running them
+#   --          end of options (the remaining arguments are positional)
 #
 # Snapshots are the git tags of https://github.com/OpenNeuroDatasets/<id>;
 # file content comes from OpenNeuro's public S3 annex remote (no login).
@@ -23,7 +24,7 @@
 # and only missing content is fetched.
 set -euo pipefail
 
-usage() { sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GET_CONTENT=1
@@ -35,6 +36,7 @@ while [ "$#" -gt 0 ]; do
     --no-get) GET_CONTENT=0 ;;
     --jobs) JOBS="${2:?--jobs needs a number}"; shift ;;
     --dry-run) DRY_RUN=1 ;;
+    --) shift; POSITIONAL+=("$@"); break ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; exit 2 ;;
     *) POSITIONAL+=("$1") ;;
@@ -45,6 +47,9 @@ if [ "${#POSITIONAL[@]}" -lt 1 ] || [ "${#POSITIONAL[@]}" -gt 3 ]; then
   usage >&2
   exit 2
 fi
+case "${JOBS}" in
+  ''|*[!0-9]*|0) echo "--jobs needs a positive integer, got '${JOBS}'" >&2; exit 2 ;;
+esac
 
 DATASET_ID="${POSITIONAL[0]}"
 SNAPSHOT="${POSITIONAL[1]:-}"
@@ -55,7 +60,8 @@ case "${DATASET_ID}" in
   *) echo "Invalid OpenNeuro accession: ${DATASET_ID}" >&2; exit 2 ;;
 esac
 
-# Snapshot versions used by the pipeline and the synthetic-data generator.
+# Snapshot versions used by the pipeline and the synthetic-data generator;
+# they match the snapshots in src/impact_pipeline/dataset_catalog.py.
 pinned_snapshot() {
   case "$1" in
     ds003171) echo 2.0.1 ;;
@@ -64,6 +70,8 @@ pinned_snapshot() {
     ds005479) echo 1.1.1 ;;
     ds004295) echo 1.0.0 ;;
     ds002336) echo 2.0.2 ;;
+    ds006623) echo 1.0.0 ;;
+    ds002685) echo 1.3.1 ;;
     *) echo "" ;;
   esac
 }
@@ -74,6 +82,12 @@ if [ -z "${SNAPSHOT}" ]; then
     exit 2
   fi
 fi
+case "${SNAPSHOT}" in
+  -*|*/*|*..*|*[[:space:]]*)
+    echo "Invalid snapshot tag: '${SNAPSHOT}'" >&2
+    exit 2
+    ;;
+esac
 
 # Absolute output path (the parent is created if needed).
 OUT_PARENT="$(dirname "${OUT_DIR}")"
@@ -114,8 +128,11 @@ echo "Source:   ${URL}"
 echo "Target:   ${OUT_DIR}"
 
 if [ -e "${OUT_DIR}/.git" ]; then
-  current="$(git -C "${OUT_DIR}" describe --tags --exact-match 2>/dev/null || true)"
-  if [ "${current}" != "${SNAPSHOT}" ]; then
+  # All tags on HEAD: one commit can carry several snapshot tags (e.g. an
+  # unchanged re-release), and `git describe` would report only one of them.
+  head_tags="$(git -C "${OUT_DIR}" tag --points-at HEAD 2>/dev/null || true)"
+  if ! printf '%s\n' "${head_tags}" | grep -Fxq -- "${SNAPSHOT}"; then
+    current="$(printf '%s' "${head_tags}" | tr '\n' ' ')"
     echo "Existing clone at ${OUT_DIR} is at '${current:-untagged revision}'," >&2
     echo "not snapshot ${SNAPSHOT}. Use another OUT_DIR or check out the tag yourself." >&2
     exit 1

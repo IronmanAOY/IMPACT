@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -148,6 +149,17 @@ def test_container_recipes_do_not_copy_data():
     for pattern in ("data/", "test_objects/", "dist/", "outputs/", "docs/manuscript/",
                     ".tmp.drive*", "licenses/fs_license*.txt"):
         assert pattern in ignore
+    # Only the tracked license texts may enter the context: a FreeSurfer
+    # license stored under any other name must not reach an image layer.
+    reincluded = [p[1:] for p in ignore if p.startswith("!licenses")]
+    assert "licenses/" not in reincluded and "licenses" not in reincluded
+    assert sorted(reincluded) == [
+        "licenses/MIT_LICENSE",
+        "licenses/THIRD_PARTY_NOTICES.md",
+        "licenses/fs_license.txt.example",
+    ]
+    for path in reincluded:
+        assert (ROOT / path).is_file(), path
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert not re.search(r"^COPY\s+\.\s", dockerfile, flags=re.M)
     assert "setup_14.x" not in dockerfile
@@ -178,6 +190,39 @@ def test_gitignore_protects_manuscripts_and_scratch():
         assert pattern in lines
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+def test_gitignore_rules_take_effect_without_hiding_tracked_files():
+    git = ["git", "-C", str(ROOT)]
+    inside = subprocess.run(git + ["rev-parse", "--is-inside-work-tree"],
+                            capture_output=True, text=True)
+    if inside.returncode != 0:
+        pytest.skip("not a git checkout")
+    paths = [
+        "docs/manuscript/paper_2/main.tex",
+        ".tmp.driveupload/123",
+        ".tmp.drivedownload/456",
+        "docs/notes/build/paper.aux",
+        "paper.synctex.gz",
+        "data/ds003171/sub-01/func/bold.nii.gz",
+        "data/melbourne/sub-01/x.nii.gz",
+        "data/scratch/ds005620/sub-1/eeg/x.vhdr",
+        "licenses/fs_license.txt",
+        "licenses/fs_license_2026.txt",
+        "licenses/license.txt",
+        "impact.sif",
+    ]
+    proc = subprocess.run(git + ["check-ignore", "--no-index", *paths],
+                          capture_output=True, text=True)
+    ignored = set(proc.stdout.split())
+    assert ignored == set(paths), f"not ignored: {sorted(set(paths) - ignored)}"
+    # No tracked file may be hidden by an over-broad pattern (e.g. *.out).
+    tracked_ignored = subprocess.run(
+        git + ["ls-files", "-ci", "--exclude-standard"],
+        capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert tracked_ignored == []
+
+
 # --- helper scripts ---------------------------------------------------------
 
 @needs_bash
@@ -185,6 +230,35 @@ def test_gitignore_protects_manuscripts_and_scratch():
 def test_shell_scripts_parse(script):
     proc = _run_script(["-n", SCRIPTS / script])
     assert proc.returncode == 0, proc.stderr
+
+
+def test_impact_pipeline_is_imported_from_this_checkout():
+    import impact_pipeline
+
+    if os.environ.get("IMPACT_TEST_INSTALLED_PACKAGE") == "1":
+        pytest.skip("testing an installed copy on request")
+    origin = Path(impact_pipeline.__file__).resolve()
+    assert (ROOT / "src") in origin.parents, origin
+
+
+def test_conftest_prefers_this_checkout_over_another_importable_copy(tmp_path):
+    # Another copy of the package importable first (another checkout or
+    # worktree installed into the shared env, a stale install): the suite must
+    # still test this checkout's src/, not silently the other copy.
+    other = tmp_path / "other_checkout"
+    (other / "impact_pipeline").mkdir(parents=True)
+    (other / "impact_pipeline" / "__init__.py").write_text("OTHER_COPY = True\n")
+    env = {k: v for k, v in os.environ.items() if k != "IMPACT_TEST_INSTALLED_PACKAGE"}
+    env["PYTHONPATH"] = str(other)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    node = (f"{Path(__file__).resolve()}"
+            "::test_impact_pipeline_is_imported_from_this_checkout")
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
+        cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=300,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "1 passed" in proc.stdout
 
 
 @needs_bash
@@ -209,6 +283,48 @@ def test_download_atlases_detects_modified_and_missing_files(tmp_path):
     proc = _run_script([SCRIPTS / "download_atlases.sh", "--dest", dest])
     assert proc.returncode == 1
     assert "not overwriting" in proc.stderr
+
+
+def _sha256(path):
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+@needs_bash
+def test_download_atlases_never_installs_an_unverified_download(tmp_path):
+    # Upstream content changed (or a proxy returned an error page): nothing
+    # that fails the pinned checksum may land where preprocessing reads it,
+    # and a good local AAL.nii must survive a bad AAL archive.
+    dest = tmp_path / "atlases"
+    shutil.copytree(ROOT / "atlases", dest)
+    (dest / "shen_1mm_268_parcellation.nii.gz").unlink()
+    (dest / "aal_SPM12" / "aal" / "atlas" / "AAL.xml").unlink()
+    aal_nii = dest / "aal_SPM12" / "aal" / "atlas" / "AAL.nii"
+    aal_before = _sha256(aal_nii)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _stub(bin_dir, "curl", (
+        'out=""; url=""\n'
+        'while [ $# -gt 0 ]; do case "$1" in --output) out="$2"; shift ;; '
+        'http*) url="$1" ;; esac; shift; done\n'
+        'case "$url" in\n'
+        '  *.tar.gz) d="$(mktemp -d)"; mkdir -p "$d/aal/atlas"\n'
+        '    echo altered > "$d/aal/atlas/AAL.nii"\n'
+        '    echo altered > "$d/aal/atlas/AAL.xml"\n'
+        '    tar -czf "$out" -C "$d" aal ;;\n'
+        '  *) echo altered > "$out" ;;\n'
+        'esac\n'
+    ))
+    proc = _run_script(
+        [SCRIPTS / "download_atlases.sh", "--dest", dest],
+        env={"PATH": os.pathsep.join([str(bin_dir), os.environ.get("PATH", "")])},
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    shen = "atlases/shen_1mm_268_parcellation.nii.gz"
+    assert f"Checksum mismatch for downloaded {shen}" in proc.stderr
+    assert not (dest / "shen_1mm_268_parcellation.nii.gz").exists()
+    assert _sha256(aal_nii) == aal_before
+    assert not (dest / "aal_SPM12" / "aal" / "atlas" / "AAL.xml").exists()
 
 
 def _fake_bids(tmp_path, name="ds003171"):
@@ -326,6 +442,116 @@ def test_download_data_rejects_unpinned_or_invalid_ids(tmp_path, args):
 
 
 @needs_bash
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+def test_download_data_reuses_clone_whose_head_carries_several_tags(tmp_path):
+    # OpenNeuro can tag one commit with several snapshots (the local ds002547
+    # clone has 1.0.1 and 1.1.0 on HEAD); `git describe` reports only one.
+    repo = tmp_path / "ds002547"
+    git = ["git", "-C", str(repo), "-c", "user.name=t",
+           "-c", "user.email=t@example.org",
+           "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "snapshot"],
+                   check=True)
+    subprocess.run(git + ["tag", "1.0.1"], check=True)
+    subprocess.run(git + ["tag", "1.1.0"], check=True)
+    proc = _run_script([SCRIPTS / "download_data.sh", "--dry-run", "--no-get",
+                        "ds002547", "", repo])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Reusing existing clone at snapshot 1.1.0." in proc.stdout
+    proc = _run_script([SCRIPTS / "download_data.sh", "--dry-run", "--no-get",
+                        "ds002547", "2.0.0", repo])
+    assert proc.returncode == 1
+    assert "not snapshot 2.0.0" in proc.stderr
+
+
+def test_download_data_pins_match_dataset_catalog():
+    from impact_pipeline.dataset_catalog import REPORT_DATASETS
+
+    script = (SCRIPTS / "download_data.sh").read_text()
+    pins = dict(re.findall(r"^\s+(ds\d{6})\) echo (\S+) ;;$", script, flags=re.M))
+    assert pins == {ds: meta.snapshot for ds, meta in REPORT_DATASETS.items()}
+    for ds, meta in REPORT_DATASETS.items():
+        assert meta.mirror_git_url == f"https://github.com/OpenNeuroDatasets/{ds}.git"
+
+
+@needs_bash
+@pytest.mark.parametrize("snapshot", ["/abs/path/ds005620", "1.0.0/../x", " 1.0.0"])
+def test_download_data_rejects_path_like_snapshot(tmp_path, snapshot):
+    proc = _run_script([SCRIPTS / "download_data.sh", "--dry-run", "ds005620",
+                        snapshot, tmp_path / "d"])
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "Invalid snapshot tag" in proc.stderr
+    assert "clone" not in proc.stdout
+
+
+@needs_bash
+def test_download_data_double_dash_ends_options(tmp_path):
+    # run_all.sh passes `--` so that nothing positional is parsed as an option.
+    proc = _run_script([SCRIPTS / "download_data.sh", "--dry-run", "--no-get", "--",
+                        "ds005620", "", tmp_path / "d"])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "refs/tags/1.0.0" in proc.stdout
+    proc = _run_script([SCRIPTS / "download_data.sh", "--dry-run", "--",
+                        "ds005620", "--no-get", tmp_path / "d"])
+    assert proc.returncode == 2
+    assert "Invalid snapshot tag: '--no-get'" in proc.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize("dataset", ["ds003171", "ds005620"])
+def test_run_all_dry_run_anywhere_executes_nothing(tmp_path, dataset):
+    # `run_all.sh ds003171 --dry-run` used to treat --dry-run as the snapshot:
+    # the download was dry, but atlases, fMRIPrep and run_pipeline ran for real.
+    log = tmp_path / "calls.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("docker", "git", "datalad", "curl", "fakepython"):
+        _stub(bin_dir, tool, f'echo "{tool} $*" >> "{log}"\nexit 0\n')
+    data_root = tmp_path / "scratch"  # not downloaded yet
+    license_file = tmp_path / "license.txt"
+    license_file.write_text("fake")
+    env = {
+        "PATH": os.pathsep.join([str(bin_dir), os.environ.get("PATH", "")]),
+        "IMPACT_DATA_ROOT": str(data_root),
+        "IMPACT_OUT_DIR": str(tmp_path / "out"),
+        "IMPACT_PYTHON": str(bin_dir / "fakepython"),
+        "FS_LICENSE": str(license_file),
+    }
+    proc = _run_script([SCRIPTS / "run_all.sh", dataset, "--dry-run"], env=env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not log.exists(), log.read_text()
+    assert "run_pipeline.py" in proc.stdout
+    assert "refs/tags/--dry-run" not in proc.stdout
+    assert not (tmp_path / "out").exists() and not data_root.exists()
+
+
+@needs_bash
+def test_run_all_rejects_unknown_options(tmp_path):
+    proc = _run_script([SCRIPTS / "run_all.sh", "ds005620", "--no-get"],
+                       env={"IMPACT_DATA_ROOT": str(tmp_path),
+                            "IMPACT_PYTHON": "python"})
+    assert proc.returncode == 2
+    assert "Unknown option: --no-get" in proc.stderr
+
+
+@needs_bash
+def test_run_all_resolves_relative_env_paths_against_caller(tmp_path):
+    proc = _run_script(
+        [SCRIPTS / "run_all.sh", "--dry-run", "ds003171"],
+        env={"IMPACT_DATA_ROOT": "rel/data", "IMPACT_OUT_DIR": "rel/out",
+             "IMPACT_PYTHON": "python"},
+        cwd=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    base = tmp_path.resolve()
+    pipeline = shlex.split(next(ln for ln in proc.stdout.splitlines()
+                                if "run_pipeline.py" in ln))
+    assert pipeline[pipeline.index("--bids-root") + 1] == f"{base}/rel/data/ds003171"
+    assert pipeline[pipeline.index("--out-dir") + 1] == f"{base}/rel/out"
+
+
+@needs_bash
 def test_run_all_does_not_require_melbourne_and_passes_fmriprep_dir(tmp_path):
     data_root = tmp_path / "scratch"
     proc = _run_script(
@@ -361,7 +587,7 @@ def test_run_all_end_to_end_with_stubbed_tools(tmp_path):
     bin_dir.mkdir()
     # git: pretend the dataset clone exists at the pinned tag; annex calls succeed.
     _stub(bin_dir, "git", f'echo "git $*" >> "{log}"\n'
-          'case "$*" in *describe*) echo 2.0.1 ;; esac\nexit 0\n')
+          'case "$*" in *"tag --points-at HEAD"*) echo 2.0.1 ;; esac\nexit 0\n')
     _stub(bin_dir, "docker", f'echo "docker $*" >> "{log}"\nexit 0\n')
     _stub(bin_dir, "fakepython", f'echo "python $*" >> "{log}"\nexit 0\n')
     data_root = tmp_path / "scratch"
@@ -380,7 +606,7 @@ def test_run_all_end_to_end_with_stubbed_tools(tmp_path):
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     calls = log.read_text().splitlines()
-    assert any("describe --tags --exact-match" in c for c in calls)
+    assert any("tag --points-at HEAD" in c for c in calls)
     assert any("annex get" in c for c in calls)
     docker = next(c for c in calls if c.startswith("docker run"))
     assert "nipreps/fmriprep:25.1.3" in docker

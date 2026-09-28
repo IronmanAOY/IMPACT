@@ -11,7 +11,11 @@
 !src/
 !scripts/
 !atlases/
-!licenses/
+# Only the tracked license texts: a FreeSurfer license (any file name) must
+# never end up in an image layer.
+!licenses/MIT_LICENSE
+!licenses/THIRD_PARTY_NOTICES.md
+!licenses/fs_license.txt.example
 
 # Explicit excludes, applied after the allowlist so they always win.
 data/

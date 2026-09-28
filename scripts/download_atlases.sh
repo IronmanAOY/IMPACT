@@ -38,6 +38,10 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+if [ "${VERIFY_ONLY}" -eq 1 ] && [ ! -d "${DEST}" ]; then
+  echo "Atlas folder not found: ${DEST}" >&2
+  exit 1
+fi
 mkdir -p "${DEST}"
 DEST="$(cd "${DEST}" && pwd)"
 
@@ -77,6 +81,35 @@ file_state() {
 download() {
   local url="$1" out="$2"
   curl --fail --location --silent --show-error --retry 3 --output "${out}" "${url}"
+}
+
+# Pinned SHA-256 of one relative path.
+pinned_sha() {
+  local entry
+  for entry in "${ATLAS_FILES[@]}"; do
+    if [ "${entry%%|*}" = "$1" ]; then
+      echo "${entry##*|}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Succeeds only if a downloaded (not yet installed) file has the pinned
+# checksum; a changed upstream file must never replace anything in DEST.
+download_ok() {
+  local file="$1" rel="$2" want got
+  want="$(pinned_sha "${rel}")"
+  if [ ! -f "${file}" ]; then
+    echo "Download did not contain atlases/${rel}; local files left unchanged." >&2
+    return 1
+  fi
+  got="$(sha256_of "${file}")"
+  if [ "${got}" != "${want}" ]; then
+    echo "Checksum mismatch for downloaded atlases/${rel} (got ${got});" \
+      "local files left unchanged." >&2
+    return 1
+  fi
 }
 
 TMP_DIR="$(mktemp -d)"
@@ -119,38 +152,66 @@ if [ "${#need_fetch[@]}" -eq 0 ]; then
   exit 0
 fi
 
+# Every download is checked in TMP_DIR first and only then moved into DEST,
+# so a changed or truncated upstream file never replaces a local atlas.
 fetched_aal=0
+failed=0
 for rel in "${need_fetch[@]}"; do
   case "${rel}" in
     schaefer_2018/*)
-      mkdir -p "${DEST}/schaefer_2018"
-      download "${SCHAEFER_URL}/$(basename "${rel}")" "${TMP_DIR}/$(basename "${rel}")"
-      mv -f "${TMP_DIR}/$(basename "${rel}")" "${DEST}/${rel}"
+      tmp_file="${TMP_DIR}/$(basename "${rel}")"
+      download "${SCHAEFER_URL}/$(basename "${rel}")" "${tmp_file}"
+      if download_ok "${tmp_file}" "${rel}"; then
+        mkdir -p "${DEST}/schaefer_2018"
+        mv -f "${tmp_file}" "${DEST}/${rel}"
+      else
+        failed=1
+      fi
       ;;
     aal_SPM12/*)
+      # One archive holds all AAL files: verify every pinned AAL file in the
+      # extracted copy before the local aal/ folder is replaced as a whole.
       if [ "${fetched_aal}" -eq 0 ]; then
-        download "${AAL_URL}" "${TMP_DIR}/aal_for_SPM12.tar.gz"
-        mkdir -p "${TMP_DIR}/aal" "${DEST}/aal_SPM12"
-        tar -xzf "${TMP_DIR}/aal_for_SPM12.tar.gz" -C "${TMP_DIR}/aal"
-        rm -rf "${DEST}/aal_SPM12/aal"
-        mv "${TMP_DIR}/aal/aal" "${DEST}/aal_SPM12/aal"
         fetched_aal=1
+        download "${AAL_URL}" "${TMP_DIR}/aal_for_SPM12.tar.gz"
+        mkdir -p "${TMP_DIR}/aal"
+        tar -xzf "${TMP_DIR}/aal_for_SPM12.tar.gz" -C "${TMP_DIR}/aal"
+        aal_ok=1
+        for entry in "${ATLAS_FILES[@]}"; do
+          aal_rel="${entry%%|*}"
+          case "${aal_rel}" in
+            aal_SPM12/aal/*)
+              download_ok "${TMP_DIR}/aal/${aal_rel#aal_SPM12/}" "${aal_rel}" || aal_ok=0
+              ;;
+          esac
+        done
+        if [ "${aal_ok}" -eq 1 ]; then
+          mkdir -p "${DEST}/aal_SPM12"
+          rm -rf "${DEST}/aal_SPM12/aal"
+          mv "${TMP_DIR}/aal/aal" "${DEST}/aal_SPM12/aal"
+        else
+          failed=1
+        fi
       fi
       ;;
     shen_1mm_268_parcellation.nii.gz)
       download "${SHEN_URL}" "${TMP_DIR}/shen.nii.gz"
-      mv -f "${TMP_DIR}/shen.nii.gz" "${DEST}/${rel}"
+      if download_ok "${TMP_DIR}/shen.nii.gz" "${rel}"; then
+        mv -f "${TMP_DIR}/shen.nii.gz" "${DEST}/${rel}"
+      else
+        failed=1
+      fi
       ;;
   esac
 done
 
-# Verify everything after download; a changed upstream file is an error.
-failed=0
+# Final check of the installed tree.
 for entry in "${ATLAS_FILES[@]}"; do
   rel="${entry%%|*}"
   want="${entry##*|}"
-  if [ "$(file_state "${rel}" "${want}")" != ok ]; then
-    echo "Checksum mismatch after download: atlases/${rel}" >&2
+  state="$(file_state "${rel}" "${want}")"
+  if [ "${state}" != ok ]; then
+    echo "Not verified after download (${state}): atlases/${rel}" >&2
     failed=1
   fi
 done
