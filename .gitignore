@@ -222,3 +222,6 @@ docs/manuscript/
 # Apptainer/Singularity images
 *.sif
 *.simg
+
+# Claude Code local worktrees and session files
+.claude/
