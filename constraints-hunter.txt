@@ -14,7 +14,8 @@
 #   numpy==2.3.5
 #   scipy==1.16.3
 # and in requirements-hunter.txt use numba==0.62.1 (numba 0.61.x requires numpy<2.3; 0.62.1 allows
-# numpy<2.4) and cupy-rocm-7-0>=14.1 (wheel; needs numpy>=2). mne 1.6.1 predates NumPy 2: that
-# route needs mne>=1.7, which this pipeline has not been validated with (pyproject pins mne<1.7).
+# numpy<2.4) and cupy-rocm-7-0>=14.1 (wheel; needs numpy>=2). mne 1.6.1 predates NumPy 2; the
+# reference environment (environment.yml) runs it on NumPy 2.2 for the calls the pipeline uses, but
+# not on 2.3.5, and mne>=1.7 has not been validated with this pipeline (pyproject pins mne<1.7).
 numpy==1.24.4
 scipy==1.10.1
