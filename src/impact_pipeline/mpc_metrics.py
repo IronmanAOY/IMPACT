@@ -450,13 +450,18 @@ def _iim_select_nodes_with_info(arr, max_n, rule="variance", node_indices=None):
         warnings.simplefilter("ignore", RuntimeWarning)
         var = np.nanvar(arr, axis=1)
     var = np.where(np.isfinite(var), var, -np.inf)
-    finite = var[np.isfinite(var)]
-    scale = float(np.max(np.abs(finite))) if finite.size else 0.0
-    if scale > 0:
-        ranked = np.round(var / scale / _IIM_VARIANCE_TIE_RTOL) * _IIM_VARIANCE_TIE_RTOL
-    else:
-        ranked = np.zeros_like(var)
-    ranked = np.where(np.isfinite(var), ranked, -np.inf)
+    # Ties are relative to the variances themselves (log scale), not to the
+    # largest variance: one high-variance node must not collapse the ranking of
+    # all others. Anchoring at the maximum keeps variances that are equal up to
+    # float noise (z-scored input) on the same level. Zero variance ranks below
+    # any positive variance and above undefined (all-NaN) nodes.
+    positive = np.isfinite(var) & (var > 0)
+    ranked = np.where(np.isfinite(var), -np.finfo(float).max, -np.inf)
+    if np.any(positive):
+        log_ref = float(np.log(np.max(var[positive])))
+        ranked[positive] = np.round(
+            (np.log(var[positive]) - log_ref) / _IIM_VARIANCE_TIE_RTOL
+        )
     order = np.lexsort((np.arange(n), -ranked))
     idx = order[:max_n]
     cutoff = ranked[idx[-1]]
@@ -4194,7 +4199,28 @@ def compute_IIM(
                 "iim_algorithm_version": IIM_ALGORITHM_VERSION,
                 "tpm_estimator": str(tpm_estimator),
             }
-            out.update(_iim_null_fields(None, psi_full=np.nan, delta_psi=np.nan))
+            # Same null-calibration schema as defined results (no surrogates are
+            # run when the observed IIM itself is undefined).
+            out.update(
+                _iim_null_fields(
+                    None,
+                    psi_full=np.nan,
+                    delta_psi=np.nan,
+                    meta={
+                        "IIM_null_method": str(null_method),
+                        "IIM_null_seed": _resolve_null_seed(null_seed, rng),
+                        "IIM_null_min_shift": (
+                            None if null_min_shift is None else int(null_min_shift)
+                        ),
+                        "IIM_null_failed": 0,
+                        "IIM_null_undefined_reason": (
+                            "observed_iim_undefined"
+                            if int(null_surrogates) > 0
+                            else None
+                        ),
+                    },
+                )
+            )
             out.update(payload_extra)
             return out
         return np.nan
@@ -4458,6 +4484,10 @@ def compute_IIM(
                         next_idx += 1
                 return float(psi)
             finally:
+                # The pool outlives an aborted call (e.g. a lookup-only cache
+                # miss), so drop its queued chunks instead of computing them.
+                for fut in future_to_idx:
+                    fut.cancel()
                 self._cleanup_tpm_spec(tpm_shm, tpm_path)
 
         def close(self):

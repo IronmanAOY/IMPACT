@@ -214,6 +214,21 @@ def test_checkpoint_kernel_cache_removed_on_completion_and_explicit_cache_kept(
     assert explicit.exists()
 
 
+def test_explicit_kernel_cache_is_not_reused_across_different_data(tmp_path):
+    # Kernel-cache keys do not identify the data, so a caller-provided cache
+    # written for one run must be invalidated (signature check) before another
+    # run uses it; previously stale cut-kernel values changed Psi^kappa.
+    shared = str(tmp_path / "shared_cache.sqlite3")
+    a, b = _ts(seed=0, t=150), _ts(seed=1, t=150)
+    mm.compute_IIM(a, bins=2, return_details=True, kernel_cache_path=shared)
+    via_shared = mm.compute_IIM(
+        b, bins=2, return_details=True, kernel_cache_path=shared
+    )
+    fresh = mm.compute_IIM(b, bins=2, return_details=True)
+    for key in ("Psi_full", "Psi_mip_preserved", "raw"):
+        assert via_shared[key] == pytest.approx(fresh[key], rel=1e-12, abs=1e-15)
+
+
 def test_null_calibration_resumes_from_checkpoints(tmp_path):
     ckpt = tmp_path / "run.iim_checkpoint.json"
     kw = dict(
@@ -260,6 +275,44 @@ def test_node_selection_is_explicit_and_degenerate_ranking_is_flagged(caplog):
     )
     assert explicit["node_selection_rule"] == "explicit"
     assert explicit["selected_nodes"] == [2, 4, 7]
+
+
+def test_variance_ties_are_relative_to_each_variance_not_to_the_largest():
+    # One high-variance node must not make all other variances "tied": the
+    # tolerance is relative to the variances being compared.
+    rng = np.random.RandomState(0)
+    raw = rng.randn(6, 400)
+    z = (raw - raw.mean(axis=1, keepdims=True)) / raw.std(axis=1, keepdims=True)
+    x = z * np.sqrt([1e7, 1.0, 2.0, 3.0, 4.0, 5.0])[:, None]
+    idx, info = mm._iim_select_nodes_with_info(x, 3)
+    assert idx.tolist() == [0, 4, 5]
+    assert info["degenerate_ranking"] is False
+
+    # Zero-variance nodes rank below positive variances, above all-NaN nodes.
+    y = np.vstack([z[:2], np.zeros((1, 400)), np.full((1, 400), np.nan)])
+    idx, info = mm._iim_select_nodes_with_info(y, 3)
+    assert idx.tolist() == [0, 1, 2]
+    assert info["degenerate_ranking"] is False
+
+
+def test_undefined_result_keeps_the_null_calibration_schema():
+    calibrated = mm.compute_IIM(
+        _ts(seed=0, n=3, t=100),
+        bins=2,
+        max_mechanism_size=1,
+        return_details=True,
+        null_surrogates=3,
+    )
+    assert calibrated["defined"] is False
+    assert calibrated["IIM_null_undefined_reason"] == "observed_iim_undefined"
+    assert calibrated["IIM_null_calibrated"] is False
+    assert np.isnan(calibrated["value"])
+    assert np.isnan(calibrated["canonical_calibrated"])
+    plain = mm.compute_IIM(
+        _ts(seed=0, n=3, t=100), bins=2, max_mechanism_size=1, return_details=True
+    )
+    assert plain["IIM_null_undefined_reason"] is None
+    assert set(plain) == set(calibrated)
 
 
 def test_state_budget_adjustments_are_recorded(caplog):

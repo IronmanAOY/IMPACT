@@ -169,6 +169,48 @@ def test_uncalibrated_run_reports_nan_null_fields():
     assert info["value"] == pytest.approx(info["canonical"])
 
 
+def _reference_node_tpm(disc, base, alpha, shrink):
+    """Loop-based state-by-node TPM (Laplace, or Hausser-Strimmer shrinkage of
+    each row towards the node's own transition p(x_i'|x_i))."""
+    n, t = disc.shape
+    cur, nxt = disc[:, :-1].T, disc[:, 1:].T
+    states = np.array(list(np.ndindex(*([base] * n))))
+    keys = [int(np.ravel_multi_index(tuple(c), [base] * n)) for c in cur]
+    tpm = np.ones((len(states), len(states)))
+    for i in range(n):
+        own = np.full((base, base), alpha)
+        for a, b in zip(cur[:, i], nxt[:, i]):
+            own[a, b] += 1.0
+        own /= own.sum(axis=1, keepdims=True)
+        for s, sv in enumerate(states):
+            nxt_i = [nxt[k, i] for k in range(len(keys)) if keys[k] == s]
+            counts = np.bincount(np.asarray(nxt_i, dtype=int), minlength=base)
+            n_s = len(nxt_i)
+            if not shrink:
+                p = (counts + alpha) / (n_s + alpha * base)
+            elif n_s <= 1:
+                p = own[sv[i]]
+            else:
+                ml = counts / n_s
+                target = own[sv[i]]
+                den = (n_s - 1) * np.sum((target - ml) ** 2)
+                lam = 1.0 if den <= 0 else np.clip((1 - np.sum(ml**2)) / den, 0, 1)
+                p = lam * target + (1 - lam) * ml
+            tpm[s] *= p[states[:, i]]
+    return tpm / tpm.sum(axis=1, keepdims=True)
+
+
+@pytest.mark.parametrize("estimator", ["node_shrinkage", "node_laplace"])
+def test_state_by_node_tpm_matches_reference(estimator):
+    rng = np.random.RandomState(1)
+    disc = rng.randint(0, 3, size=(3, 60)).astype(np.int16)
+    disc[2] = np.roll(disc[0], 1)  # a lagged cross-node dependence
+    _, tpm, _ = mm._iim_build_states_and_tpm(disc, 3, 1, 1e-3, estimator=estimator)
+    ref = _reference_node_tpm(disc, 3, 1e-3, shrink=(estimator == "node_shrinkage"))
+    np.testing.assert_allclose(tpm, ref, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(tpm.sum(axis=1), 1.0, rtol=0, atol=1e-12)
+
+
 def test_size_one_mechanisms_contribute_zero():
     # Documented convention: a mechanism (or purview) of size 1 has no
     # bipartition into two non-empty parts, so it contributes exactly 0 to Psi.
