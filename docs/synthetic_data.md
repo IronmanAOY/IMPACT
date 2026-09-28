@@ -24,8 +24,12 @@ What they are **not**:
 
 ## Targets, Sessions And Planted Levels
 
-Every planted quantity scales with a state level `g` in [0, 1]. For every metric
-the ground-truth direction is: higher `g` gives a higher metric value.
+Every planted target quantity (differentiation, directed module coupling,
+directed workspace broadcast and event responses) scales with a state level `g`
+in [0, 1], so the planted direction is: higher `g`, larger target quantity.
+Lowering differentiation also adds zero-lag shared variance at low `g` (see
+"Opposing Structure" below), so this direction is unambiguous only for metric
+terms that track the planted targets rather than zero-lag synchrony.
 
 | Target | Modality | Sessions (planted `g`) | Planted contrast | Null contrast (equal `g`) |
 |---|---|---|---|---|
@@ -72,6 +76,25 @@ For node payload `x` (the real recording, z-scored per node):
 
 All constants are in `PLANTED_DESIGN` in the generator and in each manifest
 under `planted_design`. They were fixed before any metric output was looked at.
+Seeds and ds002547 rest-donor assignment use each subject's index among all
+source subjects, so a subject's objects are identical whether it is generated
+alone (`--subjects`) or with the whole cohort.
+
+### Opposing Structure
+
+Reducing spatial differentiation cannot be planted without adding zero-lag
+shared variance. For z-scored nodes the participation ratio equals
+`n^2 / (n + sum_{i != j} C_ij^2)`, so a lower participation ratio at low `g`
+means larger zero-lag correlations at low `g`. In these objects the low-level
+session therefore carries **more** zero-lag synchrony than the high-level
+session. Metric terms driven by zero-lag synchrony, such
+as the NAS synchrony, reach, triad and ignition terms, or by a shared slow
+driver, such as the lagged predictability that IIM uses, are pushed towards
+low `g` > high `g`. A `reversed` known-answer outcome for NAS, IIM or CI (which
+contains both) therefore shows that the metric follows zero-lag synchrony
+rather than the planted directed coupling or broadcast. It is not by itself
+evidence of an implementation bug. The validation report quantifies this under
+`opposing_structure`.
 Per run, the node roles, patterns and internal states are saved in
 `test_objects/runs/real_derived_synth_completed/<ds>/planted_truth/`.
 
@@ -95,7 +118,9 @@ things separate.
    match the manifest; the BIDS data (NIfTI node container or BrainVision)
    equal the analysed arrays; sidecar sample intervals and task labels match;
    readiness is 1.0 for CI; and RAM, PDI, NAS, IIM, SRPI and CI are present,
-   defined and within their documented bounds.
+   defined and within their documented bounds. `constant_metrics` lists
+   metrics that are defined but identical in every row (for example 0
+   everywhere); it is reported, not gated.
 2. **Generator self-check (`planted_structure_verified`).** It uses simple
    statistics computed without the metric code: participation ratio, directed
    module coupling, directed workspace broadcast, evoked projection and
@@ -110,7 +135,10 @@ things separate.
    `systematic_difference_without_planted_difference`. A per-subject Spearman
    correlation between the planted level and the metric is also reported.
    These outcomes are observations. They are not a pass criterion, and nothing
-   was tuned to make them pass.
+   was tuned to make them pass. Read them together with `opposing_structure`,
+   which reports the paired zero-lag synchrony (mean |corr| over node pairs of
+   the task array) for the planted contrast; it is expected to be larger in
+   the low-level session.
 
 The report also has `pipeline_event_resolution`. Metrics are computed from the
 exact events file of each run. This section records whether the pipeline's own

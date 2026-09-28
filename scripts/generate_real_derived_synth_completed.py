@@ -273,8 +273,11 @@ SESSIONS = {
     # would duplicate it, so it is not generated.
     "ds005620": ("awake", "deep", "sed"),
 }
-# Planted state level g in [0, 1]. Every planted quantity scales with g, so the
-# ground-truth direction for every metric is metric(high g) > metric(low g).
+# Planted state level g in [0, 1]. Every planted TARGET quantity (differentiation,
+# directed coupling, directed broadcast, event responses) increases with g. Lowering
+# differentiation necessarily adds zero-lag shared variance at low g (see
+# OPPOSING_STRUCTURE_NOTE), so the expected direction is unambiguous only for
+# metrics that track the planted targets rather than zero-lag synchrony.
 PLANTED_STATE_LEVELS = {
     "ds003171": {"awake": 1.0, "recovery": 1.0, "light": 0.5, "deep": 0.2},
     "ds002547": {"awake": 1.0, "deep": 0.2, "ses-1": 0.6, "ses-2": 0.6},
@@ -355,7 +358,24 @@ PLANTED_DESIGN_DESCRIPTION = [
     "Rest arrays get the same differentiation/integration/broadcast structure "
     "for the same g, without events.",
     "Final arrays are z-scored per node (the preprocessing contract).",
+    "Opposing structure: the differentiation manipulation adds a global "
+    "component with weight sqrt(1-d), so the LOW-level session has more zero-lag "
+    "synchrony (see opposing_structure in the validation report).",
 ]
+# Reducing spatial differentiation cannot be planted without adding zero-lag
+# shared variance: for z-scored nodes the participation ratio is
+# n^2 / (n + sum_{i != j} C_ij^2), so a lower PR at low g means larger zero-lag
+# correlations at low g. Metric terms driven by zero-lag synchrony (e.g. the NAS
+# synchrony/reach/triad/ignition terms) or by a shared slow driver (e.g. lagged
+# predictability used by IIM) are therefore pushed towards low g > high g.
+OPPOSING_STRUCTURE_NOTE = (
+    "The low-level session carries MORE zero-lag synchrony than the high-level "
+    "session (a necessary side effect of planting lower differentiation). A "
+    "'reversed' known-answer outcome for a metric that is sensitive to zero-lag "
+    "synchrony (for example NAS, IIM and CI, which contains both) shows that the "
+    "metric follows zero-lag synchrony rather than the planted directed "
+    "coupling/broadcast; it is not by itself evidence of an implementation bug."
+)
 MANIPULATION_CHECKS = (
     "participation_ratio",
     "module_coupling_directionality",
@@ -823,7 +843,9 @@ class _SourceAllocator:
             return {
                 "path": path,
                 "start_sec": 0.0,
-                "reused": True,
+                # Only a payload another run already uses is reused; a recording
+                # that is merely shorter than one segment is not.
+                "reused": bool(shared),
                 "shared_with": shared,
                 "preferred_source": bool(preferred),
             }
@@ -876,16 +898,6 @@ def _ds002547_run_path(subj: str, key: str) -> Path:
     func = root / "derivatives" / "fmriprep" / f"sub-{subj}" / ses / "func"
     space = "space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz"
     return func / f"sub-{subj}_{ses}_task-{task}_{space}"
-
-
-def _ds002547_task_path(subj: str, session: str) -> Path:
-    for key in (*_DS002547_TASK_PREFERENCE.get(session, ()), *_DS002547_ALL_RUNS):
-        path = _ds002547_run_path(subj, key)
-        if path.exists():
-            return path
-    return _ds002547_run_path(
-        subj, _DS002547_TASK_PREFERENCE.get(session, _DS002547_ALL_RUNS)[0]
-    )
 
 
 def _ds005620_vhdr_path(subj: str, task: str) -> Path:
@@ -1698,6 +1710,9 @@ def _make_dataset(
         tr, sfreq = 2.0, None
         srpi_params = FMRI_SRPI_PARAMS
     all_subjects = _source_subjects(dataset_id)
+    # Seeds and donor assignment use the subject's index among ALL source
+    # subjects, so a subject's objects do not depend on --subjects/--max-subjects.
+    source_index = {s: i for i, s in enumerate(all_subjects)}
     if subjects:
         wanted = [str(s).replace("sub-", "") for s in subjects]
         all_subjects = [s for s in all_subjects if s in wanted]
@@ -1729,7 +1744,8 @@ def _make_dataset(
     runs: list[dict[str, Any]] = []
     n_nodes_by_subject: dict[str, int] = {}
     donor_usage: dict[str, list[str]] = {}
-    for subj_i, subj in enumerate(all_subjects):
+    for subj in all_subjects:
+        subj_i = source_index[subj]
         subj_rng = np.random.default_rng([int(seed), subj_i])
         donor = donor_subjects[subj_i % len(donor_subjects)] if donor_subjects else None
         if modality == "eeg":
@@ -1949,9 +1965,18 @@ def _make_dataset(
                 _write_brainvision_triplet(
                     eeg_dir / f"{stem}_eeg", ts, sfreq, channel_names
                 )
-            seg = float(gen["eeg_seconds"]) if modality == "eeg" else None
-            task_src = _source_record(task_ds, task_alloc, seg)
-            rest_src = _source_record(rest_ds, rest_alloc, seg)
+            # Actual extracted EEG segment length (a short recording gives less
+            # than --eeg-seconds); fMRI runs are used whole.
+            task_src = _source_record(
+                task_ds,
+                task_alloc,
+                task_meta.get("duration_sec") if modality == "eeg" else None,
+            )
+            rest_src = _source_record(
+                rest_ds,
+                rest_alloc,
+                rest_meta.get("duration_sec") if modality == "eeg" else None,
+            )
             if dataset_id == "ds002547":
                 donor_usage.setdefault(rest_src["source_path"], []).append(
                     f"{subj}/{ses}"
@@ -2050,8 +2075,12 @@ def _make_dataset(
         "planted_design": {
             "state_levels": levels,
             "ground_truth_direction": (
-                "metric(session with higher planted level) > " "metric(lower level)"
+                "planted target quantities (differentiation, directed coupling, "
+                "directed broadcast, event responses) are larger in the session "
+                "with the higher planted level; zero-lag synchrony is larger in "
+                "the lower-level session (opposing_structure_note)"
             ),
+            "opposing_structure_note": OPPOSING_STRUCTURE_NOTE,
             "known_answer_contrasts": KNOWN_ANSWER_CONTRASTS[dataset_id],
             "constants": PLANTED_DESIGN,
             "description": PLANTED_DESIGN_DESCRIPTION,
@@ -2126,8 +2155,9 @@ def _resolve_manifest_path(value: str | Path, synth_root: Path) -> Path:
     if not p.is_absolute():
         return (synth_root / p).resolve()
     parts = p.parts
-    if "test_objects" in parts:
-        i = parts.index("test_objects")
+    # The build machine's own path may contain 'test_objects' too; try the
+    # innermost component first.
+    for i in reversed([k for k, part in enumerate(parts) if part == "test_objects"]):
         rebased = synth_root.joinpath(*parts[i:])
         if rebased.exists():
             return rebased
@@ -2175,15 +2205,48 @@ def _runs_for_validation(
     return runs
 
 
+_EMPTY_EVENT_BUNDLE = {
+    "onsets": [],
+    "goal_onsets": [],
+    "feedback_onsets": [],
+    "feedback_values": None,
+    "self_onsets": [],
+    "nonself_onsets": [],
+}
+
+
 def _events_bundle_from_file(events_path: Path) -> dict[str, Any]:
-    """Parse one events.tsv with the pipeline's own event parser."""
+    """Parse one events.tsv with the pipeline's own event parser.
+
+    A missing file gives the pipeline's empty bundle (RAM/SRPI undefined), so
+    the run fails the smoke checks instead of aborting the validation.
+    """
     parser = getattr(_run_synergy_ci, "_events_to_ram_bundle", None)
     if parser is None:
         raise RuntimeError(
             "impact_pipeline.run_synergy_ci._events_to_ram_bundle is unavailable; "
             "cannot parse the exact events file of each run."
         )
+    if not Path(events_path).exists():
+        return {
+            k: (list(v) if isinstance(v, list) else v)
+            for k, v in _EMPTY_EVENT_BUNDLE.items()
+        }
     return parser(Path(events_path))
+
+
+def _zero_lag_synchrony(task_ts: np.ndarray) -> float:
+    """Mean |zero-lag correlation| over node pairs (metric-independent)."""
+    x = np.asarray(task_ts, dtype=np.float64)
+    x = x - x.mean(axis=0, keepdims=True)
+    sd = x.std(axis=0)
+    keep = sd > 1e-12
+    if int(keep.sum()) < 2:
+        return float("nan")
+    c = np.corrcoef(x[:, keep], rowvar=False)
+    tri = c[np.triu_indices_from(c, k=1)]
+    tri = tri[np.isfinite(tri)]
+    return float(np.mean(np.abs(tri))) if tri.size else float("nan")
 
 
 def _bids_array_consistency(
@@ -2193,7 +2256,9 @@ def _bids_array_consistency(
     events = _resolve_manifest_path(run["bids_events"], synth_root)
     checks["bids_events_exist"] = events.exists()
     data_path = _resolve_manifest_path(run["bids_data"], synth_root)
-    sidecar = _read_json(_resolve_manifest_path(run["bids_sidecar"], synth_root))
+    sidecar_path = _resolve_manifest_path(run["bids_sidecar"], synth_root)
+    checks["bids_sidecar_exists"] = sidecar_path.exists()
+    sidecar = _read_json(sidecar_path) if checks["bids_sidecar_exists"] else {}
     try:
         if modality == "eeg":
             raw = mne.io.read_raw_brainvision(
@@ -2342,6 +2407,46 @@ def _evaluate_known_answers(
     return out
 
 
+def _constant_metrics(
+    rows: list[dict[str, Any]], metrics: tuple[str, ...] | list[str]
+) -> dict[str, float]:
+    """Metrics defined in >= 2 rows whose defined values are all identical."""
+    out = {}
+    for metric in metrics:
+        vals = np.asarray(
+            [r["metric_values"].get(metric, np.nan) for r in rows], dtype=float
+        )
+        vals = vals[np.isfinite(vals)]
+        if vals.size >= 2 and float(np.ptp(vals)) <= 1e-12:
+            out[metric] = float(vals[0])
+    return out
+
+
+def _opposing_structure(
+    sync_values: dict[str, dict[str, float]],
+    planted: tuple[str, str] | list[str] | None,
+) -> dict[str, Any] | None:
+    """Zero-lag synchrony in the planted contrast (expected: low level > high)."""
+    if not planted:
+        return None
+    high, low = planted
+    pairs = [
+        (by_ses.get(low, np.nan), by_ses.get(high, np.nan))
+        for _, by_ses in sorted(sync_values.items())
+    ]
+    summ = _paired_summary(pairs)
+    return {
+        "statistic": "zero_lag_synchrony (mean |corr| over node pairs, task array)",
+        "expected": f"{low} > {high}",
+        "sessions": [low, high],
+        "summary": summ,
+        "present": bool(
+            summ["n_defined_pairs"] and (summ["median_difference"] or 0.0) > 0
+        ),
+        "note": OPPOSING_STRUCTURE_NOTE,
+    }
+
+
 def _validate_dataset(
     manifest: dict[str, Any],
     *,
@@ -2484,6 +2589,7 @@ def _validate_dataset(
     optional = [m for m in KNOWN_ANSWER_OPTIONAL_METRICS if m in df_ci.columns]
     metrics_all = list(KNOWN_ANSWER_METRICS) + optional
     values: dict[str, dict[str, dict[str, float]]] = {m: {} for m in metrics_all}
+    sync_values: dict[str, dict[str, float]] = {}
     for run in runs:
         subj, ses = str(run["subject"]), str(run["session"])
         checks: dict[str, bool] = {}
@@ -2491,35 +2597,49 @@ def _validate_dataset(
         rest_path = _resolve_manifest_path(run["rest_array"], synth_root)
         checks["task_array_exists"] = task_path.exists()
         checks["rest_array_exists"] = rest_path.exists()
-        arr = np.load(task_path)
-        rest = np.load(rest_path)
+        # A missing array is a failed smoke check, not a crash.
+        arr = np.load(task_path) if checks["task_array_exists"] else None
+        rest = np.load(rest_path) if checks["rest_array_exists"] else None
+        have_arrays = arr is not None and rest is not None
         checks["arrays_finite"] = bool(
-            np.isfinite(arr).all() and np.isfinite(rest).all()
+            have_arrays and np.isfinite(arr).all() and np.isfinite(rest).all()
         )
         checks["no_zero_variance_nodes"] = bool(
-            np.all(arr.std(axis=0) > 1e-8) and np.all(rest.std(axis=0) > 1e-8)
+            have_arrays
+            and np.all(arr.std(axis=0) > 1e-8)
+            and np.all(rest.std(axis=0) > 1e-8)
         )
-        checks["task_rest_node_count_match"] = bool(arr.shape[1] == rest.shape[1])
+        checks["task_rest_node_count_match"] = bool(
+            have_arrays and arr.shape[1] == rest.shape[1]
+        )
         if not legacy:
-            checks["task_shape_matches_manifest"] = list(arr.shape) == list(
-                run["task_shape"]
+            checks["task_shape_matches_manifest"] = arr is not None and list(
+                arr.shape
+            ) == list(run["task_shape"])
+            if arr is not None:
+                checks.update(
+                    _bids_array_consistency(run, arr, synth_root, tr, modality)
+                )
+            else:
+                checks["bids_data_matches_array"] = False
+        if arr is not None:
+            ts = arr.T
+            bundle = onsets[subj][ses][0]
+            srpi = compute_SRPI(
+                ts,
+                tr=tr,
+                self_onsets=bundle.get("self_onsets", []),
+                nonself_onsets=bundle.get("nonself_onsets", []),
+                return_details=True,
+                **srpi_params,
             )
-            checks.update(_bids_array_consistency(run, arr, synth_root, tr, modality))
-        ts = arr.T
-        bundle = onsets[subj][ses][0]
-        srpi = compute_SRPI(
-            ts,
-            tr=tr,
-            self_onsets=bundle.get("self_onsets", []),
-            nonself_onsets=bundle.get("nonself_onsets", []),
-            return_details=True,
-            **srpi_params,
-        )
-        ram = compute_RAM(
-            ts, tr=tr, stimulus_onsets=bundle, return_details=True, **ram_params
-        )
-        srpi_details.append({"subject": subj, "session": ses, **srpi})
-        ram_details.append({"subject": subj, "session": ses, **ram})
+            ram = compute_RAM(
+                ts, tr=tr, stimulus_onsets=bundle, return_details=True, **ram_params
+            )
+            srpi_details.append({"subject": subj, "session": ses, **srpi})
+            ram_details.append({"subject": subj, "session": ses, **ram})
+            if not legacy:
+                sync_values.setdefault(subj, {})[ses] = _zero_lag_synchrony(arr)
         sel = df_ci[
             (df_ci["subject"].astype(str) == subj)
             & (df_ci["session"].astype(str) == ses)
@@ -2571,6 +2691,9 @@ def _validate_dataset(
             m: int(sum(np.isfinite(r["metric_values"][m]) for r in rows))
             for m in KNOWN_ANSWER_METRICS
         },
+        # Not a gate: a metric that is defined but identical in every row (for
+        # example 0 everywhere) runs but is degenerate on these objects.
+        "constant_metrics": _constant_metrics(rows, KNOWN_ANSWER_METRICS),
     }
 
     if legacy or "planted_design" not in manifest:
@@ -2583,6 +2706,7 @@ def _validate_dataset(
         }
         planted_verified = None
         manip = None
+        opposing = None
     else:
         design = manifest["planted_design"]
         levels = {
@@ -2611,6 +2735,9 @@ def _validate_dataset(
         planted_verified = bool(planted_pair) and all(
             (s.get("median_difference") or 0.0) > 0 for s in planted_pair.values()
         )
+        opposing = _opposing_structure(
+            sync_values, design["known_answer_contrasts"].get("planted")
+        )
     report = {
         "dataset_id": dataset_id,
         "object_kind": OBJECT_KIND,
@@ -2626,6 +2753,7 @@ def _validate_dataset(
         "smoke_test": smoke,
         "planted_structure_verified": planted_verified,
         "manipulation_checks": manip,
+        "opposing_structure": opposing,
         "known_answer": known,
         "pipeline_event_resolution": {
             "consistent": (
@@ -2690,7 +2818,8 @@ def _write_summary(
         "known_answer_summary": _known_answer_digest(validation),
         "known_answer_note": (
             "Known-answer outcomes are observations of whether each metric recovers "
-            "the planted direction; they are not a pass criterion and were not tuned."
+            "the planted direction; they are not a pass criterion and were not tuned. "
+            + OPPOSING_STRUCTURE_NOTE
         ),
         "synthetic": True,
         "derived_from_real_recordings": True,
@@ -2886,6 +3015,10 @@ def _print_outcome(summary: dict[str, Any]) -> None:
         print(f"  {ds}: smoke_test={status}")
         if failed:
             print(f"    failed checks: {', '.join(failed)}")
+        constant = rep["smoke_test"].get("constant_metrics") or {}
+        if constant:
+            text = ", ".join(f"{m}={v:g}" for m, v in constant.items())
+            print(f"    constant in every row (not a gate): {text}")
         for kind, outcomes in summary["known_answer_summary"].get(ds, {}).items():
             if isinstance(outcomes, dict):
                 text = ", ".join(f"{m}={o}" for m, o in outcomes.items())

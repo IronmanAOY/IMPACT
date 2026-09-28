@@ -247,18 +247,21 @@ def _derivative_subjects(root: Path) -> dict[str, int]:
 
 
 def _relativize(obj: Any, root: Path, label: str) -> Any:
-    """Replace absolute paths under ``root`` with '<label>/<relative path>'."""
+    """Replace absolute paths under ``root`` with '<label>/<relative path>'.
+
+    Paths embedded in longer strings (for example exception messages) are
+    replaced too, so no absolute local path reaches the reports.
+    """
     prefix = str(root)
     if isinstance(obj, dict):
         return {k: _relativize(v, root, label) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_relativize(v, root, label) for v in obj]
-    if isinstance(obj, str) and obj.startswith(prefix):
-        rest = obj[len(prefix):]
-        if not rest:
+    if isinstance(obj, str):
+        if obj == prefix:
             return label
-        if rest[0] in "/\\":
-            return f"{label}/{rest.lstrip('/')}"
+        for sep in ("/", "\\"):
+            obj = obj.replace(prefix + sep, f"{label}/")
     return obj
 
 
@@ -569,7 +572,7 @@ def inspect_dataset(
                 "incomplete_status_json": str(status_json) if status_json.exists() else None,
             }
         )
-        return out
+        return _relativize(out, local_root, local_root.name)
     files = _list_files(local_root)
     out["file_counts"] = {
         "total": len(files),

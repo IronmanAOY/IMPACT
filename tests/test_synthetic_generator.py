@@ -235,6 +235,14 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _tree_hashes(root: Path) -> dict[str, str]:
+    return {
+        p.relative_to(root).as_posix(): _sha(p)
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
 def test_inspection_counts_top_level_subjects_and_respects_source_root(
     inspect_mod, tmp_path
 ):
@@ -486,6 +494,9 @@ def test_manifest_paths_rebase_for_legacy_absolute_paths(gen, tmp_path):
     assert gen._resolve_manifest_path(rel.as_posix(), root) == target.resolve()
     with pytest.raises(FileNotFoundError):
         gen._resolve_manifest_path("/nowhere/else/file.npy", root)
+    # The build machine's own path may itself contain a 'test_objects' folder.
+    nested = Path("/nonexistent/test_objects/impact-synergy-pipeline") / rel
+    assert gen._resolve_manifest_path(str(nested), root) == target
 
 
 def test_validate_only_on_relocated_copy_is_nondestructive(
@@ -494,7 +505,7 @@ def test_validate_only_on_relocated_copy_is_nondestructive(
     moved = tmp_path / "somewhere_else"
     shutil.copytree(generated["synth"], moved)
     reports = moved / "test_objects" / "real_derived_synth_completed" / "reports"
-    before = {p.name: _sha(p) for p in reports.glob("*.json")}
+    before = _tree_hashes(moved)
     monkeypatch.setenv("IMPACT_SYNTH_ROOT", str(moved))
     out = tmp_path / "revalidation"
     rc = gen.main(
@@ -509,14 +520,16 @@ def test_validate_only_on_relocated_copy_is_nondestructive(
         ]
         + TINY_IIM
     )
-    after = {p.name: _sha(p) for p in reports.glob("*.json")}
-    assert before == after, "validate-only modified shipped reports"
+    after = _tree_hashes(moved)
+    assert before == after, "validate-only modified the shipped objects or reports"
     assert not (reports / "ds005620").exists()
     summary = json.loads((out / gen.SUMMARY_NAME).read_text())
     assert "all_validated" not in summary
     assert summary["object_kind"] == "software_smoke_test_objects"
     rep = summary["validation"]["ds005620"]
-    assert rc == (0 if summary["smoke_test_passed"] else 1)
+    # Well-formed objects must pass the smoke gate (and exit 0).
+    assert summary["smoke_test_passed"] is True, rep["smoke_test"]
+    assert rc == 0
     assert rep["iim_configuration"]["iim_max_nodes"] == 4
     assert rep["smoke_test"]["n_rows"] == 3
     rows = {r["session"]: r for r in rep["rows"]}
@@ -540,6 +553,12 @@ def test_validate_only_on_relocated_copy_is_nondestructive(
             "undefined",
         }
     assert rep["planted_structure_verified"] in (True, False)
+    # The low-level session carries more zero-lag synchrony by construction.
+    opposing = rep["opposing_structure"]
+    assert opposing["expected"] == "deep > awake"
+    assert opposing["summary"]["n_defined_pairs"] == 1
+    assert opposing["present"] is True
+    assert "zero-lag synchrony" in summary["known_answer_note"]
     # The pipeline event resolver is compared against the exact events file.
     res = {r["session"]: r for r in rep["pipeline_event_resolution"]["runs"]}
     assert res["awake"]["consistent"] and res["deep"]["consistent"]
@@ -557,6 +576,13 @@ def test_smoke_gate_fails_on_broken_arrays(gen, generated, tmp_path):
     arr = np.load(moved / run["task_array"])
     arr[:, 0] = 0.0
     np.save(moved / run["task_array"], arr)
+    # A missing array must be reported as a failed check, not abort validation.
+    awake = next(
+        r
+        for r in manifest["runs"]
+        if r["subject"] == "1010" and r["session"] == "awake"
+    )
+    (moved / awake["rest_array"]).unlink()
     out = tmp_path / "reval"
     rc = gen.main(
         [
@@ -576,6 +602,12 @@ def test_smoke_gate_fails_on_broken_arrays(gen, generated, tmp_path):
     assert rc == 1 and summary["smoke_test_passed"] is False
     failed = summary["validation"]["ds005620"]["smoke_test"]["failed_checks"]
     assert "no_zero_variance_nodes" in failed and "bids_data_matches_array" in failed
+    assert "rest_array_exists" in failed
+    rows = {
+        r["session"]: r["checks"] for r in summary["validation"]["ds005620"]["rows"]
+    }
+    assert rows["awake"]["rest_array_exists"] is False
+    assert rows["deep"]["rest_array_exists"] is True
 
 
 def test_validate_only_accepts_legacy_manifest_with_foreign_absolute_paths(
@@ -622,3 +654,65 @@ def test_validate_only_accepts_legacy_manifest_with_foreign_absolute_paths(
     assert rep["planted_structure_verified"] is None
     assert rep["pipeline_event_resolution"]["consistent"] is None
     assert all(r["checks"]["arrays_finite"] for r in rep["rows"])
+
+
+def test_subject_subset_regenerates_identical_objects(gen, generated, tmp_path):
+    """A subject's objects do not depend on which other subjects are generated."""
+    subset = tmp_path / "subset"
+    subset.mkdir()
+    args = _gen_args(subset, generated["source"]) + ["--skip-validation"]
+    for ds, subj in (("ds005620", "1037"), ("ds002547", "14")):
+        assert gen.main(args + ["--datasets", ds, "--subjects", subj]) == 0
+        reports = subset / "test_objects" / "real_derived_synth_completed" / "reports"
+        sub_manifest = json.loads((reports / f"{ds}_manifest.json").read_text())
+        full = {
+            r["session"]: r
+            for r in generated["manifests"][ds]["runs"]
+            if r["subject"] == subj
+        }
+        assert sub_manifest["subjects"] == [subj]
+        for run in sub_manifest["runs"]:
+            ref = full[run["session"]]
+            rest_src = run["rest_source"]["source_path"]
+            assert rest_src == ref["rest_source"]["source_path"]
+            for key in ("task_array", "rest_array"):
+                a = np.load(generated["synth"] / ref[key])
+                b = np.load(subset / run[key])
+                assert np.array_equal(a, b), (ds, subj, run["session"], key)
+
+
+def test_inspection_relativizes_paths_inside_messages(inspect_mod, tmp_path):
+    root = tmp_path / "sources" / "ds005620"
+    row = {
+        "error": f"[Errno 2] No such file or directory: '{root}/sub-1/eeg/x.vhdr'",
+        "files": [str(root / "sub-1" / "a.tsv")],
+        "local_root": str(root),
+    }
+    out = inspect_mod._relativize(row, root, "ds005620")
+    text = json.dumps(out)
+    assert str(tmp_path) not in text
+    assert out["files"] == ["ds005620/sub-1/a.tsv"]
+    assert "'ds005620/sub-1/eeg/x.vhdr'" in out["error"]
+    assert out["local_root"] == "ds005620"
+
+
+def test_source_allocator_flags_only_true_reuse(gen, tmp_path):
+    short = tmp_path / "short.vhdr"
+    short.write_text("x")
+    alloc = gen._SourceAllocator(60.0, lambda _p: 10.0)
+    first = alloc.allocate([(short, True)], "awake/task")
+    # Shorter than one segment, but nobody else uses it: not a reuse.
+    assert first["reused"] is False and first["shared_with"] == []
+    second = alloc.allocate([(short, True)], "deep/task")
+    assert second["reused"] is True and second["shared_with"] == ["awake/task"]
+    with pytest.raises(FileNotFoundError):
+        alloc.allocate([(tmp_path / "missing.vhdr", True)], "sed/task")
+
+
+def test_constant_metrics_are_reported(gen):
+    rows = [
+        {"metric_values": {"NAS": 0.0, "IIM": 0.2, "SRPI": np.nan}},
+        {"metric_values": {"NAS": 0.0, "IIM": 0.3, "SRPI": 0.5}},
+        {"metric_values": {"NAS": 0.0, "IIM": np.nan, "SRPI": np.nan}},
+    ]
+    assert gen._constant_metrics(rows, ("NAS", "IIM", "SRPI", "RAM")) == {"NAS": 0.0}
