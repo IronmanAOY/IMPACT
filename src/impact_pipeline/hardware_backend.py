@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from dataclasses import asdict, dataclass
 from typing import Any
 
 import numpy as np
+
+log = logging.getLogger(__name__)
+
+# Per-process record of whether the accelerator eigh path is trusted.
+# CuPy documents cupy.linalg.eigh as "not yet supported" on ROCm (its HIP
+# build routes to hipSOLVER syevj), and HPE warns about wrong rocBLAS results
+# on ROCm 6.4.0/6.4.1, so device eigh is only used after a numerical parity
+# check against NumPy and falls back to the CPU otherwise.
+_EIGH_DEVICE_STATUS: dict[tuple, dict[str, Any]] = {}
+EIGH_BACKEND_ENV = "IMPACT_EIGH_BACKEND"
+EIGH_PARITY_RTOL = 1e-8
+_THREAD_LIMITS_APPLIED = False
 
 
 class HardwareBackendError(RuntimeError):
@@ -168,16 +181,41 @@ def resolve_hardware_backend(target: str | HardwareBackend | dict | None = None)
     raise HardwareBackendError(f"Unhandled hardware target '{target}'.")
 
 
+def _apply_runtime_thread_limits() -> None:
+    """
+    Environment variables only affect BLAS/OpenMP pools that have not been
+    initialised yet; NumPy is already imported here, so also apply the limit
+    to the loaded pools via threadpoolctl (best effort, once per process).
+    """
+    global _THREAD_LIMITS_APPLIED
+    if _THREAD_LIMITS_APPLIED:
+        return
+    _THREAD_LIMITS_APPLIED = True
+    try:
+        limit = int(str(os.environ.get("OMP_NUM_THREADS", "1")).strip() or "1")
+    except ValueError:
+        return
+    try:
+        from threadpoolctl import threadpool_limits  # type: ignore
+    except Exception:
+        return
+    try:
+        threadpool_limits(limits=max(1, limit))
+    except Exception as exc:  # pragma: no cover - platform specific
+        log.debug("threadpoolctl could not apply thread limits: %s", exc)
+
+
 def configure_process_for_hardware(backend: str | HardwareBackend | dict | None) -> HardwareBackend:
     resolved = resolve_hardware_backend(backend)
     if resolved.accelerator:
         # Keep CPU support libraries conservative when the accelerator is doing
         # the matrix-heavy work. This avoids accidental CPU oversubscription in
-        # Slurm array tasks and local multi-worker runs.
+        # batch array tasks and local multi-worker runs.
         os.environ.setdefault("OMP_NUM_THREADS", "1")
         os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
         os.environ.setdefault("MKL_NUM_THREADS", "1")
         os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+        _apply_runtime_thread_limits()
     return resolved
 
 
@@ -288,6 +326,139 @@ def accelerated_row_norm(a, axis=1, backend=None):
     return xp.asnumpy(out)
 
 
+def _eigh_status_key(resolved: HardwareBackend) -> tuple:
+    return (
+        resolved.target,
+        resolved.runtime,
+        resolved.device_name,
+        int(resolved.device_count),
+    )
+
+
+def _eigh_backend_policy() -> str:
+    policy = str(os.environ.get(EIGH_BACKEND_ENV, "auto") or "auto").strip().lower()
+    if policy not in {"auto", "device", "cpu"}:
+        raise HardwareBackendError(
+            f"{EIGH_BACKEND_ENV}={policy!r} is invalid; "
+            "expected one of: auto, device, cpu."
+        )
+    return policy
+
+
+def check_eigh_parity(
+    backend=None, n: int = 48, seed: int = 0, rtol: float = EIGH_PARITY_RTOL
+) -> dict:
+    """
+    Compare accelerator ``eigh`` against ``numpy.linalg.eigh`` on a fixed
+    symmetric positive-definite matrix. Eigenvectors are sign/rotation
+    ambiguous, so the check uses eigenvalues, reconstruction and orthogonality.
+    """
+    resolved = resolve_hardware_backend(backend)
+    rng = np.random.default_rng(int(seed))
+    a = rng.standard_normal((int(n), int(n)))
+    spd = a @ a.T + float(n) * np.eye(int(n))
+    ref_vals = np.linalg.eigh(spd)[0]
+    out: dict[str, Any] = {
+        "backend": resolved.target,
+        "runtime": resolved.runtime,
+        "n": int(n),
+        "rtol": float(rtol),
+    }
+    if not resolved.accelerator:
+        out.update({"device_ok": False, "reason": "cpu_backend", "checked": False})
+        return out
+    xp = get_array_module(resolved)
+    try:
+        vals_d, vecs_d = xp.linalg.eigh(xp.asarray(spd, dtype=xp.float64))
+        vals = np.asarray(to_numpy(vals_d), dtype=float)
+        vecs = np.asarray(to_numpy(vecs_d), dtype=float)
+    except Exception as exc:
+        out.update(
+            {
+                "device_ok": False,
+                "checked": True,
+                "reason": f"device_eigh_error:{type(exc).__name__}: {exc}",
+            }
+        )
+        return out
+    scale = float(np.max(np.abs(ref_vals))) or 1.0
+    if vals.shape != ref_vals.shape or vecs.shape != spd.shape:
+        out.update(
+            {
+                "device_ok": False,
+                "checked": True,
+                "reason": "device_eigh_shape_mismatch",
+            }
+        )
+        return out
+    val_err = float(np.max(np.abs(np.sort(vals) - ref_vals)) / scale)
+    recon_err = float(
+        np.max(np.abs((vecs * vals) @ vecs.T - spd)) / float(np.max(np.abs(spd)))
+    )
+    orth_err = float(np.max(np.abs(vecs.T @ vecs - np.eye(int(n)))))
+    finite = bool(np.all(np.isfinite(vals)) and np.all(np.isfinite(vecs)))
+    ok = finite and max(val_err, recon_err, orth_err) <= float(rtol)
+    out.update(
+        {
+            "device_ok": bool(ok),
+            "checked": True,
+            "eigenvalue_rel_err": val_err,
+            "reconstruction_rel_err": recon_err,
+            "orthogonality_err": orth_err,
+            "reason": None if ok else "device_eigh_parity_failed",
+        }
+    )
+    return out
+
+
+def device_eigh_status(backend=None) -> dict:
+    """Return (and cache per process) whether the accelerator eigh path is used."""
+    resolved = resolve_hardware_backend(backend)
+    if not resolved.accelerator:
+        return {"use_device": False, "reason": "cpu_backend"}
+    key = _eigh_status_key(resolved)
+    cached = _EIGH_DEVICE_STATUS.get(key)
+    if cached is not None:
+        return cached
+    policy = _eigh_backend_policy()
+    if policy == "cpu":
+        status = {
+            "use_device": False,
+            "reason": f"{EIGH_BACKEND_ENV}=cpu",
+            "policy": policy,
+        }
+    elif policy == "device":
+        status = {
+            "use_device": True,
+            "reason": f"{EIGH_BACKEND_ENV}=device (parity check skipped)",
+            "policy": policy,
+        }
+    else:
+        parity = check_eigh_parity(resolved)
+        status = {
+            "use_device": bool(parity.get("device_ok")),
+            "reason": parity.get("reason"),
+            "policy": policy,
+            "parity": parity,
+        }
+        if not status["use_device"]:
+            log.warning(
+                "Accelerator eigh disabled for this process (%s); "
+                "using NumPy eigh on the CPU.",
+                parity.get("reason"),
+            )
+    _EIGH_DEVICE_STATUS[key] = status
+    return status
+
+
+def _cpu_psd_invsqrt(mat, eps):
+    m = np.asarray(to_numpy(mat), dtype=float)
+    sym = 0.5 * (m + m.T)
+    vals, vecs = np.linalg.eigh(sym)
+    vals = np.maximum(vals, float(eps))
+    return (vecs * (1.0 / np.sqrt(vals))) @ vecs.T
+
+
 def accelerated_psd_invsqrt(mat, eps=1e-10, backend=None):
     resolved = resolve_hardware_backend(backend)
     if not resolved.accelerator:
@@ -295,10 +466,87 @@ def accelerated_psd_invsqrt(mat, eps=1e-10, backend=None):
         vals, vecs = np.linalg.eigh(sym)
         vals = np.maximum(vals, float(eps))
         return (vecs * (1.0 / np.sqrt(vals))) @ vecs.T
+    if not device_eigh_status(resolved).get("use_device", False):
+        return _cpu_psd_invsqrt(mat, eps)
     xp = get_array_module(resolved)
-    m = xp.asarray(mat, dtype=xp.float64)
-    sym = 0.5 * (m + m.T)
-    vals, vecs = xp.linalg.eigh(sym)
-    vals = xp.maximum(vals, float(eps))
-    out = (vecs * (1.0 / xp.sqrt(vals))) @ vecs.T
-    return xp.asnumpy(out)
+    try:
+        m = xp.asarray(mat, dtype=xp.float64)
+        sym = 0.5 * (m + m.T)
+        vals, vecs = xp.linalg.eigh(sym)
+        vals = xp.maximum(vals, float(eps))
+        out = (vecs * (1.0 / xp.sqrt(vals))) @ vecs.T
+        return xp.asnumpy(out)
+    except Exception as exc:
+        key = _eigh_status_key(resolved)
+        _EIGH_DEVICE_STATUS[key] = {
+            "use_device": False,
+            "reason": f"device_eigh_error:{type(exc).__name__}: {exc}",
+            "policy": _eigh_backend_policy(),
+        }
+        log.warning(
+            "Accelerator eigh failed (%s); falling back to NumPy eigh on the CPU.", exc
+        )
+        return _cpu_psd_invsqrt(mat, eps)
+
+
+def device_info(backend=None) -> dict:
+    """Describe the resolved backend and visible devices (for logs/provenance)."""
+    resolved = resolve_hardware_backend(backend)
+    info: dict[str, Any] = {
+        "backend": resolved.to_dict(),
+        "visible_device_env": {
+            name: os.environ.get(name)
+            for name in (
+                "HIP_VISIBLE_DEVICES",
+                "ROCR_VISIBLE_DEVICES",
+                "CUDA_VISIBLE_DEVICES",
+                "PMI_LOCAL_RANK",
+                "PBS_JOBID",
+                "PBS_ARRAY_INDEX",
+            )
+            if os.environ.get(name) is not None
+        },
+        "numpy_version": np.__version__,
+    }
+    if not resolved.accelerator:
+        return info
+    cp = importlib.import_module("cupy")
+    info["cupy_version"] = str(getattr(cp, "__version__", "unknown"))
+    runtime = cp.cuda.runtime
+    try:
+        info["runtime_version"] = int(runtime.runtimeGetVersion())
+    except Exception:
+        info["runtime_version"] = None
+    try:
+        info["driver_version"] = int(runtime.driverGetVersion())
+    except Exception:
+        info["driver_version"] = None
+    devices = []
+    for idx in range(int(resolved.device_count)):
+        rec: dict[str, Any] = {"index": int(idx)}
+        try:
+            props = runtime.getDeviceProperties(idx)
+            name = props.get("name", b"") if isinstance(props, dict) else b""
+            rec["name"] = (
+                name.decode("utf-8", errors="replace")
+                if isinstance(name, bytes)
+                else str(name)
+            )
+            if isinstance(props, dict):
+                for key in (
+                    "totalGlobalMem",
+                    "multiProcessorCount",
+                    "gcnArchName",
+                    "major",
+                    "minor",
+                ):
+                    val = props.get(key)
+                    if isinstance(val, bytes):
+                        val = val.decode("utf-8", errors="replace")
+                    if val is not None:
+                        rec[key] = val
+        except Exception as exc:
+            rec["error"] = f"{type(exc).__name__}: {exc}"
+        devices.append(rec)
+    info["devices"] = devices
+    return info

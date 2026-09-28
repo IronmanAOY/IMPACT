@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-import glob
 import sys
 import argparse
 import logging
@@ -36,7 +35,10 @@ from impact_pipeline.analysis_bootstrap import (
 )
 from impact_pipeline.motion_model import motion_covariate_analysis
 from impact_pipeline.atlas_robustness import atlas_check
-from impact_pipeline.replication import run_replication
+from impact_pipeline.replication import (
+    _find_fmriprep_derivatives,
+    run_replication,
+)
 from impact_pipeline.model_comparison import compare_models
 from impact_pipeline.generate_word_doc import create_doc
 from impact_pipeline.execution_profiles import get_execution_profile
@@ -44,18 +46,28 @@ from impact_pipeline.hardware_backend import (
     HardwareBackendError,
     backend_summary,
     configure_process_for_hardware,
+    normalize_hardware_target,
 )
 from impact_pipeline.hunter_iim import (
+    campaign_status,
     collect_iim_results_by_path,
     prepare_hunter_campaign,
     run_cut_reduce,
+    run_cut_reduce_all,
     run_cut_shard,
+    run_packed_shard,
     run_phase1_reduce,
+    run_phase1_reduce_all,
     run_phase1_shard,
+    run_reduce_all,
+    summarize_campaign_timing,
 )
 from impact_pipeline.provenance import (
     PROVENANCE_COLUMNS,
     REAL_DATA_ORIGIN,
+    assert_origin_matches_dataset,
+    collect_code_version,
+    collect_runtime_versions,
     is_test_object_origin,
     resolve_dataset_provenance,
     write_json,
@@ -74,6 +86,23 @@ STATS_SEED = 42  # explicit seed for all resampling statistics (steps 4 and 8)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pipeline")
 EXPECTED_CONDA_ENV = os.environ.get("IMPACT_CONDA_ENV", "impact-synergy-clean")
+HUNTER_STAGES = (
+    "build-campaign",
+    "phase1-shard",
+    "phase1-reduce",
+    "phase1-reduce-all",
+    "cut-shard",
+    "cut-reduce",
+    "cut-reduce-all",
+    "reduce-all",
+    "finalize-pipeline",
+    "status",
+)
+# Robustness atlases for fMRI step 6 (AAL-116 = SPM12 AAL; 'aal90' is the
+# legacy file key, still recognised for existing outputs).
+ROBUSTNESS_ATLASES = ("aal116", "shen268")
+LEGACY_ATLAS_KEYS = {"aal116": "aal90"}
+HARDWARE_COLUMNS = ("hardware_target", "hardware_backend", "hardware_runtime")
 
 DATASET_CONFIGS = {
     "ds003171": {
@@ -315,9 +344,18 @@ DATASET_CONFIGS = {
             "eps": 1e-8,
         },
         "srpi_require_explicit_params": True,
+        # Analysed runs: awake eyes-closed rest; deep = first sed2 (else sed)
+        # rest run, i.e. the run the events resolver selects as well, so the
+        # analysed set does not depend on which metrics are requested.
         "eeg_session_rules": {
             "awake": [("awake", "EC")],
-            "deep": [("sed2", "rest"), ("sed", "rest")],
+            "deep": [("sed2", "rest", "first"), ("sed", "rest", "first")],
+        },
+        # Rest/baseline recordings for PDI: same state, disjoint from the
+        # analysed runs (awake eyes-open rest; remaining sed2/sed rest runs).
+        "eeg_rest_rules": {
+            "awake": [("awake", "EO")],
+            "deep": [("sed2", "rest", "after_first"), ("sed", "rest", "after_first")],
         },
     },
 }
@@ -341,6 +379,7 @@ def _apply_metric_subset(df, df_mean, mpc_metrics=None, compute_ci=True):
         selected = set(mpc_metrics)
 
     keep_df = [c for c in PROVENANCE_COLUMNS if c in df.columns]
+    keep_df.extend(c for c in HARDWARE_COLUMNS if c in df.columns)
     keep_df.extend(['subject', 'session', 'theta', 'S'])
     for metric in ("RAM", "PDI", "NAS", "IIM", "SRPI"):
         if metric in selected and metric in df.columns:
@@ -395,6 +434,7 @@ def _apply_metric_subset(df, df_mean, mpc_metrics=None, compute_ci=True):
         df_mean = df_mean.merge(recovered, on=["subject", "session"], how="left")
 
     keep_mean = [c for c in PROVENANCE_COLUMNS if c in df_mean.columns]
+    keep_mean.extend(c for c in HARDWARE_COLUMNS if c in df_mean.columns)
     keep_mean.extend(['subject', 'session', 'S'])
     for metric in ("RAM", "PDI", "PDI_anchor", "PDI_task", "NAS", "IIM", "SRPI", "IIM_raw", "IIM_raw_scaled"):
         include = (metric in selected) or (metric.startswith("IIM") and "IIM" in selected)
@@ -419,6 +459,10 @@ def _write_run_provenance_manifest(
     atlas: str,
     sessions,
     condition: str,
+    parameters: dict | None = None,
+    hardware=None,
+    status: str | None = None,
+    extra: dict | None = None,
 ) -> None:
     payload = provenance.as_manifest_dict()
     payload.update(
@@ -429,13 +473,39 @@ def _write_run_provenance_manifest(
             "atlas": str(atlas),
             "sessions": [str(s) for s in sessions],
             "condition": str(condition),
+            "status": (None if status is None else str(status)),
+            "code_version": collect_code_version(root),
+            "runtime": collect_runtime_versions(),
+            "hardware_backend": (
+                None
+                if hardware is None
+                else (hardware.to_dict() if hasattr(hardware, "to_dict") else hardware)
+            ),
+            "parameters": _json_safe(parameters or {}),
             "result_usage_note": (
                 "Results retain explicit dataset-origin provenance. Synthetic validation outputs "
                 "remain isolated from real-study outputs unless selected explicitly."
             ),
         }
     )
+    if extra:
+        payload.update(_json_safe(extra))
     write_json(cache_dir / "provenance_manifest.json", payload)
+
+
+def _json_safe(value):
+    """Convert tuples/Paths/numpy scalars so run parameters serialise to JSON."""
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
 
 
 def _ensure_provenance_columns(df: pd.DataFrame, provenance) -> pd.DataFrame:
@@ -580,13 +650,24 @@ def _write_eeg_preprocessing_summary(cache_dir: Path, summary_payload: dict) -> 
             [
                 "subject",
                 "session",
+                "segment",
                 "source_file",
                 "output_file",
                 "run_index",
+                "bids_run",
+                "run_index_source",
                 "n_channels",
                 "n_timepoints",
                 "sfreq_hz",
             ],
+        ),
+        "excluded_channels": (
+            "preprocessing_eeg_excluded_channels.csv",
+            ["subject", "channel", "type", "source"],
+        ),
+        "missing_rest": (
+            "preprocessing_eeg_missing_rest.csv",
+            ["subject", "session", "file", "reason"],
         ),
     }
     for key, (name, cols) in table_map.items():
@@ -614,47 +695,130 @@ def _resolve_freesurfer_license_path() -> Path:
     )
 
 
-def ensure_fmriprep(bids_dir, fmriprep_out, work_dir, fs_license, freesurf_out, subjects=None):
+FMRIPREP_IMAGE = "nipreps/fmriprep:25.1.3"
+FMRIPREP_LICENSE_IN_CONTAINER = "/opt/freesurfer/license.txt"
 
-    layout = BIDSLayout(bids_dir, validate=False)
+
+def canonical_fmriprep_dir(bids_root) -> Path:
+    """Canonical fMRIPrep derivatives location: <bids_root>/derivatives/fmriprep."""
+    return Path(bids_root).expanduser().resolve() / "derivatives" / "fmriprep"
+
+
+def _has_fmriprep_subjects(path: Path) -> bool:
+    return path.is_dir() and any(p.is_dir() for p in path.glob("sub-*"))
+
+
+def _resolve_fmriprep_dir(fmriprep_dir_override, bids_root, out) -> Path:
+    """
+    fMRIPrep derivatives used by preprocessing (and written by --run-fmriprep):
+    --fmriprep-dir if given, else <bids_root>/derivatives/fmriprep. The legacy
+    <out>/fmriprep location is still read when only it holds derivatives.
+    """
+    if fmriprep_dir_override is not None:
+        return Path(fmriprep_dir_override).expanduser().resolve()
+    canonical = canonical_fmriprep_dir(bids_root)
+    legacy = Path(out) / "fmriprep"
+    if not _has_fmriprep_subjects(canonical) and _has_fmriprep_subjects(legacy):
+        log.warning(
+            "Using legacy fMRIPrep derivatives at %s (canonical location: %s).",
+            legacy,
+            canonical,
+        )
+        return legacy.resolve()
+    return canonical
+
+
+def _fmriprep_subject_complete(fmriprep_out: Path, sub: str) -> bool:
+    out = Path(fmriprep_out)
+    report = out / f"sub-{sub}.html"
+    bold = list((out / f"sub-{sub}").glob("**/func/*desc-preproc_bold.nii.gz"))
+    return report.exists() and bool(bold)
+
+
+def ensure_fmriprep(
+    bids_dir,
+    fmriprep_out,
+    work_dir,
+    fs_license,
+    freesurf_out,
+    subjects=None,
+    *,
+    nthreads=None,
+    omp_nthreads=None,
+    mem_mb=None,
+    image=None,
+    skip_existing=True,
+):
+    """
+    Run fMRIPrep (docker) for subjects whose derivatives are not complete yet.
+
+    The license file is mounted by its own path (any file name) at
+    /opt/freesurfer/license.txt. Resource limits default to
+    IMPACT_FMRIPREP_NTHREADS / IMPACT_FMRIPREP_OMP_NTHREADS /
+    IMPACT_FMRIPREP_MEM_MB (16 / 8 / 96000) and the pinned image to
+    IMPACT_FMRIPREP_IMAGE (nipreps/fmriprep:25.1.3).
+    """
+    bids_dir = Path(bids_dir).expanduser().resolve()
+    fmriprep_out = Path(fmriprep_out).expanduser().resolve()
+    work_dir = Path(work_dir).expanduser().resolve()
+    freesurf_out = Path(freesurf_out).expanduser().resolve()
+    license_path = Path(fs_license).expanduser().resolve()
+    nthreads = int(nthreads or os.environ.get("IMPACT_FMRIPREP_NTHREADS", 16))
+    omp_nthreads = int(
+        omp_nthreads or os.environ.get("IMPACT_FMRIPREP_OMP_NTHREADS", 8)
+    )
+    mem_mb = int(mem_mb or os.environ.get("IMPACT_FMRIPREP_MEM_MB", 96000))
+    image = str(image or os.environ.get("IMPACT_FMRIPREP_IMAGE", FMRIPREP_IMAGE))
+
+    layout = BIDSLayout(str(bids_dir), validate=False)
     all_subj = sorted(layout.get(return_type='id', target='subject'))
     if subjects:
-        subjects = [s for s in all_subj if s in subjects]
+        wanted = {str(s).strip().replace("sub-", "", 1) for s in subjects}
+        subjects = [s for s in all_subj if s in wanted]
     else:
         subjects = all_subj
- 
 
     os.makedirs(work_dir, exist_ok=True)
     os.makedirs(fmriprep_out, exist_ok=True)
     os.makedirs(freesurf_out, exist_ok=True)
-    
+
+    ran = []
     for sub in subjects:
+        if skip_existing and _fmriprep_subject_complete(fmriprep_out, sub):
+            log.info(
+                "fMRIPrep derivatives for sub-%s already present in %s; skipping.",
+                sub,
+                fmriprep_out,
+            )
+            continue
         log.info("Running fMRIPrep on %s …", sub)
-        cache_host = Path(work_dir) / 'bids_db'
+        cache_host = work_dir / "bids_db"
         cache_cont = '/bids_db'
         cmd = [
-          'docker','run','--rm',
-          '-v', f'{bids_dir}:/data',
-          '-v', f'{fmriprep_out}:/out',
-          '-v', f'{work_dir}:/work',
-          '-v', f'{freesurf_out}:/out_freesurfer',
-          '-v', f'{Path(fs_license).parent.resolve()}:/licenses:ro',
-          '-v', f'{cache_host}:{cache_cont}',
-          'nipreps/fmriprep:25.1.3',
-          '/data','/out','participant',
-          '--participant-label', sub,
-          '--fs-license-file',
-          '/licenses/fs_license.txt', # make sure your freesurfer license is named and placed correctly
-          '--fs-subjects-dir', '/out_freesurfer',
-          '--bids-database-dir', cache_cont,
-          '--work-dir','/work',
- #         '--clean-workdir',   # Enable only for final full-dataset fMRIPrep runs when intermediate work files can be discarded.
-          '--skip-bids-validation',
-          '--nthreads', '16', # or however many logical CPUs you have
-          '--omp-nthreads', '8', # ~ half of total
-          '--mem', '96000', # adjust to your RAM
+            "docker", "run", "--rm",
+            "-v", f"{bids_dir}:/data",
+            "-v", f"{fmriprep_out}:/out",
+            "-v", f"{work_dir}:/work",
+            "-v", f"{freesurf_out}:/out_freesurfer",
+            # the license is mounted by its own path, whatever its file name
+            "-v", f"{license_path}:{FMRIPREP_LICENSE_IN_CONTAINER}:ro",
+            "-v", f"{cache_host}:{cache_cont}",
+            image,
+            "/data", "/out", "participant",
+            "--participant-label", sub,
+            "--fs-license-file", FMRIPREP_LICENSE_IN_CONTAINER,
+            "--fs-subjects-dir", "/out_freesurfer",
+            "--bids-database-dir", cache_cont,
+            "--work-dir", "/work",
+            # "--clean-workdir",  # final full-dataset runs only (discards work)
+            "--skip-bids-validation",
+            "--nthreads", str(nthreads),
+            "--omp-nthreads", str(omp_nthreads),
+            "--mem", str(mem_mb),
         ]
         subprocess.run(cmd, check=True)
+        ran.append(sub)
+    return ran
 
 
 def _persist_step2_outputs(
@@ -711,6 +875,206 @@ def _ci_reference_record(df):
     return rec
 
 
+def _resolve_replication_root() -> Path:
+    return _first_existing_path(
+        root / "data" / "scratch" / "melbourne",
+        root / "data" / "scratch" / "melbourne_propofol",
+        root / "data" / "melbourne",
+        root / "data" / "melbourne_propofol",
+    )
+
+
+def _check_replication_inputs(melb_root: Path) -> None:
+    """Fail before the expensive steps when replication cannot run at all."""
+    if not melb_root.exists():
+        raise FileNotFoundError(
+            "--run-replication requested, but the replication dataset is missing at "
+            f"'{melb_root}'. Download it or run without --run-replication."
+        )
+    # Same derivative search as run_replication (single source of truth).
+    deriv_root, _n_files, searched = _find_fmriprep_derivatives(str(melb_root))
+    if deriv_root is None:
+        raise FileNotFoundError(
+            "--run-replication requested, but no fMRIPrep desc-preproc BOLD files "
+            f"were found (searched: {', '.join(searched)}). Run fMRIPrep for the "
+            "replication dataset first or run without --run-replication."
+        )
+
+
+def _missing_atlas_runs(prep_out, atlas, sessions, condition, subjects=None, limit=10):
+    """Subject/session folders lacking <subj>_run-*_<atlas>_ts.npy (step-6 inputs)."""
+    prep_out = Path(prep_out)
+    if not prep_out.exists():
+        return ["<missing preprocessed directory>"]
+    wanted = (
+        None if subjects is None else {str(s).replace("sub-", "", 1) for s in subjects}
+    )
+    missing = []
+    for subj_dir in sorted(
+        p for p in prep_out.iterdir() if p.is_dir() and not p.name.startswith(".")
+    ):
+        if wanted is not None and subj_dir.name not in wanted:
+            continue
+        for ses in sessions:
+            if not list(
+                (subj_dir / str(ses) / str(condition)).glob(
+                    f"{subj_dir.name}_run-*_{atlas}_ts.npy"
+                )
+            ):
+                missing.append(f"{subj_dir.name}/{ses}")
+                if len(missing) >= int(limit):
+                    return missing
+    return missing
+
+
+def _bids_repetition_time(bids_root):
+    """First RepetitionTime in sub-*/func or sub-*/ses-*/func *_bold.json sidecars."""
+    if bids_root is None:
+        return None
+    broot = Path(bids_root)
+    sidecars = sorted(
+        list(broot.glob("sub-*/func/*_bold.json"))
+        + list(broot.glob("sub-*/ses-*/func/*_bold.json"))
+    )
+    for sidecar_path in sidecars:
+        with open(sidecar_path, "r", encoding="utf-8") as f:
+            tr = json.load(f).get("RepetitionTime")
+        if tr is not None and np.isfinite(float(tr)) and float(tr) > 0:
+            return float(tr)
+    return None
+
+
+def _run_atlas_robustness(
+    *,
+    prep_out,
+    bids_root,
+    sessions,
+    compute_ci,
+    df,
+    subjects,
+    dataset_id,
+    pdi_params,
+    pdi_require_explicit_params,
+    pdi_require_strict_baseline,
+    pdi_primary_endpoint,
+    nas_params,
+    srpi_params,
+    srpi_require_explicit_params,
+    context=None,
+):
+    """
+    Step 6: repeat the metrics on the robustness atlases with the same IIM
+    settings, condition, TR and hardware as step 2. Atlases without
+    time series are skipped with a recorded reason instead of crashing. In
+    Hunter mode IIM is excluded (it is not distributed for these atlases).
+    """
+    ctx = dict(context or {})
+    if not bool(ctx.get("enabled", True)):
+        return {
+            "skipped": {
+                "reason": "atlas robustness disabled (--no-atlas-robustness)",
+                "dataset": dataset_id,
+            }
+        }
+    condition = ctx.get("condition") or "audio"
+    atlases = tuple(ctx.get("atlases") or ROBUSTNESS_ATLASES)
+    tr = ctx.get("tr")
+    if tr is None:
+        from impact_pipeline.run_synergy_ci import _infer_sample_interval_seconds
+
+        # Same TR source as step 2, then any session-level BOLD sidecar.
+        tr = _infer_sample_interval_seconds(bids_root)
+        if tr is None:
+            tr = _bids_repetition_time(bids_root)
+    if tr is None:
+        return {
+            "skipped": {
+                "reason": (
+                    "no sample interval: no *_bold.json sidecar with "
+                    "RepetitionTime under the BIDS root (pass --tr)"
+                ),
+                "dataset": dataset_id,
+            }
+        }
+
+    results, usable, labels = {}, [], {}
+    for atlas in atlases:
+        key = str(atlas)
+        missing = _missing_atlas_runs(prep_out, key, sessions, condition, subjects)
+        legacy = LEGACY_ATLAS_KEYS.get(key)
+        if (
+            missing
+            and legacy
+            and not _missing_atlas_runs(prep_out, legacy, sessions, condition, subjects)
+        ):
+            key, missing = legacy, []
+        if missing:
+            log.warning(
+                "6/9 Atlas robustness: skipping %s (no time series for %s)",
+                atlas,
+                ", ".join(missing),
+            )
+            results[str(atlas)] = {
+                "skipped": {"reason": "missing_atlas_timeseries", "missing": missing}
+            }
+            continue
+        usable.append(key)
+        labels[key] = str(atlas)
+    if not usable:
+        return results
+
+    robust_metrics = [
+        m for m in ("RAM", "PDI", "NAS", "IIM", "SRPI") if m in df.columns
+    ]
+    notes = []
+    if str(ctx.get("execution_mode", "local")) == "hunter" and "IIM" in robust_metrics:
+        robust_metrics.remove("IIM")
+        notes.append(
+            "IIM omitted in Hunter finalize: robustness-atlas IIM is not distributed."
+        )
+    iim_settings = dict(ctx.get("iim_settings") or {})
+    synergy_kwargs = {
+        "condition": condition,
+        "hardware_target": ctx.get("hardware_target", "cpu"),
+        "dataset_id": dataset_id,
+    }
+    synergy_kwargs.update({k: v for k, v in iim_settings.items() if v is not None})
+    # Provenance of the primary run is carried into the robustness rows.
+    synergy_kwargs.update({
+        k: str(df[k].dropna().iloc[0])
+        for k in ("data_origin", "dataset_role", "provenance_label")
+        if k in df.columns and df[k].notna().any()
+    })
+    log.info("6/9 Testing robustness across atlases: %s", ", ".join(labels.values()))
+    atlas_res = atlas_check(
+        str(prep_out),
+        atlases=tuple(usable),
+        sessions=sessions,
+        thetas=np.arange(0.1, 1.0, 0.1),
+        tr=float(tr),
+        stimulus_onsets=None,
+        mpc_metrics=robust_metrics,
+        compute_ci=bool(
+            compute_ci and ("CI" in df.columns) and "IIM" in robust_metrics
+        ),
+        pdi_params=pdi_params,
+        pdi_require_explicit_params=pdi_require_explicit_params,
+        pdi_require_strict_baseline=pdi_require_strict_baseline,
+        pdi_primary_endpoint=pdi_primary_endpoint,
+        nas_params=nas_params,
+        srpi_params=srpi_params,
+        srpi_require_explicit_params=srpi_require_explicit_params,
+        subjects=subjects,
+        **synergy_kwargs,
+    )
+    for key, payload in dict(atlas_res).items():
+        if isinstance(payload, dict) and notes:
+            payload = dict(payload)
+            payload["notes"] = list(payload.get("notes") or []) + notes
+        results[labels.get(key, key)] = payload
+    return results
+
+
 def _postprocess_after_step2(
     *,
     df,
@@ -738,6 +1102,7 @@ def _postprocess_after_step2(
     df_stats_by_theta,
     condition=None,
     stats_seed=STATS_SEED,
+    robustness_context=None,
 ):
     condition_eff = condition if condition is not None else (cfg or {}).get("condition")
     pair = tuple(str(s) for s in tuple(sessions)[:2])
@@ -841,70 +1206,28 @@ def _postprocess_after_step2(
         motion = {'skipped': f"motion~CI omitted for modality={modality} or missing CI."}
 
     if cfg.get("atlas_robustness", False) and modality == "fmri":
-        log.info("6/9 Testing robustness across atlases")
-        sidecars = []
-        if bids_root is not None:
-            broot = Path(bids_root)
-            sidecars = sorted(
-                glob.glob(str(broot / "sub-*" / "func" / "*_bold.json"))
-                + glob.glob(str(broot / "sub-*" / "ses-*" / "func" / "*_bold.json"))
-            )
-        real_tr = None
-        for sidecar_path in sidecars:
-            with open(sidecar_path, "r", encoding="utf-8") as f:
-                real_tr = json.load(f).get('RepetitionTime')
-            if real_tr is not None:
-                break
-        if real_tr is None:
-            atlas_res = {
-                "skipped": {
-                    "skipped": (
-                        "no *_bold.json sidecar with RepetitionTime under the BIDS "
-                        "root; atlas robustness needs an explicit TR"
-                    ),
-                    "dataset": dataset_id,
-                }
-            }
-        else:
-            # IIM is not recomputed here: the exhaustive default IIM configuration is
-            # infeasible in this step and the CLI IIM settings are not forwarded, so
-            # CI is not assessed across atlases (recorded in the notes).
-            robust_metrics = [
-                m for m in ("RAM", "PDI", "NAS", "SRPI") if m in df.columns
-            ]
-            robust_ci = bool(compute_ci and ("CI" in df.columns))
-            provenance_kwargs = {
-                k: str(df[k].dropna().iloc[0])
-                for k in ("data_origin", "dataset_role", "provenance_label")
-                if k in df.columns and df[k].notna().any()
-            }
-            atlas_res = atlas_check(
-                str(prep_out),
-                atlases=('aal90', 'shen268'),
-                sessions=pair,
-                thetas=np.arange(0.1, 1.0, 0.1),
-                tr=float(real_tr),
-                stimulus_onsets=None,
-                mpc_metrics=robust_metrics,
-                compute_ci=robust_ci,
-                pdi_params=pdi_params,
-                pdi_require_explicit_params=pdi_require_explicit_params,
-                pdi_require_strict_baseline=pdi_require_strict_baseline,
-                pdi_primary_endpoint=pdi_primary_endpoint,
-                nas_params=nas_params,
-                srpi_params=srpi_params,
-                srpi_require_explicit_params=srpi_require_explicit_params,
-                subjects=subjects,
-                condition=condition_eff,
-                compute_kwargs={"dataset_id": dataset_id, **provenance_kwargs},
-            )
-            for payload in atlas_res.values():
-                if isinstance(payload, dict) and isinstance(payload.get("notes"), list):
-                    payload["notes"].append(
-                        "IIM not recomputed for alternative atlases (exhaustive "
-                        "default configuration is infeasible here; primary IIM "
-                        "settings are not forwarded)."
-                    )
+        # Same condition, TR, IIM settings and hardware as step 2; only the
+        # analysed session pair is recomputed (the statistics compare that pair).
+        robustness_ctx = dict(robustness_context or {})
+        if not robustness_ctx.get("condition"):
+            robustness_ctx["condition"] = condition_eff
+        atlas_res = _run_atlas_robustness(
+            prep_out=prep_out,
+            bids_root=bids_root,
+            sessions=pair,
+            compute_ci=compute_ci,
+            df=df,
+            subjects=subjects,
+            dataset_id=dataset_id,
+            pdi_params=pdi_params,
+            pdi_require_explicit_params=pdi_require_explicit_params,
+            pdi_require_strict_baseline=pdi_require_strict_baseline,
+            pdi_primary_endpoint=pdi_primary_endpoint,
+            nas_params=nas_params,
+            srpi_params=srpi_params,
+            srpi_require_explicit_params=srpi_require_explicit_params,
+            context=robustness_ctx,
+        )
     else:
         atlas_res = {
             "skipped": {
@@ -916,20 +1239,24 @@ def _postprocess_after_step2(
     repl = None
     if run_replication_flag and cfg.get("supports_replication", False):
         log.info("7/9 Replication (Melbourne Propofol)")
-        melb_root = _first_existing_path(
-            root / 'data' / 'scratch' / 'melbourne',
-            root / 'data' / 'scratch' / 'melbourne_propofol',
-            root / 'data' / 'melbourne',
-            root / 'data' / 'melbourne_propofol',
-        )
+        melb_root = _resolve_replication_root()
         melb_out = out / 'melbourne' / 'preprocessed'
-        repl = run_replication(
-            data_root=str(melb_root),
-            out_dir=str(melb_out),
-            atlas=atlas,
-            sessions=pair,
-            random_state=stats_seed,
-        )
+        try:
+            repl = run_replication(
+                data_root=str(melb_root),
+                out_dir=str(melb_out),
+                atlas=atlas,
+                sessions=pair,
+                random_state=stats_seed,
+            )
+        except Exception as exc:
+            # A failing optional replication must not discard the finished analysis.
+            log.error(
+                "7/9 Replication failed (%s: %s); continuing with the report.",
+                type(exc).__name__,
+                exc,
+            )
+            repl = {"dataset": "melbourne", "error": f"{type(exc).__name__}: {exc}"}
     elif run_replication_flag:
         log.info("7/9 Replication skipped: not configured for dataset '%s'", dataset_id)
 
@@ -1038,15 +1365,33 @@ def _run_hunter_stage(
     report_doc,
     run_replication_flag,
     hardware_target,
+    hunter_array_index=None,
+    hunter_shards_per_node=None,
+    hunter_scheduler=None,
+    hunter_settings_overrides=None,
+    build_hardware_backend=None,
+    iim_settings=None,
+    run_parameters=None,
+    atlas_robustness=True,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
     stage = str(hunter_stage or "build-campaign").strip().lower()
+    if stage not in HUNTER_STAGES:
+        raise ValueError(
+            f"Unknown hunter stage '{hunter_stage}'. "
+            f"Expected one of: {', '.join(HUNTER_STAGES)}."
+        )
     campaign_dir = Path(
         hunter_campaign_dir if hunter_campaign_dir is not None else (cache_dir / "hunter_iim_campaign")
     ).resolve()
 
     if stage == "build-campaign":
+        if mpc_metrics is not None and "IIM" not in set(mpc_metrics):
+            raise ValueError(
+                "Hunter mode distributes IIM only, but IIM is not in --mpc-metrics. "
+                "Add IIM or use --execution-mode local for the other metrics."
+            )
         onsets = None
         needs_onsets = (mpc_metrics is None) or bool({"RAM", "SRPI"} & set(mpc_metrics))
         if needs_onsets and bids_root is not None:
@@ -1056,8 +1401,12 @@ def _run_hunter_stage(
             else:
                 layout = BIDSLayout(bids_root, validate=False)
                 discovered_subjects = sorted(layout.get(return_type='id', target='subject'))
+            # Same condition as finalize (run_s_ci) so both select the same runs.
             onsets = {
-                subj: {ses: load_onsets(bids_root, subj, ses) for ses in sessions}
+                subj: {
+                    ses: load_onsets(bids_root, subj, ses, condition=condition)
+                    for ses in sessions
+                }
                 for subj in discovered_subjects
             }
         context = {
@@ -1087,6 +1436,9 @@ def _run_hunter_stage(
             "nas_params": nas_params,
             "srpi_params": srpi_params,
             "srpi_require_explicit_params": bool(srpi_require_explicit_params),
+            "iim_settings": _json_safe(dict(iim_settings or {})),
+            "atlas_robustness": bool(atlas_robustness),
+            "run_parameters": _json_safe(dict(run_parameters or {})),
         }
         manifest = prepare_hunter_campaign(
             data_dir=prep_out,
@@ -1106,165 +1458,251 @@ def _run_hunter_stage(
             iim_max_purview_size=iim_max_purview_size,
             hardware_target=hardware_target,
             step2_context=context,
+            scheduler=hunter_scheduler,
+            settings_overrides=hunter_settings_overrides,
+            build_hardware_backend=build_hardware_backend,
         )
+        sched = manifest.get("scheduler") or {}
         log.info(
-            "Hunter campaign prepared: runs=%d phase1_tasks=%d cut_tasks=%d dir=%s",
+            "Hunter campaign prepared: runs=%d phase1_tasks=%d cut_tasks=%d "
+            "scheduler=%s shards_per_node=%s workers_per_task=%s dir=%s",
             len(manifest.get("runs", [])),
             len(manifest.get("phase1_tasks", [])),
             len(manifest.get("cut_tasks", [])),
+            sched.get("scheduler"),
+            sched.get("shards_per_node"),
+            manifest["execution_profile"].get("hunter_phase1_workers_per_task"),
             campaign_dir,
         )
-        return
+        log.info(
+            "Submit on a Hunter login node with: bash %s",
+            campaign_dir / sched.get("scheduler", "pbs") / "00_submit_all.sh",
+        )
+        return manifest
 
-    if stage == "phase1-shard":
+    if stage in {"phase1-shard", "cut-shard"}:
+        if hunter_array_index is not None:
+            run_packed_shard(
+                campaign_dir,
+                stage,
+                int(hunter_array_index),
+                # None: the packing the campaign was built with
+                (
+                    None
+                    if hunter_shards_per_node is None
+                    else int(hunter_shards_per_node)
+                ),
+            )
+            return None
         if hunter_task_index is None:
-            raise ValueError("--hunter-task-index is required for hunter phase1-shard.")
-        run_phase1_shard(campaign_dir, int(hunter_task_index))
-        return
+            raise ValueError(
+                "--hunter-task-index (or --hunter-array-index) is required for "
+                f"hunter {stage}."
+            )
+        if stage == "phase1-shard":
+            run_phase1_shard(campaign_dir, int(hunter_task_index))
+        else:
+            run_cut_shard(campaign_dir, int(hunter_task_index))
+        return None
     if stage == "phase1-reduce":
         if hunter_run_index is None:
             raise ValueError("--hunter-run-index is required for hunter phase1-reduce.")
         run_phase1_reduce(campaign_dir, int(hunter_run_index))
-        return
-    if stage == "cut-shard":
-        if hunter_task_index is None:
-            raise ValueError("--hunter-task-index is required for hunter cut-shard.")
-        run_cut_shard(campaign_dir, int(hunter_task_index))
-        return
+        return None
     if stage == "cut-reduce":
         if hunter_run_index is None:
             raise ValueError("--hunter-run-index is required for hunter cut-reduce.")
         run_cut_reduce(campaign_dir, int(hunter_run_index))
-        return
-    if stage == "finalize-pipeline":
-        ctx = json.loads((campaign_dir / "campaign_manifest.json").read_text(encoding="utf-8"))["step2_context"]
-        ctx_dataset_id = str(ctx.get("dataset_id", dataset_id))
-        ctx_cfg = DATASET_CONFIGS.get(ctx_dataset_id, cfg)
-        ctx_modality = ctx_cfg["modality"] if ctx_cfg is not None else modality
-        iim_precomputed_by_path = collect_iim_results_by_path(campaign_dir)
-        df, df_mean, _df_S, _df_CI, df_stats_by_theta = run_s_ci(
-            prep_out=Path(ctx["prep_out"]),
-            bids_root=(None if ctx["bids_root"] is None else Path(ctx["bids_root"])),
-            figdir=Path(ctx["figdir"]),
-            atlas=ctx["atlas"],
-            sessions=tuple(ctx["sessions"]),
-            thetas=np.arange(0.1, 1.0, 0.1),
-            thetas_fine=np.arange(0.4, 0.81, 0.02),
-            mpc_metrics=ctx["mpc_metrics"],
-            compute_ci=bool(ctx["compute_ci"]),
-            condition=ctx["condition"],
-            tr=ctx["tr"],
-            onsets=None,
-            load_onsets_fn=load_onsets if ctx_modality in {"fmri", "eeg"} else None,
-            iim_n_parts=iim_n_parts,
-            iim_max_timepoints=iim_max_timepoints,
-            iim_max_nodes=iim_max_nodes,
-            iim_max_mechanism_size=iim_max_mechanism_size,
-            iim_max_purview_size=iim_max_purview_size,
-            iim_parallel_workers=None,
-            iim_memory_target_ratio=0.90,
-            iim_worker_mem_gb_estimate=3.0,
-            iim_cpu_oversub_factor=3.0,
-            iim_enable_parallel=False,
-            iim_checkpoint_dir=None,
-            iim_resume_checkpoint=False,
-            iim_checkpoint_every_cuts=1,
-            iim_progress_log_every_cuts=1,
-            iim_use_shared_memory=False,
-            iim_phase1_parallel_workers=None,
-            iim_phase1_chunk_size=8,
-            iim_phase1_shared_memory=False,
-            pdi_params=ctx["pdi_params"],
-            pdi_require_explicit_params=bool(ctx["pdi_require_explicit_params"]),
-            pdi_require_strict_baseline=bool(ctx["pdi_require_strict_baseline"]),
-            pdi_primary_endpoint=ctx["pdi_primary_endpoint"],
-            nas_params=ctx["nas_params"],
-            srpi_params=ctx["srpi_params"],
-            srpi_require_explicit_params=bool(ctx["srpi_require_explicit_params"]),
-            subjects=ctx["subjects"],
-            iim_precomputed_by_path=iim_precomputed_by_path,
-            dataset_id=ctx_dataset_id,
-            data_origin=ctx.get("data_origin", REAL_DATA_ORIGIN),
-            dataset_role=ctx.get("dataset_role"),
-            provenance_label=ctx.get("provenance_label"),
-            modality=ctx_modality,
-            hardware_target=ctx.get("hardware_target", "cpu"),
-        )
-        df, df_mean = _apply_metric_subset(
-            df,
-            df_mean,
-            mpc_metrics=ctx["mpc_metrics"],
-            compute_ci=bool(ctx["compute_ci"]),
-        )
-        if 'subject' in df.columns:
-            df['subject'] = df['subject'].astype(str)
-        if 'subject' in df_mean.columns:
-            df_mean['subject'] = df_mean['subject'].astype(str)
-        _persist_step2_outputs(
-            Path(ctx["cache_dir"]),
-            df,
-            df_mean,
-            df_stats_by_theta,
-            persist_primary=True,
-        )
-        provenance = resolve_dataset_provenance(
-            repo_root=root,
-            out_dir=ctx["out_dir"],
-            dataset_id=ctx_dataset_id,
-            data_origin=ctx.get("data_origin", REAL_DATA_ORIGIN),
-        )
-        df = _ensure_provenance_columns(df, provenance)
-        df_mean = _ensure_provenance_columns(df_mean, provenance)
-        _write_run_provenance_manifest(
+        return None
+    if stage == "phase1-reduce-all":
+        run_phase1_reduce_all(campaign_dir)
+        return None
+    if stage == "cut-reduce-all":
+        run_cut_reduce_all(campaign_dir)
+        return None
+    if stage == "reduce-all":
+        run_reduce_all(campaign_dir)
+        return None
+    if stage == "status":
+        status = campaign_status(campaign_dir)
+        log.info("Hunter campaign status: %s", json.dumps(status["stages"]))
+        return status
+
+    # finalize-pipeline
+    manifest = json.loads(
+        (campaign_dir / "campaign_manifest.json").read_text(encoding="utf-8")
+    )
+    ctx = manifest["step2_context"]
+    ctx_dataset_id = str(ctx.get("dataset_id", dataset_id))
+    ctx_cfg = DATASET_CONFIGS.get(ctx_dataset_id, cfg)
+    ctx_modality = ctx_cfg["modality"] if ctx_cfg is not None else modality
+    ctx_iim = dict(ctx.get("iim_settings") or {})
+
+    def _ctx_iim(key, fallback):
+        return ctx_iim.get(key, fallback)
+
+    iim_precomputed_by_path = collect_iim_results_by_path(campaign_dir)
+    df, df_mean, _df_S, _df_CI, df_stats_by_theta = run_s_ci(
+        prep_out=Path(ctx["prep_out"]),
+        bids_root=(None if ctx["bids_root"] is None else Path(ctx["bids_root"])),
+        figdir=Path(ctx["figdir"]),
+        atlas=ctx["atlas"],
+        sessions=tuple(ctx["sessions"]),
+        thetas=np.arange(0.1, 1.0, 0.1),
+        thetas_fine=np.arange(0.4, 0.81, 0.02),
+        mpc_metrics=ctx["mpc_metrics"],
+        compute_ci=bool(ctx["compute_ci"]),
+        condition=ctx["condition"],
+        tr=ctx["tr"],
+        onsets=None,
+        load_onsets_fn=load_onsets if ctx_modality in {"fmri", "eeg"} else None,
+        iim_n_parts=_ctx_iim("iim_n_parts", iim_n_parts),
+        iim_max_timepoints=_ctx_iim("iim_max_timepoints", iim_max_timepoints),
+        iim_max_nodes=_ctx_iim("iim_max_nodes", iim_max_nodes),
+        iim_max_mechanism_size=_ctx_iim(
+            "iim_max_mechanism_size", iim_max_mechanism_size
+        ),
+        iim_max_purview_size=_ctx_iim("iim_max_purview_size", iim_max_purview_size),
+        iim_parallel_workers=None,
+        iim_memory_target_ratio=0.90,
+        iim_worker_mem_gb_estimate=3.0,
+        iim_cpu_oversub_factor=3.0,
+        iim_enable_parallel=False,
+        iim_checkpoint_dir=None,
+        iim_resume_checkpoint=False,
+        iim_checkpoint_every_cuts=1,
+        iim_progress_log_every_cuts=1,
+        iim_use_shared_memory=False,
+        iim_phase1_parallel_workers=None,
+        iim_phase1_chunk_size=8,
+        iim_phase1_shared_memory=False,
+        pdi_params=ctx["pdi_params"],
+        pdi_require_explicit_params=bool(ctx["pdi_require_explicit_params"]),
+        pdi_require_strict_baseline=bool(ctx["pdi_require_strict_baseline"]),
+        pdi_primary_endpoint=ctx["pdi_primary_endpoint"],
+        nas_params=ctx["nas_params"],
+        srpi_params=ctx["srpi_params"],
+        srpi_require_explicit_params=bool(ctx["srpi_require_explicit_params"]),
+        subjects=ctx["subjects"],
+        iim_precomputed_by_path=iim_precomputed_by_path,
+        dataset_id=ctx_dataset_id,
+        data_origin=ctx.get("data_origin", REAL_DATA_ORIGIN),
+        dataset_role=ctx.get("dataset_role"),
+        provenance_label=ctx.get("provenance_label"),
+        modality=ctx_modality,
+        # The finalize job's own target (e.g. 'cpu' on a CPU/pre queue).
+        hardware_target=hardware_target,
+    )
+    df, df_mean = _apply_metric_subset(
+        df,
+        df_mean,
+        mpc_metrics=ctx["mpc_metrics"],
+        compute_ci=bool(ctx["compute_ci"]),
+    )
+    if "subject" in df.columns:
+        df["subject"] = df["subject"].astype(str)
+    if "subject" in df_mean.columns:
+        df_mean["subject"] = df_mean["subject"].astype(str)
+    _persist_step2_outputs(
+        Path(ctx["cache_dir"]),
+        df,
+        df_mean,
+        df_stats_by_theta,
+        persist_primary=True,
+    )
+    provenance = resolve_dataset_provenance(
+        repo_root=root,
+        out_dir=ctx["out_dir"],
+        dataset_id=ctx_dataset_id,
+        data_origin=ctx.get("data_origin", REAL_DATA_ORIGIN),
+    )
+    df = _ensure_provenance_columns(df, provenance)
+    df_mean = _ensure_provenance_columns(df_mean, provenance)
+    manifest_kwargs = dict(
+        cache_dir=Path(ctx["cache_dir"]),
+        provenance=provenance,
+        modality=ctx_modality,
+        bids_root=(None if ctx["bids_root"] is None else Path(ctx["bids_root"])),
+        execution_mode="hunter",
+        atlas=ctx["atlas"],
+        sessions=tuple(ctx["sessions"]),
+        condition=ctx["condition"],
+        parameters=ctx.get("run_parameters") or {},
+        hardware={
+            "finalize_target": str(hardware_target),
+            "campaign_target": ctx.get("hardware_target"),
+            "campaign_build": manifest.get("build_hardware_backend"),
+        },
+        extra={
+            "hunter_campaign": {
+                "campaign_dir": str(campaign_dir),
+                "scheduler": manifest.get("scheduler"),
+                "execution_profile": manifest.get("execution_profile"),
+                "kernel_code_version": manifest.get("kernel_code_version"),
+            }
+        },
+    )
+    _write_run_provenance_manifest(status="finalize_started", **manifest_kwargs)
+    if is_test_object_origin(provenance.data_origin):
+        _export_test_object_metric_bank(
+            df=df,
+            df_mean=df_mean,
             cache_dir=Path(ctx["cache_dir"]),
             provenance=provenance,
             modality=ctx_modality,
-            bids_root=(None if ctx["bids_root"] is None else Path(ctx["bids_root"])),
-            execution_mode="hunter",
             atlas=ctx["atlas"],
             sessions=tuple(ctx["sessions"]),
             condition=ctx["condition"],
         )
-        if is_test_object_origin(provenance.data_origin):
-            _export_test_object_metric_bank(
-                df=df,
-                df_mean=df_mean,
-                cache_dir=Path(ctx["cache_dir"]),
-                provenance=provenance,
-                modality=ctx_modality,
-                atlas=ctx["atlas"],
-                sessions=tuple(ctx["sessions"]),
-                condition=ctx["condition"],
-            )
-        _postprocess_after_step2(
-            df=df,
-            df_mean=df_mean,
-            prep_out=Path(ctx["prep_out"]),
-            bids_root=(None if ctx["bids_root"] is None else Path(ctx["bids_root"])),
-            figdir=Path(ctx["figdir"]),
-            atlas=ctx["atlas"],
-            sessions=tuple(ctx["sessions"]),
-            compute_ci=bool(ctx["compute_ci"]),
-            modality=ctx_modality,
-            dataset_id=ctx_dataset_id,
-            cfg=ctx_cfg,
-            subjects=ctx["subjects"],
-            out=Path(ctx["out_dir"]),
-            report_doc=ctx["report_doc"],
-            pdi_params=ctx["pdi_params"],
-            pdi_require_explicit_params=bool(ctx["pdi_require_explicit_params"]),
-            pdi_require_strict_baseline=bool(ctx["pdi_require_strict_baseline"]),
-            pdi_primary_endpoint=ctx["pdi_primary_endpoint"],
-            nas_params=ctx["nas_params"],
-            srpi_params=ctx["srpi_params"],
-            srpi_require_explicit_params=bool(ctx["srpi_require_explicit_params"]),
-            run_replication_flag=bool(ctx["run_replication_flag"]),
-            df_stats_by_theta=df_stats_by_theta,
-            condition=ctx["condition"],
-        )
-        return
+    _postprocess_after_step2(
+        df=df,
+        df_mean=df_mean,
+        prep_out=Path(ctx["prep_out"]),
+        bids_root=(None if ctx["bids_root"] is None else Path(ctx["bids_root"])),
+        figdir=Path(ctx["figdir"]),
+        atlas=ctx["atlas"],
+        sessions=tuple(ctx["sessions"]),
+        compute_ci=bool(ctx["compute_ci"]),
+        modality=ctx_modality,
+        dataset_id=ctx_dataset_id,
+        cfg=ctx_cfg,
+        subjects=ctx["subjects"],
+        out=Path(ctx["out_dir"]),
+        report_doc=ctx["report_doc"],
+        pdi_params=ctx["pdi_params"],
+        pdi_require_explicit_params=bool(ctx["pdi_require_explicit_params"]),
+        pdi_require_strict_baseline=bool(ctx["pdi_require_strict_baseline"]),
+        pdi_primary_endpoint=ctx["pdi_primary_endpoint"],
+        nas_params=ctx["nas_params"],
+        srpi_params=ctx["srpi_params"],
+        srpi_require_explicit_params=bool(ctx["srpi_require_explicit_params"]),
+        run_replication_flag=bool(ctx["run_replication_flag"]),
+        df_stats_by_theta=df_stats_by_theta,
+        condition=ctx["condition"],
+        robustness_context={
+            "enabled": bool(ctx.get("atlas_robustness", True)),
+            "execution_mode": "hunter",
+            "condition": ctx["condition"],
+            "tr": ctx["tr"],
+            "iim_settings": ctx_iim,
+            "hardware_target": hardware_target,
+        },
+    )
+    summarize_campaign_timing(campaign_dir)
+    _write_run_provenance_manifest(status="completed", **manifest_kwargs)
+    return None
 
-    raise ValueError(f"Unknown hunter stage '{hunter_stage}'.")
+
+def _normalize_subjects(subjects):
+    """Accept subject IDs with or without the 'sub-' prefix everywhere."""
+    if subjects is None:
+        return None
+    out = []
+    for s in subjects:
+        label = str(s).strip().replace("sub-", "", 1)
+        if label and label not in out:
+            out.append(label)
+    return out or None
 
 
 def main(
@@ -1312,10 +1750,21 @@ def main(
     hunter_campaign_dir=None,
     hunter_task_index=None,
     hunter_run_index=None,
+    assume_tr=None,
+    fmriprep_dir=None,
+    hunter_scheduler=None,
+    hunter_array_index=None,
+    hunter_shards_per_node=None,
+    hunter_phase1_shards_per_run=None,
+    hunter_cut_shards_per_run=None,
+    hunter_workers_per_task=None,
+    atlas_robustness=True,
+    cli_argv=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
     _assert_expected_runtime_env()
+    subjects = _normalize_subjects(subjects)
 
     catalog_entry = get_report_dataset(dataset_id)
     cfg = DATASET_CONFIGS.get(dataset_id)
@@ -1344,10 +1793,38 @@ def main(
         )
     modality = cfg["modality"]
     execution_profile = get_execution_profile(execution_mode)
+    hunter_mode = execution_profile.name == "hunter"
+    hunter_stage_key = str(hunter_stage or "build-campaign").strip().lower()
+    if hunter_mode and hunter_stage_key not in HUNTER_STAGES:
+        raise ValueError(
+            f"Unknown hunter stage '{hunter_stage}'. "
+            f"Expected one of: {', '.join(HUNTER_STAGES)}."
+        )
+    if not hunter_mode and hunter_stage is not None:
+        log.warning(
+            "--hunter-stage %s is ignored in execution mode '%s'.",
+            hunter_stage,
+            execution_mode,
+        )
     try:
-        hardware_backend = configure_process_for_hardware(hardware_target)
+        requested_hardware_target = normalize_hardware_target(hardware_target)
     except HardwareBackendError as exc:
         raise RuntimeError(f"Hardware target unavailable: {exc}") from exc
+    try:
+        hardware_backend = configure_process_for_hardware(requested_hardware_target)
+    except HardwareBackendError as exc:
+        if not (hunter_mode and hunter_stage_key == "build-campaign"):
+            raise RuntimeError(f"Hardware target unavailable: {exc}") from exc
+        # Login nodes have no APU: prepare the campaign on the CPU (numerically
+        # identical TPM estimation) and let the compute jobs request the target.
+        log.warning(
+            "Hardware target '%s' is not available on this build host (%s). The "
+            "campaign is prepared on the CPU; its compute jobs will request '%s'.",
+            hardware_target,
+            exc,
+            requested_hardware_target,
+        )
+        hardware_backend = configure_process_for_hardware("cpu")
     log.info("Hardware target: %s", backend_summary(hardware_backend))
 
     provenance = resolve_dataset_provenance(
@@ -1362,24 +1839,15 @@ def main(
     figdir.mkdir(exist_ok=True)
     cache_dir = out / 'cache'
     cache_dir.mkdir(exist_ok=True)
-    
-    fmriprep_out = out / 'fmriprep'
+
     prep_out     = out / 'preprocessed'
-    freesurf_out = out / 'freesurfer'
     workdir      = out / 'work'
     bids_root = (
         Path(bids_root_override)
         if bids_root_override is not None
         else _first_existing_path(*cfg["bids_candidates"])
     )
-    hunter_stage_key = str(hunter_stage or "build-campaign").strip().lower()
-    if execution_profile.name == "hunter" and hunter_stage_key in {
-        "phase1-shard",
-        "phase1-reduce",
-        "cut-shard",
-        "cut-reduce",
-        "finalize-pipeline",
-    }:
+    if hunter_mode and hunter_stage_key != "build-campaign":
         _run_hunter_stage(
             hunter_stage=hunter_stage_key,
             hunter_campaign_dir=hunter_campaign_dir,
@@ -1391,7 +1859,11 @@ def main(
             figdir=figdir,
             cache_dir=cache_dir,
             atlas=atlas_override or cfg["atlas"],
-            sessions=tuple(sessions_override) if sessions_override else tuple(cfg["sessions"]),
+            sessions=(
+                tuple(sessions_override)
+                if sessions_override
+                else tuple(cfg["sessions"])
+            ),
             condition=condition_override or cfg["condition"],
             metric_tr=tr_override,
             subjects=subjects,
@@ -1403,12 +1875,18 @@ def main(
             iim_max_mechanism_size=iim_max_mechanism_size_override,
             iim_max_purview_size=iim_max_purview_size_override,
             pdi_params=dict(cfg.get("pdi_params", {})),
-            pdi_require_explicit_params=bool(cfg.get("pdi_require_explicit_params", True)),
-            pdi_require_strict_baseline=bool(cfg.get("pdi_require_strict_baseline", True)),
+            pdi_require_explicit_params=bool(
+                cfg.get("pdi_require_explicit_params", True)
+            ),
+            pdi_require_strict_baseline=bool(
+                cfg.get("pdi_require_strict_baseline", True)
+            ),
             pdi_primary_endpoint=str(cfg.get("pdi_primary_endpoint", "anchor")),
             nas_params=dict(cfg.get("nas_params", {})),
             srpi_params=dict(cfg.get("srpi_params", {})),
-            srpi_require_explicit_params=bool(cfg.get("srpi_require_explicit_params", True)),
+            srpi_require_explicit_params=bool(
+                cfg.get("srpi_require_explicit_params", True)
+            ),
             out=out,
             modality=modality,
             dataset_id=dataset_id,
@@ -1418,7 +1896,9 @@ def main(
             cfg=cfg,
             report_doc=f"IMPaCT_Empirical_Validation_{dataset_id}.docx",
             run_replication_flag=run_replication_flag,
-            hardware_target=hardware_backend.requested,
+            hardware_target=requested_hardware_target,
+            hunter_array_index=hunter_array_index,
+            hunter_shards_per_node=hunter_shards_per_node,
         )
         return
     if not bids_root.exists():
@@ -1426,16 +1906,13 @@ def main(
             f"Missing {dataset_id} dataset at '{bids_root}'. "
             "Provide --bids-root explicitly or download the dataset first."
         )
-    _write_run_provenance_manifest(
-        cache_dir=cache_dir,
-        provenance=provenance,
-        modality=modality,
-        bids_root=bids_root,
-        execution_mode=execution_mode,
-        atlas=atlas_override or cfg["atlas"],
-        sessions=tuple(sessions_override) if sessions_override else tuple(cfg["sessions"]),
-        condition=condition_override or cfg["condition"],
+    assert_origin_matches_dataset(bids_root, provenance.data_origin)
+    replication_enabled = bool(run_replication_flag) and bool(
+        cfg.get("supports_replication", False)
     )
+    if replication_enabled:
+        # Fail now rather than after hours of metric computation (step 7).
+        _check_replication_inputs(_resolve_replication_root())
 
     atlas = atlas_override or cfg["atlas"]
     sessions = tuple(sessions_override) if sessions_override else tuple(cfg["sessions"])
@@ -1563,7 +2040,95 @@ def main(
         int(iim_progress_log_every_cuts),
         iim_use_shared_memory,
     )
-    
+    iim_settings = {
+        "iim_n_parts": iim_n_parts,
+        "iim_max_timepoints": iim_max_timepoints,
+        "iim_max_nodes": iim_max_nodes,
+        "iim_max_mechanism_size": iim_max_mechanism_size,
+        "iim_max_purview_size": iim_max_purview_size,
+        "iim_parallel_workers": iim_parallel_workers,
+        "iim_memory_target_ratio": iim_memory_target_ratio,
+        "iim_worker_mem_gb_estimate": iim_worker_mem_gb_estimate,
+        "iim_cpu_oversub_factor": iim_cpu_oversub_factor,
+        "iim_enable_parallel": iim_enable_parallel,
+        "iim_checkpoint_dir": iim_checkpoint_dir,
+        "iim_resume_checkpoint": iim_resume_checkpoint,
+        "iim_checkpoint_every_cuts": int(iim_checkpoint_every_cuts),
+        "iim_progress_log_every_cuts": int(iim_progress_log_every_cuts),
+        "iim_use_shared_memory": iim_use_shared_memory,
+        "iim_phase1_parallel_workers": iim_phase1_parallel_workers,
+        "iim_phase1_chunk_size": int(iim_phase1_chunk_size),
+        "iim_phase1_shared_memory": bool(iim_phase1_shared_memory),
+    }
+    fmriprep_out = (
+        _resolve_fmriprep_dir(fmriprep_dir, bids_root, out)
+        if modality == "fmri"
+        else None
+    )
+    run_parameters = {
+        "cli_argv": (None if cli_argv is None else list(cli_argv)),
+        "dataset_id": dataset_id,
+        "data_origin": provenance.data_origin,
+        "subjects": subjects,
+        "mpc_metrics": mpc_metrics,
+        "compute_ci": bool(compute_ci),
+        "reuse_step2": bool(reuse_step2),
+        "atlas": atlas,
+        "sessions": sessions,
+        "condition": condition,
+        "tr_override": tr_override,
+        "metric_tr": metric_tr,
+        "assume_tr": assume_tr,
+        "run_fmriprep": bool(run_fmriprep),
+        "run_preprocessing": bool(run_preprocessing_flag),
+        "run_replication": bool(run_replication_flag),
+        "fmriprep_dir": (None if fmriprep_out is None else str(fmriprep_out)),
+        "eeg": {
+            "target_sfreq": eeg_target_sfreq,
+            "l_freq": eeg_l_freq,
+            "h_freq": eeg_h_freq,
+            "max_duration_sec": eeg_max_duration_sec,
+            "session_rules": cfg.get("eeg_session_rules"),
+            "rest_rules": cfg.get("eeg_rest_rules"),
+        },
+        "iim": iim_settings,
+        "pdi_params": pdi_params,
+        "pdi_require_explicit_params": pdi_require_explicit_params,
+        "pdi_require_strict_baseline": pdi_require_strict_baseline,
+        "pdi_primary_endpoint": pdi_primary_endpoint,
+        "nas_params": nas_params,
+        "srpi_params": srpi_params,
+        "srpi_require_explicit_params": srpi_require_explicit_params,
+        "execution_mode": execution_mode,
+        "hardware_target_requested": requested_hardware_target,
+        "atlas_robustness": bool(atlas_robustness),
+        "hunter": (
+            None
+            if not hunter_mode
+            else {
+                "stage": hunter_stage_key,
+                "scheduler": hunter_scheduler,
+                "phase1_shards_per_run": hunter_phase1_shards_per_run,
+                "cut_shards_per_run": hunter_cut_shards_per_run,
+                "workers_per_task": hunter_workers_per_task,
+                "shards_per_node": hunter_shards_per_node,
+            }
+        ),
+    }
+    manifest_kwargs = dict(
+        cache_dir=cache_dir,
+        provenance=provenance,
+        modality=modality,
+        bids_root=bids_root,
+        execution_mode=execution_mode,
+        atlas=atlas,
+        sessions=sessions,
+        condition=condition,
+        parameters=run_parameters,
+        hardware=hardware_backend,
+    )
+    _write_run_provenance_manifest(status="started", **manifest_kwargs)
+
     # 0. RUN FMRIPrep ON MISSING SUBJECTS
     if run_fmriprep:
         if not cfg["supports_fmriprep"]:
@@ -1576,21 +2141,38 @@ def main(
             fmriprep_out=str(fmriprep_out),
             work_dir=str(workdir),
             fs_license=str(_resolve_freesurfer_license_path()),
-            freesurf_out=str(freesurf_out),
-            subjects=subjects
+            freesurf_out=str(Path(fmriprep_out).parent / "freesurfer"),
+            subjects=subjects,
         )
 
     # 1. PREPROCESSING
     if run_preprocessing_flag:
         if modality == "fmri":
             from impact_pipeline.preprocessing import run_preprocessing
-            log.info("1/9 Preprocessing %s (fMRI)", dataset_id)
-            run_preprocessing(
-                bids_root=str(bids_root),
-                fmriprep_deriv=str(out/'fmriprep'),
-                out_root=str(prep_out),
-                subjects=subjects
+            log.info(
+                "1/9 Preprocessing %s (fMRI) from fMRIPrep derivatives at %s",
+                dataset_id,
+                fmriprep_out,
             )
+            if not _has_fmriprep_subjects(Path(fmriprep_out)):
+                raise FileNotFoundError(
+                    f"No fMRIPrep derivatives (sub-*/) at '{fmriprep_out}'. Run "
+                    f"fMRIPrep into '{canonical_fmriprep_dir(bids_root)}' (canonical), "
+                    "use --run-fmriprep, or point --fmriprep-dir at existing "
+                    "derivatives."
+                )
+            fmri_summary = run_preprocessing(
+                bids_root=str(bids_root),
+                fmriprep_deriv=str(fmriprep_out),
+                out_root=str(prep_out),
+                subjects=subjects,
+                assume_tr=assume_tr,
+                dataset_id=dataset_id,
+            )
+            write_json(
+                cache_dir / "preprocessing_fmri_summary.json", _json_safe(fmri_summary)
+            )
+            log.info("fMRI preprocessing summary: %s", fmri_summary.get("summary"))
         elif modality == "eeg":
             log.info("1/9 Preprocessing %s (EEG)", dataset_id)
             eeg_summary = run_preprocessing_eeg(
@@ -1603,7 +2185,12 @@ def main(
                 target_sfreq=float(eeg_target_sfreq),
                 l_freq=float(eeg_l_freq) if eeg_l_freq is not None else None,
                 h_freq=float(eeg_h_freq) if eeg_h_freq is not None else None,
-                max_duration_sec=float(eeg_max_duration_sec) if eeg_max_duration_sec is not None else None,
+                max_duration_sec=(
+                    float(eeg_max_duration_sec)
+                    if eeg_max_duration_sec is not None
+                    else None
+                ),
+                rest_rules=cfg.get("eeg_rest_rules"),
             )
             _write_eeg_preprocessing_summary(cache_dir, eeg_summary)
             summ = eeg_summary.get("summary", {})
@@ -1626,9 +2213,9 @@ def main(
             "or provide an out-dir that already contains a populated 'preprocessed' folder."
         )
 
-    if execution_profile.name == "hunter":
-        _run_hunter_stage(
-            hunter_stage=hunter_stage,
+    if hunter_mode:
+        campaign_manifest = _run_hunter_stage(
+            hunter_stage=hunter_stage_key,
             hunter_campaign_dir=hunter_campaign_dir,
             hunter_task_index=hunter_task_index,
             hunter_run_index=hunter_run_index,
@@ -1659,10 +2246,35 @@ def main(
             out=out,
             modality=modality,
             dataset_id=dataset_id,
+            data_origin=provenance.data_origin,
+            dataset_role=provenance.dataset_role,
+            provenance_label=provenance.provenance_label,
             cfg=cfg,
             report_doc=report_doc,
             run_replication_flag=run_replication_flag,
-            hardware_target=hardware_backend.requested,
+            hardware_target=requested_hardware_target,
+            hunter_scheduler=hunter_scheduler,
+            hunter_settings_overrides={
+                "phase1_shards_per_run": hunter_phase1_shards_per_run,
+                "cut_shards_per_run": hunter_cut_shards_per_run,
+                "workers_per_task": hunter_workers_per_task,
+                "shards_per_node": hunter_shards_per_node,
+            },
+            build_hardware_backend=hardware_backend,
+            iim_settings=iim_settings,
+            run_parameters=run_parameters,
+            atlas_robustness=atlas_robustness,
+        )
+        _write_run_provenance_manifest(
+            status="hunter_campaign_built",
+            extra={
+                "hunter_campaign": {
+                    "campaign_dir": (campaign_manifest or {}).get("campaign_dir"),
+                    "scheduler": (campaign_manifest or {}).get("scheduler"),
+                    "n_runs": len((campaign_manifest or {}).get("runs", [])),
+                }
+            },
+            **manifest_kwargs,
         )
         return
 
@@ -1811,7 +2423,17 @@ def main(
         run_replication_flag=run_replication_flag,
         df_stats_by_theta=df_stats_by_theta,
         condition=condition,
+        robustness_context={
+            "enabled": bool(atlas_robustness),
+            "execution_mode": execution_mode,
+            "condition": condition,
+            "tr": metric_tr,
+            "iim_settings": iim_settings,
+            "hardware_target": requested_hardware_target,
+        },
     )
+    _write_run_provenance_manifest(status="completed", **manifest_kwargs)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run IMPaCT pipeline")
@@ -1877,12 +2499,88 @@ if __name__ == '__main__':
         ),
     )
     parser.add_argument(
-        '--hunter-stage',
+        "--hunter-stage",
+        default=None,
+        choices=HUNTER_STAGES,
+        help=(
+            "Hunter stage selector (default: build-campaign). reduce-all merges the "
+            "phase-1 and cut reductions of all runs; status reports missing shards."
+        ),
+    )
+    parser.add_argument(
+        "--hunter-scheduler",
+        default=None,
+        choices=("pbs", "slurm"),
+        help=(
+            "Batch system for generated Hunter scripts (default: "
+            "IMPACT_HUNTER_SCHEDULER or 'pbs'; HLRS Hunter runs PBS Pro). "
+            "'slurm' writes generic sbatch scripts."
+        ),
+    )
+    parser.add_argument(
+        "--hunter-array-index",
+        type=int,
         default=None,
         help=(
-            "Hunter stage selector. "
-            "Supported: build-campaign, phase1-shard, phase1-reduce, cut-shard, cut-reduce, finalize-pipeline."
+            "PBS array index of a packed shard job; the shard is "
+            "shards_per_node*index + PMI_LOCAL_RANK (set by PALS mpiexec)."
         ),
+    )
+    parser.add_argument(
+        "--hunter-shards-per-node",
+        type=int,
+        default=None,
+        help=(
+            "Shards packed per node (build: default 4 for PBS mi300a nodes; "
+            "shard stages: packing of this launch)."
+        ),
+    )
+    parser.add_argument(
+        "--hunter-phase1-shards-per-run",
+        type=int,
+        default=None,
+        help=(
+            "Phase-1 (mechanism) shards per run "
+            "(default: IMPACT_HUNTER_PHASE1_SHARDS_PER_RUN or 16)."
+        ),
+    )
+    parser.add_argument(
+        "--hunter-cut-shards-per-run",
+        type=int,
+        default=None,
+        help="Cut shards per run (default: IMPACT_HUNTER_CUT_SHARDS_PER_RUN or 256).",
+    )
+    parser.add_argument(
+        "--hunter-workers-per-task",
+        type=int,
+        default=None,
+        help=(
+            "Worker processes per shard (default: cores per packed rank minus 2 "
+            "for PBS; cpus-per-task for Slurm)."
+        ),
+    )
+    parser.add_argument(
+        "--assume-tr",
+        type=float,
+        default=None,
+        help=(
+            "Explicit TR (s) for fMRI preprocessing when neither the NIfTI header "
+            "nor the BIDS sidecar provides a plausible TR. Without it such runs "
+            "raise an error (no silent fallback)."
+        ),
+    )
+    parser.add_argument(
+        "--fmriprep-dir",
+        default=None,
+        help=(
+            "fMRIPrep derivatives directory (read by --run-preprocessing, written "
+            "by --run-fmriprep). Default: <bids-root>/derivatives/fmriprep."
+        ),
+    )
+    parser.add_argument(
+        "--no-atlas-robustness",
+        action="store_true",
+        help="Skip step 6 (metrics on the AAL-116 and Shen-268 robustness atlases).",
     )
     parser.add_argument(
         '--hunter-campaign-dir',
@@ -2104,4 +2802,14 @@ if __name__ == '__main__':
         hunter_campaign_dir=args.hunter_campaign_dir,
         hunter_task_index=args.hunter_task_index,
         hunter_run_index=args.hunter_run_index,
+        assume_tr=args.assume_tr,
+        fmriprep_dir=args.fmriprep_dir,
+        hunter_scheduler=args.hunter_scheduler,
+        hunter_array_index=args.hunter_array_index,
+        hunter_shards_per_node=args.hunter_shards_per_node,
+        hunter_phase1_shards_per_run=args.hunter_phase1_shards_per_run,
+        hunter_cut_shards_per_run=args.hunter_cut_shards_per_run,
+        hunter_workers_per_task=args.hunter_workers_per_task,
+        atlas_robustness=not args.no_atlas_robustness,
+        cli_argv=sys.argv,
     )

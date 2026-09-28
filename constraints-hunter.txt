@@ -1,0 +1,9 @@
+# pip constraints for the HLRS Hunter default stack HLRS/APU/2026.1
+# (CPE 25.09: cray-python 3.11.7 with Cray LibSci-linked numpy 1.24.4 and scipy 1.10.1).
+# Keeping these versions prevents pip from shadowing the system numpy/scipy in the
+# --system-site-packages venv. Use with: python3 -m pip install -c constraints-hunter.txt -r requirements-hunter.txt
+#
+# Testing stack HLRS/APU/testing-2026.2 (CPE 26.03, cray-python 3.12.12): replace with
+#   numpy==2.3.5 and scipy==1.16.3, and use numba>=0.62 (numba 0.61.x requires numpy<2.3).
+numpy==1.24.4
+scipy==1.10.1

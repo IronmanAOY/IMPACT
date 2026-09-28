@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import dataclasses
 import hashlib
 import json
+import logging
 import math
 import os
 import shlex
 import shutil
+import socket
+import sqlite3
+import sys
 import tempfile
 import time
 from multiprocessing import shared_memory
@@ -15,8 +20,17 @@ from pathlib import Path
 
 import numpy as np
 
-from impact_pipeline.execution_profiles import ExecutionProfile
-from impact_pipeline.hardware_backend import configure_process_for_hardware
+from impact_pipeline.execution_profiles import (
+    ExecutionProfile,
+    HunterPBSProfile,
+    HunterSlurmProfile,
+    normalize_hunter_scheduler,
+)
+from impact_pipeline.hardware_backend import (
+    backend_summary,
+    configure_process_for_hardware,
+    normalize_hardware_target,
+)
 from impact_pipeline.mpc_metrics import (
     _IIMDiskKernelCache,
     _iim_build_cut_tpm,
@@ -27,12 +41,53 @@ from impact_pipeline.mpc_metrics import (
     _iim_phase_worker_run_chunk_for_tpm,
     prepare_iim_problem,
 )
+from impact_pipeline.provenance import collect_code_version
 from impact_pipeline.synergy_ci import build_ci_run_specs
+
+log = logging.getLogger(__name__)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LOCALSCRATCH_ROOT = Path("/localscratch")
+PHASE1_STAGE = "phase1-shard"
+CUT_STAGE = "cut-shard"
+FORCE_ENV = "IMPACT_HUNTER_FORCE"
+IIM_CACHE_DIR_ENV = "IMPACT_IIM_CACHE_DIR"
+KERNEL_CACHE_ENV = "IMPACT_IIM_KERNEL_CACHE"
+KEEP_KERNEL_CACHE_ENV = "IMPACT_IIM_KEEP_KERNEL_CACHE"
+# Environment variables that expose the node-local rank of a packed launch.
+LOCAL_RANK_ENV_VARS = (
+    "PMI_LOCAL_RANK",
+    "PALS_LOCAL_RANKID",
+    "OMPI_COMM_WORLD_LOCAL_RANK",
+    "MPI_LOCALRANKID",
+    "SLURM_LOCALID",
+)
+# New generic names -> deprecated Slurm-specific aliases (still accepted).
+_ENV_ALIASES = {
+    "IMPACT_HUNTER_SETUP_FILE": ("IMPACT_HUNTER_SLURM_SETUP_FILE",),
+    "IMPACT_HUNTER_SETUP": ("IMPACT_HUNTER_SLURM_SETUP",),
+    "IMPACT_HUNTER_ACCOUNT": ("IMPACT_HUNTER_SLURM_ACCOUNT",),
+}
+_SLURM_ONLY_ENV = (
+    "IMPACT_HUNTER_APU_PARTITION",
+    "IMPACT_HUNTER_CPU_PARTITION",
+    "IMPACT_HUNTER_SLURM_QOS",
+    "IMPACT_HUNTER_CPUS_PER_TASK",
+    "IMPACT_HUNTER_MEM_PER_TASK",
+    "IMPACT_HUNTER_GPUS_PER_TASK",
+    "IMPACT_HUNTER_SLURM_ARRAY_THROTTLE",
+)
+_TRUE_TOKENS = {"1", "true", "yes", "on"}
+_FALSE_TOKENS = {"0", "false", "no", "off", "none", ""}
 
 
 def _json_dump(path: Path, payload) -> None:
+    # Atomic replace: a job killed mid-write never leaves a truncated result
+    # that a resubmission could mistake for a completed shard.
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _json_load(path: Path):
@@ -60,6 +115,599 @@ def _split_evenly(n_items: int, n_shards: int):
         out.append((start, stop))
         start = stop
     return out
+
+
+# ---------------------------------------------------------------------------
+# Scheduler / runtime settings
+# ---------------------------------------------------------------------------
+
+
+def _env_value(name: str, env=None) -> str | None:
+    """Value of an IMPACT_HUNTER_* variable, honouring deprecated aliases."""
+    env = os.environ if env is None else env
+    raw = env.get(name)
+    if raw is not None and str(raw).strip():
+        return str(raw).strip()
+    for alias in _ENV_ALIASES.get(name, ()):
+        raw = env.get(alias)
+        if raw is not None and str(raw).strip():
+            log.info("%s is deprecated; use %s instead.", alias, name)
+            return str(raw).strip()
+    return None
+
+
+def _env_optional_resource(name: str, default: str | None, env=None) -> str | None:
+    """Like _env_value, but an explicitly empty/'none' value disables the default."""
+    env = os.environ if env is None else env
+    if name not in env:
+        return default
+    raw = str(env.get(name) or "").strip()
+    return None if raw.lower() in _FALSE_TOKENS else raw
+
+
+def _env_flag(name: str, default: bool = False, env=None) -> bool:
+    env = os.environ if env is None else env
+    raw = env.get(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in _TRUE_TOKENS
+
+
+def parse_walltime(text) -> int:
+    """Parse [[D-]HH:]MM:SS style walltimes into seconds."""
+    raw = str(text).strip()
+    days = 0
+    if "-" in raw:
+        day_txt, raw = raw.split("-", 1)
+        days = int(day_txt)
+    parts = [int(p) for p in raw.split(":")]
+    if not parts or len(parts) > 3 or any(p < 0 for p in parts):
+        raise ValueError(f"Invalid walltime {text!r}; expected HH:MM:SS.")
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    hours, minutes, seconds = parts
+    return int(days) * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def format_walltime(seconds: int) -> str:
+    seconds = int(seconds)
+    return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
+
+
+def _validate_walltime(label: str, value: str, maximum: str, context: str) -> str:
+    secs = parse_walltime(value)
+    if secs <= 0:
+        raise ValueError(f"{label}={value!r} must be positive.")
+    if secs > parse_walltime(maximum):
+        raise ValueError(
+            f"{label}={value!r} exceeds the {context} limit of {maximum}. "
+            "Reduce the walltime (more shards per run shorten each task)."
+        )
+    return format_walltime(secs)
+
+
+def default_cpu_bind(cores_per_node: int, shards_per_node: int) -> str | None:
+    """PALS --cpu-bind list with one contiguous core block per rank."""
+    spn = int(shards_per_node)
+    cores = int(cores_per_node)
+    if spn <= 1:
+        return None
+    if cores % spn != 0:
+        raise ValueError(
+            f"cores_per_node={cores} is not divisible by shards_per_node={spn}; "
+            "set IMPACT_HUNTER_PBS_CPU_BIND."
+        )
+    width = cores // spn
+    return "list:" + ":".join(f"{i * width}-{(i + 1) * width - 1}" for i in range(spn))
+
+
+def default_gpu_bind(gpus_per_node: int, shards_per_node: int) -> str | None:
+    """One APU per rank (HLRS example); other packings: IMPACT_HUNTER_PBS_GPU_BIND."""
+    spn = int(shards_per_node)
+    if spn <= 1 or int(gpus_per_node) != spn:
+        return None
+    return "list:" + ":".join(str(i) for i in range(spn))
+
+
+def _python_launcher(env=None) -> list[str]:
+    env = os.environ if env is None else env
+    explicit = _env_value("IMPACT_HUNTER_PYTHON", env)
+    if explicit:
+        return shlex.split(explicit)
+    conda_env = _env_value("IMPACT_HUNTER_CONDA_ENV", env) or _env_value(
+        "IMPACT_CONDA_ENV", env
+    )
+    if conda_env:
+        conda_bin = (
+            _env_value("IMPACT_HUNTER_CONDA_BIN", env)
+            or _env_value("CONDA_BIN", env)
+            or "conda"
+        )
+        # --no-capture-output streams logs instead of buffering them until exit.
+        return [conda_bin, "run", "--no-capture-output", "-n", conda_env, "python"]
+    return ["python3"]
+
+
+def _int_setting(overrides, key, env, env_name, default, minimum=1):
+    value = overrides.get(key)
+    if value is None:
+        value = _env_value(env_name, env)
+    if value is None:
+        value = default
+    if value is None:
+        return None
+    ivalue = int(value)
+    if ivalue < int(minimum):
+        raise ValueError(f"{key} must be >= {minimum}; got {ivalue}.")
+    return ivalue
+
+
+def resolve_hunter_settings(
+    profile: ExecutionProfile,
+    *,
+    scheduler: str | None = None,
+    overrides: dict | None = None,
+    env=None,
+):
+    """
+    Resolve the effective shard/worker counts and scheduler settings.
+
+    Precedence: explicit overrides (CLI) > IMPACT_HUNTER_* environment > profile.
+    Returns ``(effective_profile, settings)``; both are stored in the campaign
+    manifest so every stage runs with the configuration it was built with.
+    """
+    env = os.environ if env is None else env
+    overrides = {k: v for k, v in dict(overrides or {}).items() if v is not None}
+    sched = normalize_hunter_scheduler(
+        overrides.get("scheduler")
+        or scheduler
+        or _env_value("IMPACT_HUNTER_SCHEDULER", env)
+        or profile.hunter_scheduler
+    )
+    phase1_shards = _int_setting(
+        overrides,
+        "phase1_shards_per_run",
+        env,
+        "IMPACT_HUNTER_PHASE1_SHARDS_PER_RUN",
+        profile.hunter_phase1_shards_per_run,
+    )
+    cut_shards = _int_setting(
+        overrides,
+        "cut_shards_per_run",
+        env,
+        "IMPACT_HUNTER_CUT_SHARDS_PER_RUN",
+        profile.hunter_cut_shards_per_run,
+    )
+    chunk_size = _int_setting(
+        overrides,
+        "chunk_size",
+        env,
+        "IMPACT_HUNTER_CHUNK_SIZE",
+        profile.hunter_phase1_chunk_size,
+    )
+
+    settings: dict = {"scheduler": sched}
+    if sched == "pbs":
+        pbs = profile.hunter_pbs or HunterPBSProfile()
+        spn = _int_setting(
+            overrides,
+            "shards_per_node",
+            env,
+            "IMPACT_HUNTER_SHARDS_PER_NODE",
+            pbs.shards_per_node,
+        )
+        cores = _int_setting(
+            overrides,
+            "cores_per_node",
+            env,
+            "IMPACT_HUNTER_CORES_PER_NODE",
+            pbs.cores_per_node,
+        )
+        gpus = _int_setting(
+            overrides,
+            "gpus_per_node",
+            env,
+            "IMPACT_HUNTER_GPUS_PER_NODE",
+            pbs.gpus_per_node,
+            minimum=0,
+        )
+        if spn > cores:
+            raise ValueError(f"shards_per_node={spn} exceeds cores_per_node={cores}.")
+        default_workers = max(1, cores // spn - 2)
+        queue = (
+            overrides.get("queue")
+            or _env_value("IMPACT_HUNTER_PBS_QUEUE", env)
+            or pbs.queue
+        )
+        max_walltime = (
+            _env_value("IMPACT_HUNTER_PBS_MAX_WALLTIME", env) or pbs.max_walltime
+        )
+        time_limit, limit_context = max_walltime, "PBS walltime (academic users: 24 h)"
+        if queue == "test":
+            time_limit, limit_context = pbs.test_queue_max_walltime, "'test' queue"
+        default_time = pbs.test_queue_max_walltime if queue == "test" else None
+        times = {}
+        for key, env_name, prof_default in (
+            ("phase1_time", "IMPACT_HUNTER_PHASE1_TIME", pbs.phase1_time),
+            ("cut_time", "IMPACT_HUNTER_CUT_TIME", pbs.cut_time),
+            ("reduce_time", "IMPACT_HUNTER_REDUCE_TIME", pbs.reduce_time),
+        ):
+            raw = (
+                overrides.get(key)
+                or _env_value(env_name, env)
+                or default_time
+                or prof_default
+            )
+            times[key] = _validate_walltime(env_name, raw, time_limit, limit_context)
+        for slurm_only in _SLURM_ONLY_ENV:
+            if _env_value(slurm_only, env):
+                log.warning(
+                    "%s has no PBS equivalent on Hunter (whole nodes are "
+                    "allocated) and is ignored.",
+                    slurm_only,
+                )
+        settings.update(
+            {
+                "node_type": _env_value("IMPACT_HUNTER_PBS_NODE_TYPE", env)
+                or pbs.node_type,
+                "queue": queue,
+                "group_list": (
+                    overrides.get("group_list")
+                    or _env_value("IMPACT_HUNTER_PBS_GROUP_LIST", env)
+                    or _env_value("IMPACT_HUNTER_ACCOUNT", env)
+                    or pbs.group_list
+                ),
+                "workspace_resource": _env_optional_resource(
+                    "IMPACT_HUNTER_PBS_WORKSPACE_RESOURCE", pbs.workspace_resource, env
+                ),
+                "localscratch": _env_flag(
+                    "IMPACT_HUNTER_PBS_LOCALSCRATCH", pbs.localscratch, env
+                ),
+                "cpu_queue": _env_value("IMPACT_HUNTER_PBS_CPU_QUEUE", env)
+                or pbs.cpu_queue,
+                "cpu_node_type": _env_value("IMPACT_HUNTER_PBS_CPU_NODE_TYPE", env)
+                or pbs.cpu_node_type,
+                "smoke_queue": _env_optional_resource(
+                    "IMPACT_HUNTER_PBS_SMOKE_QUEUE", "test", env
+                ),
+                "max_walltime": max_walltime,
+                "shards_per_node": int(spn),
+                "cores_per_node": int(cores),
+                "gpus_per_node": int(gpus),
+                "cpu_bind": _env_value("IMPACT_HUNTER_PBS_CPU_BIND", env)
+                or pbs.cpu_bind
+                or default_cpu_bind(cores, spn),
+                "gpu_bind": _env_value("IMPACT_HUNTER_PBS_GPU_BIND", env)
+                or pbs.gpu_bind
+                or default_gpu_bind(gpus, spn),
+                "launcher": _env_value("IMPACT_HUNTER_PBS_LAUNCHER", env)
+                or pbs.launcher,
+                "max_array_size": _int_setting(
+                    overrides,
+                    "max_array_size",
+                    env,
+                    "IMPACT_HUNTER_MAX_ARRAY_SIZE",
+                    pbs.max_array_size,
+                ),
+                **times,
+            }
+        )
+    else:
+        slurm = dataclasses.asdict(profile.hunter_slurm or HunterSlurmProfile())
+        env_overrides = {
+            "IMPACT_HUNTER_APU_PARTITION": "apu_partition",
+            "IMPACT_HUNTER_CPU_PARTITION": "cpu_partition",
+            "IMPACT_HUNTER_ACCOUNT": "account",
+            "IMPACT_HUNTER_SLURM_QOS": "qos",
+            "IMPACT_HUNTER_PHASE1_TIME": "phase1_time",
+            "IMPACT_HUNTER_CUT_TIME": "cut_time",
+            "IMPACT_HUNTER_REDUCE_TIME": "reduce_time",
+            "IMPACT_HUNTER_CPUS_PER_TASK": "cpus_per_task",
+            "IMPACT_HUNTER_MEM_PER_TASK": "mem_per_task",
+            "IMPACT_HUNTER_GPUS_PER_TASK": "gpus_per_task",
+            "IMPACT_HUNTER_SLURM_ARRAY_THROTTLE": "array_throttle",
+            "IMPACT_HUNTER_MAX_ARRAY_SIZE": "max_array_size",
+        }
+        for env_name, key in env_overrides.items():
+            value = _env_value(env_name, env)
+            if value is not None:
+                slurm[key] = value
+        for key in ("phase1_time", "cut_time", "reduce_time"):
+            # Passed to --time verbatim: Slurm reads a bare number as minutes and
+            # accepts D-HH[:MM[:SS]], which the PBS walltime parser does not.
+            slurm[key] = str(slurm[key]).strip()
+        slurm["cpus_per_task"] = int(slurm["cpus_per_task"])
+        slurm["gpus_per_task"] = int(slurm.get("gpus_per_task") or 0)
+        slurm["max_array_size"] = int(
+            overrides.get("max_array_size") or slurm["max_array_size"]
+        )
+        if slurm.get("array_throttle") not in (None, ""):
+            slurm["array_throttle"] = int(slurm["array_throttle"])
+        default_workers = int(slurm["cpus_per_task"])
+        settings.update(slurm)
+        settings["shards_per_node"] = 1
+
+    workers = _int_setting(
+        overrides,
+        "workers_per_task",
+        env,
+        "IMPACT_HUNTER_WORKERS_PER_TASK",
+        profile.hunter_phase1_workers_per_task,
+    )
+    if workers is None:
+        workers = default_workers
+
+    setup_file = _env_value("IMPACT_HUNTER_SETUP_FILE", env)
+    if setup_file:
+        setup_path = Path(setup_file).expanduser().resolve()
+        if not setup_path.exists():
+            raise FileNotFoundError(f"Missing IMPACT_HUNTER_SETUP_FILE: {setup_path}")
+        setup_file = str(setup_path)
+    settings.update(
+        {
+            "python_launcher": _python_launcher(env),
+            "setup_file": setup_file,
+            "inline_setup": _env_value("IMPACT_HUNTER_SETUP", env),
+            "repo_root": str(REPO_ROOT),
+            "shard_omp_threads": _int_setting(
+                {}, "shard_omp_threads", env, "IMPACT_HUNTER_SHARD_OMP_THREADS", 1
+            ),
+        }
+    )
+    effective = dataclasses.replace(
+        profile,
+        hunter_phase1_shards_per_run=int(phase1_shards),
+        hunter_cut_shards_per_run=int(cut_shards),
+        hunter_phase1_workers_per_task=int(workers),
+        hunter_phase1_chunk_size=int(chunk_size),
+        hunter_scheduler=sched,
+    )
+    return effective, settings
+
+
+# ---------------------------------------------------------------------------
+# Packing (several shards per exclusively allocated node)
+# ---------------------------------------------------------------------------
+
+
+def packed_array_size(n_tasks: int, shards_per_node: int) -> int:
+    """Number of array subjobs (nodes) needed for ``n_tasks`` packed shards."""
+    n = int(max(0, n_tasks))
+    spn = int(max(1, shards_per_node))
+    return (n + spn - 1) // spn
+
+
+def resolve_local_rank(env=None) -> int | None:
+    env = os.environ if env is None else env
+    for name in LOCAL_RANK_ENV_VARS:
+        raw = env.get(name)
+        if raw is not None and str(raw).strip() != "":
+            return int(str(raw).strip())
+    return None
+
+
+def resolve_packed_task_index(array_index: int, shards_per_node: int, env=None) -> int:
+    """
+    Shard index handled by this process: ``shards_per_node * array_index +
+    local_rank`` where the local rank comes from the launcher (PALS exports
+    PMI_LOCAL_RANK).
+    """
+    spn = int(shards_per_node)
+    if spn < 1:
+        raise ValueError("shards_per_node must be >= 1")
+    if int(array_index) < 0:
+        raise ValueError("array index must be >= 0")
+    local = resolve_local_rank(env)
+    if local is None:
+        if spn > 1:
+            raise RuntimeError(
+                "Packed shard execution needs the node-local rank from the launcher "
+                f"({', '.join(LOCAL_RANK_ENV_VARS)}); "
+                f"launch with PALS mpiexec -n {spn} --ppn {spn}."
+            )
+        local = 0
+    if not 0 <= int(local) < spn:
+        raise RuntimeError(
+            f"Local rank {local} is outside 0..{spn - 1} for shards_per_node={spn}."
+        )
+    return int(array_index) * spn + int(local)
+
+
+# ---------------------------------------------------------------------------
+# Node-local kernel caches, timing and identities
+# ---------------------------------------------------------------------------
+
+
+def resolve_iim_cache_dir(env=None) -> Path:
+    """
+    Directory for per-task SQLite kernel caches. Never the shared Lustre
+    campaign directory (SQLite WAL is unsafe on parallel file systems):
+    IMPACT_IIM_CACHE_DIR, else /localscratch/$PBS_JOBID on localscratch nodes,
+    else $TMPDIR (a RAM disk on Hunter), else the system temp dir.
+    """
+    env = os.environ if env is None else env
+    explicit = str(env.get(IIM_CACHE_DIR_ENV) or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    job_id = str(env.get("PBS_JOBID") or "").strip()
+    if job_id:
+        local = LOCALSCRATCH_ROOT / job_id
+        if local.is_dir():
+            return local
+    tmp = str(env.get("TMPDIR") or "").strip()
+    if tmp:
+        return Path(tmp)
+    return Path(tempfile.gettempdir())
+
+
+@contextlib.contextmanager
+def _kernel_cache_scope(campaign_dir: Path, label: str):
+    if not _env_flag(KERNEL_CACHE_ENV, True):
+        yield None
+        return
+    campaign_tag = hashlib.sha1(str(campaign_dir).encode("utf-8")).hexdigest()[:10]
+    scope = (
+        resolve_iim_cache_dir()
+        / "impact_iim_kernels"
+        / f"{campaign_tag}_{_sanitize_token(label)}_{os.getpid()}"
+    )
+    scope.mkdir(parents=True, exist_ok=True)
+    try:
+        yield scope
+    finally:
+        # Kernel caches are only valid within one Psi evaluation of one task;
+        # nothing reuses them, so they are always removed.
+        if not _env_flag(KEEP_KERNEL_CACHE_ENV, False):
+            shutil.rmtree(scope, ignore_errors=True)
+
+
+def _peak_rss_mb() -> float | None:
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - non-POSIX
+        return None
+    usage = max(
+        resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+        resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+    )
+    divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
+    return float(usage) / divisor
+
+
+def _children_cpu_seconds() -> float | None:
+    """CPU time of terminated, reaped child processes (the Psi worker pools)."""
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - non-POSIX
+        return None
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return float(usage.ru_utime + usage.ru_stime)
+
+
+def _timing_start() -> dict:
+    return {
+        "started_unix": float(time.time()),
+        "_t0": time.perf_counter(),
+        "_cpu0": time.process_time(),
+        "_child_cpu0": _children_cpu_seconds(),
+    }
+
+
+def _timing_finish(start: dict, **extra) -> dict:
+    env_keys = (
+        "PBS_JOBID",
+        "PBS_ARRAY_INDEX",
+        "PMI_RANK",
+        "PMI_LOCAL_RANK",
+        "SLURM_JOB_ID",
+        "SLURM_ARRAY_TASK_ID",
+    )
+    process_cpu = float(time.process_time() - start["_cpu0"])
+    child_cpu0, child_cpu1 = start.get("_child_cpu0"), _children_cpu_seconds()
+    # Worker pools do the Psi work in child processes: their CPU time is only
+    # visible through RUSAGE_CHILDREN (pools are joined before this point).
+    children_cpu = (
+        None
+        if child_cpu0 is None or child_cpu1 is None
+        else max(0.0, float(child_cpu1 - child_cpu0))
+    )
+    out = {
+        "started_unix": start["started_unix"],
+        "finished_unix": float(time.time()),
+        "wall_seconds": float(time.perf_counter() - start["_t0"]),
+        "process_cpu_seconds": process_cpu,
+        "children_cpu_seconds": children_cpu,
+        "cpu_seconds": process_cpu + (children_cpu or 0.0),
+        "peak_rss_mb": _peak_rss_mb(),
+        "host": socket.gethostname(),
+        "pid": int(os.getpid()),
+        "scheduler_env": {k: os.environ[k] for k in env_keys if k in os.environ},
+    }
+    out.update(extra)
+    return out
+
+
+def _write_timing(campaign_dir: Path, stage: str, name: str, timing: dict) -> None:
+    _json_dump(
+        Path(campaign_dir)
+        / "timing"
+        / _sanitize_token(stage)
+        / f"{_sanitize_token(name)}.json",
+        timing,
+    )
+
+
+def _runtime_code_version() -> str:
+    info = collect_code_version(REPO_ROOT)
+    version = str(info.get("git_sha") or info.get("declared_version") or "unknown")
+    if info.get("git_dirty"):
+        version += "+dirty"
+    return version
+
+
+def _problem_digest(prep) -> str:
+    h = hashlib.sha1()
+    for key in ("curr_obs", "tpm_full", "states_full"):
+        arr = np.ascontiguousarray(prep[key])
+        h.update(key.encode("utf-8"))
+        h.update(str(arr.dtype).encode("utf-8"))
+        h.update(str(arr.shape).encode("utf-8"))
+        h.update(arr.tobytes())
+    h.update(json.dumps([list(x) for x in prep["mechanisms_all"]]).encode("utf-8"))
+    h.update(json.dumps([list(x) for x in prep["purviews_all"]]).encode("utf-8"))
+    h.update(
+        json.dumps([[list(a), list(b)] for a, b in prep["cuts_eval"]]).encode("utf-8")
+    )
+    return h.hexdigest()
+
+
+def _task_identity(meta: dict, task: dict, stage: str, code_version: str) -> dict:
+    return {
+        "stage": str(stage),
+        "run_key": str(task["run_key"]),
+        "task_index": int(task["task_index"]),
+        "start": int(task["start"]),
+        "stop": int(task["stop"]),
+        "problem_digest": meta.get("problem_digest"),
+        "code_version": str(code_version),
+    }
+
+
+def _stored_completion(path: Path, identity: dict):
+    """The stored payload if it is a completed result for ``identity``, else None."""
+    if not path.exists():
+        return None
+    try:
+        rec = _json_load(path)
+    except Exception:
+        return None
+    if rec.get("status") != "complete" or rec.get("identity") != identity:
+        return None
+    return rec
+
+
+def _completed_payload(path: Path, identity: dict):
+    """Return the stored payload when it is a completed result for ``identity``."""
+    if _env_flag(FORCE_ENV, False):
+        return None
+    return _stored_completion(path, identity)
+
+
+# Results derived from shards by the reducers; stale copies from an earlier
+# build of the same campaign directory must never be reused.
+_DERIVED_RESULT_FILES = ("phase1_result.json", "final_result.json")
+
+
+def _check_single_code_version(versions, run_key: str) -> str | None:
+    """All shards of a run must come from the same code version."""
+    distinct = sorted({str(v) for v in versions if v is not None})
+    if len(distinct) > 1:
+        raise RuntimeError(
+            f"Shards of {run_key} were computed by different code versions "
+            f"({', '.join(distinct)}). Resubmit the campaign so every shard is "
+            "recomputed with the current code (or set IMPACT_HUNTER_FORCE=1)."
+        )
+    return distinct[0] if distinct else None
 
 
 def _mk_readonly_array_spec(label, arr, use_shared_memory, tmp_dir, owner_shms, owner_files):
@@ -185,6 +833,17 @@ def _compute_psi_for_problem(
             if cache is not None:
                 cache.close()
 
+    if cache_spec is not None:
+        # All workers open this one SQLite file. Creating it (WAL switch and
+        # schema) concurrently fails with "database is locked" (no busy wait
+        # for the journal-mode change), so the parent creates it first.
+        _IIMDiskKernelCache(
+            str(kernel_cache_path),
+            signature=None,
+            memory_entries=int(kernel_cache_memory_entries),
+            flush_batch=int(kernel_cache_flush_batch),
+        ).close()
+
     owner_shms = []
     owner_files = []
     tmp_dir = tempfile.mkdtemp(prefix="hunter_iim_psi_")
@@ -213,28 +872,47 @@ def _compute_psi_for_problem(
             owner_shms,
             owner_files,
         )
-        psi_terms = []
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=int(workers_eff),
-            initializer=_iim_phase_worker_init_static,
-            initargs=(spec_curr, spec_states, int(base), purviews),
-        ) as ex:
-            futures = [
-                ex.submit(
-                    _iim_phase_worker_run_chunk_for_tpm,
-                    spec_tpm,
-                    chunk,
-                    cache_spec,
-                    (None if cut_mask_a is None else int(cut_mask_a)),
-                    bool(cache_spec is not None),
-                    False,
-                )
-                for chunk in chunks
-            ]
-            for fut in concurrent.futures.as_completed(futures):
-                psi_chunk, _chunk_len = fut.result()
-                psi_terms.append(float(psi_chunk))
-        return float(math.fsum(psi_terms)) if psi_terms else 0.0
+
+        def _run_pool(spec):
+            # Every chunk is (re)computed into a fresh list: a retry never
+            # double counts chunks of an aborted attempt.
+            psi_terms = []
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=int(workers_eff),
+                initializer=_iim_phase_worker_init_static,
+                initargs=(spec_curr, spec_states, int(base), purviews),
+            ) as ex:
+                futures = [
+                    ex.submit(
+                        _iim_phase_worker_run_chunk_for_tpm,
+                        spec_tpm,
+                        chunk,
+                        spec,
+                        (None if cut_mask_a is None else int(cut_mask_a)),
+                        bool(spec is not None),
+                        False,
+                    )
+                    for chunk in chunks
+                ]
+                for fut in concurrent.futures.as_completed(futures):
+                    psi_chunk, _chunk_len = fut.result()
+                    psi_terms.append(float(psi_chunk))
+            return float(math.fsum(psi_terms)) if psi_terms else 0.0
+
+        try:
+            return _run_pool(cache_spec)
+        except sqlite3.Error as exc:  # locked, read-only, corrupt cache file
+            if cache_spec is None:
+                raise
+            # The cache only memoises kernel values; without it the result is
+            # identical, so keep the parallel run instead of failing the shard.
+            log.warning(
+                "IIM kernel cache %s failed in a worker (%s); recomputing this "
+                "Psi in parallel without the cache.",
+                kernel_cache_path,
+                exc,
+            )
+            return _run_pool(None)
     finally:
         _cleanup_specs(owner_shms, owner_files, tmp_dir)
 
@@ -281,9 +959,33 @@ def prepare_hunter_campaign(
     iim_max_purview_size,
     step2_context,
     hardware_target="cpu",
+    scheduler=None,
+    settings_overrides=None,
+    build_hardware_backend=None,
 ):
+    """
+    Build a Hunter IIM campaign: one prepared IIM problem per unique run plus
+    phase-1 (mechanism) and cut shards, and the scheduler scripts.
+
+    ``hardware_target`` is the target the compute jobs will request;
+    ``build_hardware_backend`` (optional) is the backend used for the
+    preparation step itself, so a campaign can be built on a login node
+    without an accelerator. Scheduler, shard and worker settings are resolved
+    by :func:`resolve_hunter_settings` and frozen in the manifest.
+    """
     campaign_dir = Path(campaign_dir).resolve()
-    hardware_backend = configure_process_for_hardware(hardware_target)
+    requested_target = normalize_hardware_target(hardware_target)
+    if build_hardware_backend is None:
+        hardware_backend = configure_process_for_hardware(requested_target)
+    else:
+        hardware_backend = configure_process_for_hardware(build_hardware_backend)
+    effective_profile, scheduler_settings = resolve_hunter_settings(
+        execution_profile,
+        scheduler=scheduler,
+        overrides=settings_overrides,
+    )
+    code_version = collect_code_version(REPO_ROOT)
+    kernel_code_version = _runtime_code_version()
     run_specs = build_ci_run_specs(
         str(data_dir),
         atlas,
@@ -304,6 +1006,7 @@ def prepare_hunter_campaign(
                 "subject": str(spec["subject"]),
                 "session": str(spec["session"]),
                 "ts_path": ts_path,
+                "ts_path_input": str(spec["ts_path"]),
             }
         )
 
@@ -316,6 +1019,11 @@ def prepare_hunter_campaign(
         run_key = f"run-{run_index:04d}_{_sanitize_token(spec['subject'])}_{_sanitize_token(spec['session'])}_{run_digest}"
         run_dir = _run_artifact_dir(campaign_dir, run_key)
         run_dir.mkdir(parents=True, exist_ok=True)
+        # A rebuild into an existing campaign directory invalidates the reduced
+        # results (shard files are kept: their identity decides reuse).
+        for name in _DERIVED_RESULT_FILES:
+            with contextlib.suppress(FileNotFoundError):
+                (run_dir / name).unlink()
 
         ts_time_region = np.load(ts_path)
         ts_iim = np.asarray(ts_time_region.T, dtype=float)
@@ -342,6 +1050,7 @@ def prepare_hunter_campaign(
             "subject": str(spec["subject"]),
             "session": str(spec["session"]),
             "ts_path": str(ts_path),
+            "ts_path_input": str(spec["ts_path_input"]),
             "dataset_id": step2_context.get("dataset_id"),
             "data_origin": step2_context.get("data_origin"),
             "dataset_role": step2_context.get("dataset_role"),
@@ -352,7 +1061,9 @@ def prepare_hunter_campaign(
             "iim_bins": int(iim_bins),
             "iim_lag_trs": int(iim_lag_trs),
             "iim_n_parts": (None if iim_n_parts is None else int(iim_n_parts)),
-            "iim_max_timepoints": (None if iim_max_timepoints is None else int(iim_max_timepoints)),
+            "iim_max_timepoints": (
+                None if iim_max_timepoints is None else int(iim_max_timepoints)
+            ),
             "iim_max_nodes": (None if iim_max_nodes is None else int(iim_max_nodes)),
             "iim_max_mechanism_size": (
                 None if iim_max_mechanism_size is None else int(iim_max_mechanism_size)
@@ -375,9 +1086,11 @@ def prepare_hunter_campaign(
                 "bins_used": prep.get("bins_used"),
                 "n_cuts_evaluated": 0,
                 "mip_cut": None,
-                "phase1_parallel_workers": execution_profile.hunter_phase1_workers_per_task,
-                "phase1_chunk_size": int(execution_profile.hunter_phase1_chunk_size),
-                "phase1_shared_memory": bool(execution_profile.hunter_shared_memory),
+                "phase1_parallel_workers": (
+                    effective_profile.hunter_phase1_workers_per_task
+                ),
+                "phase1_chunk_size": int(effective_profile.hunter_phase1_chunk_size),
+                "phase1_shared_memory": bool(effective_profile.hunter_shared_memory),
             }
             _json_dump(run_dir / "final_result.json", final_payload)
             runs.append(meta)
@@ -395,12 +1108,19 @@ def prepare_hunter_campaign(
 
         phase1_ranges = _split_evenly(
             len(prep["mechanisms_all"]),
-            int(execution_profile.hunter_phase1_shards_per_run),
+            int(effective_profile.hunter_phase1_shards_per_run),
         )
         cut_ranges = _split_evenly(
             len(prep["cuts_eval"]),
-            int(execution_profile.hunter_cut_shards_per_run),
+            int(effective_profile.hunter_cut_shards_per_run),
         )
+        bins_used = int(prep["bins_used"])
+        bins_reason = None
+        if bins_used != int(iim_bins):
+            bins_reason = (
+                f"requested bins={int(iim_bins)} exceed max_state_space="
+                f"{int(prep.get('max_state_space', 0))} (bins are reduced before nodes)"
+            )
         meta.update(
             {
                 "defined": True,
@@ -408,12 +1128,16 @@ def prepare_hunter_campaign(
                 "n_regions_input": int(prep["n_regions_input"]),
                 "n_time_input": int(prep["n_time_input"]),
                 "n_nodes_used": int(prep["n_nodes_used"]),
-                "bins_used": int(prep["bins_used"]),
+                "bins_used": bins_used,
+                "bins_reduction_reason": bins_reason,
+                "tpm_alpha": prep.get("tpm_alpha"),
+                "max_state_space": prep.get("max_state_space"),
                 "max_mechanism_size_used": int(prep["max_mechanism_size_used"]),
                 "max_purview_size_used": int(prep["max_purview_size_used"]),
                 "n_cuts_evaluated": int(len(prep["cuts_eval"])),
                 "n_mechanisms": int(len(prep["mechanisms_all"])),
                 "n_purviews": int(len(prep["purviews_all"])),
+                "problem_digest": _problem_digest(prep),
                 "phase1_shards": [
                     {"task_index": int(i), "start": int(a), "stop": int(b)}
                     for i, (a, b) in enumerate(phase1_ranges)
@@ -442,200 +1166,609 @@ def prepare_hunter_campaign(
         "atlas": str(atlas),
         "sessions": list(sessions),
         "condition": str(condition),
-        "execution_profile": dataclasses.asdict(execution_profile),
+        "execution_profile": dataclasses.asdict(effective_profile),
         "hardware_backend": hardware_backend.to_dict(),
+        "hardware_target": requested_target,
+        "build_hardware_backend": backend_summary(hardware_backend),
+        "scheduler": scheduler_settings,
+        # Cut Psi does not depend on the phase-1 result, so the PBS DAG runs
+        # phase-1 and cut shards concurrently; the legacy Slurm chain keeps
+        # the phase-1 reduce before the cut shards.
+        "cut_requires_phase1": scheduler_settings["scheduler"] != "pbs",
+        "code_version": code_version,
+        "kernel_code_version": kernel_code_version,
         "runs": runs,
         "phase1_tasks": phase1_tasks,
         "cut_tasks": cut_tasks,
         "step2_context": step2_context,
     }
     _json_dump(campaign_dir / "campaign_manifest.json", manifest)
-    _write_hunter_slurm_scripts(campaign_dir, manifest)
+    write_hunter_scheduler_scripts(campaign_dir, manifest)
     return manifest
 
 
-def _write_hunter_slurm_scripts(campaign_dir: Path, manifest):
-    profile = manifest["execution_profile"]
-    slurm = dict(profile.get("hunter_slurm") or {})
-    env_overrides = {
-        "IMPACT_HUNTER_APU_PARTITION": "apu_partition",
-        "IMPACT_HUNTER_CPU_PARTITION": "cpu_partition",
-        "IMPACT_HUNTER_SLURM_ACCOUNT": "account",
-        "IMPACT_HUNTER_SLURM_QOS": "qos",
-        "IMPACT_HUNTER_PHASE1_TIME": "phase1_time",
-        "IMPACT_HUNTER_CUT_TIME": "cut_time",
-        "IMPACT_HUNTER_REDUCE_TIME": "reduce_time",
-        "IMPACT_HUNTER_CPUS_PER_TASK": "cpus_per_task",
-        "IMPACT_HUNTER_MEM_PER_TASK": "mem_per_task",
-        "IMPACT_HUNTER_GPUS_PER_TASK": "gpus_per_task",
-    }
-    for env_name, slurm_key in env_overrides.items():
-        env_value = os.environ.get(env_name)
-        if env_value is not None and str(env_value).strip():
-            slurm[slurm_key] = str(env_value).strip()
+# ---------------------------------------------------------------------------
+# Scheduler scripts
+# ---------------------------------------------------------------------------
 
+
+def _stage_command(manifest, campaign_dir: Path, hardware_target: str) -> list[str]:
+    settings = manifest.get("scheduler") or {}
     ctx = manifest.get("step2_context") or {}
-    hw = manifest.get("hardware_backend") or {}
-    hardware_target = str(ctx.get("hardware_target") or hw.get("requested") or "cpu")
-    use_accelerator_partition = hardware_target in {"gpu", "hunter-apu"}
-    account_line = ""
-    if slurm.get("account"):
-        account_line += f"#SBATCH --account={slurm['account']}\n"
-    if slurm.get("qos"):
-        account_line += f"#SBATCH --qos={slurm['qos']}\n"
-    repo_root = Path(__file__).resolve().parents[2]
-
-    conda_env = os.environ.get("IMPACT_HUNTER_CONDA_ENV") or os.environ.get("IMPACT_CONDA_ENV")
-    if conda_env:
-        conda_bin = (
-            os.environ.get("IMPACT_HUNTER_CONDA_BIN")
-            or os.environ.get("CONDA_BIN")
-            or "conda"
-        )
-        python_launcher = [conda_bin, "run", "-n", conda_env, "python"]
-    else:
-        python_launcher = [os.environ.get("IMPACT_HUNTER_PYTHON", "python")]
-
-    setup_chunks = []
-    setup_file = os.environ.get("IMPACT_HUNTER_SLURM_SETUP_FILE")
-    if setup_file:
-        setup_path = Path(setup_file).expanduser()
-        if not setup_path.exists():
-            raise FileNotFoundError(f"Missing IMPACT_HUNTER_SLURM_SETUP_FILE: {setup_path}")
-        setup_chunks.append(setup_path.read_text(encoding="utf-8").rstrip())
-    inline_setup = os.environ.get("IMPACT_HUNTER_SLURM_SETUP")
-    if inline_setup:
-        setup_chunks.append(str(inline_setup).rstrip())
-
-    runtime_preamble = "set -euo pipefail\n"
-    runtime_preamble += f"cd {shlex.quote(str(repo_root))}\n"
-    if setup_chunks:
-        runtime_preamble += "\n".join(chunk for chunk in setup_chunks if chunk.strip()) + "\n"
-
-    base_opts = [
-        *python_launcher,
+    repo_root = Path(settings.get("repo_root") or REPO_ROOT)
+    cmd = [
+        *(settings.get("python_launcher") or _python_launcher()),
         str(repo_root / "run_pipeline.py"),
         "--execution-mode",
         "hunter",
         "--hunter-campaign-dir",
         str(campaign_dir),
         "--hardware-target",
-        hardware_target,
+        str(hardware_target),
     ]
     if ctx.get("dataset_id"):
-        base_opts.extend(["--dataset-id", str(ctx["dataset_id"])])
+        cmd.extend(["--dataset-id", str(ctx["dataset_id"])])
     if ctx.get("data_origin"):
-        base_opts.extend(["--data-origin", str(ctx["data_origin"])])
+        cmd.extend(["--data-origin", str(ctx["data_origin"])])
     if ctx.get("out_dir"):
-        base_opts.extend(["--out-dir", str(ctx["out_dir"])])
-    py_cmd = " ".join(shlex.quote(x) for x in base_opts)
+        cmd.extend(["--out-dir", str(ctx["out_dir"])])
+    return cmd
+
+
+def _quote_cmd(parts) -> str:
+    return " ".join(shlex.quote(str(x)) for x in parts)
+
+
+def _runtime_preamble(
+    settings: dict, *, uses_conda: bool, shard_threads: int | None
+) -> str:
+    lines = [
+        "set -eo pipefail",
+        "# Site setup is sourced before `set -u` (Lmod under nounset is unverified).",
+    ]
+    if settings.get("setup_file"):
+        lines.append(f"source {shlex.quote(str(settings['setup_file']))}")
+    if settings.get("inline_setup"):
+        lines.append(str(settings["inline_setup"]).rstrip())
+    lines.append("set -u")
+    lines.append(f"cd {shlex.quote(str(settings.get('repo_root') or REPO_ROOT))}")
+    if not uses_conda:
+        lines.append("# The setup above pins the interpreter; skip the conda check.")
+        lines.append("export IMPACT_SKIP_ENV_CHECK=1")
+    if shard_threads is not None:
+        lines.append(
+            "# One BLAS/OpenMP thread per worker process (workers are processes)."
+        )
+        for var in (
+            "OMP_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+        ):
+            lines.append(f"export {var}={int(shard_threads)}")
+    return "\n".join(lines) + "\n"
+
+
+def _uses_conda(settings: dict) -> bool:
+    launcher = [str(x) for x in (settings.get("python_launcher") or [])]
+    return len(launcher) >= 2 and launcher[1] == "run" and "-n" in launcher
+
+
+def _write_script(scripts_dir: Path, name: str, text: str) -> Path:
+    path = scripts_dir / name
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _check_array_size(
+    stage: str, n_subjobs: int, max_array_size: int, hint: str
+) -> None:
+    if int(n_subjobs) > int(max_array_size):
+        raise ValueError(
+            f"Hunter stage '{stage}' needs {int(n_subjobs)} array subjobs, above "
+            f"the configured maximum array size {int(max_array_size)} "
+            f"(IMPACT_HUNTER_MAX_ARRAY_SIZE). {hint}"
+        )
+
+
+def _pbs_select(
+    node_type: str | None, *, mpiprocs: int | None = None, localscratch: bool = False
+) -> str:
+    parts = ["1"]
+    if node_type:
+        parts.append(f"node_type={node_type}")
+    if localscratch:
+        parts.append("node_type_storage=localscratch")
+    if mpiprocs and int(mpiprocs) > 1:
+        parts.append(f"mpiprocs={int(mpiprocs)}")
+    return ":".join(parts)
+
+
+def _pbs_header(
+    name, *, select, walltime, settings, queue, array_size=1, comment=None
+) -> list[str]:
+    lines = [
+        "#!/bin/bash",
+        f"#PBS -N {name}",
+        f"#PBS -l select={select}",
+        f"#PBS -l walltime={walltime}",
+    ]
+    if settings.get("workspace_resource"):
+        lines.append(f"#PBS -l {settings['workspace_resource']}")
+    if queue:
+        lines.append(f"#PBS -q {queue}")
+    if settings.get("group_list"):
+        lines.append(f"#PBS -W group_list={settings['group_list']}")
+    lines.append("#PBS -j oe")
+    if int(array_size) >= 2:
+        # PBS arrays need >= 2 subjobs and must be rerunnable on Hunter.
+        lines.append(f"#PBS -J 0-{int(array_size) - 1}")
+        lines.append("#PBS -r y")
+    if comment:
+        lines.append(f"# {comment}")
+    return lines
+
+
+def _pbs_shard_launch(
+    cmd: list[str], stage: str, settings: dict, index_expr: str
+) -> str:
+    spn = int(settings.get("shards_per_node", 1))
+    if spn <= 1:
+        return (
+            f"{_quote_cmd(cmd)} --hunter-stage {stage} --hunter-task-index {index_expr}"
+        )
+    launch = [
+        str(settings.get("launcher") or "mpiexec"),
+        "-n",
+        str(spn),
+        "--ppn",
+        str(spn),
+    ]
+    if settings.get("cpu_bind"):
+        launch.extend(["--cpu-bind", str(settings["cpu_bind"])])
+    if settings.get("gpu_bind"):
+        launch.extend(["--gpu-bind", str(settings["gpu_bind"])])
+    return (
+        f"{_quote_cmd(launch)} {_quote_cmd(cmd)} --hunter-stage {stage} "
+        f"--hunter-array-index {index_expr} --hunter-shards-per-node {spn}"
+    )
+
+
+def _write_hunter_pbs_scripts(campaign_dir: Path, manifest) -> dict:
+    settings = dict(manifest.get("scheduler") or {})
+    target = str(
+        manifest.get("hardware_target")
+        or (manifest.get("step2_context") or {}).get("hardware_target")
+        or "cpu"
+    )
+    spn = int(settings.get("shards_per_node", 1))
+    uses_conda = _uses_conda(settings)
+    scripts_dir = campaign_dir / "pbs"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (scripts_dir / "logs").mkdir(exist_ok=True)
+
+    phase1_tasks = manifest.get("phase1_tasks", [])
+    cut_tasks = manifest.get("cut_tasks", [])
+    n_p1 = packed_array_size(len(phase1_tasks), spn)
+    n_cut = packed_array_size(len(cut_tasks), spn)
+    hint = "Increase IMPACT_HUNTER_SHARDS_PER_NODE packing or lower the shards per run."
+    _check_array_size("phase1-shard", n_p1, settings["max_array_size"], hint)
+    _check_array_size("cut-shard", n_cut, settings["max_array_size"], hint)
+
+    shard_select = _pbs_select(
+        settings.get("node_type"),
+        mpiprocs=spn,
+        localscratch=bool(settings.get("localscratch")),
+    )
+    shard_preamble = _runtime_preamble(
+        settings,
+        uses_conda=uses_conda,
+        shard_threads=settings.get("shard_omp_threads", 1),
+    )
+    # Phase-1 Psi is CPU-only; cut shards build cut TPMs on the requested target.
+    cmd_p1 = _stage_command(manifest, campaign_dir, "cpu")
+    cmd_cut = _stage_command(manifest, campaign_dir, target)
+    written = {}
+
+    def _index_line(n_array):
+        return (
+            'array_index="${PBS_ARRAY_INDEX:-0}"' if n_array >= 2 else "array_index=0"
+        )
+
+    if phase1_tasks:
+        text = (
+            "\n".join(
+                _pbs_header(
+                    "impact_p1",
+                    select=shard_select,
+                    walltime=settings["phase1_time"],
+                    settings=settings,
+                    queue=settings.get("queue"),
+                    array_size=n_p1,
+                    comment=(
+                        f"IMPaCT IIM phase-1 shards: {len(phase1_tasks)} tasks, "
+                        f"{spn} per node, {n_p1} node(s)."
+                    ),
+                )
+            )
+            + "\n"
+            + shard_preamble
+            + _index_line(n_p1)
+            + "\n"
+            + _pbs_shard_launch(cmd_p1, PHASE1_STAGE, settings, '"${array_index}"')
+            + "\n"
+        )
+        written["phase1"] = _write_script(scripts_dir, "01_phase1_shards.pbs", text)
+    if cut_tasks:
+        text = (
+            "\n".join(
+                _pbs_header(
+                    "impact_cut",
+                    select=shard_select,
+                    walltime=settings["cut_time"],
+                    settings=settings,
+                    queue=settings.get("queue"),
+                    array_size=n_cut,
+                    comment=(
+                        f"IMPaCT IIM cut shards: {len(cut_tasks)} tasks, "
+                        f"{spn} per node, {n_cut} node(s)."
+                    ),
+                )
+            )
+            + "\n"
+            + shard_preamble
+            + _index_line(n_cut)
+            + "\n"
+            + _pbs_shard_launch(cmd_cut, CUT_STAGE, settings, '"${array_index}"')
+            + "\n"
+        )
+        written["cut"] = _write_script(scripts_dir, "02_cut_shards.pbs", text)
+
+    # Reduce + finalize: one job for all runs. Pure-CPU work goes to a CPU/pre
+    # queue only when one is configured (academic users cannot use genoa).
+    use_cpu_queue = bool(settings.get("cpu_queue") or settings.get("cpu_node_type"))
+    red_node_type = (
+        settings.get("cpu_node_type") if use_cpu_queue else settings.get("node_type")
+    )
+    red_queue = settings.get("cpu_queue") if use_cpu_queue else settings.get("queue")
+    red_target = "cpu" if use_cpu_queue else target
+    cmd_red = _stage_command(manifest, campaign_dir, red_target)
+    red_settings = dict(settings)
+    if use_cpu_queue:
+        red_settings["localscratch"] = False
+    text = (
+        "\n".join(
+            _pbs_header(
+                "impact_red",
+                select=_pbs_select(red_node_type),
+                walltime=settings["reduce_time"],
+                settings=red_settings,
+                queue=red_queue,
+                comment="IMPaCT IIM reduce (all runs) + finalize pipeline in one job.",
+            )
+        )
+        + "\n"
+        + _runtime_preamble(settings, uses_conda=uses_conda, shard_threads=None)
+        + (
+            f"{_quote_cmd(cmd_red)} --hunter-stage reduce-all\n"
+            f"{_quote_cmd(cmd_red)} --hunter-stage finalize-pipeline\n"
+        )
+    )
+    written["reduce_finalize"] = _write_script(
+        scripts_dir, "03_reduce_finalize.pbs", text
+    )
+
+    # Single-job smoke test (the 'test' queue allows one job per user, 25 min).
+    smoke_lines = _pbs_header(
+        "impact_smoke",
+        select=shard_select,
+        walltime=parse_and_cap_smoke_walltime(settings),
+        settings=settings,
+        queue=settings.get("smoke_queue"),
+        comment="All stages in one job, for a tiny campaign (e.g. --iim-max-nodes 4).",
+    )
+    repo_src = Path(settings.get("repo_root") or REPO_ROOT) / "src"
+    selftest_cmd = [
+        *(settings.get("python_launcher") or ["python3"]),
+        "-m",
+        "impact_pipeline.hardware_selftest",
+        "--target",
+        target,
+        "--json",
+        str(campaign_dir / "hardware_selftest.json"),
+    ]
+    pythonpath = f"{shlex.quote(str(repo_src))}${{PYTHONPATH:+:${{PYTHONPATH}}}}"
+    smoke_body = [
+        shard_preamble.rstrip("\n"),
+        f"export PYTHONPATH={pythonpath}",
+        _quote_cmd(selftest_cmd),
+    ]
+    if phase1_tasks:
+        smoke_body.append(
+            f"for ((array_index=0; array_index<{n_p1}; array_index++)); do "
+            + _pbs_shard_launch(cmd_p1, PHASE1_STAGE, settings, '"${array_index}"')
+            + "; done"
+        )
+    if cut_tasks:
+        smoke_body.append(
+            f"for ((array_index=0; array_index<{n_cut}; array_index++)); do "
+            + _pbs_shard_launch(cmd_cut, CUT_STAGE, settings, '"${array_index}"')
+            + "; done"
+        )
+    cmd_smoke = _quote_cmd(_stage_command(manifest, campaign_dir, target))
+    smoke_body.append(f"{cmd_smoke} --hunter-stage reduce-all")
+    smoke_body.append(f"{cmd_smoke} --hunter-stage finalize-pipeline")
+    written["smoke"] = _write_script(
+        scripts_dir,
+        "90_smoke_all_in_one.pbs",
+        "\n".join(smoke_lines) + "\n" + "\n".join(smoke_body) + "\n",
+    )
+
+    submit = [
+        "#!/bin/bash",
+        "# Submit the IMPaCT Hunter IIM campaign (PBS Pro).",
+        "# Run interactively on a Hunter login node. Re-running after a failure is",
+        "# safe: completed shards are skipped. qsub does not forward this shell's",
+        "# environment (no -V): job-time settings such as IMPACT_HUNTER_FORCE=1",
+        "# (recompute) belong in the setup file sourced by every job.",
+        "set -euo pipefail",
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+        'campaign_dir="$(cd "${script_dir}/.." && pwd)"',
+        'mkdir -p "${script_dir}/logs"',
+        "# PBS writes <jobname>.o<jobid> files into the submission directory.",
+        'cd "${script_dir}/logs"',
+    ]
+    deps = []
+    if phase1_tasks:
+        submit.append('jid_p1=$(qsub "${script_dir}/01_phase1_shards.pbs")')
+        submit.append('echo "phase1_shards=${jid_p1}"')
+        deps.append("${jid_p1}")
+    if cut_tasks:
+        submit.append('jid_cut=$(qsub "${script_dir}/02_cut_shards.pbs")')
+        submit.append('echo "cut_shards=${jid_cut}"')
+        deps.append("${jid_cut}")
+    if deps:
+        # Dependencies apply to whole arrays (PBS has no subjob dependencies).
+        depend = "afterok:" + ":".join(deps)
+        red_script = '"${script_dir}/03_reduce_finalize.pbs"'
+        submit.append(f"jid_red=$(qsub -W depend={depend} {red_script})")
+    else:
+        submit.append('jid_red=$(qsub "${script_dir}/03_reduce_finalize.pbs")')
+    submit.append('echo "reduce_finalize=${jid_red}"')
+    submit.append(
+        '{ echo "phase1_shards=${jid_p1:-}"; echo "cut_shards=${jid_cut:-}"; '
+        'echo "reduce_finalize=${jid_red}"; } > "${script_dir}/submitted_jobs.txt"'
+    )
+    written["submit"] = _write_script(
+        scripts_dir, "00_submit_all.sh", "\n".join(submit) + "\n"
+    )
+
+    plan = {
+        "scheduler": "pbs",
+        "shards_per_node": spn,
+        "stages": {
+            "phase1-shard": {
+                "tasks": len(phase1_tasks),
+                "subjobs": n_p1,
+                "array": n_p1 >= 2,
+                "walltime": settings["phase1_time"],
+                "node_hours_upper_bound": n_p1
+                * parse_walltime(settings["phase1_time"])
+                / 3600.0,
+            },
+            "cut-shard": {
+                "tasks": len(cut_tasks),
+                "subjobs": n_cut,
+                "array": n_cut >= 2,
+                "walltime": settings["cut_time"],
+                "node_hours_upper_bound": n_cut
+                * parse_walltime(settings["cut_time"])
+                / 3600.0,
+            },
+            "reduce-finalize": {
+                "tasks": 1,
+                "subjobs": 1,
+                "array": False,
+                "walltime": settings["reduce_time"],
+                "node_type": red_node_type,
+                "queue": red_queue,
+                "hardware_target": red_target,
+                "node_hours_upper_bound": parse_walltime(settings["reduce_time"])
+                / 3600.0,
+            },
+        },
+        "notes": [
+            "Whole mi300a nodes are allocated and charged; shards are packed per "
+            "node with PALS mpiexec.",
+            "HLRS 'single' queue: 40 queued / 20 running jobs per user; whether "
+            "array subjobs count individually is unverified (ask HLRS).",
+            "Array maximum size on Hunter is unverified; the guard uses "
+            "IMPACT_HUNTER_MAX_ARRAY_SIZE.",
+        ],
+    }
+    _json_dump(scripts_dir / "campaign_plan.json", plan)
+    return {
+        "scripts_dir": str(scripts_dir),
+        "plan": plan,
+        "written": {k: str(v) for k, v in written.items()},
+    }
+
+
+def parse_and_cap_smoke_walltime(settings: dict) -> str:
+    cap = "00:25:00"
+    raw = _env_value("IMPACT_HUNTER_SMOKE_TIME") or cap
+    if settings.get("smoke_queue") == "test":
+        return _validate_walltime("IMPACT_HUNTER_SMOKE_TIME", raw, cap, "'test' queue")
+    return _validate_walltime(
+        "IMPACT_HUNTER_SMOKE_TIME",
+        raw,
+        settings.get("max_walltime") or "24:00:00",
+        "PBS walltime",
+    )
+
+
+def _write_hunter_slurm_scripts(campaign_dir: Path, manifest):
+    settings = dict(manifest.get("scheduler") or {})
+    if settings.get("scheduler") != "slurm":
+        # Manifests built before the PBS backend existed: resolve Slurm settings now.
+        profile = manifest.get("execution_profile") or {}
+        _eff, settings = resolve_hunter_settings(
+            ExecutionProfile(
+                name=str(profile.get("name", "hunter")),
+                description=str(profile.get("description", "")),
+                distributed_iim=True,
+                hunter_slurm=HunterSlurmProfile(),
+            ),
+            scheduler="slurm",
+        )
+    target = str(
+        manifest.get("hardware_target")
+        or (manifest.get("step2_context") or {}).get("hardware_target")
+        or (manifest.get("hardware_backend") or {}).get("requested")
+        or "cpu"
+    )
+    use_accelerator = target in {"gpu", "hunter-apu"}
+    uses_conda = _uses_conda(settings)
+    account_line = ""
+    if settings.get("account"):
+        account_line += f"#SBATCH --account={settings['account']}\n"
+    if settings.get("qos"):
+        account_line += f"#SBATCH --qos={settings['qos']}\n"
 
     scripts_dir = campaign_dir / "slurm"
     scripts_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = scripts_dir / "logs"
+    log_dir.mkdir(exist_ok=True)
 
     phase1_tasks = manifest.get("phase1_tasks", [])
     cut_tasks = manifest.get("cut_tasks", [])
     runs = manifest.get("runs", [])
+    hint = "Lower IMPACT_HUNTER_*_SHARDS_PER_RUN or raise MaxArraySize."
+    for stage, n in (
+        ("phase1-shard", len(phase1_tasks)),
+        ("cut-shard", len(cut_tasks)),
+        ("reduce", len(runs)),
+    ):
+        _check_array_size(stage, n, settings["max_array_size"], hint)
+    throttle = settings.get("array_throttle")
+    throttle_txt = f"%{int(throttle)}" if throttle not in (None, "") else ""
 
-    def _partition(default_kind: str) -> str:
-        if use_accelerator_partition:
-            return str(slurm.get("apu_partition", "apu"))
-        return str(slurm.get("cpu_partition", "cpu"))
+    def _array_line(n):
+        return f"#SBATCH --array=0-{int(n) - 1}{throttle_txt}\n"
 
-    def _gpu_line() -> str:
-        if not use_accelerator_partition:
-            return ""
-        gpus = int(slurm.get("gpus_per_task", 0) or 0)
-        if gpus <= 0:
-            gpus = 1
-        return f"#SBATCH --gpus-per-task={gpus}\n"
+    def _out_line(array):
+        pattern = "%x_%A_%a.out" if array else "%x_%j.out"
+        return f"#SBATCH --output={log_dir / pattern}\n"
 
-    def _write_script(name, text):
-        path = scripts_dir / name
-        path.write_text(text, encoding="utf-8")
-        path.chmod(0o755)
+    def _gpu_line():
+        gpus = int(settings.get("gpus_per_task", 0) or 0)
+        return f"#SBATCH --gpus-per-task={max(1, gpus)}\n"
+
+    cpu_partition = str(settings.get("cpu_partition", "cpu"))
+    apu_partition = str(settings.get("apu_partition", "apu"))
+    shard_preamble = _runtime_preamble(
+        settings,
+        uses_conda=uses_conda,
+        shard_threads=settings.get("shard_omp_threads", 1),
+    )
+    plain_preamble = _runtime_preamble(
+        settings, uses_conda=uses_conda, shard_threads=None
+    )
+    cmd_cpu = _quote_cmd(_stage_command(manifest, campaign_dir, "cpu"))
+    cmd_target = _quote_cmd(_stage_command(manifest, campaign_dir, target))
+    task_idx = "--hunter-task-index $SLURM_ARRAY_TASK_ID"
+    run_idx = "--hunter-run-index $SLURM_ARRAY_TASK_ID"
+    cut_partition = apu_partition if use_accelerator else cpu_partition
 
     if phase1_tasks:
+        # Phase-1 Psi is CPU-only: CPU partition, no GPU request.
         _write_script(
+            scripts_dir,
             "01_phase1_shards.sbatch",
             (
                 "#!/bin/bash\n"
-                f"#SBATCH --job-name=impact_iim_p1\n"
-                f"#SBATCH --partition={_partition('cpu')}\n"
-                f"#SBATCH --time={slurm.get('phase1_time', '24:00:00')}\n"
-                f"#SBATCH --cpus-per-task={int(slurm.get('cpus_per_task', 32))}\n"
-                f"#SBATCH --mem={slurm.get('mem_per_task', '0')}\n"
-                f"{_gpu_line()}"
-                f"#SBATCH --array=0-{len(phase1_tasks) - 1}\n"
+                "#SBATCH --job-name=impact_iim_p1\n"
+                f"#SBATCH --partition={cpu_partition}\n"
+                f"#SBATCH --time={settings['phase1_time']}\n"
+                f"#SBATCH --cpus-per-task={int(settings['cpus_per_task'])}\n"
+                f"#SBATCH --mem={settings.get('mem_per_task', '0')}\n"
+                f"{_array_line(len(phase1_tasks))}"
+                f"{_out_line(True)}"
                 f"{account_line}"
-                f"{runtime_preamble}"
-                f"{py_cmd} --hunter-stage phase1-shard --hunter-task-index $SLURM_ARRAY_TASK_ID\n"
+                f"{shard_preamble}"
+                f"{cmd_cpu} --hunter-stage phase1-shard {task_idx}\n"
             ),
         )
     if runs:
         _write_script(
+            scripts_dir,
             "02_phase1_reduce.sbatch",
             (
                 "#!/bin/bash\n"
-                f"#SBATCH --job-name=impact_iim_p1r\n"
-                f"#SBATCH --partition={_partition('cpu')}\n"
-                f"#SBATCH --time={slurm.get('reduce_time', '02:00:00')}\n"
-                f"#SBATCH --cpus-per-task=1\n"
-                f"#SBATCH --mem={slurm.get('mem_per_task', '0')}\n"
-                f"{_gpu_line()}"
-                f"#SBATCH --array=0-{len(runs) - 1}\n"
+                "#SBATCH --job-name=impact_iim_p1r\n"
+                f"#SBATCH --partition={cpu_partition}\n"
+                f"#SBATCH --time={settings['reduce_time']}\n"
+                "#SBATCH --cpus-per-task=1\n"
+                f"#SBATCH --mem={settings.get('mem_per_task', '0')}\n"
+                f"{_array_line(len(runs))}"
+                f"{_out_line(True)}"
                 f"{account_line}"
-                f"{runtime_preamble}"
-                f"{py_cmd} --hunter-stage phase1-reduce --hunter-run-index $SLURM_ARRAY_TASK_ID\n"
+                f"{plain_preamble}"
+                f"{cmd_cpu} --hunter-stage phase1-reduce {run_idx}\n"
             ),
         )
     if cut_tasks:
         _write_script(
+            scripts_dir,
             "03_cut_shards.sbatch",
             (
                 "#!/bin/bash\n"
-                f"#SBATCH --job-name=impact_iim_cut\n"
-                f"#SBATCH --partition={_partition('apu')}\n"
-                f"#SBATCH --time={slurm.get('cut_time', '24:00:00')}\n"
-                f"#SBATCH --cpus-per-task={int(slurm.get('cpus_per_task', 32))}\n"
-                f"#SBATCH --mem={slurm.get('mem_per_task', '0')}\n"
-                f"{_gpu_line()}"
-                f"#SBATCH --array=0-{len(cut_tasks) - 1}\n"
+                "#SBATCH --job-name=impact_iim_cut\n"
+                f"#SBATCH --partition={cut_partition}\n"
+                f"#SBATCH --time={settings['cut_time']}\n"
+                f"#SBATCH --cpus-per-task={int(settings['cpus_per_task'])}\n"
+                f"#SBATCH --mem={settings.get('mem_per_task', '0')}\n"
+                f"{_gpu_line() if use_accelerator else ''}"
+                f"{_array_line(len(cut_tasks))}"
+                f"{_out_line(True)}"
                 f"{account_line}"
-                f"{runtime_preamble}"
-                f"{py_cmd} --hunter-stage cut-shard --hunter-task-index $SLURM_ARRAY_TASK_ID\n"
+                f"{shard_preamble}"
+                f"{cmd_target} --hunter-stage cut-shard {task_idx}\n"
             ),
         )
     if runs:
         _write_script(
+            scripts_dir,
             "04_cut_reduce.sbatch",
             (
                 "#!/bin/bash\n"
-                f"#SBATCH --job-name=impact_iim_red\n"
-                f"#SBATCH --partition={_partition('cpu')}\n"
-                f"#SBATCH --time={slurm.get('reduce_time', '02:00:00')}\n"
-                f"#SBATCH --cpus-per-task=1\n"
-                f"#SBATCH --mem={slurm.get('mem_per_task', '0')}\n"
-                f"{_gpu_line()}"
-                f"#SBATCH --array=0-{len(runs) - 1}\n"
+                "#SBATCH --job-name=impact_iim_red\n"
+                f"#SBATCH --partition={cpu_partition}\n"
+                f"#SBATCH --time={settings['reduce_time']}\n"
+                "#SBATCH --cpus-per-task=1\n"
+                f"#SBATCH --mem={settings.get('mem_per_task', '0')}\n"
+                f"{_array_line(len(runs))}"
+                f"{_out_line(True)}"
                 f"{account_line}"
-                f"{runtime_preamble}"
-                f"{py_cmd} --hunter-stage cut-reduce --hunter-run-index $SLURM_ARRAY_TASK_ID\n"
+                f"{plain_preamble}"
+                f"{cmd_cpu} --hunter-stage cut-reduce {run_idx}\n"
             ),
         )
         _write_script(
+            scripts_dir,
             "05_finalize_pipeline.sbatch",
             (
                 "#!/bin/bash\n"
-                f"#SBATCH --job-name=impact_finalize\n"
-                f"#SBATCH --partition={_partition('cpu')}\n"
-                f"#SBATCH --time={slurm.get('reduce_time', '02:00:00')}\n"
-                f"#SBATCH --cpus-per-task=4\n"
-                f"#SBATCH --mem={slurm.get('mem_per_task', '0')}\n"
-                f"{_gpu_line()}"
+                "#SBATCH --job-name=impact_finalize\n"
+                f"#SBATCH --partition={cpu_partition}\n"
+                f"#SBATCH --time={settings['reduce_time']}\n"
+                "#SBATCH --cpus-per-task=4\n"
+                f"#SBATCH --mem={settings.get('mem_per_task', '0')}\n"
+                f"{_out_line(False)}"
                 f"{account_line}"
-                f"{runtime_preamble}"
-                f"{py_cmd} --hunter-stage finalize-pipeline\n"
+                f"{plain_preamble}"
+                f"{cmd_cpu} --hunter-stage finalize-pipeline\n"
             ),
         )
         submit_lines = [
@@ -671,12 +1804,36 @@ def _write_hunter_slurm_scripts(campaign_dir: Path, manifest):
                 'echo "finalize=${jid_fin}"',
             ]
         )
-        _write_script("00_submit_all.sh", "\n".join(submit_lines) + "\n")
+        _write_script(scripts_dir, "00_submit_all.sh", "\n".join(submit_lines) + "\n")
+    return {"scripts_dir": str(scripts_dir)}
+
+
+def write_hunter_scheduler_scripts(campaign_dir, manifest) -> dict:
+    campaign_dir = Path(campaign_dir).resolve()
+    sched = (manifest.get("scheduler") or {}).get("scheduler") or "slurm"
+    if sched == "pbs":
+        out = _write_hunter_pbs_scripts(campaign_dir, manifest)
+    else:
+        out = _write_hunter_slurm_scripts(campaign_dir, manifest)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Stage execution
+# ---------------------------------------------------------------------------
+
+
+def _load_manifest(campaign_dir: Path):
+    return _json_load(campaign_dir / "campaign_manifest.json")
+
+
+def _task_label(stage: str, task: dict) -> str:
+    return f"{task['run_key']}_{stage}_{int(task['task_index']):04d}"
 
 
 def run_phase1_shard(campaign_dir, task_index):
     campaign_dir = Path(campaign_dir).resolve()
-    manifest = _json_load(campaign_dir / "campaign_manifest.json")
+    manifest = _load_manifest(campaign_dir)
     task = manifest["phase1_tasks"][int(task_index)]
     run_dir = _run_artifact_dir(campaign_dir, task["run_key"])
     meta, problem = _load_problem(run_dir)
@@ -686,20 +1843,37 @@ def run_phase1_shard(campaign_dir, task_index):
         _json_dump(out_path, payload)
         return payload
 
+    identity = _task_identity(meta, task, PHASE1_STAGE, _runtime_code_version())
+    existing = _completed_payload(out_path, identity)
+    if existing is not None:
+        log.info("phase1 shard %s already complete; skipping.", out_path)
+        return existing
+
+    start = _timing_start()
     shard_mechanisms = problem["mechanisms_all"][int(task["start"]):int(task["stop"])]
-    kernel_cache_path = run_dir / "phase1_shards" / f"kernel_{int(task['task_index']):04d}.sqlite3"
-    psi_partial = _compute_psi_for_problem(
-        tpm=problem["tpm_full"],
-        curr_obs=problem["curr_obs"],
-        states_full=problem["states_full"],
-        base=int(meta["bins_used"]),
-        mechanisms=shard_mechanisms,
-        purviews=problem["purviews_all"],
-        cut_mask_a=None,
-        phase1_parallel_workers=manifest["execution_profile"]["hunter_phase1_workers_per_task"],
-        phase1_chunk_size=manifest["execution_profile"]["hunter_phase1_chunk_size"],
-        phase1_shared_memory=manifest["execution_profile"]["hunter_shared_memory"],
-        kernel_cache_path=str(kernel_cache_path),
+    profile = manifest["execution_profile"]
+    with _kernel_cache_scope(campaign_dir, _task_label("p1", task)) as cache_dir:
+        kernel_cache_path = None if cache_dir is None else cache_dir / "kernel.sqlite3"
+        psi_partial = _compute_psi_for_problem(
+            tpm=problem["tpm_full"],
+            curr_obs=problem["curr_obs"],
+            states_full=problem["states_full"],
+            base=int(meta["bins_used"]),
+            mechanisms=shard_mechanisms,
+            purviews=problem["purviews_all"],
+            cut_mask_a=None,
+            phase1_parallel_workers=profile["hunter_phase1_workers_per_task"],
+            phase1_chunk_size=profile["hunter_phase1_chunk_size"],
+            phase1_shared_memory=profile["hunter_shared_memory"],
+            kernel_cache_path=(
+                None if kernel_cache_path is None else str(kernel_cache_path)
+            ),
+        )
+    timing = _timing_finish(
+        start,
+        stage=PHASE1_STAGE,
+        task_index=int(task_index),
+        n_mechanisms=len(shard_mechanisms),
     )
     payload = {
         "status": "complete",
@@ -710,14 +1884,36 @@ def run_phase1_shard(campaign_dir, task_index):
         "stop": int(task["stop"]),
         "n_mechanisms": int(len(shard_mechanisms)),
         "psi_partial": float(psi_partial),
+        "identity": identity,
+        "timing": timing,
     }
     _json_dump(out_path, payload)
+    _write_timing(campaign_dir, PHASE1_STAGE, _task_label("p1", task), timing)
     return payload
+
+
+def _shard_record(path: Path, meta: dict, shard: dict, stage: str):
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {stage} result: {path}")
+    rec = _json_load(path)
+    if rec.get("status") != "complete":
+        raise RuntimeError(f"{stage} did not complete: {path}")
+    identity = rec.get("identity")
+    if identity is not None:
+        if identity.get("problem_digest") != meta.get("problem_digest") or (
+            int(identity.get("start", -1)),
+            int(identity.get("stop", -1)),
+        ) != (int(shard["start"]), int(shard["stop"])):
+            raise RuntimeError(
+                f"{stage} result {path} belongs to a different campaign build; "
+                "rerun the shard."
+            )
+    return rec
 
 
 def run_phase1_reduce(campaign_dir, run_index):
     campaign_dir = Path(campaign_dir).resolve()
-    manifest = _json_load(campaign_dir / "campaign_manifest.json")
+    manifest = _load_manifest(campaign_dir)
     run_meta = manifest["runs"][int(run_index)]
     run_dir = _run_artifact_dir(campaign_dir, run_meta["run_key"])
     if not bool(run_meta.get("defined", False)):
@@ -730,14 +1926,13 @@ def run_phase1_reduce(campaign_dir, run_index):
         return payload
 
     partials = []
+    versions = []
     for shard in run_meta["phase1_shards"]:
         shard_path = run_dir / "phase1_shards" / f"shard_{int(shard['task_index']):04d}.json"
-        if not shard_path.exists():
-            raise FileNotFoundError(f"Missing phase1 shard result: {shard_path}")
-        rec = _json_load(shard_path)
-        if rec.get("status") != "complete":
-            raise RuntimeError(f"Phase1 shard did not complete: {shard_path}")
+        rec = _shard_record(shard_path, run_meta, shard, "Phase1 shard")
         partials.append(float(rec["psi_partial"]))
+        versions.append((rec.get("identity") or {}).get("code_version"))
+    code_version = _check_single_code_version(versions, run_meta["run_key"])
 
     psi_full = float(math.fsum(partials)) if partials else 0.0
     payload = {
@@ -745,14 +1940,16 @@ def run_phase1_reduce(campaign_dir, run_index):
         "defined": True,
         "psi_full": float(psi_full),
         "n_shards": int(len(partials)),
+        "problem_digest": run_meta.get("problem_digest"),
+        "code_version": code_version,
     }
     _json_dump(run_dir / "phase1_result.json", payload)
     return payload
 
 
-def run_cut_shard(campaign_dir, task_index):
+def run_cut_shard(campaign_dir, task_index, *, require_phase1=None):
     campaign_dir = Path(campaign_dir).resolve()
-    manifest = _json_load(campaign_dir / "campaign_manifest.json")
+    manifest = _load_manifest(campaign_dir)
     hardware_backend = configure_process_for_hardware(
         (manifest.get("step2_context") or {}).get("hardware_target")
         or (manifest.get("hardware_backend") or {}).get("requested")
@@ -767,50 +1964,100 @@ def run_cut_shard(campaign_dir, task_index):
         _json_dump(out_path, payload)
         return payload
 
+    if require_phase1 is None:
+        require_phase1 = bool(manifest.get("cut_requires_phase1", True))
     phase1_path = run_dir / "phase1_result.json"
-    if not phase1_path.exists():
+    if require_phase1 and not phase1_path.exists():
         raise FileNotFoundError(f"Missing phase1 reduction result: {phase1_path}")
 
+    identity = _task_identity(meta, task, CUT_STAGE, _runtime_code_version())
+    existing = _completed_payload(out_path, identity)
+    if existing is not None:
+        log.info("cut shard %s already complete; skipping.", out_path)
+        return existing
+
+    # Per-cut checkpoint so a walltime kill loses at most one cut.
+    partial_path = out_path.with_name(out_path.stem + ".partial.json")
+    cut_scores = {}
+    if partial_path.exists() and not _env_flag(FORCE_ENV, False):
+        try:
+            partial = _json_load(partial_path)
+            if partial.get("identity") == identity:
+                cut_scores = {
+                    str(k): float(v)
+                    for k, v in (partial.get("cut_scores") or {}).items()
+                }
+        except Exception:
+            cut_scores = {}
+    resumed_cuts = len(cut_scores)
+
+    start = _timing_start()
     shard_cuts = problem["cuts_eval"][int(task["start"]):int(task["stop"])]
     static_cache = {}
     obs_state_cache = {}
-    cut_scores = {}
+    profile = manifest["execution_profile"]
+    with _kernel_cache_scope(campaign_dir, _task_label("cut", task)) as cache_dir:
+        for local_idx, (A, B) in enumerate(shard_cuts):
+            cut_key = _iim_cut_to_key(A, B)
+            if cut_key in cut_scores:
+                continue
+            cut_mask_a = 0
+            for nn in A:
+                cut_mask_a |= 1 << int(nn)
+            tpm_cut = _iim_build_cut_tpm(
+                problem["tpm_full"],
+                problem["states_full"],
+                int(meta["bins_used"]),
+                A,
+                B,
+                hardware_backend=hardware_backend,
+            )
+            kernel_cache_path = (
+                None
+                if cache_dir is None
+                else cache_dir / f"kernel_{int(local_idx):04d}.sqlite3"
+            )
+            psi_cut = _compute_psi_for_problem(
+                tpm=tpm_cut,
+                curr_obs=problem["curr_obs"],
+                states_full=problem["states_full"],
+                base=int(meta["bins_used"]),
+                mechanisms=problem["mechanisms_all"],
+                purviews=problem["purviews_all"],
+                cut_mask_a=int(cut_mask_a),
+                phase1_parallel_workers=profile["hunter_phase1_workers_per_task"],
+                phase1_chunk_size=profile["hunter_phase1_chunk_size"],
+                phase1_shared_memory=profile["hunter_shared_memory"],
+                kernel_cache_path=(
+                    None if kernel_cache_path is None else str(kernel_cache_path)
+                ),
+                static_cache=static_cache,
+                obs_state_cache=obs_state_cache,
+            )
+            if kernel_cache_path is not None:
+                for suffix in ("", "-wal", "-shm"):
+                    with contextlib.suppress(OSError):
+                        Path(str(kernel_cache_path) + suffix).unlink()
+            cut_scores[cut_key] = float(psi_cut)
+            _json_dump(partial_path, {"identity": identity, "cut_scores": cut_scores})
+
     best_cut = None
     best_psi = -np.inf
-    for local_idx, (A, B) in enumerate(shard_cuts):
-        cut_mask_a = 0
-        for nn in A:
-            cut_mask_a |= (1 << int(nn))
-        tpm_cut = _iim_build_cut_tpm(
-            problem["tpm_full"],
-            problem["states_full"],
-            int(meta["bins_used"]),
-            A,
-            B,
-            hardware_backend=hardware_backend,
-        )
-        kernel_cache_path = run_dir / "cut_shards" / f"kernel_{int(task['task_index']):04d}_{int(local_idx):04d}.sqlite3"
-        psi_cut = _compute_psi_for_problem(
-            tpm=tpm_cut,
-            curr_obs=problem["curr_obs"],
-            states_full=problem["states_full"],
-            base=int(meta["bins_used"]),
-            mechanisms=problem["mechanisms_all"],
-            purviews=problem["purviews_all"],
-            cut_mask_a=int(cut_mask_a),
-            phase1_parallel_workers=manifest["execution_profile"]["hunter_phase1_workers_per_task"],
-            phase1_chunk_size=manifest["execution_profile"]["hunter_phase1_chunk_size"],
-            phase1_shared_memory=manifest["execution_profile"]["hunter_shared_memory"],
-            kernel_cache_path=str(kernel_cache_path),
-            static_cache=static_cache,
-            obs_state_cache=obs_state_cache,
-        )
-        cut_key = _iim_cut_to_key(A, B)
-        cut_scores[cut_key] = float(psi_cut)
+    # Deterministic MIP choice: first cut (campaign order) with the max preserved Psi.
+    for A, B in shard_cuts:
+        psi_cut = cut_scores[_iim_cut_to_key(A, B)]
         if float(psi_cut) > float(best_psi):
             best_psi = float(psi_cut)
             best_cut = [list(A), list(B)]
 
+    timing = _timing_finish(
+        start,
+        stage=CUT_STAGE,
+        task_index=int(task_index),
+        n_cuts=len(shard_cuts),
+        resumed_cuts=int(resumed_cuts),
+        hardware_backend=backend_summary(hardware_backend),
+    )
     payload = {
         "status": "complete",
         "defined": True,
@@ -821,14 +2068,19 @@ def run_cut_shard(campaign_dir, task_index):
         "cut_scores": cut_scores,
         "best_cut": best_cut,
         "best_psi": (None if not np.isfinite(best_psi) else float(best_psi)),
+        "identity": identity,
+        "timing": timing,
     }
     _json_dump(out_path, payload)
+    with contextlib.suppress(OSError):
+        partial_path.unlink()
+    _write_timing(campaign_dir, CUT_STAGE, _task_label("cut", task), timing)
     return payload
 
 
 def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
     campaign_dir = Path(campaign_dir).resolve()
-    manifest = _json_load(campaign_dir / "campaign_manifest.json")
+    manifest = _load_manifest(campaign_dir)
     run_meta = manifest["runs"][int(run_index)]
     run_dir = _run_artifact_dir(campaign_dir, run_meta["run_key"])
     if not bool(run_meta.get("defined", False)):
@@ -848,7 +2100,18 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
         return payload
 
     phase1 = _json_load(run_dir / "phase1_result.json")
+    if phase1.get("problem_digest", run_meta.get("problem_digest")) != run_meta.get(
+        "problem_digest"
+    ):
+        raise RuntimeError(
+            f"{run_dir / 'phase1_result.json'} belongs to a different campaign build; "
+            "rerun the phase-1 reduction."
+        )
     psi_full = float(phase1["psi_full"])
+    build_fields = {
+        "problem_digest": run_meta.get("problem_digest"),
+        "code_version": phase1.get("code_version"),
+    }
     if not np.isfinite(psi_full) or psi_full <= 0:
         payload = {
             "value": None,
@@ -863,19 +2126,20 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
             "n_nodes_used": int(run_meta["n_nodes_used"]),
             "bins_used": int(run_meta["bins_used"]),
             "n_cuts_evaluated": int(run_meta["n_cuts_evaluated"]),
+            **build_fields,
         }
         _json_dump(run_dir / "final_result.json", payload)
         return payload
 
     best_psi = -np.inf
     best_cut = None
+    n_scored = 0
+    versions = [phase1.get("code_version")]
     for shard in run_meta["cut_shards"]:
         shard_path = run_dir / "cut_shards" / f"shard_{int(shard['task_index']):04d}.json"
-        if not shard_path.exists():
-            raise FileNotFoundError(f"Missing cut shard result: {shard_path}")
-        rec = _json_load(shard_path)
-        if rec.get("status") != "complete":
-            raise RuntimeError(f"Cut shard did not complete: {shard_path}")
+        rec = _shard_record(shard_path, run_meta, shard, "Cut shard")
+        versions.append((rec.get("identity") or {}).get("code_version"))
+        n_scored += len(rec.get("cut_scores") or {})
         psi = rec.get("best_psi")
         if psi is None:
             continue
@@ -883,6 +2147,15 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
         if psi > best_psi:
             best_psi = psi
             best_cut = rec.get("best_cut")
+    if n_scored != int(run_meta["n_cuts_evaluated"]):
+        raise RuntimeError(
+            f"Cut shards for {run_meta['run_key']} scored {n_scored} cuts, "
+            f"expected {int(run_meta['n_cuts_evaluated'])}."
+        )
+    # Psi_full (phase 1) and the cut Psi values must come from the same code.
+    build_fields["code_version"] = _check_single_code_version(
+        versions, run_meta["run_key"]
+    )
 
     if not np.isfinite(best_psi):
         payload = {
@@ -898,6 +2171,7 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
             "n_nodes_used": int(run_meta["n_nodes_used"]),
             "bins_used": int(run_meta["bins_used"]),
             "n_cuts_evaluated": int(run_meta["n_cuts_evaluated"]),
+            **build_fields,
         }
         _json_dump(run_dir / "final_result.json", payload)
         return payload
@@ -919,6 +2193,7 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
         "Psi_mip_preserved": float(best_psi),
         "n_nodes_used": int(run_meta["n_nodes_used"]),
         "bins_used": int(run_meta["bins_used"]),
+        "bins_reduction_reason": run_meta.get("bins_reduction_reason"),
         "max_nodes_requested": run_meta.get("iim_max_nodes"),
         "max_mechanism_size_used": int(run_meta["max_mechanism_size_used"]),
         "max_purview_size_used": int(run_meta["max_purview_size_used"]),
@@ -934,27 +2209,215 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
         "phase1_mechanisms_done": int(run_meta["n_mechanisms"]),
         "phase1_total_mechanisms": int(run_meta["n_mechanisms"]),
         "phase1_eta_seconds": None,
-        "phase1_parallel_workers": manifest["execution_profile"]["hunter_phase1_workers_per_task"],
-        "phase1_chunk_size": int(manifest["execution_profile"]["hunter_phase1_chunk_size"]),
-        "phase1_shared_memory": bool(manifest["execution_profile"]["hunter_shared_memory"]),
+        "phase1_parallel_workers": manifest["execution_profile"][
+            "hunter_phase1_workers_per_task"
+        ],
+        "phase1_chunk_size": int(
+            manifest["execution_profile"]["hunter_phase1_chunk_size"]
+        ),
+        "phase1_shared_memory": bool(
+            manifest["execution_profile"]["hunter_shared_memory"]
+        ),
         "induced_partition_cache_enabled": False,
         "induced_partition_cache_path": None,
         "induced_partition_cache_stats": None,
         "defined": True,
         "undefined_reason": None,
+        **build_fields,
     }
     _json_dump(run_dir / "final_result.json", payload)
     return payload
 
 
+def _reduce_all(campaign_dir, fn, label):
+    campaign_dir = Path(campaign_dir).resolve()
+    manifest = _load_manifest(campaign_dir)
+    results, errors = [], []
+    for run_index, run_meta in enumerate(manifest.get("runs", [])):
+        try:
+            results.append(fn(campaign_dir, run_index))
+        except (FileNotFoundError, RuntimeError) as exc:
+            errors.append(f"{run_meta.get('run_key')}: {exc}")
+    if errors:
+        raise RuntimeError(
+            f"{label} failed for {len(errors)} run(s):\n" + "\n".join(errors)
+        )
+    return results
+
+
+def run_phase1_reduce_all(campaign_dir):
+    """Phase-1 reduction for every run in one process (merged reducer)."""
+    return _reduce_all(campaign_dir, run_phase1_reduce, "phase1-reduce")
+
+
+def run_cut_reduce_all(campaign_dir):
+    """Cut reduction (final IIM) for every run in one process (merged reducer)."""
+    return _reduce_all(campaign_dir, run_cut_reduce, "cut-reduce")
+
+
+def run_reduce_all(campaign_dir):
+    start = _timing_start()
+    campaign_dir = Path(campaign_dir).resolve()
+    p1 = run_phase1_reduce_all(campaign_dir)
+    final = run_cut_reduce_all(campaign_dir)
+    timing = _timing_finish(start, stage="reduce-all", n_runs=len(final))
+    _write_timing(campaign_dir, "reduce-all", "reduce_all", timing)
+    return {"phase1": p1, "final": final, "timing": timing}
+
+
+def run_packed_shard(
+    campaign_dir, stage: str, array_index: int, shards_per_node=None, env=None
+):
+    """
+    Run the shard of a packed launch (``shards_per_node`` ranks per node).
+    Ranks beyond the last task of a partially filled node exit without work.
+    ``shards_per_node`` defaults to the packing the campaign was built with; a
+    different explicit value would skip or duplicate tasks and is rejected.
+    """
+    campaign_dir = Path(campaign_dir).resolve()
+    manifest = _load_manifest(campaign_dir)
+    tasks_key = {PHASE1_STAGE: "phase1_tasks", CUT_STAGE: "cut_tasks"}.get(stage)
+    if tasks_key is None:
+        raise ValueError(
+            f"Packed execution supports {PHASE1_STAGE} and {CUT_STAGE}, not '{stage}'."
+        )
+    built_spn = (manifest.get("scheduler") or {}).get("shards_per_node")
+    if shards_per_node is None:
+        shards_per_node = int(built_spn or 1)
+    elif built_spn is not None and int(shards_per_node) != int(built_spn):
+        raise ValueError(
+            f"--hunter-shards-per-node {int(shards_per_node)} does not match the "
+            f"campaign packing ({int(built_spn)} shards per node); the array index "
+            "would map to the wrong shards."
+        )
+    task_index = resolve_packed_task_index(array_index, shards_per_node, env=env)
+    n_tasks = len(manifest.get(tasks_key, []))
+    if task_index >= n_tasks:
+        log.info(
+            "%s: packed slot %d has no task (n_tasks=%d); nothing to do.",
+            stage,
+            task_index,
+            n_tasks,
+        )
+        return None
+    if stage == PHASE1_STAGE:
+        return run_phase1_shard(campaign_dir, task_index)
+    return run_cut_shard(campaign_dir, task_index)
+
+
+def campaign_status(campaign_dir) -> dict:
+    """Completed/missing shards and results of a campaign (written to status.json)."""
+    campaign_dir = Path(campaign_dir).resolve()
+    manifest = _load_manifest(campaign_dir)
+    runs_by_key = {str(r["run_key"]): r for r in manifest.get("runs", [])}
+    # 'complete' means a resubmission would skip the shard (same identity check).
+    code_version = _runtime_code_version()
+    status = {
+        "phase1-shard": {"complete": [], "missing": []},
+        "cut-shard": {"complete": [], "missing": []},
+    }
+    for stage, key, sub in (
+        (PHASE1_STAGE, "phase1_tasks", "phase1_shards"),
+        (CUT_STAGE, "cut_tasks", "cut_shards"),
+    ):
+        for i, task in enumerate(manifest.get(key, [])):
+            path = (
+                _run_artifact_dir(campaign_dir, task["run_key"])
+                / sub
+                / f"shard_{int(task['task_index']):04d}.json"
+            )
+            identity = _task_identity(
+                runs_by_key.get(str(task["run_key"]), {}), task, stage, code_version
+            )
+            ok = _stored_completion(path, identity) is not None
+            status[stage]["complete" if ok else "missing"].append(int(i))
+
+    def _final_current(run_meta) -> bool:
+        run_dir = _run_artifact_dir(campaign_dir, run_meta["run_key"])
+        path = run_dir / "final_result.json"
+        if not path.exists():
+            return False
+        try:
+            rec = _json_load(path)
+        except Exception:
+            return False
+        return rec.get("problem_digest") == run_meta.get("problem_digest")
+
+    finals = [_final_current(r) for r in manifest.get("runs", [])]
+    summary = {
+        "campaign_dir": str(campaign_dir),
+        "n_runs": len(finals),
+        "final_results": int(sum(finals)),
+        "stages": {
+            stage: {
+                "complete": len(v["complete"]),
+                "missing": len(v["missing"]),
+                "missing_indices": v["missing"],
+            }
+            for stage, v in status.items()
+        },
+        "timing": summarize_campaign_timing(campaign_dir, write=False),
+    }
+    _json_dump(campaign_dir / "status.json", summary)
+    return summary
+
+
+def summarize_campaign_timing(campaign_dir, write=True) -> dict:
+    """Aggregate per-task timing records (wall time, CPU time, peak RSS) per stage."""
+    campaign_dir = Path(campaign_dir).resolve()
+    out = {}
+    root = campaign_dir / "timing"
+    if root.exists():
+        for stage_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            walls, rss, cpu, cpu_all = [], [], [], []
+            for path in sorted(stage_dir.glob("*.json")):
+                try:
+                    rec = _json_load(path)
+                except Exception:
+                    continue
+                walls.append(float(rec.get("wall_seconds") or 0.0))
+                cpu.append(float(rec.get("process_cpu_seconds") or 0.0))
+                # parent + worker processes (older records: parent only)
+                cpu_all.append(
+                    float(rec.get("cpu_seconds", rec.get("process_cpu_seconds")) or 0.0)
+                )
+                if rec.get("peak_rss_mb") is not None:
+                    rss.append(float(rec["peak_rss_mb"]))
+            if walls:
+                out[stage_dir.name] = {
+                    "n_tasks": len(walls),
+                    "wall_seconds_total": float(sum(walls)),
+                    "wall_seconds_mean": float(np.mean(walls)),
+                    "wall_seconds_max": float(max(walls)),
+                    "process_cpu_seconds_total": float(sum(cpu)),
+                    "cpu_seconds_total": float(sum(cpu_all)),
+                    "peak_rss_mb_max": (None if not rss else float(max(rss))),
+                }
+    if write:
+        _json_dump(campaign_dir / "timing_summary.json", out)
+    return out
+
+
 def collect_iim_results_by_path(campaign_dir):
     campaign_dir = Path(campaign_dir).resolve()
-    manifest = _json_load(campaign_dir / "campaign_manifest.json")
+    manifest = _load_manifest(campaign_dir)
     out = {}
     for run_meta in manifest.get("runs", []):
         run_dir = _run_artifact_dir(campaign_dir, run_meta["run_key"])
         final_path = run_dir / "final_result.json"
         if not final_path.exists():
             raise FileNotFoundError(f"Missing final IIM result: {final_path}")
-        out[str(run_meta["ts_path"])] = _json_load(final_path)
+        result = _json_load(final_path)
+        # Undefined runs have no digest; for defined runs the result must come
+        # from this build of the campaign (not a stale earlier reduction).
+        if result.get("problem_digest") != run_meta.get("problem_digest"):
+            raise RuntimeError(
+                f"Final IIM result {final_path} does not belong to the current "
+                "campaign build; run the reduce-all stage again."
+            )
+        out[str(run_meta["ts_path"])] = result
+        # Also key by the path as discovered (may differ from the resolved path
+        # when the output directory is reached through a symlink).
+        if run_meta.get("ts_path_input"):
+            out.setdefault(str(run_meta["ts_path_input"]), result)
     return out

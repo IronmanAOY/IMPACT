@@ -72,7 +72,7 @@ def _paired_summary(agg: pd.DataFrame, metric: str, sessions: tuple[str, ...]) -
 
 def atlas_check(
     data_dir,
-    atlases=('aal90', 'shen268'),
+    atlases=('aal116', 'shen268'),
     sessions=('awake', 'deep'),
     thetas=None,
     tr=None,
@@ -91,6 +91,7 @@ def atlas_check(
     iim_kwargs=None,
     ci_reference=None,
     compute_kwargs=None,
+    **synergy_kwargs,
 ):
     """
     Re-run the metric computation on alternative atlases and summarise paired
@@ -128,7 +129,13 @@ def atlas_check(
             "CI not assessed across atlases: components not computed here: "
             f"{','.join(missing)}."
         )
-    extra = dict(compute_kwargs or {})
+    # ``synergy_kwargs`` (e.g. condition, hardware_target, step-2 iim_* settings)
+    # are accepted from the orchestration layer; explicit arguments win.
+    synergy_kwargs = dict(synergy_kwargs)
+    condition = synergy_kwargs.pop("condition", condition)
+    ci_reference = synergy_kwargs.pop("ci_reference", ci_reference)
+    extra = dict(synergy_kwargs)
+    extra.update(dict(compute_kwargs or {}))
     extra.update(dict(iim_kwargs or {}))
 
     for atlas in atlases:

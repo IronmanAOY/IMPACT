@@ -225,16 +225,107 @@ REPORT_DATASETS: dict[str, ReportDataset] = {
         local_root_candidates=("data/scratch/ds003171", "data/ds003171"),
         fetch_strategy="full_local",
         pipeline_ready=True,
-        task_hints=("audioawake", "audiodeep", "restawake", "restdeep"),
+        task_hints=(
+            "audioawake",
+            "audiolight",
+            "audiodeep",
+            "audiorecovery",
+            "restawake",
+            "restlight",
+            "restdeep",
+            "restrecovery",
+        ),
         representative_payload_paths=(
             "sub-2525JK/func/sub-2525JK_task-audioawake_run-01_bold.nii.gz",
         ),
         notes=(
-            "fMRI replication anchor in the repository. Valuable for PDI/NAS/IIM, but RAM and SRPI remain undefined."
+            "fMRI replication anchor in the repository. Valuable for PDI/NAS/IIM, "
+            "but RAM and SRPI remain undefined. sub-10JR's awake audio run is "
+            "labelled task-audio and is mapped explicitly to audioawake "
+            "(DATASET_TASK_ALIASES)."
         ),
         report_priority=8,
     ),
 }
+
+
+# Explicit, dataset-specific corrections of BIDS task labels. Preprocessing and
+# run-spec building both resolve task labels through these tables so that a
+# run is either analysed under an explicit state or reported as skipped.
+DATASET_TASK_ALIASES: dict[str, dict[str, dict[str, str]]] = {
+    "ds003171": {
+        # sub-10JR's awake auditory run is labelled task-audio (TaskName "audio")
+        # instead of task-audioawake. Its AcquisitionTime (15:42:23) precedes
+        # restawake (15:48), audiolight (16:35), audiodeep (17:04) and
+        # audiorecovery (17:35), i.e. it is the audio run of the awake block.
+        "10JR": {"audio": "audioawake"},
+    },
+}
+
+# ds003171 task labels are <condition><state>, e.g. audioawake, restlight.
+# 'light' (light sedation) is a real state of the design; it is preprocessed
+# and written under <subject>/light/<condition> and is analysed only when
+# requested via --sessions.
+DATASET_STATE_TASK_GRAMMAR: dict[str, dict[str, tuple[str, ...]]] = {
+    "ds003171": {
+        "conditions": ("audio", "rest"),
+        "states": ("awake", "light", "deep", "recovery"),
+    },
+}
+
+
+def _normalize_subject_label(subject) -> str:
+    return str(subject or "").strip().replace("sub-", "", 1)
+
+
+def canonical_task_label(
+    dataset_id: str | None, subject, task: str | None
+) -> str | None:
+    """Apply the explicit per-subject task alias table (no inference)."""
+    if task is None:
+        return None
+    aliases = DATASET_TASK_ALIASES.get(str(dataset_id or "").strip(), {})
+    subj_aliases = aliases.get(_normalize_subject_label(subject), {})
+    return subj_aliases.get(str(task), str(task))
+
+
+def parse_state_task(
+    dataset_id: str | None, subject, task: str | None
+) -> tuple[str, str] | None:
+    """
+    Map a BIDS task label to ``(state, condition)`` for datasets that encode
+    the sedation state in the task label. Returns None when the label is not
+    part of the dataset grammar (callers must record such runs as skipped).
+    """
+    ds = str(dataset_id or "ds003171").strip()
+    grammar = DATASET_STATE_TASK_GRAMMAR.get(ds)
+    label = canonical_task_label(ds, subject, task)
+    if grammar is None or not label:
+        return None
+    for condition in grammar["conditions"]:
+        if label.startswith(condition):
+            state = label[len(condition) :]
+            if state in grammar["states"]:
+                return state, condition
+    return None
+
+
+def task_labels_for_state(
+    dataset_id: str | None, subject, state: str, condition: str
+) -> tuple[str, ...]:
+    """
+    BIDS task labels (as they appear on disk) that encode ``condition`` in
+    ``state`` for ``subject``, including explicit aliases (e.g. sub-10JR's
+    ``audio`` for ``audioawake``).
+    """
+    ds = str(dataset_id or "").strip()
+    canonical = f"{condition}{state}"
+    labels = [canonical]
+    subj_aliases = DATASET_TASK_ALIASES.get(ds, {}).get(
+        _normalize_subject_label(subject), {}
+    )
+    labels.extend(raw for raw, target in subj_aliases.items() if target == canonical)
+    return tuple(dict.fromkeys(labels))
 
 
 def get_report_dataset(dataset_id: str | None) -> ReportDataset | None:

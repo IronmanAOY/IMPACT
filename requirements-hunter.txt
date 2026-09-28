@@ -1,0 +1,21 @@
+# Runtime requirements for HLRS Hunter (cray-python venv created with --system-site-packages).
+# Install on a login node through the HLRS SOCKS tunnel (see scripts/hunter/install_hunter_env.sh):
+#   python3 -m pip install -c constraints-hunter.txt -r requirements-hunter.txt
+# numpy/scipy come from cray-python (Cray LibSci-linked) and are pinned by constraints-hunter.txt.
+# CuPy for ROCm is NOT listed: it must match the ROCm stack and is installed separately.
+# Developer tools (pytest, flake8, black, pyinstaller, bids-validator CLI, node) are not needed on Hunter.
+pandas==2.3.3
+scikit-learn==1.7.2
+threadpoolctl==3.6.0
+joblib==1.5.3
+statsmodels==0.14.6
+nibabel==5.3.2
+nilearn==0.13.1
+mne==1.6.1
+numba==0.61.2
+networkx==3.4.2
+python-louvain==0.16
+matplotlib==3.10.8
+python-docx==1.2.0
+pybids==0.21.0
+psutil==7.2.2
