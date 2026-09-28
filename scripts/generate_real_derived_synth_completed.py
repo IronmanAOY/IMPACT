@@ -284,7 +284,11 @@ REQUIRED_METRIC_COLUMNS = (
     "CI_missing",
 )
 # Values that do not record why a metric is undefined.
-_NOT_A_REASON = {"", "ok", "nan", "none", "null", "n/a"}
+# 'not_computed' means the metric code skipped the metric; the validator
+# requests every metric, so it never explains an undefined value here.
+_NOT_A_REASON = {"", "ok", "nan", "<na>", "none", "null", "n/a", "not_computed"}
+# PDI endpoints whose baseline reason columns are PDI_<endpoint>_reason.
+PDI_ENDPOINTS = ("anchor", "task")
 SMOKE_GATE_DESCRIPTION = (
     "Passes when every run's arrays exist, load, are finite, have no zero-"
     "variance nodes and match the manifest and BIDS objects; the metric table "
@@ -2599,10 +2603,19 @@ def _undefined_reason(
         (f"{metric}_reason", rec.get(f"{metric}_reason")),
     ]
     if metric == "PDI":
-        primary = _reason_text(rec.get("PDI_primary_source")) or _reason_text(
-            rec.get("PDI_primary_endpoint")
-        )
-        if primary:
+        # The declared primary endpoint (anchor or task) says which baseline
+        # reason applies. PDI_primary_source is 'undefined' whenever PDI is
+        # NaN, so it names the endpoint only for legacy tables without
+        # PDI_primary_endpoint.
+        endpoints = [
+            text
+            for text in (
+                _reason_text(rec.get("PDI_primary_endpoint")),
+                _reason_text(rec.get("PDI_primary_source")),
+            )
+            if text in PDI_ENDPOINTS
+        ]
+        for primary in dict.fromkeys(endpoints):
             candidates.append(
                 (f"PDI_{primary}_reason", rec.get(f"PDI_{primary}_reason"))
             )
@@ -2624,9 +2637,11 @@ def _undefined_reason(
 def _ci_status_consistent(rec: dict[str, Any]) -> bool:
     """CI, CI_defined and CI_missing agree (spec D1).
 
-    A finite CI has CI_defined true and nothing missing. A NaN CI has
-    CI_defined false and lists only known tokens (a component or
-    ``<component>_reference``), including every undefined component.
+    A finite CI has CI_defined true, nothing missing and every component
+    defined (an undefined component must never enter CI, e.g. as 0). A NaN CI
+    has CI_defined false and lists only known tokens (a component or
+    ``<component>_reference``), including every undefined component. IIM
+    counts as undefined when IIM_defined is false, as in assemble_ci.
     """
     ci = _as_float(rec.get("CI"))
     defined = _flag(rec.get("CI_defined"))
@@ -2635,13 +2650,15 @@ def _ci_status_consistent(rec: dict[str, Any]) -> bool:
         for tok in (_reason_text(rec.get("CI_missing")) or "").split(",")
         if tok.strip()
     ]
-    if np.isfinite(ci):
-        return defined is not False and not missing
-    allowed = set(CI_COMPONENT_METRICS) | {
-        f"{c}_reference" for c in CI_COMPONENT_METRICS
-    }
     undefined = {
         c for c in CI_COMPONENT_METRICS if not np.isfinite(_as_float(rec.get(c)))
+    }
+    if _flag(rec.get("IIM_defined")) is False:
+        undefined.add("IIM")
+    if np.isfinite(ci):
+        return defined is not False and not missing and not undefined
+    allowed = set(CI_COMPONENT_METRICS) | {
+        f"{c}_reference" for c in CI_COMPONENT_METRICS
     }
     return (
         defined is not True
@@ -2654,10 +2671,12 @@ def _ci_status_consistent(rec: dict[str, Any]) -> bool:
 def _tree_fingerprint(
     roots: list[Path], exclude: list[Path] | tuple[Path, ...] = ()
 ) -> dict[str, tuple[int, int]]:
-    """(size, mtime_ns) of every file under ``roots``; links are not followed.
+    """(size, mtime_ns) of every file under ``roots``; links inside are not followed.
 
     Used to show that validation leaves the objects and shipped reports
-    untouched. Paths under ``exclude`` (the validation output) are skipped.
+    untouched. Paths under ``exclude`` (the validation output) are skipped. A
+    root that is itself a link to a folder (e.g. a linked repository path) is
+    walked, so the files behind it are watched and not only the link.
     """
     skip = [os.path.abspath(str(p)) for p in exclude]
 
@@ -2668,7 +2687,7 @@ def _tree_fingerprint(
     for root in dict.fromkeys(os.path.abspath(str(r)) for r in roots):
         if _skipped(root) or not os.path.lexists(root):
             continue
-        if not os.path.isdir(root) or os.path.islink(root):
+        if not os.path.isdir(root):
             st = os.lstat(root)
             out[root] = (int(st.st_size), int(st.st_mtime_ns))
             continue

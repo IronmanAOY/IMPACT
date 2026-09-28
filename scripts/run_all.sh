@@ -109,8 +109,11 @@ fmriprep_subject_complete() {
   [ -f "${FMRIPREP_DIR}/${label}.html" ] || return 1
   [ -d "${FMRIPREP_DIR}/${label}" ] || return 1
   local hit
-  hit="$(find "${FMRIPREP_DIR}/${label}" -path '*/func/*desc-preproc_bold.nii.gz' \
-    ! -path '*/func/*/*' -print -quit 2>/dev/null || true)"
+  # Search relative to the subject folder, so a 'func' component in the
+  # derivatives path itself cannot match or exclude anything.
+  hit="$(cd "${FMRIPREP_DIR}/${label}" 2>/dev/null \
+    && find . -path '*/func/*desc-preproc_bold.nii.gz' ! -path '*/func/*/*' \
+      -print -quit 2>/dev/null || true)"
   [ -n "${hit}" ]
 }
 

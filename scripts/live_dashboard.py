@@ -141,6 +141,7 @@ MPC_VERDICT_COLUMNS = ("MPC_verdict", "MPC_reason")
 MPC_UNDETERMINED = "UNDETERMINED"
 MPC_REASON_BEARER_MISMATCH = "BEARER_MISMATCH"
 MPC_REASON_RUN_DISAGREEMENT = "RUN_VERDICTS_DISAGREE"
+MPC_REASON_RUN_VERDICT_MISSING = "RUN_VERDICT_MISSING"
 MIXED_CI_EXPLORATORY_NOTE = (
     "EXPLORATORY: the components come from different datasets, i.e. from "
     "different bearers (participants and recordings). The combined index is a "
@@ -5716,9 +5717,14 @@ def _float_or_nan(value: Any) -> float:
 
 
 def _present_value(value: Any) -> bool:
-    """True for a recorded table value (not None, NaN or an empty string)."""
+    """True for a recorded table value (not None, NaN/NA or an empty string)."""
     if value is None:
         return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
     if isinstance(value, float) and not math.isfinite(value):
         return False
     return bool(str(value).strip()) and str(value).strip().lower() != "nan"
@@ -5732,17 +5738,29 @@ def _merge_run_verdicts(
     per theta). If every run has the same verdict it is kept, with the
     distinct run reasons joined by ';'. If runs disagree the subject-session
     is UNDETERMINED (no determinate verdict holds for all runs) with reason
-    'RUN_VERDICTS_DISAGREE:<verdicts>'. (None, None) if nothing is recorded.
+    'RUN_VERDICTS_DISAGREE:<verdicts>'. A run without a recorded verdict next
+    to runs with one is unknown, so the subject-session is UNDETERMINED with
+    'RUN_VERDICT_MISSING' (a missing verdict never lets the others decide).
+    (None, None) if nothing is recorded.
     """
-    uniq = list(dict.fromkeys(str(v).strip() for v in verdicts if _present_value(v)))
+    present = [str(v).strip() for v in verdicts if _present_value(v)]
+    n_missing = len(list(verdicts)) - len(present)
+    uniq = list(dict.fromkeys(present))
     why = list(
         dict.fromkeys(str(r).strip() for r in (reasons or []) if _present_value(r))
     )
     if not uniq:
         return None, None
-    if len(uniq) == 1:
+    if len(uniq) == 1 and not n_missing:
         return uniq[0], (";".join(why) or None)
-    return MPC_UNDETERMINED, f"{MPC_REASON_RUN_DISAGREEMENT}:{'/'.join(sorted(uniq))}"
+    codes = []
+    if len(uniq) > 1:
+        codes.append(f"{MPC_REASON_RUN_DISAGREEMENT}:{'/'.join(sorted(uniq))}")
+    elif uniq[0] == MPC_UNDETERMINED:
+        codes.extend(why)
+    if n_missing:
+        codes.append(MPC_REASON_RUN_VERDICT_MISSING)
+    return MPC_UNDETERMINED, ";".join(codes)
 
 
 @dataclass
@@ -9100,11 +9118,29 @@ class DashboardState:
         if exploratory:
             mixed["MPC_verdict"] = MPC_UNDETERMINED
             mixed["MPC_reason"] = MPC_REASON_BEARER_MISMATCH
-        elif "MPC_verdict" in anchor_df.columns:
-            # Same rows and order as the anchor table.
-            for col in MPC_VERDICT_COLUMNS:
-                if col in anchor_df.columns:
-                    mixed[col] = anchor_df[col].tolist()
+        elif "MPC_verdict" in run_frames[source_datasets[0]].columns:
+            # The verdict of the dataset that supplied every component (which
+            # need not be the anchor), for the same source subject as the
+            # components (explicit mapping), never the anchor's by position.
+            src = run_frames[source_datasets[0]]
+            src_reasons = (
+                src["MPC_reason"] if "MPC_reason" in src.columns else [None] * len(src)
+            )
+            verdict_lookup = {
+                (str(sub), str(ses)): (verdict, reason)
+                for sub, ses, verdict, reason in zip(
+                    src["subject"], src["session"], src["MPC_verdict"], src_reasons
+                )
+            }
+            src_subjects = mixed[f"{MIXED_CI_COMPONENTS[0]}_source_subject"]
+            picked = [
+                verdict_lookup.get((str(src_sub), str(ses)), (None, None))
+                if src_sub
+                else (None, None)
+                for src_sub, ses in zip(src_subjects, mixed["session"])
+            ]
+            mixed["MPC_verdict"] = [v if _present_value(v) else None for v, _ in picked]
+            mixed["MPC_reason"] = [r if _present_value(r) else None for _, r in picked]
 
         mixed["anchor_subject"] = mixed["subject"]
         mixed["dataset_id"] = str(context.get("primary_dataset_id") or anchor_dataset_id)

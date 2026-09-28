@@ -33,8 +33,8 @@ LAYOUTS = {
 }
 
 
-def _tree(tmp_path):
-    data_root = tmp_path / "scratch"
+def _tree(tmp_path, data_root=None):
+    data_root = data_root or (tmp_path / "scratch")
     bids = data_root / "ds003171"
     deriv = bids / "derivatives" / "fmriprep"
     for label, (files, _complete) in LAYOUTS.items():
@@ -54,8 +54,19 @@ def test_python_rule_known_answers(tmp_path):
 
 
 @needs_bash
-def test_run_all_requests_fmriprep_for_exactly_the_incomplete_subjects(tmp_path):
-    data_root, deriv = _tree(tmp_path)
+@pytest.mark.parametrize(
+    "data_dir",
+    [
+        "scratch",
+        # A 'func' folder above the derivatives must not change the verdict
+        # (the Python rule globs relative to the subject folder).
+        "func/scratch",
+    ],
+)
+def test_run_all_requests_fmriprep_for_exactly_the_incomplete_subjects(
+    tmp_path, data_dir
+):
+    data_root, deriv = _tree(tmp_path, tmp_path / data_dir)
     # An existing clone at the pinned snapshot (git stubbed; nothing downloads).
     bids = data_root / "ds003171"
     (bids / ".git").mkdir()

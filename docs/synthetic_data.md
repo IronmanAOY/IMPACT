@@ -140,13 +140,17 @@ things separate.
      the reason is `CI_missing` (with `CI_defined=False`). For a component
      it is, in this order, the metric table's own reason column
      (`<metric>_undefined_reason`, `<metric>_reason`, or for PDI the reason
-     of its primary endpoint), the `undefined_reason` of the direct
+     of its declared primary endpoint, `PDI_anchor_reason` or
+     `PDI_task_reason`), the `undefined_reason` of the direct
      `compute_RAM` / `compute_SRPI` call on the same run, or the readiness
-     reason. `ok`, empty strings and NaN are not reasons;
+     reason. `ok`, empty strings and NaN are not reasons, and neither is
+     `not_computed` (the validator requests every metric, so a skipped metric
+     is not explained);
    - `CI`, `CI_defined` and `CI_missing` agree (`CI_status_consistent`): a
-     finite CI has nothing missing; an undefined CI lists every undefined
-     component and only known tokens (`<component>` or
-     `<component>_reference`);
+     finite CI has nothing missing and every component defined (an undefined
+     component never enters CI, for example as 0); an undefined CI lists
+     every undefined component (IIM also when `IIM_defined` is false) and
+     only known tokens (`<component>` or `<component>_reference`);
    - every readiness row that is not ready names its reason.
 
    And per dataset (`dataset_checks`): the metric table has the required

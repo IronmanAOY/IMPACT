@@ -730,6 +730,27 @@ def test_undefined_reason_sources_and_ci_status_known_answers(gen):
     assert gen._undefined_reason("PDI", rec) is None
     rec["PDI_anchor_reason"] = "missing_anchor_baseline"
     assert gen._undefined_reason("PDI", rec)["source"] == "PDI_anchor_reason"
+    # As compute_synergy_ci writes an undefined PDI: the source is
+    # 'undefined', the declared endpoint says which baseline reason applies.
+    rec = {
+        "PDI": nan,
+        "PDI_primary_endpoint": "anchor",
+        "PDI_primary_source": "undefined",
+        "PDI_anchor_reason": "missing_deep_rest_baseline",
+        "PDI_task_reason": "ok",
+    }
+    assert gen._undefined_reason("PDI", rec) == {
+        "reason": "missing_deep_rest_baseline",
+        "source": "PDI_anchor_reason",
+    }
+    rec.update(
+        PDI_primary_endpoint="task",
+        PDI_task_reason="state_pdi_estimator_undefined",
+    )
+    assert gen._undefined_reason("PDI", rec)["source"] == "PDI_task_reason"
+    # A requested metric the code skipped ('not_computed') is not explained.
+    rec = {"IIM": nan, "IIM_undefined_reason": "not_computed"}
+    assert gen._undefined_reason("IIM", rec) is None
     # The direct call counts only when it is undefined as well.
     direct = {"value": 0.3, "undefined_reason": "stale"}
     assert gen._undefined_reason("RAM", {"RAM": nan}, direct=direct) is None
@@ -748,6 +769,9 @@ def test_undefined_reason_sources_and_ci_status_known_answers(gen):
     ok_defined = {**comps, "CI": 0.7, "CI_defined": True, "CI_missing": nan}
     assert gen._ci_status_consistent(ok_defined)
     assert not gen._ci_status_consistent({**ok_defined, "CI_defined": False})
+    # D1: an undefined component never enters a finite CI (e.g. as 0).
+    assert not gen._ci_status_consistent({**ok_defined, "SRPI": nan})
+    assert not gen._ci_status_consistent({**ok_defined, "IIM_defined": False})
     undefined = {
         **comps,
         "RAM": nan,
@@ -760,6 +784,10 @@ def test_undefined_reason_sources_and_ci_status_known_answers(gen):
     assert not gen._ci_status_consistent({**undefined, "CI_missing": "NAS_reference"})
     assert not gen._ci_status_consistent({**undefined, "CI_missing": "RAM,bogus"})
     assert not gen._ci_status_consistent({**undefined, "CI_defined": True})
+    # A flagged-undefined IIM must be listed even when a value is stored.
+    flagged = {**undefined, "IIM_defined": False, "CI_missing": "RAM,IIM"}
+    assert gen._ci_status_consistent(flagged)
+    assert not gen._ci_status_consistent({**flagged, "CI_missing": "RAM"})
 
 
 def test_tree_fingerprint_sees_edits_and_skips_the_output_folder(gen, tmp_path):
@@ -780,6 +808,16 @@ def test_tree_fingerprint_sees_edits_and_skips_the_output_folder(gen, tmp_path):
         "removed": [],
         "modified": ["objects/a/x.npy"],
     }
+    # A root that is a link to a folder is walked: edits behind it are seen.
+    linked = tmp_path / "linked"
+    linked.symlink_to(tmp_path / "objects", target_is_directory=True)
+    before = gen._tree_fingerprint([linked], exclude=[linked / "revalidation"])
+    assert str(linked / "a" / "x.npy") in before
+    (tmp_path / "objects" / "a" / "x.npy").write_bytes(b"12345")
+    after = gen._tree_fingerprint([linked], exclude=[linked / "revalidation"])
+    assert gen._fingerprint_changes(before, after, tmp_path)["modified"] == [
+        "linked/a/x.npy"
+    ]
 
 
 def test_validate_only_accepts_legacy_manifest_with_foreign_absolute_paths(

@@ -206,6 +206,50 @@ def test_single_source_carries_mpc_verdict_columns(dash_state, tmp_path):
     assert set(mixed["CI_composition"]) == {"single_source"}
 
 
+def test_single_source_verdict_comes_from_the_source_dataset(dash_state, tmp_path):
+    """All components from a non-anchor dataset: its verdict, mapped subject."""
+    dash, state = dash_state
+    anchor_out = tmp_path / "outputs" / "scratch" / "dsA"
+    aux_out = tmp_path / "test_objects" / "runs" / "dsB"
+    comps = {k: 1.0 for k in COMPONENTS}
+    sessions = ("awake", "deep")
+    # The anchor's own verdicts must not be used: none of its values are.
+    _write_step2(
+        anchor_out,
+        [
+            {"subject": s, "session": ses, **comps, "MPC_verdict": "ATTRIBUTED"}
+            for s in ("01", "02")
+            for ses in sessions
+        ],
+    )
+    verdicts_b = {"11": ("NOT_ATTRIBUTED", "ABSENT:NAS"), "12": ("ATTRIBUTED", "")}
+    _write_step2(
+        aux_out,
+        [
+            {"subject": s, "session": ses, **comps,
+             "MPC_verdict": verdicts_b[s][0], "MPC_reason": verdicts_b[s][1]}
+            for s in ("11", "12")
+            for ses in sessions
+        ],
+    )
+    manifest = state._compose_mixed_source_ci(
+        _context(
+            anchor_out,
+            aux_out,
+            {k: "dsB" for k in COMPONENTS},
+            mapping_aux={"01": "12", "02": "11"},
+        )
+    )
+    assert manifest["exploratory"] is False and manifest["source_datasets"] == ["dsB"]
+    mixed = pd.read_csv(manifest["step2_df_path"], dtype={"subject": str})
+    by = {(r.subject, r.session): r for r in mixed.itertuples()}
+    for ses in sessions:
+        assert by[("01", ses)].MPC_verdict == "ATTRIBUTED"  # dsB subject 12
+        assert by[("02", ses)].MPC_verdict == "NOT_ATTRIBUTED"  # dsB subject 11
+        assert by[("02", ses)].MPC_reason == "ABSENT:NAS"
+    assert manifest["mpc_verdict_counts"] == {"ATTRIBUTED": 2, "NOT_ATTRIBUTED": 2}
+
+
 def test_merge_run_verdicts_known_answers():
     import scripts.live_dashboard as dash
 
@@ -222,6 +266,38 @@ def test_merge_run_verdicts_known_answers():
         "UNDETERMINED",
         "RUN_VERDICTS_DISAGREE:ATTRIBUTED/NOT_ATTRIBUTED",
     )
+    # A run without a verdict is unknown: it never lets the other runs decide
+    # (dropping it would turn a disagreement into a determinate verdict).
+    assert dash._merge_run_verdicts(["ATTRIBUTED", np.nan, "ATTRIBUTED"]) == (
+        "UNDETERMINED",
+        "RUN_VERDICT_MISSING",
+    )
+    assert dash._merge_run_verdicts(["ATTRIBUTED", pd.NA]) == (
+        "UNDETERMINED",
+        "RUN_VERDICT_MISSING",
+    )
+    assert dash._merge_run_verdicts(["NOT_ATTRIBUTED", None], ["ABSENT:NAS", None]) == (
+        "UNDETERMINED",
+        "RUN_VERDICT_MISSING",
+    )
+    assert dash._merge_run_verdicts(
+        ["UNDETERMINED", ""], ["INCONCLUSIVE:IIM", ""]
+    ) == ("UNDETERMINED", "INCONCLUSIVE:IIM;RUN_VERDICT_MISSING")
+    assert dash._merge_run_verdicts(["ATTRIBUTED", "NOT_ATTRIBUTED", None]) == (
+        "UNDETERMINED",
+        "RUN_VERDICTS_DISAGREE:ATTRIBUTED/NOT_ATTRIBUTED;RUN_VERDICT_MISSING",
+    )
+    # Missingness safety over random run sets: hiding run verdicts never
+    # yields a determinate verdict that the full set does not have.
+    rng = np.random.default_rng(0)
+    codes = np.array(["ATTRIBUTED", "NOT_ATTRIBUTED", "UNDETERMINED"])
+    for _ in range(2000):
+        full = list(codes[rng.integers(0, 3, size=int(rng.integers(1, 5)))])
+        hidden = [None if rng.random() < 0.4 else v for v in full]
+        v_full, _ = dash._merge_run_verdicts(full)
+        v_hidden, _ = dash._merge_run_verdicts(hidden)
+        if v_hidden not in (None, "UNDETERMINED"):
+            assert v_hidden == v_full and None not in hidden
 
 
 def test_aal90_is_the_116_node_aal116_atlas(dash_state, tmp_path):
