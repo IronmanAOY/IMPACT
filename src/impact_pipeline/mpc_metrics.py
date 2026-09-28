@@ -12,6 +12,7 @@ import math
 import atexit
 import tempfile
 import shutil
+import weakref
 import concurrent.futures
 import sqlite3
 from collections import OrderedDict
@@ -49,6 +50,12 @@ except Exception:
         return _wrap
 
 log = logging.getLogger(__name__)
+
+# numba's on-disk JIT cache defaults to a __pycache__ directory next to this
+# file, i.e. inside the source tree (read-only in containers / HPC installs, and
+# written regardless of PYTHONDONTWRITEBYTECODE). Only enable it when the user
+# points NUMBA_CACHE_DIR at a writable cache location (e.g. node-local scratch).
+_NUMBA_DISK_CACHE = bool(os.environ.get("NUMBA_CACHE_DIR", "").strip())
 
 
 class _IIMDiskKernelCache:
@@ -219,7 +226,7 @@ class _IIMDiskKernelCache:
                 pass
 
 
-@njit(cache=True)
+@njit(cache=_NUMBA_DISK_CACHE)
 def _build_partition_maps_numba(base, z_len, posA, posB):
     nZ = 1
     for _ in range(z_len):
@@ -248,7 +255,7 @@ def _build_partition_maps_numba(base, z_len, posA, posB):
     return mapA, mapB
 
 
-@njit(cache=True)
+@njit(cache=_NUMBA_DISK_CACHE)
 def _compose_product_distribution_numba(pA, pB, mapA, mapB):
     n = int(mapA.shape[0])
     q = np.empty(n, dtype=np.float64)
@@ -268,7 +275,7 @@ def _compose_product_distribution_numba(pA, pB, mapA, mapB):
     return q
 
 
-@njit(cache=True)
+@njit(cache=_NUMBA_DISK_CACHE)
 def _jsd_numba(p, q):
     n = int(p.shape[0])
     sp = 0.0
@@ -293,6 +300,27 @@ def _jsd_numba(p, q):
 
 
 _IIM_PHASE1_CTX = None
+
+# Bump whenever a change alters Psi, cut scores or cached kernel values, so that
+# checkpoints and kernel caches written by older code are not reused.
+# v4: both mechanism/purview bipartition pairings in the MIP search, state-by-node
+#     TPM estimators, explicit node selection / state-budget policy.
+IIM_ALGORITHM_VERSION = "iim-v4-2026.09"
+
+
+def _iim_remove_sqlite_files(path):
+    """Remove an SQLite database and its WAL/SHM/journal side files (best effort)."""
+    if not path:
+        return
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            os.remove(f"{path}{suffix}")
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.warning(
+                "Could not remove IIM kernel cache file %s%s: %s", path, suffix, exc
+            )
 
 
 class _IIMKernelCacheMissError(RuntimeError):
@@ -377,17 +405,143 @@ def _iim_discretize_per_node(arr, base_bins):
     return out
 
 
-def _iim_select_nodes(arr, max_n):
+IIM_NODE_SELECTION_RULES = ("variance", "index")
+IIM_STATE_BUDGET_POLICIES = ("reduce_bins_first", "reduce_nodes_first", "error")
+# Relative variance spread below which a variance ranking is treated as tied
+# (e.g. z-scored ROI series, where all variances equal 1 up to float noise).
+_IIM_VARIANCE_TIE_RTOL = 1e-6
+
+
+def _iim_select_nodes_with_info(arr, max_n, rule="variance", node_indices=None):
+    """
+    Deterministic, declared node selection for the IIM subsystem.
+
+    rule='variance': highest temporal variance; ties (relative spread below
+        ``_IIM_VARIANCE_TIE_RTOL``) are broken by ascending node index, and a
+        fully tied ranking is flagged as degenerate (it then equals rule='index').
+    rule='index': the first ``max_n`` nodes in input order (a predeclared order).
+    node_indices: explicit node list (overrides ``rule``); truncated to ``max_n``.
+    """
     n = int(arr.shape[0])
-    if n <= int(max_n):
-        return np.arange(n, dtype=int)
-    var = np.nanvar(arr, axis=1)
+    max_n = int(max_n)
+    info = {"rule": str(rule), "degenerate_ranking": False}
+    if node_indices is not None:
+        idx = np.asarray(node_indices, dtype=int).reshape(-1)
+        if (
+            idx.size == 0
+            or np.any(idx < 0)
+            or np.any(idx >= n)
+            or np.unique(idx).size != idx.size
+        ):
+            raise ValueError(
+                f"node_indices must be unique indices in [0, {n}), got {idx.tolist()}"
+            )
+        info["rule"] = "explicit"
+        return np.sort(idx[:max_n].astype(int)), info
+    if rule not in IIM_NODE_SELECTION_RULES:
+        raise ValueError(
+            f"node_selection must be one of {IIM_NODE_SELECTION_RULES}, got {rule!r}"
+        )
+    if n <= max_n:
+        return np.arange(n, dtype=int), info
+    if rule == "index":
+        return np.arange(max_n, dtype=int), info
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        var = np.nanvar(arr, axis=1)
     var = np.where(np.isfinite(var), var, -np.inf)
-    idx = np.argsort(var)[::-1][: int(max_n)]
-    return np.sort(idx.astype(int))
+    finite = var[np.isfinite(var)]
+    scale = float(np.max(np.abs(finite))) if finite.size else 0.0
+    if scale > 0:
+        ranked = np.round(var / scale / _IIM_VARIANCE_TIE_RTOL) * _IIM_VARIANCE_TIE_RTOL
+    else:
+        ranked = np.zeros_like(var)
+    ranked = np.where(np.isfinite(var), ranked, -np.inf)
+    order = np.lexsort((np.arange(n), -ranked))
+    idx = order[:max_n]
+    cutoff = ranked[idx[-1]]
+    # Ranking is arbitrary when the max_n-th node ties with an unselected one.
+    info["degenerate_ranking"] = bool(np.any(ranked[order[max_n:]] == cutoff))
+    return np.sort(idx.astype(int)), info
 
 
-def _iim_build_states_and_tpm(disc, base, lag, alpha, hardware_backend=None):
+def _iim_select_nodes(arr, max_n, rule="variance", node_indices=None):
+    idx, _info = _iim_select_nodes_with_info(
+        arr, max_n, rule=rule, node_indices=node_indices
+    )
+    return idx
+
+
+def _iim_node_conditional_tpm(curr_keys, nxt, states_full, base, alpha, estimator):
+    """
+    State-by-node TPM: T(s'|s) = prod_i p_i(s'_i | s) (conditional independence
+    of next-step node states given the current system state, as in IIT).
+
+    'node_laplace'   : p_i(.|s) = (C_i(s, .) + alpha) / (n_s + alpha*K).
+    'node_shrinkage' : James-Stein shrinkage (Hausser & Strimmer 2009) of the
+                       row-wise ML estimate towards the node's own
+                       transition p_i(x'_i | x_i) (same lag, pooled over all
+                       transitions, i.e. no cross-node influence),
+                       with data-driven intensity lambda_s in [0, 1]. Rows with
+                       n_s <= 1 or unobserved rows fall back to that target, so
+                       unsupported cross-node dependence is not invented from a
+                       single transition and unobserved rows are not uniform.
+    """
+    n_states, n = int(states_full.shape[0]), int(states_full.shape[1])
+    base = int(base)
+    curr_keys = np.asarray(curr_keys, dtype=np.int64)
+    n_obs = np.bincount(curr_keys, minlength=n_states).astype(float)
+    curr_states = (
+        states_full[curr_keys] if curr_keys.size else np.zeros((0, n), dtype=np.int16)
+    )
+    tpm = np.ones((n_states, n_states), dtype=float)
+    for i in range(n):
+        x_next = np.asarray(nxt[:, i], dtype=np.int64)
+        counts = np.zeros((n_states, base), dtype=float)
+        np.add.at(counts, (curr_keys, x_next), 1.0)
+        if estimator == "node_laplace":
+            p_i = (counts + float(alpha)) / (n_obs[:, None] + float(alpha) * base)
+        else:
+            self_counts = np.zeros((base, base), dtype=float)
+            np.add.at(
+                self_counts,
+                (np.asarray(curr_states[:, i], dtype=np.int64), x_next),
+                1.0,
+            )
+            self_p = (self_counts + float(alpha)) / (
+                self_counts.sum(axis=1, keepdims=True) + float(alpha) * base
+            )
+            target = self_p[np.asarray(states_full[:, i], dtype=np.int64)]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                theta = np.where(
+                    n_obs[:, None] > 0, counts / np.maximum(n_obs[:, None], 1.0), target
+                )
+                num = 1.0 - np.sum(theta * theta, axis=1)
+                den = (n_obs - 1.0) * np.sum((target - theta) ** 2, axis=1)
+                lam = np.where(den > 0, num / np.where(den > 0, den, 1.0), 1.0)
+            lam = np.where(n_obs <= 1.0, 1.0, np.clip(lam, 0.0, 1.0))
+            p_i = lam[:, None] * target + (1.0 - lam[:, None]) * theta
+        p_i = p_i / np.sum(p_i, axis=1, keepdims=True)
+        tpm *= p_i[:, np.asarray(states_full[:, i], dtype=np.int64)]
+    tpm /= np.sum(tpm, axis=1, keepdims=True)
+    return tpm
+
+
+IIM_TPM_ESTIMATORS = ("node_shrinkage", "node_laplace", "joint_laplace")
+
+
+def _iim_build_states_and_tpm(
+    disc,
+    base,
+    lag,
+    alpha,
+    hardware_backend=None,
+    estimator="joint_laplace",
+):
+    if estimator not in IIM_TPM_ESTIMATORS:
+        raise ValueError(
+            f"tpm_estimator must be one of {IIM_TPM_ESTIMATORS}, got {estimator!r}"
+        )
     n, t = disc.shape
     t_eff = int(t - lag)
     curr = disc[:, :t_eff].T.astype(np.int16, copy=False)
@@ -398,6 +552,18 @@ def _iim_build_states_and_tpm(disc, base, lag, alpha, hardware_backend=None):
     nxt_keys = _iim_subset_key_matrix(nxt, full_subset, int(base))
 
     n_states = int(int(base) ** int(n))
+    sid = np.arange(n_states, dtype=np.int64)[:, None]
+    powv = (int(base) ** np.arange(n - 1, -1, -1, dtype=np.int64))[None, :]
+    states_full = ((sid // powv) % int(base)).astype(np.int16)
+
+    if estimator != "joint_laplace":
+        # Small (n_states x K) count tables: computed on the host for every backend
+        # so that CPU and accelerator runs are bit-identical.
+        tpm = _iim_node_conditional_tpm(
+            curr_keys, nxt, states_full, base, alpha, estimator
+        )
+        return curr, tpm, states_full
+
     backend = resolve_hardware_backend(hardware_backend)
     if backend.accelerator:
         xp = get_array_module(backend)
@@ -410,10 +576,6 @@ def _iim_build_states_and_tpm(disc, base, lag, alpha, hardware_backend=None):
         np.add.at(counts, (curr_keys, nxt_keys), 1.0)
         row_sum = counts.sum(axis=1, keepdims=True)
         tpm = (counts + float(alpha)) / (row_sum + float(alpha) * n_states)
-
-    sid = np.arange(n_states, dtype=np.int64)[:, None]
-    powv = (int(base) ** np.arange(n - 1, -1, -1, dtype=np.int64))[None, :]
-    states_full = ((sid // powv) % int(base)).astype(np.int16)
     return curr, tpm, states_full
 
 
@@ -422,6 +584,12 @@ def _iim_build_phase1_chunks_adaptive(
     max_chunk_size,
     workers,
 ):
+    """
+    Contiguous mechanism chunks (resume-safe with prefix-based checkpoints).
+    With several workers: target 4 mechanisms per task for the first 50% of
+    mechanisms, 2 for the next 30% and 1 for the last 20%, while keeping enough
+    tasks to occupy all workers.
+    """
     mechs = tuple(remaining_mechanisms)
     if not mechs:
         return []
@@ -578,11 +746,36 @@ def prepare_iim_problem(
     tpm_alpha: float = 1e-3,
     max_state_space: int = 1500,
     hardware_backend=None,
+    tpm_estimator: str = "node_shrinkage",
+    node_selection: str = "variance",
+    node_indices=None,
+    state_budget_policy: str = "reduce_bins_first",
+    log_label: str | None = None,
 ):
+    """
+    Build the discrete IIM problem (subsystem, discretisation, TPM, mechanisms,
+    purviews and system cuts). Shared by ``compute_IIM`` and the Hunter path.
+
+    Subsystem choice is explicit and recorded: ``node_selection`` ('variance' =
+    highest temporal variance with index tie-break, 'index' = first nodes in
+    input order) or ``node_indices`` (explicit list). The state budget
+    ``bins**nodes <= max_state_space`` is enforced by ``state_budget_policy``
+    ('reduce_bins_first' [legacy], 'reduce_nodes_first', or 'error' which returns
+    an undefined problem); every adjustment is logged and returned in
+    ``budget_adjustments``.
+    """
     if ts.ndim != 2:
         raise ValueError(f"ts should be 2D (n_regions × n_time), got shape {ts.shape}")
     if partition_mode not in {"all", "balanced"}:
         raise ValueError("partition_mode must be 'all' or 'balanced'")
+    if tpm_estimator not in IIM_TPM_ESTIMATORS:
+        raise ValueError(f"tpm_estimator must be one of {IIM_TPM_ESTIMATORS}")
+    if node_selection not in IIM_NODE_SELECTION_RULES:
+        raise ValueError(f"node_selection must be one of {IIM_NODE_SELECTION_RULES}")
+    if state_budget_policy not in IIM_STATE_BUDGET_POLICIES:
+        raise ValueError(
+            f"state_budget_policy must be one of {IIM_STATE_BUDGET_POLICIES}"
+        )
     if bins < 2:
         raise ValueError("bins must be >= 2")
     if lag_trs < 1:
@@ -614,18 +807,73 @@ def prepare_iim_problem(
     else:
         rand_state = np.random.RandomState(rng)
 
-    use_nodes = int(n_regions) if max_nodes is None else min(int(max_nodes), int(n_regions))
-    selected = _iim_select_nodes(ts, use_nodes)
-    ts_sel = np.asarray(ts[selected, :], dtype=float)
+    label = str(log_label) if log_label else "IIM"
+    n_candidates = (
+        int(n_regions) if node_indices is None else int(np.asarray(node_indices).size)
+    )
+    use_nodes = n_candidates if max_nodes is None else min(int(max_nodes), n_candidates)
+    selected, selection_info = _iim_select_nodes_with_info(
+        ts, use_nodes, rule=node_selection, node_indices=node_indices
+    )
     eff_bins = int(bins)
-    n_sel = int(ts_sel.shape[0])
-    while n_sel >= 2 and (int(eff_bins) ** int(n_sel)) > int(max_state_space):
-        if eff_bins > 2:
+    n_sel = int(selected.size)
+    budget_adjustments = []
+
+    def _over_budget():
+        return (int(eff_bins) ** int(n_sel)) > int(max_state_space)
+
+    def _budget_note(what, old, new):
+        return (
+            f"{what} {old}->{new} "
+            f"({eff_bins}^{n_sel} > max_state_space={int(max_state_space)})"
+        )
+
+    if n_sel >= 2 and _over_budget() and state_budget_policy == "error":
+        log.warning(
+            "[%s] IIM state budget exceeded: bins=%d nodes=%d "
+            "(%d states > max_state_space=%d); "
+            "state_budget_policy='error' -> undefined.",
+            label,
+            eff_bins,
+            n_sel,
+            int(eff_bins) ** int(n_sel),
+            int(max_state_space),
+        )
+        return {
+            "defined": False,
+            "undefined_reason": "state_space_too_large",
+            "n_regions_input": int(n_regions),
+            "n_time_input": int(n_time),
+            "n_nodes_used": int(n_sel),
+            "bins_used": int(eff_bins),
+            "bins_requested": int(bins),
+            "state_budget_policy": str(state_budget_policy),
+        }
+    while n_sel >= 2 and _over_budget():
+        reduce_bins = eff_bins > 2 and (
+            state_budget_policy == "reduce_bins_first" or n_sel <= 2
+        )
+        if reduce_bins:
+            budget_adjustments.append(_budget_note("bins", eff_bins, eff_bins - 1))
             eff_bins -= 1
             continue
+        budget_adjustments.append(_budget_note("nodes", n_sel, n_sel - 1))
         n_sel -= 1
-        selected = _iim_select_nodes(ts, n_sel)
-        ts_sel = np.asarray(ts[selected, :], dtype=float)
+        selected, selection_info = _iim_select_nodes_with_info(
+            ts, n_sel, rule=node_selection, node_indices=node_indices
+        )
+    if budget_adjustments:
+        log.warning(
+            "[%s] IIM state budget (%s): requested bins=%d nodes=%d -> "
+            "using bins=%d nodes=%d; %s",
+            label,
+            state_budget_policy,
+            int(bins),
+            int(use_nodes),
+            int(eff_bins),
+            int(n_sel),
+            "; ".join(budget_adjustments),
+        )
     if n_sel < 2:
         return {
             "defined": False,
@@ -634,7 +882,28 @@ def prepare_iim_problem(
             "n_time_input": int(n_time),
             "n_nodes_used": int(n_sel),
             "bins_used": int(eff_bins),
+            "bins_requested": int(bins),
+            "budget_adjustments": list(budget_adjustments),
         }
+    ts_sel = np.asarray(ts[selected, :], dtype=float)
+    if selection_info.get("degenerate_ranking", False):
+        log.warning(
+            "[%s] IIM node selection rule '%s' is degenerate (tied variances, e.g. "
+            "standardised input); selected lowest-index nodes %s. Declare "
+            "node_selection='index' or pass node_indices to make the subsystem "
+            "choice explicit.",
+            label,
+            selection_info.get("rule"),
+            selected.tolist(),
+        )
+    else:
+        log.info(
+            "[%s] IIM subsystem: rule=%s nodes=%s bins=%d",
+            label,
+            selection_info.get("rule"),
+            selected.tolist(),
+            int(eff_bins),
+        )
 
     mech_size_eff = (
         int(n_sel)
@@ -686,6 +955,11 @@ def prepare_iim_problem(
         int(lag_trs),
         float(tpm_alpha),
         hardware_backend=hardware_backend,
+        estimator=str(tpm_estimator),
+    )
+    n_states = int(tpm_full.shape[0])
+    n_rows_observed = int(
+        np.unique(_iim_subset_key_matrix(curr_obs, tuple(range(n_sel)), eff_bins)).size
     )
 
     return {
@@ -694,6 +968,17 @@ def prepare_iim_problem(
         "n_regions_input": int(n_regions),
         "n_time_input": int(n_time),
         "selected_nodes": tuple(int(x) for x in selected.tolist()),
+        "node_selection_rule": str(selection_info.get("rule")),
+        "node_selection_degenerate": bool(
+            selection_info.get("degenerate_ranking", False)
+        ),
+        "bins_requested": int(bins),
+        "state_budget_policy": str(state_budget_policy),
+        "budget_adjustments": list(budget_adjustments),
+        "tpm_estimator": str(tpm_estimator),
+        "n_states": int(n_states),
+        "n_transitions": int(curr_obs.shape[0]),
+        "n_states_observed": int(n_rows_observed),
         "ts_selected": ts_sel,
         "disc": disc,
         "curr_obs": curr_obs,
@@ -896,23 +1181,38 @@ def _iim_phase1_chunk_contribution(
             keyA = _iim_encode_vals([m_vals[posM[nn]] for nn in MA], base)
             keyB = _iim_encode_vals([m_vals[posM[nn]] for nn in MB], base)
             for ZA, ZB in z_parts:
-                pA = _effect(MA, keyA, ZA) if direction == "effect" else _cause(MA, keyA, ZA)
-                pB = _effect(MB, keyB, ZB) if direction == "effect" else _cause(MB, keyB, ZB)
-                mapA, mapB = _partition_maps(Z, ZA, ZB)
-                if NUMBA_AVAILABLE:
-                    q = _compose_product_distribution_numba(pA, pB, mapA, mapB)
-                    d = float(_jsd_numba(p_full, q))
-                else:
-                    q = pA[mapA] * pB[mapB]
-                    q_sum = float(np.sum(q))
-                    if q_sum <= 0:
-                        q = np.ones(nZ, dtype=float) / float(nZ)
+                # Bipartitions are enumerated as unordered pairs, so both pairings
+                # (MA->ZA, MB->ZB) and (MA->ZB, MB->ZA) must be searched; otherwise
+                # the MIP depends on node labelling and phi is overestimated.
+                for Z1, Z2 in ((ZA, ZB), (ZB, ZA)):
+                    pA = (
+                        _effect(MA, keyA, Z1)
+                        if direction == "effect"
+                        else _cause(MA, keyA, Z1)
+                    )
+                    pB = (
+                        _effect(MB, keyB, Z2)
+                        if direction == "effect"
+                        else _cause(MB, keyB, Z2)
+                    )
+                    mapA, mapB = _partition_maps(Z, Z1, Z2)
+                    if NUMBA_AVAILABLE:
+                        q = _compose_product_distribution_numba(pA, pB, mapA, mapB)
+                        d = float(_jsd_numba(p_full, q))
                     else:
-                        q = q / q_sum
-                    p_full_n = p_full / max(float(np.sum(p_full)), 1e-12)
-                    d = float(0.5 * entropy(p_full_n, 0.5 * (p_full_n + q), base=2) + 0.5 * entropy(q, 0.5 * (p_full_n + q), base=2))
-                if d < best:
-                    best = d
+                        q = pA[mapA] * pB[mapB]
+                        q_sum = float(np.sum(q))
+                        if q_sum <= 0:
+                            q = np.ones(nZ, dtype=float) / float(nZ)
+                        else:
+                            q = q / q_sum
+                        p_full_n = p_full / max(float(np.sum(p_full)), 1e-12)
+                        d = float(
+                            0.5 * entropy(p_full_n, 0.5 * (p_full_n + q), base=2)
+                            + 0.5 * entropy(q, 0.5 * (p_full_n + q), base=2)
+                        )
+                    if d < best:
+                        best = d
         out = float(best) if np.isfinite(best) else 0.0
         if bool(use_induced_partition_cache) and (kernel_cache is not None):
             kernel_cache.set(cache_key, out)
@@ -1033,7 +1333,6 @@ def _iim_phase_worker_init_static(spec_curr, spec_states, base, purviews):
 
 
 def _iim_phase_worker_bind_tpm(spec_tpm):
-    global _IIM_PHASE1_CTX
     if not isinstance(_IIM_PHASE1_CTX, dict):
         raise RuntimeError("IIM worker context not initialized.")
     mode = str(spec_tpm.get("mode", "shared_memory"))
@@ -1060,7 +1359,6 @@ def _iim_phase_worker_bind_tpm(spec_tpm):
 
 
 def _iim_phase_worker_bind_kernel_cache(cache_spec):
-    global _IIM_PHASE1_CTX
     if not isinstance(_IIM_PHASE1_CTX, dict):
         raise RuntimeError("IIM worker context not initialized.")
 
@@ -1133,6 +1431,10 @@ def _iim_phase_worker_run_chunk_for_tpm(
         use_induced_partition_cache=bool(use_induced_partition_cache) and (kernel_cache is not None),
         kernel_cache_lookup_only=bool(kernel_cache_lookup_only),
     )
+    if kernel_cache is not None and not bool(kernel_cache_lookup_only):
+        # Pool workers exit without running atexit handlers, so pending writes
+        # must be flushed per chunk or they are silently lost.
+        kernel_cache.flush()
     return float(psi_chunk), int(len(mechanisms))
 
 
@@ -1966,6 +2268,11 @@ def compute_PDI(
     multiscale_max_scale: int = 5,
     eps: float = 1e-12,
     hardware_backend=None,
+    return_details: bool = False,
+    null_surrogates: int = 0,
+    null_method: str = "phase_randomize",
+    null_seed: int | None = None,
+    null_min_shift: int | None = None,
 ) -> float:
     """
     Composite measurable Phenomenal Differentiation Index (PDI).
@@ -2015,17 +2322,44 @@ def compute_PDI(
         Maximum coarse-graining scale for multiscale ordinal complexity.
     eps : float, optional
         Numerical stability constant.
+    return_details : bool, optional
+        When True, return a dictionary with components, definedness and the
+        null-calibration fields instead of a float.
+    null_surrogates : int, optional
+        Number of surrogate task runs for null calibration (0 = off). Each
+        surrogate is scored against the same baseline(s); the null-corrected
+        value is ``PDI_excess = PDI_obs - mean(PDI_null)`` and
+        ``PDI_z = PDI_excess / sd(PDI_null)``. When enabled, the returned value is
+        ``PDI_calibrated = max(PDI_excess, 0)`` (``PDI_excess`` if
+        ``clip_negative=False``).
+    null_method : str, optional
+        Surrogate type (see ``_surrogate_timeseries``). The default
+        ``'phase_randomize'`` (multivariate, amplitude-adjusted) keeps each
+        region's marginal and all linear auto-/cross-correlation, so the
+        calibrated value is the differentiation not explained by a linear
+        Gaussian process with the task's spectra. This removes the positive
+        clipping bias and the sensitivity of Xi to autocorrelation/smoothness
+        (filtering, TR).
+    null_seed : int or None, optional
+        Seed of the surrogate generator (default 0).
+    null_min_shift : int or None, optional
+        Minimum shift for ``null_method='circular_shift'``.
 
     Returns
     -------
-    float
-        The PDI value.
+    float or dict
+        The PDI value (NaN when undefined), or details when requested.
 
     Notes
     -----
     With ``clip_negative=True`` (default), the output is non-negative and
     increases when observed differentiation exceeds baseline with good temporal
-    stability and low differential noise.
+    stability and low differential noise. Uncalibrated PDI is positively
+    biased under the null (per-component gains are clipped at 0 before
+    weighting), so cross-condition comparisons should use the calibrated value.
+    PDI is undefined (NaN) for fewer than 2 regions, fewer than
+    ``max(4, ordinal_order + 1)`` timepoints, an empty baseline list, or runs
+    without finite values.
     """
     if ts.ndim != 2:
         raise ValueError(f"ts should be 2D (n_regions × n_time), got shape {ts.shape}")
@@ -2046,17 +2380,49 @@ def compute_PDI(
     if np.any(comp_w < 0) or float(np.sum(comp_w)) <= 0:
         raise ValueError("component_weights must be non-negative and not all zero")
     comp_w = comp_w / float(np.sum(comp_w))
+    if int(null_surrogates) < 0:
+        raise ValueError("null_surrogates must be >= 0")
+    if null_method not in SURROGATE_METHODS:
+        raise ValueError(f"null_method must be one of {SURROGATE_METHODS}")
     backend = resolve_hardware_backend(hardware_backend)
+    null_seed_eff = _resolve_null_seed(null_seed, 0)
+
+    def _undefined(reason):
+        if return_details:
+            out = {
+                "value": np.nan,
+                "raw": np.nan,
+                "defined": False,
+                "undefined_reason": str(reason),
+            }
+            out.update(
+                _metric_null_fields(
+                    "PDI", None, null_method, null_seed_eff, clip_negative
+                )
+            )
+            return out
+        return np.nan
+
+    # Measured inputs only: an undefined PDI is NaN with a reason, never 0.0.
+    n_regions_in, n_time_in = ts.shape
+    if n_regions_in < 2:
+        return _undefined("insufficient_regions")
+    if n_time_in < max(4, int(ordinal_order) + 1):
+        return _undefined("insufficient_timepoints")
+    if not np.any(np.isfinite(ts)):
+        return _undefined("no_finite_task_values")
 
     # compute baseline reference set
     if baseline_ts is None:
         # fallback: shuffled surrogate destroys temporal structure while
         # preserving marginal amplitudes.
+        baseline_source = "shuffled_task_surrogate"
         n_regions = ts.shape[0]
         rng = np.random.RandomState(0)
         shuffled = np.stack([rng.permutation(ts[r]) for r in range(n_regions)])
         baseline_ts_use = [shuffled]
     else:
+        baseline_source = "provided"
         # baseline_ts may be provided as a list/tuple of runs (each run is 2D)
         if isinstance(baseline_ts, (list, tuple)):
             baseline_ts_use = list(baseline_ts)
@@ -2075,12 +2441,19 @@ def compute_PDI(
                 "baseline_ts must be a numpy array or a list/tuple of numpy arrays"
             )
 
+    if not baseline_ts_use:
+        return _undefined("empty_baseline")
+    if any(
+        not np.any(np.isfinite(np.asarray(run, dtype=float))) for run in baseline_ts_use
+    ):
+        return _undefined("no_finite_baseline_values")
+
     # Use shared bin edges across observed + baseline to keep response alphabet fixed.
     arrays_for_edges = [ts.ravel()] + [run.ravel() for run in baseline_ts_use]
     all_vals = np.concatenate(arrays_for_edges)
     finite_vals = all_vals[np.isfinite(all_vals)]
     if finite_vals.size == 0:
-        return 0.0
+        return _undefined("no_finite_values")
     vmin = float(np.min(finite_vals))
     vmax = float(np.max(finite_vals))
     if np.isclose(vmin, vmax):
@@ -2309,17 +2682,6 @@ def compute_PDI(
 
     obs = _run_stats(ts)
     base_stats = [_run_stats(run) for run in baseline_ts_use]
-    if not base_stats:
-        base_stats = [
-            {
-                "xi_norm": 0.0,
-                "delta_spatial": 0.0,
-                "d_eff_norm": 0.0,
-                "c_multi": 0.0,
-                "S": 1.0,
-                "nu": 0.0,
-            }
-        ]
 
     if weighted:
         w = np.asarray([run.size for run in baseline_ts_use], dtype=float)
@@ -2374,12 +2736,82 @@ def compute_PDI(
         pdi_raw = max(float(pdi_raw), 0.0)
 
     if not normalize:
-        return float(pdi_raw)
+        pdi_value = float(pdi_raw)
+    elif clip_negative:
+        # bounded normalization in [0,1]
+        pdi_value = float(np.clip(pdi_raw, 0.0, 1.0))
+    else:
+        pdi_value = float(np.clip(0.5 * (pdi_raw + 1.0), 0.0, 1.0))
 
-    # bounded normalization in [0,1]
-    if clip_negative:
-        return float(np.clip(pdi_raw, 0.0, 1.0))
-    return float(np.clip(0.5 * (pdi_raw + 1.0), 0.0, 1.0))
+    null_stats = None
+    null_reason = None
+    if int(null_surrogates) > 0:
+        # Surrogate task runs scored against the same baseline(s).
+        null_rng = np.random.RandomState(null_seed_eff)
+        null_vals = []
+        for _ in range(int(null_surrogates)):
+            try:
+                surr = _surrogate_timeseries(
+                    ts, null_method, null_rng, min_shift=null_min_shift
+                )
+            except ValueError as exc:
+                null_reason = f"surrogates_unavailable: {exc}"
+                break
+            null_vals.append(
+                compute_PDI(
+                    surr,
+                    bins=bins,
+                    baseline_ts=baseline_ts,
+                    weighted=weighted,
+                    normalize=normalize,
+                    clip_negative=clip_negative,
+                    stability_segments=stability_segments,
+                    noise_penalty_kappa=noise_penalty_kappa,
+                    component_weights=component_weights,
+                    ordinal_order=ordinal_order,
+                    multiscale_max_scale=multiscale_max_scale,
+                    eps=eps,
+                    hardware_backend=backend,
+                )
+            )
+        null_stats = _null_calibration_stats(pdi_value, null_vals)
+        if null_reason is None and null_stats["null_n"] == 0:
+            null_reason = "all_surrogates_undefined"
+    null_fields = _metric_null_fields(
+        "PDI", null_stats, null_method, null_seed_eff, clip_negative, null_reason
+    )
+    # Calibration requested but no valid surrogate -> NaN, never the raw value.
+    value = null_fields["PDI_calibrated"] if int(null_surrogates) > 0 else pdi_value
+
+    if not return_details:
+        return float(value)
+    component_names = ("xi_norm", "delta_spatial", "d_eff_norm", "c_multi")
+    out = {
+        "value": float(value),
+        "raw": float(pdi_value),
+        "pdi_core": float(core),
+        "c_stab": float(c_stab),
+        "c_noise": float(c_noise),
+        "contrasts": {k: float(v) for k, v in zip(component_names, contrasts)},
+        "observed_components": {
+            k: float(obs[k]) for k in component_names + ("S", "nu")
+        },
+        "baseline_components": {
+            "xi_norm": x_xi_base,
+            "delta_spatial": x_delta_base,
+            "d_eff_norm": x_deff_base,
+            "c_multi": x_cmulti_base,
+            "S": S_base,
+            "nu": nu_base,
+        },
+        "baseline_source": baseline_source,
+        "n_baseline_runs": int(len(baseline_ts_use)),
+        "defined": True,
+        "undefined_reason": None,
+    }
+    out.update(null_fields)
+    return out
+
 
 def compute_NAS(
     ts: np.ndarray,
@@ -2410,6 +2842,11 @@ def compute_NAS(
     boost_against_baseline: bool = False,
     normalize: bool = True,
     hardware_backend=None,
+    return_details: bool = False,
+    null_surrogates: int = 0,
+    null_method: str = "circular_shift",
+    null_seed: int | None = None,
+    null_min_shift: int | None = None,
 ) -> float:
     """
     Theory-aligned Network Activation Synchrony (NAS).
@@ -2472,18 +2909,54 @@ def compute_NAS(
         If True and ``baseline_ts`` is provided, returns max(NAS - NAS_base, 0).
     normalize : bool, optional
         If True, clip final value to [0,1].
+    return_details : bool, optional
+        When True, return a dictionary with per-band values, workspace nodes,
+        definedness and null-calibration fields instead of a float.
+    null_surrogates : int, optional
+        Number of surrogates for null calibration (0 = off). The broadcast set
+        V (top-tau strength) and, unless ``workspace_nodes`` is given, the
+        workspace G are selected from the same data they are scored on, so NAS
+        is positive for independent noise. Surrogates repeat the whole
+        selection-and-scoring procedure on data with the cross-node coupling
+        removed, so ``NAS_excess = NAS_obs - mean(NAS_null)`` and
+        ``NAS_z = NAS_excess / sd(NAS_null)`` are free of that selection bias.
+        When enabled, the returned value is ``NAS_calibrated = max(NAS_excess, 0)``.
+    null_method : str, optional
+        Surrogate type (see ``_surrogate_timeseries``); default
+        ``'circular_shift'`` (independent shift per node: keeps each node's
+        spectrum/marginal, destroys cross-node phase and envelope coupling).
+    null_seed : int or None, optional
+        Seed of the surrogate generator (default ``random_state``).
+    null_min_shift : int or None, optional
+        Minimum circular shift in samples (default 10% of the run).
 
     Returns
     -------
-    float
-        NAS value in [0,1] when ``normalize=True``.
+    float or dict
+        NAS value in [0,1] when ``normalize=True``; NaN when the input has fewer
+        than 2 regions or fewer than 4 timepoints.
     """
     if ts.ndim != 2:
         raise ValueError(f"ts should be 2D (n_regions × n_time), got shape {ts.shape}")
     _ = (zthr, eps)  # retained only for backward compatibility
     n_regions, n_time = ts.shape
+    if int(null_surrogates) < 0:
+        raise ValueError("null_surrogates must be >= 0")
+    if null_method not in SURROGATE_METHODS:
+        raise ValueError(f"null_method must be one of {SURROGATE_METHODS}")
+    null_seed_eff = _resolve_null_seed(null_seed, random_state)
     if n_regions < 2 or n_time < 4:
-        return 0.0
+        # Undefined, not zero (measured inputs only).
+        if return_details:
+            out = {
+                "value": np.nan,
+                "raw": np.nan,
+                "defined": False,
+                "undefined_reason": "insufficient_shape",
+            }
+            out.update(_metric_null_fields("NAS", None, null_method, null_seed_eff))
+            return out
+        return np.nan
     backend = resolve_hardware_backend(hardware_backend)
 
     if tr is None or (not np.isfinite(tr)) or float(tr) <= 0:
@@ -2680,10 +3153,11 @@ def compute_NAS(
         back = float(np.mean(A_dir[np.ix_(Vbar, V)]))
         return float(np.clip((out - back) / (out + back + 1e-12), 0.0, 1.0))
 
-    rev_lags = np.asarray([int(l) for l in reverberation_lags], dtype=int)
+    rev_lags = np.asarray([int(lag) for lag in reverberation_lags], dtype=int)
     rev_lags = rev_lags[rev_lags > 0]
 
     nas_bands = []
+    band_components = []
     for b_idx, (flo, fhi) in enumerate(band_specs):
         xb, can_phase = _band_filter(x, flo, fhi, fs)
         use_phase = bool(can_phase and xb.shape[1] >= 8)
@@ -2772,6 +3246,7 @@ def compute_NAS(
 
         if not L_vals:
             nas_bands.append(0.0)
+            band_components.append({})
             continue
 
         L_bar = float(np.mean(L_vals))
@@ -2808,8 +3283,16 @@ def compute_NAS(
         else:
             nas_f = float(np.exp(np.sum(comp_w * np.log(comps + 1e-12))))
         nas_bands.append(float(nas_f))
+        band_components.append(
+            {
+                k: float(v)
+                for k, v in zip(("L", "B", "H", "D", "W", "E", "R"), comps.tolist())
+            }
+        )
 
-    nas_val = float(np.dot(bw, np.asarray(nas_bands, dtype=float)))
+    nas_unboosted = float(np.dot(bw, np.asarray(nas_bands, dtype=float)))
+    nas_val = nas_unboosted
+    nas_base = None
     if boost_against_baseline and baseline_ts is not None:
         nas_base = compute_NAS(
             baseline_ts,
@@ -2843,9 +3326,273 @@ def compute_NAS(
         )
         nas_val = max(nas_val - nas_base, 0.0)
 
-    if normalize:
-        return float(np.clip(nas_val, 0.0, 1.0))
-    return float(nas_val)
+    def _finalize(v):
+        if nas_base is not None:
+            v = max(float(v) - float(nas_base), 0.0)
+        return float(np.clip(v, 0.0, 1.0)) if normalize else float(v)
+
+    nas_value = float(np.clip(nas_val, 0.0, 1.0)) if normalize else float(nas_val)
+
+    null_stats = None
+    null_reason = None
+    if int(null_surrogates) > 0:
+        null_rng = np.random.RandomState(null_seed_eff)
+        null_vals = []
+        for _ in range(int(null_surrogates)):
+            try:
+                surr = _surrogate_timeseries(
+                    x, null_method, null_rng, min_shift=null_min_shift
+                )
+            except ValueError as exc:
+                null_reason = f"surrogates_unavailable: {exc}"
+                break
+            surr_unboosted = compute_NAS(
+                surr,
+                tr=tr,
+                tau=tau,
+                lambda_phase=lambda_phase,
+                alpha=alpha,
+                beta=beta,
+                gamma=gamma,
+                delta=delta,
+                eta=eta,
+                zeta=zeta,
+                rho=rho,
+                bands=band_specs,
+                band_weights=bw.tolist(),
+                window_len=wlen,
+                step_len=step,
+                max_triads=max_triads,
+                random_state=random_state,
+                workspace_nodes=workspace_nodes,
+                workspace_quantile=workspace_quantile,
+                workspace_min_size=workspace_min_size,
+                directed_lag=directed_lag,
+                reverberation_lags=tuple(int(v) for v in rev_lags.tolist()),
+                baseline_ts=None,
+                boost_against_baseline=False,
+                normalize=False,
+                hardware_backend=backend,
+            )
+            null_vals.append(_finalize(surr_unboosted))
+        null_stats = _null_calibration_stats(nas_value, null_vals)
+        if null_reason is None and null_stats["null_n"] == 0:
+            null_reason = "all_surrogates_undefined"
+    null_fields = _metric_null_fields(
+        "NAS", null_stats, null_method, null_seed_eff, undefined_reason=null_reason
+    )
+    # Calibration requested but no valid surrogate -> NaN, never the raw value.
+    value = null_fields["NAS_calibrated"] if int(null_surrogates) > 0 else nas_value
+
+    if not return_details:
+        return float(value)
+    out = {
+        "value": float(value),
+        "raw": float(nas_value),
+        "nas_unboosted": float(nas_unboosted),
+        "nas_baseline": (None if nas_base is None else float(nas_base)),
+        "band_values": [float(v) for v in nas_bands],
+        "band_components": band_components,
+        "workspace_nodes": [int(v) for v in G.tolist()],
+        "defined": True,
+        "undefined_reason": None,
+    }
+    out.update(null_fields)
+    return out
+
+
+SURROGATE_METHODS = (
+    "circular_shift",
+    "phase_randomize",
+    "phase_randomize_independent",
+    "shuffle",
+)
+_SURROGATE_IAAFT_ITERATIONS = 10
+
+
+def _surrogate_timeseries(ts, method, rng, min_shift=None):
+    """
+    One surrogate of a node x time matrix for null calibration.
+
+    - 'circular_shift': independent circular shift of every node except node 0
+      (shifts >= ``min_shift`` samples, default 10% of the run). Preserves each
+      node's marginal and autocorrelation exactly; destroys cross-node alignment.
+    - 'phase_randomize': multivariate Fourier surrogate (the same random phase
+      offsets for all nodes), amplitude-adjusted by IAAFT iterations (rank
+      remap to each node's original values / re-impose the original amplitude
+      spectrum). Preserves marginals, auto- and (approximately) cross-spectra,
+      i.e. linear-Gaussian structure; destroys nonlinear/non-Gaussian structure.
+    - 'phase_randomize_independent': as above with independent phases per node
+      (destroys cross-node coupling, keeps each node's spectrum and marginal).
+    - 'shuffle': independent random permutation per node (destroys all temporal
+      and cross-node structure; keeps marginals).
+    NaN positions are kept in place.
+    """
+    x = np.asarray(ts, dtype=float)
+    if x.ndim != 2:
+        raise ValueError(
+            f"surrogate input must be 2D (n_nodes x n_time), got {x.shape}"
+        )
+    n, t = x.shape
+    if method == "circular_shift":
+        lo = int(math.ceil(0.1 * t)) if min_shift is None else int(min_shift)
+        lo = max(1, lo)
+        hi = t - lo
+        if hi < lo:
+            raise ValueError(
+                f"run too short (n_time={t}) for circular-shift surrogates "
+                f"with min_shift={lo}"
+            )
+        candidates = np.arange(lo, hi + 1)
+        shifts = rng.choice(
+            candidates, size=max(0, n - 1), replace=bool(candidates.size < n - 1)
+        )
+        out = x.copy()
+        for i in range(1, n):
+            out[i] = np.roll(x[i], int(shifts[i - 1]))
+        return out
+    if method == "shuffle":
+        return np.stack([x[i, rng.permutation(t)] for i in range(n)]) if n else x.copy()
+    if method in ("phase_randomize", "phase_randomize_independent"):
+        nan_mask = ~np.isfinite(x)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            row_mean = np.nanmean(np.where(nan_mask, np.nan, x), axis=1, keepdims=True)
+        row_mean = np.nan_to_num(row_mean, nan=0.0)
+        filled = np.where(nan_mask, row_mean, x)
+        centred = filled - row_mean
+        spec = np.fft.rfft(centred, axis=1)
+        n_freq = spec.shape[1]
+        rows = 1 if method == "phase_randomize" else n
+        phases = rng.uniform(0.0, 2.0 * np.pi, size=(rows, n_freq))
+        phases[:, 0] = 0.0
+        if t % 2 == 0 and n_freq > 1:
+            phases[:, -1] = 0.0
+        surr = np.fft.irfft(spec * np.exp(1j * phases), n=t, axis=1)
+        finite_idx = [np.flatnonzero(~nan_mask[i]) for i in range(n)]
+        sorted_vals = [np.sort(x[i, finite_idx[i]]) for i in range(n)]
+        target_amp = np.abs(spec)
+        out = filled.copy()
+        # IAAFT refinement (Schreiber & Schmitz 1996): alternate between the
+        # original amplitude spectrum and the original marginal (rank remap of
+        # the finite samples only; NaN positions keep the row-mean filler).
+        for it in range(_SURROGATE_IAAFT_ITERATIONS + 1):
+            for i in range(n):
+                idx = finite_idx[i]
+                order = np.argsort(surr[i, idx], kind="mergesort")
+                out[i, idx[order]] = sorted_vals[i]
+            if it == _SURROGATE_IAAFT_ITERATIONS:
+                break
+            cur = np.fft.rfft(out - row_mean, axis=1)
+            surr = (
+                np.fft.irfft(target_amp * np.exp(1j * np.angle(cur)), n=t, axis=1)
+                + row_mean
+            )
+        out[nan_mask] = np.nan
+        return out
+    raise ValueError(f"null_method must be one of {SURROGATE_METHODS}, got {method!r}")
+
+
+def _null_calibration_stats(observed, null_values):
+    """Excess over a surrogate null, z-score and one-sided empirical p-value."""
+    vals = np.asarray(null_values, dtype=float).reshape(-1)
+    vals = vals[np.isfinite(vals)]
+    out = {
+        "null_n": int(vals.size),
+        "null_mean": np.nan,
+        "null_sd": np.nan,
+        "z": np.nan,
+        "p": np.nan,
+        "excess": np.nan,
+    }
+    obs = float(observed)
+    if vals.size == 0 or not np.isfinite(obs):
+        return out
+    mean = float(np.mean(vals))
+    sd = float(np.std(vals, ddof=1)) if vals.size > 1 else np.nan
+    out["null_mean"] = mean
+    out["null_sd"] = sd
+    out["excess"] = float(obs - mean)
+    if np.isfinite(sd) and sd > 0:
+        out["z"] = float((obs - mean) / sd)
+    out["p"] = float((1.0 + np.sum(vals >= obs)) / (vals.size + 1.0))
+    return out
+
+
+def _iim_null_fields(stats, psi_full, delta_psi, null_values=None, meta=None):
+    """
+    IIM null-calibration fields. The null statistic is the integration mass
+    Delta_Psi = Psi_full - max_kappa Psi^kappa (bits) of surrogates with
+    independent nodes. It is also expressed on the IIM_raw scale by dividing by
+    the observed Psi_full (IIM_null_mean/IIM_null_sd), so that
+    IIM_z = (IIM_raw - IIM_null_mean) / IIM_null_sd. The ratio itself is not
+    calibrated directly: it is scale-free, so finite-sample noise gives it an
+    O(1) value that no surrogate comparison can separate from real coupling.
+    """
+    psi_scale = float(psi_full) + 1e-12 if np.isfinite(psi_full) else np.nan
+    if stats is None:
+        stats = _null_calibration_stats(np.nan, [])
+    excess = float(stats["excess"])
+    out = {
+        "IIM_null_calibrated": bool(stats["null_n"] > 0),
+        "IIM_raw": (
+            np.nan if not np.isfinite(delta_psi) else float(delta_psi / psi_scale)
+        ),
+        "Delta_Psi": float(delta_psi),
+        "Delta_Psi_null": [float(v) for v in (null_values or [])],
+        "Delta_Psi_null_mean": float(stats["null_mean"]),
+        "Delta_Psi_null_sd": float(stats["null_sd"]),
+        "IIM_null_n": int(stats["null_n"]),
+        "IIM_null_mean": (
+            float(stats["null_mean"] / psi_scale) if stats["null_n"] else np.nan
+        ),
+        "IIM_null_sd": (
+            float(stats["null_sd"] / psi_scale) if stats["null_n"] else np.nan
+        ),
+        "IIM_z": float(stats["z"]),
+        "IIM_null_p": float(stats["p"]),
+        "IIM_excess": excess,
+        "canonical_calibrated": (
+            float(max(excess, 0.0)) if np.isfinite(excess) else np.nan
+        ),
+    }
+    out["IIM_calibrated"] = out["canonical_calibrated"]
+    out.update(meta or {})
+    return out
+
+
+def _metric_null_fields(
+    prefix, stats, method, seed, clip_negative=True, undefined_reason=None
+):
+    """Null-calibration fields ``<prefix>_*`` for PDI/NAS details dictionaries."""
+    if stats is None:
+        stats = _null_calibration_stats(np.nan, [])
+    excess = float(stats["excess"])
+    if np.isfinite(excess):
+        calibrated = float(max(excess, 0.0)) if clip_negative else excess
+    else:
+        calibrated = np.nan
+    return {
+        f"{prefix}_null_undefined_reason": undefined_reason,
+        f"{prefix}_null_calibrated": bool(stats["null_n"] > 0),
+        f"{prefix}_null_method": str(method),
+        f"{prefix}_null_seed": seed,
+        f"{prefix}_null_n": int(stats["null_n"]),
+        f"{prefix}_null_mean": float(stats["null_mean"]),
+        f"{prefix}_null_sd": float(stats["null_sd"]),
+        f"{prefix}_z": float(stats["z"]),
+        f"{prefix}_null_p": float(stats["p"]),
+        f"{prefix}_excess": excess,
+        f"{prefix}_calibrated": calibrated,
+    }
+
+
+def _resolve_null_seed(null_seed, fallback):
+    if null_seed is not None:
+        return int(null_seed)
+    if isinstance(fallback, (int, np.integer)):
+        return int(fallback)
+    return 0
 
 
 def compute_IIM(
@@ -2877,6 +3624,15 @@ def compute_IIM(
     kernel_cache_memory_entries: int = 300_000,
     kernel_cache_flush_batch: int = 5_000,
     hardware_backend=None,
+    tpm_estimator: str = "node_shrinkage",
+    node_selection: str = "variance",
+    node_indices=None,
+    state_budget_policy: str = "reduce_bins_first",
+    null_surrogates: int = 0,
+    null_method: str = "circular_shift",
+    null_seed: int | None = None,
+    null_min_shift: int | None = None,
+    keep_kernel_cache: bool = False,
 ) -> float:
     """
     IIT-leaning Integrated Information Metric (IIM) from an empirical causal TPM.
@@ -2899,13 +3655,52 @@ def compute_IIM(
 
     keeps the CI-facing term in [0, 1] while retaining signed raw diagnostics.
 
+    Definitions used by this implementation:
+
+    - Mechanism/purview partitions are bipartitions into two non-empty parts;
+      both pairings (M1->Z1, M2->Z2) and (M1->Z2, M2->Z1) are searched, so phi
+      is the minimum over all such partitions and invariant to node labelling.
+      Consequently mechanisms or purviews of size 1 have no admissible
+      partition and contribute exactly 0 to Psi (Psi effectively sums over
+      |M| >= 2 with weight 1/|M|).
+    - TPM (``tpm_estimator``): 'node_shrinkage' (default) estimates the TPM in
+      state-by-node form (next-step node states conditionally independent
+      given the current state, as in IIT) with James-Stein shrinkage of each
+      row towards the node's own transition p(x_i' | x_i) (the "no cross-node
+      influence" model, estimated from all transitions); 'node_laplace' uses Laplace
+      smoothing per node; 'joint_laplace' is the legacy joint K^n x K^n Laplace
+      estimate (alpha=``tpm_alpha``), which turns finite-sample noise into
+      spurious non-factorisable repertoires. Unobserved rows are not uniform
+      under the node estimators.
+    - Subsystem: ``node_selection`` / ``node_indices`` and the state budget
+      (``state_budget_policy``) are explicit; every adjustment is logged and
+      returned (``budget_adjustments``, ``node_selection_degenerate``).
+
+    Null calibration (``null_surrogates > 0``). IIM_raw is a scale-free ratio:
+    for independent processes the estimated Psi is pure finite-sample bias,
+    and cutting (which averages TPM rows) removes more of that bias than the
+    intact TPM carries, so IIM_raw is O(1) even for independent noise and does
+    not increase with coupling. The null statistic is therefore the integration
+    mass Delta_Psi = Psi - max_kappa Psi^kappa (bits) of surrogates with
+    independent nodes (default: independent circular shifts, which keep each
+    node's marginal and autocorrelation; same subsystem, bins, lag and cut
+    family). Reported: ``IIM_raw``, ``Delta_Psi``, ``Delta_Psi_null_mean/sd``,
+    ``IIM_null_mean/sd`` (= Delta_Psi null moments / Psi, i.e. on the IIM_raw
+    scale), ``IIM_z``, ``IIM_null_p`` (one-sided, (1+#null>=obs)/(n+1)),
+    ``IIM_excess`` = Delta_Psi - mean null (bits) and the calibrated canonical
+    value ``canonical_calibrated`` = ``IIM_calibrated`` = max(IIM_excess, 0),
+    which is ~0 for independent nodes and increases with coupling strength.
+    When calibration is on, the returned ``value`` is the calibrated canonical
+    value (``IIM_excess`` if ``clamp=False``); ``raw``/``canonical`` keep their
+    uncalibrated definitions for backward compatibility.
+
     Parameters
     ----------
     ts : ndarray, shape (n_regions, n_time)
         Timeseries matrix.
     bins : int, optional
-        Target number of discrete levels per node. May be reduced internally
-        to satisfy ``max_state_space``.
+        Target number of discrete levels per node. May be reduced to satisfy
+        ``max_state_space`` according to ``state_budget_policy`` (logged).
     lag_trs : int, optional
         Lag (in samples) for transition construction.
     n_parts : int or None, optional
@@ -2933,7 +3728,8 @@ def compute_IIM(
         Largest purview size included in Ψ. If ``None`` (default), all purview
         sizes up to the selected subsystem size are included.
     tpm_alpha : float, optional
-        Laplace smoothing for TPM row estimation.
+        Laplace pseudo-count ('joint_laplace', 'node_laplace'; for
+        'node_shrinkage' it only smooths the per-node shrinkage target).
     max_state_space : int, optional
         Upper bound on number of discrete system states used in TPM.
     return_details : bool, optional
@@ -2970,6 +3766,32 @@ def compute_IIM(
         In-memory LRU front-cache size for the kernel cache.
     kernel_cache_flush_batch : int, optional
         Number of pending inserts before batched SQLite flush.
+    hardware_backend : optional
+        Backend for TPM/cut-TPM construction (see ``hardware_backend``).
+    tpm_estimator : {'node_shrinkage', 'node_laplace', 'joint_laplace'}, optional
+        TPM estimator (see above). 'joint_laplace' reproduces pre-v4 values.
+    node_selection : {'variance', 'index'}, optional
+        Declared subsystem rule when more nodes than ``max_nodes`` are given:
+        highest temporal variance (index tie-break; flagged as degenerate for
+        standardised inputs) or the first nodes in input order.
+    node_indices : sequence of int or None, optional
+        Explicit subsystem (overrides ``node_selection``).
+    state_budget_policy : {'reduce_bins_first', 'reduce_nodes_first', 'error'}
+        How ``bins**nodes <= max_state_space`` is enforced; 'error' makes the
+        result undefined instead of adjusting.
+    null_surrogates : int, optional
+        Number of surrogates for null calibration (0 = off, default).
+    null_method : str, optional
+        Surrogate type (see ``_surrogate_timeseries``), default 'circular_shift'.
+    null_seed : int or None, optional
+        Surrogate seed (default: ``rng`` when it is an int, else 0).
+    null_min_shift : int or None, optional
+        Minimum circular shift in samples (default max(lag+1, 10% of T)).
+    keep_kernel_cache : bool, optional
+        Keep an auto-created kernel cache after completion. By default temp
+        caches are always removed and checkpoint-adjacent caches are removed
+        once the checkpoint holds a terminal status; an explicit
+        ``kernel_cache_path`` is never removed.
 
     Returns
     -------
@@ -2978,171 +3800,13 @@ def compute_IIM(
     """
     backend = resolve_hardware_backend(hardware_backend)
 
-    # ---------- local functions ----------
-    def _encode_vals(vals, base):
-        key = 0
-        for v in vals:
-            key = key * base + int(v)
-        return int(key)
-
-    def _decode_key(key, k, base):
-        out = [0] * k
-        v = int(key)
-        for i in range(k - 1, -1, -1):
-            out[i] = v % base
-            v //= base
-        return tuple(out)
-
-    def _subset_key_matrix(states, subset, base):
-        if len(subset) == 0:
-            return np.zeros(states.shape[0], dtype=np.int64)
-        cols = states[:, subset].astype(np.int64, copy=False)
-        mult = (base ** np.arange(len(subset) - 1, -1, -1, dtype=np.int64))
-        return (cols * mult).sum(axis=1).astype(np.int64)
-
-    def _enumerate_subsets(nodes, max_size):
-        out = []
-        for r in range(1, min(max_size, len(nodes)) + 1):
-            out.extend(tuple(c) for c in itertools.combinations(nodes, r))
-        return out
-
-    def _enumerate_bipartitions(nodes):
-        n = len(nodes)
-        if n < 2:
-            return []
-        out = []
-        node_set = tuple(nodes)
-        for k in range(1, (n // 2) + 1):
-            for A in itertools.combinations(node_set, k):
-                A = tuple(A)
-                B = tuple(x for x in node_set if x not in A)
-                if k == n - k and A[0] > B[0]:
-                    continue
-                out.append((A, B))
-        return out
-
-    def _jsd(p, q):
-        p = np.asarray(p, dtype=float)
-        q = np.asarray(q, dtype=float)
-        p = p / max(p.sum(), 1e-12)
-        q = q / max(q.sum(), 1e-12)
-        m = 0.5 * (p + q)
-        return float(0.5 * entropy(p, m, base=2) + 0.5 * entropy(q, m, base=2))
-
-    def _discretize_per_node(arr, base_bins):
-        n, T = arr.shape
-        out = np.zeros((n, T), dtype=np.int16)
-        for i in range(n):
-            x = arr[i]
-            finite = x[np.isfinite(x)]
-            if finite.size == 0:
-                continue
-            vmin = float(np.min(finite))
-            vmax = float(np.max(finite))
-            if np.isclose(vmin, vmax):
-                continue
-            edges = np.quantile(finite, np.linspace(0.0, 1.0, base_bins + 1))
-            if np.unique(edges).size != base_bins + 1:
-                edges = np.linspace(vmin, vmax, base_bins + 1)
-            bins_inner = edges[1:-1]
-            z = np.digitize(x, bins_inner, right=False)
-            z = np.clip(z, 0, base_bins - 1)
-            z[~np.isfinite(x)] = 0
-            out[i] = z.astype(np.int16)
-        return out
-
-    def _select_nodes(arr, max_n):
-        n = arr.shape[0]
-        if n <= max_n:
-            return np.arange(n, dtype=int)
-        var = np.nanvar(arr, axis=1)
-        var = np.where(np.isfinite(var), var, -np.inf)
-        idx = np.argsort(var)[::-1][:max_n]
-        return np.sort(idx.astype(int))
-
-    def _build_states_and_tpm(disc, base, lag, alpha):
-        n, T = disc.shape
-        T_eff = T - lag
-        curr = disc[:, :T_eff].T.astype(np.int16, copy=False)
-        nxt = disc[:, lag:].T.astype(np.int16, copy=False)
-
-        full_subset = tuple(range(n))
-        curr_keys = _subset_key_matrix(curr, full_subset, base)
-        nxt_keys = _subset_key_matrix(nxt, full_subset, base)
-
-        n_states = int(base ** n)
-        C = np.zeros((n_states, n_states), dtype=float)
-        np.add.at(C, (curr_keys, nxt_keys), 1.0)
-        row_sum = C.sum(axis=1, keepdims=True)
-        tpm = (C + alpha) / (row_sum + alpha * n_states)
-
-        sid = np.arange(n_states, dtype=np.int64)[:, None]
-        powv = (base ** np.arange(n - 1, -1, -1, dtype=np.int64))[None, :]
-        states_full = ((sid // powv) % base).astype(np.int16)
-        return curr, tpm, states_full
-
-    def _marginalize(dist_full, keys, n_keys):
-        p = np.bincount(keys, weights=dist_full, minlength=n_keys).astype(float)
-        s = p.sum()
-        if s <= 0:
-            return np.ones(n_keys, dtype=float) / float(n_keys)
-        return p / s
-
-    def _build_phase1_chunks_adaptive(
-        remaining_mechanisms,
-        max_chunk_size,
-        workers,
-    ):
-        """
-        Build mechanism chunks with adaptive sizes.
-
-        Strategy:
-        - keep chunks as large as possible (to reduce scheduling overhead),
-        - keep worker utilization high.
-
-        Chunks are contiguous in mechanism order (resume-safe with prefix-based
-        checkpoint progress). Piecewise policy requested for phase-1 throughput:
-        - first 50% of remaining mechanisms: target 4 mechanisms per worker task,
-        - next 30%: target 2 mechanisms per worker task,
-        - final 20% (last 1/5): target 1 mechanism per worker task.
-
-        We still keep enough tasks to occupy available workers whenever possible.
-        """
-        mechs = tuple(remaining_mechanisms)
-        if not mechs:
-            return []
-        max_chunk = max(1, int(max_chunk_size))
-        workers_eff = max(1, int(workers))
-        if workers_eff <= 1:
-            return [
-                tuple(mechs[i:i + max_chunk])
-                for i in range(0, len(mechs), max_chunk)
-            ]
-
-        chunks = []
-        idx = 0
-        n_total = int(len(mechs))
-        while idx < n_total:
-            rem = int(n_total - idx)
-            active_workers = max(1, min(workers_eff, rem))
-
-            progress = float(idx) / float(max(1, n_total))
-            if progress >= 0.80:
-                stage_target = 1
-            elif progress >= 0.50:
-                stage_target = 2
-            else:
-                stage_target = 4
-
-            stage_target = min(int(stage_target), int(max_chunk))
-            # Keep enough chunks for all active workers when possible.
-            c = min(stage_target, max(1, rem // active_workers))
-            c = max(1, min(int(c), rem))
-            chunks.append(tuple(mechs[idx:idx + c]))
-            idx += c
-        return chunks
-
+    # Parallel-execution state shared by all Psi evaluations of this run.
+    # A broken reusable pool only disables the reusable pool (per-call pools are
+    # still tried); a failed per-call pool disables intra-task parallelism.
+    # Kernel-cache misses are not execution failures and never disable either.
     phase_parallel_runtime_enabled = True
+    phase_reusable_runtime_enabled = True
+    phase_parallel_fallbacks = []
 
     def _compute_psi(
         tpm,
@@ -3168,15 +3832,16 @@ def compute_IIM(
         kernel_cache_lookup_only=False,
     ):
         nonlocal phase_parallel_runtime_enabled
+        nonlocal phase_reusable_runtime_enabled
         _, n_nodes = states_full.shape
         if mechanisms is None:
             all_nodes = tuple(range(n_nodes))
-            mechanisms = tuple(_enumerate_subsets(all_nodes, mech_size))
+            mechanisms = tuple(_iim_enumerate_subsets(all_nodes, mech_size))
         else:
             mechanisms = tuple(tuple(sorted(m)) for m in mechanisms)
         if purviews is None:
             all_nodes = tuple(range(n_nodes))
-            purviews = tuple(_enumerate_subsets(all_nodes, purv_size))
+            purviews = tuple(_iim_enumerate_subsets(all_nodes, purv_size))
         else:
             purviews = tuple(tuple(sorted(z)) for z in purviews)
         if not mechanisms or not purviews:
@@ -3208,7 +3873,7 @@ def compute_IIM(
                 parallel_workers_eff = 1
         chunk_size_eff = max(1, int(phase1_chunk_size))
         remaining_mechanisms = mechanisms[done_start:]
-        chunks = _build_phase1_chunks_adaptive(
+        chunks = _iim_build_phase1_chunks_adaptive(
             remaining_mechanisms,
             max_chunk_size=chunk_size_eff,
             workers=parallel_workers_eff,
@@ -3235,13 +3900,20 @@ def compute_IIM(
             parallel_workers_eff > 1
             and len(remaining_mechanisms) > 1
         )
-        if use_parallel and (parallel_runtime is not None):
+        # Psi accumulated before this call (resume prefix); any fallback restarts
+        # from here so partially aggregated parallel chunks are never re-added.
+        psi_start = float(psi)
+        if (
+            use_parallel
+            and (parallel_runtime is not None)
+            and phase_reusable_runtime_enabled
+        ):
             try:
                 return float(
                     parallel_runtime.run_chunks(
                         tpm=tpm,
                         chunks=chunks,
-                        psi_start=float(psi),
+                        psi_start=float(psi_start),
                         done_start=int(done_start),
                         total_mechanisms=int(n_mechanisms),
                         progress_cb=progress_cb,
@@ -3251,8 +3923,15 @@ def compute_IIM(
                         kernel_cache_lookup_only=bool(kernel_cache_lookup_only),
                     )
                 )
+            except _IIMKernelCacheMissError:
+                # A lookup-only cache miss is a data condition, not a pool failure:
+                # the caller recomputes this cut; parallelism stays enabled.
+                raise
             except Exception as exc:
-                phase_parallel_runtime_enabled = False
+                phase_reusable_runtime_enabled = False
+                phase_parallel_fallbacks.append(
+                    f"reusable_pool: {type(exc).__name__}: {exc}"
+                )
                 log.warning(
                     "[%s] IIM reusable phase workers failed (%s); falling back to per-call execution.",
                     run_label,
@@ -3379,8 +4058,13 @@ def compute_IIM(
                                 progress_cb(int(done_abs), int(total_abs), float(psi))
                             next_idx += 1
                 return float(psi)
+            except _IIMKernelCacheMissError:
+                raise
             except Exception as exc:
                 phase_parallel_runtime_enabled = False
+                phase_parallel_fallbacks.append(
+                    f"per_call_pool: {type(exc).__name__}: {exc}"
+                )
                 log.warning(
                     "[%s] IIM intra-task phase parallelization failed (%s); falling back to sequential mechanisms.",
                     run_label,
@@ -3407,6 +4091,10 @@ def compute_IIM(
                     except Exception:
                         pass
 
+        # Sequential path (also the fallback after a failed parallel attempt):
+        # restart from the pre-call prefix so completed parallel chunks are not
+        # counted twice.
+        psi = float(psi_start)
         done_abs = int(done_start)
         total_abs = int(n_mechanisms)
         for chunk in chunks:
@@ -3440,17 +4128,6 @@ def compute_IIM(
             B,
             hardware_backend=backend,
         )
-
-    def _all_system_cuts(n_nodes_sys, part_mode):
-        nodes = tuple(range(n_nodes_sys))
-        all_cuts = _enumerate_bipartitions(nodes)
-        if part_mode == "balanced":
-            out = []
-            for A, B in all_cuts:
-                if abs(len(A) - len(B)) <= 1:
-                    out.append((A, B))
-            return out
-        return all_cuts
 
     def _cut_to_key(A, B):
         return f"{','.join(map(str, A))}|{','.join(map(str, B))}"
@@ -3505,16 +4182,19 @@ def compute_IIM(
                 "value": np.nan,
                 "raw": np.nan,
                 "canonical": np.nan,
-                "clipped": np.nan,   # legacy alias
+                "clipped": np.nan,  # legacy alias
                 "iim_plus": np.nan,  # legacy alias
                 "scale": scale,
-                "I_full": float(psi_full),          # legacy field name
-                "min_partition_sum": float(psi_mip),# legacy field name
+                "I_full": float(psi_full),  # legacy field name
+                "min_partition_sum": float(psi_mip),  # legacy field name
                 "Psi_full": float(psi_full),
                 "Psi_mip_preserved": float(psi_mip),
                 "defined": False,
                 "undefined_reason": reason,
+                "iim_algorithm_version": IIM_ALGORITHM_VERSION,
+                "tpm_estimator": str(tpm_estimator),
             }
+            out.update(_iim_null_fields(None, psi_full=np.nan, delta_psi=np.nan))
             out.update(payload_extra)
             return out
         return np.nan
@@ -3544,6 +4224,12 @@ def compute_IIM(
 
     # legacy alias
     _ = method
+    if int(null_surrogates) < 0:
+        raise ValueError("null_surrogates must be >= 0")
+    if null_method not in SURROGATE_METHODS:
+        raise ValueError(f"null_method must be one of {SURROGATE_METHODS}")
+    # Snapshot so surrogate runs evaluate exactly the same (possibly sampled) cuts.
+    cut_rng_state = rand_state.get_state()
 
     prep = prepare_iim_problem(
         ts,
@@ -3558,6 +4244,11 @@ def compute_IIM(
         tpm_alpha=float(tpm_alpha),
         max_state_space=int(max_state_space),
         hardware_backend=backend,
+        tpm_estimator=str(tpm_estimator),
+        node_selection=str(node_selection),
+        node_indices=node_indices,
+        state_budget_policy=str(state_budget_policy),
+        log_label=run_label,
     )
     if not bool(prep.get("defined", False)):
         return _undefined_payload(
@@ -3565,10 +4256,13 @@ def compute_IIM(
             extra={
                 "n_nodes_used": prep.get("n_nodes_used"),
                 "bins_used": prep.get("bins_used"),
+                "bins_requested": prep.get("bins_requested"),
+                "budget_adjustments": prep.get("budget_adjustments"),
             },
         )
 
     selected = np.asarray(prep["selected_nodes"], dtype=int)
+    selected_nodes_list = [int(x) for x in selected.tolist()]
     ts_sel = np.asarray(prep["ts_selected"], dtype=float)
     disc = np.asarray(prep["disc"], dtype=np.int16)
     curr_obs = np.asarray(prep["curr_obs"], dtype=np.int16)
@@ -3853,32 +4547,43 @@ def compute_IIM(
     mip_cut = None
     psi_full = np.nan
 
-    signature = None
+    # Everything that changes Psi / cut scores / kernel values must be in the
+    # signature, otherwise a resume (or a reused kernel cache) silently mixes
+    # results from different estimators or code versions.
+    try:
+        disc_view = memoryview(np.ascontiguousarray(disc))
+        disc_hash = hashlib.sha1(disc_view).hexdigest()
+    except Exception:
+        disc_hash = None
+    cuts_hash = hashlib.sha1(
+        json.dumps(cuts_payload, separators=(",", ":"), ensure_ascii=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    signature = {
+        "iim_algorithm_version": IIM_ALGORITHM_VERSION,
+        "n_regions_input": int(n_regions),
+        "n_time_input": int(n_time),
+        "n_nodes_used": int(n_sel),
+        "selected_nodes": [int(x) for x in selected.tolist()],
+        "node_selection_rule": str(prep.get("node_selection_rule")),
+        "bins_requested": int(bins),
+        "bins_used": int(eff_bins),
+        "lag_trs": int(lag_trs),
+        "tpm_estimator": str(tpm_estimator),
+        "tpm_alpha": float(tpm_alpha),
+        "max_state_space": int(max_state_space),
+        "state_budget_policy": str(state_budget_policy),
+        "partition_mode": str(partition_mode),
+        "n_parts_requested": (None if n_parts is None else int(n_parts)),
+        "max_nodes_requested": (None if max_nodes is None else int(max_nodes)),
+        "max_mechanism_size_used": int(mech_size_eff),
+        "max_purview_size_used": int(purv_size_eff),
+        "n_cuts_total": int(len(cuts_eval)),
+        "cuts_hash": cuts_hash,
+        "disc_hash": disc_hash,
+    }
     if checkpoint_path:
-        try:
-            disc_view = memoryview(np.ascontiguousarray(disc))
-            disc_hash = hashlib.sha1(disc_view).hexdigest()
-        except Exception:
-            disc_hash = None
-        cuts_hash = hashlib.sha1(
-            json.dumps(cuts_payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-        ).hexdigest()
-        signature = {
-            "n_regions_input": int(n_regions),
-            "n_time_input": int(n_time),
-            "n_nodes_used": int(n_sel),
-            "bins_used": int(eff_bins),
-            "lag_trs": int(lag_trs),
-            "partition_mode": str(partition_mode),
-            "n_parts_requested": (None if n_parts is None else int(n_parts)),
-            "max_nodes_requested": (None if max_nodes is None else int(max_nodes)),
-            "max_mechanism_size_used": int(mech_size_eff),
-            "max_purview_size_used": int(purv_size_eff),
-            "n_cuts_total": int(len(cuts_eval)),
-            "cuts_hash": cuts_hash,
-            "disc_hash": disc_hash,
-        }
-
         checkpoint_dir = os.path.dirname(os.path.abspath(checkpoint_path))
         if checkpoint_dir:
             os.makedirs(checkpoint_dir, exist_ok=True)
@@ -4004,15 +4709,23 @@ def compute_IIM(
 
     induced_kernel_cache = None
     induced_kernel_cache_path_eff = None
+    # Cache file ownership: an explicit kernel_cache_path belongs to the caller
+    # and is kept; a checkpoint-adjacent cache is kept only while the run is
+    # resumable (deleted once the checkpoint holds a terminal status); an
+    # auto-created temp cache is always deleted (also on abnormal exit).
     if kernel_cache_path is not None:
         induced_kernel_cache_path_eff = str(kernel_cache_path)
+        kernel_cache_disposal = "keep"
     elif checkpoint_path:
         induced_kernel_cache_path_eff = f"{checkpoint_path}.kernel.sqlite3"
+        kernel_cache_disposal = "keep" if bool(keep_kernel_cache) else "on_terminal"
     else:
         induced_kernel_cache_path_eff = os.path.join(
             tempfile.gettempdir(),
             f"iim_kernel_cache_{os.getpid()}_{time.time_ns()}.sqlite3",
         )
+        kernel_cache_disposal = "keep" if bool(keep_kernel_cache) else "always"
+    kernel_cache_finalizer = None
     try:
         induced_kernel_cache = _IIMDiskKernelCache(
             induced_kernel_cache_path_eff,
@@ -4020,12 +4733,20 @@ def compute_IIM(
             memory_entries=int(kernel_cache_memory_entries),
             flush_batch=int(kernel_cache_flush_batch),
         )
+        if kernel_cache_disposal == "always":
+            kernel_cache_finalizer = weakref.finalize(
+                induced_kernel_cache,
+                _iim_remove_sqlite_files,
+                induced_kernel_cache_path_eff,
+            )
         log.info(
-            "[%s] IIM induced-partition cache: enabled path=%s mem_entries=%d flush_batch=%d",
+            "[%s] IIM induced-partition cache: enabled path=%s mem_entries=%d "
+            "flush_batch=%d disposal=%s",
             run_label,
             induced_kernel_cache_path_eff,
             int(kernel_cache_memory_entries),
             int(kernel_cache_flush_batch),
+            kernel_cache_disposal,
         )
     except Exception as exc:
         induced_kernel_cache = None
@@ -4035,7 +4756,7 @@ def compute_IIM(
             exc,
         )
 
-    def _close_induced_cache():
+    def _close_induced_cache(terminal=True):
         nonlocal induced_kernel_cache
         if induced_kernel_cache is not None:
             try:
@@ -4043,12 +4764,18 @@ def compute_IIM(
             except Exception:
                 pass
             induced_kernel_cache = None
+        if kernel_cache_disposal == "always" or (
+            kernel_cache_disposal == "on_terminal" and terminal
+        ):
+            _iim_remove_sqlite_files(induced_kernel_cache_path_eff)
+            if kernel_cache_finalizer is not None:
+                kernel_cache_finalizer.detach()
 
     def _write_checkpoint(status, undefined_reason=None):
         if not checkpoint_path:
             return
         payload = {
-            "version": 3,
+            "version": 4,
             "status": status,
             "updated_unix": float(time.time()),
             "signature": signature,
@@ -4058,12 +4785,12 @@ def compute_IIM(
             "completed_cuts": {k: float(v) for k, v in completed_cut_scores.items()},
             "best": {
                 "psi_preserved_max": (
-                    None if not np.isfinite(psi_preserved_max) else float(psi_preserved_max)
+                    None
+                    if not np.isfinite(psi_preserved_max)
+                    else float(psi_preserved_max)
                 ),
                 "mip_cut": (
-                    None
-                    if mip_cut is None
-                    else [list(mip_cut[0]), list(mip_cut[1])]
+                    None if mip_cut is None else [list(mip_cut[0]), list(mip_cut[1])]
                 ),
             },
             "n_cuts_total": int(len(cuts_eval)),
@@ -4078,7 +4805,9 @@ def compute_IIM(
                 None if phase1_eta_seconds is None else float(phase1_eta_seconds)
             ),
             "phase1_psi_partial": (
-                None if not np.isfinite(phase1_psi_partial) else float(phase1_psi_partial)
+                None
+                if not np.isfinite(phase1_psi_partial)
+                else float(phase1_psi_partial)
             ),
             "phase1_resumed_partial": bool(phase1_resumed_partial),
             "materialization_done_mechanisms": int(materialization_done_mechanisms),
@@ -4088,7 +4817,9 @@ def compute_IIM(
                 else int(materialization_total_mechanisms)
             ),
             "materialization_est_scale": (
-                None if materialization_est_scale is None else int(materialization_est_scale)
+                None
+                if materialization_est_scale is None
+                else int(materialization_est_scale)
             ),
             "materialization_key_checks": int(materialization_key_checks),
             "materialization_missing_groups": int(materialization_missing_groups),
@@ -4256,6 +4987,9 @@ def compute_IIM(
             return False
         if len(cuts_eval) <= 1:
             return False
+        if all(_cut_to_key(A, B) in completed_cut_scores for A, B in cuts_eval):
+            # Resumed run with every cut already scored: nothing to materialize.
+            return False
 
         n_nodes_sys = int(states_full.shape[1])
         all_nodes_sys = tuple(range(n_nodes_sys))
@@ -4293,7 +5027,7 @@ def compute_IIM(
             M = tuple(sorted(M))
             if len(M) < 2:
                 continue
-            obs_keys = _subset_key_matrix(curr_obs, M, eff_bins)
+            obs_keys = _iim_subset_key_matrix(curr_obs, M, eff_bins)
             if obs_keys.size == 0:
                 continue
             uk = np.unique(obs_keys).astype(np.int64, copy=False)
@@ -4388,9 +5122,9 @@ def compute_IIM(
                                     break
                                 tpm_by_pi.pop(old_nonzero, None)
 
-                    static_cache = {}
                     cut_mask_for_key = int(pi)
 
+                    missing_rows = []
                     for m_key in uk:
                         mk = int(m_key)
                         total_directional_keys += 2
@@ -4404,26 +5138,31 @@ def compute_IIM(
 
                         missing_groups += 1
                         materialization_missing_groups = int(missing_groups)
-                        obs_row = np.zeros((1, n_nodes_sys), dtype=np.int16)
-                        m_vals = _decode_key(int(mk), len(M), eff_bins)
+                        obs_row = np.zeros(n_nodes_sys, dtype=np.int16)
+                        m_vals = _iim_decode_key(int(mk), len(M), eff_bins)
                         for p, nn in enumerate(M):
-                            obs_row[0, int(nn)] = int(m_vals[p])
+                            obs_row[int(nn)] = int(m_vals[p])
+                        missing_rows.append(obs_row)
 
+                    if missing_rows:
+                        # One call per (M, Z, pi) group: all missing mechanism states
+                        # share the call's repertoire caches. Each state's kernel value
+                        # is written to the cache independently of the others.
                         _iim_phase1_chunk_contribution(
                             (M,),
                             (Z,),
                             int(eff_bins),
                             tpm_ref,
-                            obs_row,
+                            np.asarray(missing_rows, dtype=np.int16),
                             states_full,
-                            static_cache=static_cache,
+                            static_cache=psi_static_cache,
                             obs_state_cache=None,
                             kernel_cache=induced_kernel_cache,
                             cut_mask_a=int(cut_mask_for_key),
                             use_induced_partition_cache=True,
                             kernel_cache_lookup_only=False,
                         )
-                        computed_groups += 1
+                        computed_groups += len(missing_rows)
                         materialization_computed_groups = int(computed_groups)
 
             if (
@@ -4466,6 +5205,7 @@ def compute_IIM(
         return True
 
     lookup_only_cut_aggregation = False
+    phase2_cache_misses = 0
     try:
         lookup_only_cut_aggregation = bool(_materialize_induced_kernel_cases())
     except Exception as exc:
@@ -4525,12 +5265,24 @@ def compute_IIM(
                         kernel_cache_lookup_only=True,
                     )
                 except _IIMKernelCacheMissError:
-                    lookup_only_cut_aggregation = False
-                    phase2_mode = "recompute"
-                    iim_phase = "phase2_cuts_recompute"
+                    # Recompute this cut only; keep lookup-only aggregation (and
+                    # parallelism) for later cuts unless misses are systematic.
+                    phase2_cache_misses += 1
+                    if phase2_cache_misses >= 3:
+                        lookup_only_cut_aggregation = False
+                        phase2_mode = "recompute"
+                        iim_phase = "phase2_cuts_recompute"
                     log.warning(
-                        "[%s] IIM lookup-only aggregation cache miss; falling back to per-cut recomputation.",
+                        "[%s] IIM lookup-only aggregation cache miss (%d so far); "
+                        "recomputing cut %s%s.",
                         run_label,
+                        int(phase2_cache_misses),
+                        cut_key,
+                        (
+                            ""
+                            if lookup_only_cut_aggregation
+                            else " and all remaining cuts"
+                        ),
                     )
                     tpm_cut = _build_cut_tpm(tpm_full, states_full, eff_bins, A, B)
                     psi_cut = _compute_psi(
@@ -4627,19 +5379,127 @@ def compute_IIM(
     canonical = float(np.clip(raw, 0.0, 1.0))
     # Legacy positive-only decomposition term retained for diagnostics.
     iim_plus = float(np.clip(raw, 0.0, 1.0))
+    delta_psi = float(psi_full - psi_preserved_max)
 
-    selected = canonical if clamp else raw
+    iim_phase = "complete"
+    _write_checkpoint("complete")
+    induced_cache_enabled = bool(induced_kernel_cache is not None)
+    induced_cache_stats = (
+        None if induced_kernel_cache is None else induced_kernel_cache.stats()
+    )
+    _close_phase_parallel_runtime()
+    _close_induced_cache()
+
+    # ---------- surrogate-null calibration ----------
+    null_seed_eff = _resolve_null_seed(null_seed, rng)
+    null_min_shift_eff = (
+        int(null_min_shift)
+        if null_min_shift is not None
+        else max(int(lag_trs) + 1, int(math.ceil(0.1 * float(ts_sel.shape[1]))))
+    )
+    null_meta = {
+        "IIM_null_method": str(null_method),
+        "IIM_null_seed": int(null_seed_eff),
+        "IIM_null_min_shift": int(null_min_shift_eff),
+        "IIM_null_failed": 0,
+        "IIM_null_undefined_reason": None,
+    }
+    null_deltas = []
+    if int(null_surrogates) > 0:
+        null_rng = np.random.RandomState(null_seed_eff)
+        n_failed = 0
+        for k in range(int(null_surrogates)):
+            try:
+                surr = _surrogate_timeseries(
+                    ts_sel, null_method, null_rng, min_shift=null_min_shift_eff
+                )
+            except ValueError as exc:
+                reason = f"surrogates_unavailable: {exc}"
+                null_meta["IIM_null_undefined_reason"] = reason
+                n_failed = int(null_surrogates)
+                break
+            cut_rng = np.random.RandomState()
+            cut_rng.set_state(cut_rng_state)
+            surr_ckpt = (
+                None
+                if not checkpoint_path
+                else f"{checkpoint_path}.null-{null_method}"
+                f"-seed{null_seed_eff}-{k:04d}.json"
+            )
+            surr_info = compute_IIM(
+                surr,
+                bins=int(eff_bins),
+                lag_trs=int(lag_trs),
+                n_parts=n_parts,
+                rng=cut_rng,
+                partition_mode=str(partition_mode),
+                max_mechanism_size=int(mech_size_eff),
+                max_purview_size=int(purv_size_eff),
+                tpm_alpha=float(tpm_alpha),
+                max_state_space=int(max_state_space),
+                return_details=True,
+                checkpoint_path=surr_ckpt,
+                resume_from_checkpoint=bool(resume_from_checkpoint),
+                checkpoint_every_cuts=int(checkpoint_every_cuts),
+                progress_log_every_cuts=int(progress_log_every_cuts),
+                progress_label=f"{run_label}/null{k:03d}",
+                phase1_parallel_workers=phase1_parallel_workers,
+                phase1_chunk_size=int(phase1_chunk_size),
+                phase1_shared_memory=bool(phase1_shared_memory),
+                kernel_cache_memory_entries=int(kernel_cache_memory_entries),
+                kernel_cache_flush_batch=int(kernel_cache_flush_batch),
+                hardware_backend=backend,
+                tpm_estimator=str(tpm_estimator),
+                node_selection="index",
+                state_budget_policy="error",
+                null_surrogates=0,
+            )
+            if bool(surr_info.get("defined", False)):
+                null_deltas.append(
+                    float(surr_info["Psi_full"]) - float(surr_info["Psi_mip_preserved"])
+                )
+            elif surr_info.get("undefined_reason") == "nonpositive_psi_full":
+                # No estimable causal structure in the surrogate: no integration.
+                null_deltas.append(0.0)
+            else:
+                n_failed += 1
+        null_meta["IIM_null_failed"] = int(n_failed)
+        if not null_deltas and null_meta["IIM_null_undefined_reason"] is None:
+            null_meta["IIM_null_undefined_reason"] = "all_surrogates_undefined"
+        null_stats = _null_calibration_stats(delta_psi, null_deltas)
+        log.info(
+            "[%s] IIM null calibration (%s, n=%d): Delta_Psi=%.6g "
+            "null_mean=%.6g null_sd=%.6g z=%.3f p=%.3f",
+            run_label,
+            null_method,
+            int(null_stats["null_n"]),
+            delta_psi,
+            float(null_stats["null_mean"]),
+            float(null_stats["null_sd"]),
+            float(null_stats["z"]),
+            float(null_stats["p"]),
+        )
+    else:
+        null_stats = None
+    null_fields = _iim_null_fields(
+        null_stats,
+        psi_full=psi_full,
+        delta_psi=delta_psi,
+        null_values=null_deltas,
+        meta=null_meta,
+    )
+
+    if int(null_surrogates) > 0:
+        # Calibration was requested: never fall back silently to the
+        # uncalibrated ratio (NaN + IIM_null_undefined_reason instead).
+        selected = (
+            null_fields["canonical_calibrated"] if clamp else null_fields["IIM_excess"]
+        )
+    else:
+        selected = canonical if clamp else raw
     value = float(selected * scale)
 
     if return_details:
-        iim_phase = "complete"
-        _write_checkpoint("complete")
-        induced_cache_enabled = bool(induced_kernel_cache is not None)
-        induced_cache_stats = (
-            None if induced_kernel_cache is None else induced_kernel_cache.stats()
-        )
-        _close_phase_parallel_runtime()
-        _close_induced_cache()
         return {
             "value": value,
             "raw": raw,
@@ -4669,26 +5529,46 @@ def compute_IIM(
             ),
             "phase1_mechanisms_done": int(phase1_mechanisms_done),
             "phase1_total_mechanisms": (
-                None if phase1_total_mechanisms is None else int(phase1_total_mechanisms)
+                None
+                if phase1_total_mechanisms is None
+                else int(phase1_total_mechanisms)
             ),
             "phase1_eta_seconds": (
                 None if phase1_eta_seconds is None else float(phase1_eta_seconds)
             ),
             "phase1_parallel_workers": (
-                None if phase1_parallel_workers is None else int(phase1_parallel_workers)
+                None
+                if phase1_parallel_workers is None
+                else int(phase1_parallel_workers)
             ),
             "phase1_chunk_size": int(phase1_chunk_size),
             "phase1_shared_memory": bool(phase1_shared_memory),
             "induced_partition_cache_enabled": bool(induced_cache_enabled),
             "induced_partition_cache_path": induced_kernel_cache_path_eff,
             "induced_partition_cache_stats": induced_cache_stats,
+            "induced_partition_cache_disposal": kernel_cache_disposal,
+            "phase2_cache_misses": int(phase2_cache_misses),
+            "phase_parallel_enabled": bool(phase_parallel_runtime_enabled),
+            "phase_parallel_fallbacks": list(phase_parallel_fallbacks),
+            "iim_algorithm_version": IIM_ALGORITHM_VERSION,
+            "tpm_estimator": str(tpm_estimator),
+            "tpm_alpha": float(tpm_alpha),
+            "lag_trs": int(lag_trs),
+            "selected_nodes": [int(x) for x in selected_nodes_list],
+            "node_selection_rule": prep.get("node_selection_rule"),
+            "node_selection_degenerate": bool(
+                prep.get("node_selection_degenerate", False)
+            ),
+            "bins_requested": int(bins),
+            "state_budget_policy": str(state_budget_policy),
+            "budget_adjustments": list(prep.get("budget_adjustments", [])),
+            "n_states": int(prep.get("n_states", 0)),
+            "n_states_observed": int(prep.get("n_states_observed", 0)),
+            "n_transitions": int(prep.get("n_transitions", 0)),
+            **null_fields,
             "defined": True,
             "undefined_reason": None,
         }
-    iim_phase = "complete"
-    _write_checkpoint("complete")
-    _close_phase_parallel_runtime()
-    _close_induced_cache()
     return value
 
 
