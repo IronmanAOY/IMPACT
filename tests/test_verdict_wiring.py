@@ -447,6 +447,81 @@ def test_srpi_agency_mode_through_the_protocol(tmp_path):
     assert deep["SRPI_c"] < 0.5 and deep["MPC_verdict"] != "MPC_CONSISTENT"
 
 
+def test_declared_mode_fallbacks_are_applied_per_run_and_recorded(tmp_path):
+    """RAM update='prediction_error' needs a choice/reward log and SRPI
+    mode='agency' self_caused/other_caused events; the protocol can declare a
+    fallback for runs without them. The fallback is part of the protocol (and
+    its hash), and every row records the mode used and the reason."""
+    x_tag, rows_tag = _agency_task(0, tag=1.0)
+    x_none, rows_none = _agency_task(1, tag=0.0)
+    legacy_rows = [r for r in rows_none
+                   if r["trial_type"] not in ("self_caused", "other_caused")]
+    prep = _save_runs(tmp_path, {"awake": x_tag, "deep": x_none})
+    onsets = {"s1": {
+        "awake": (events_table_to_bundle(pd.DataFrame(rows_tag)), "1"),
+        "deep": (events_table_to_bundle(pd.DataFrame(legacy_rows)), "1"),
+    }}
+    proto = E.Protocol(necessity_set=("RAM", "SRPI"), estimators={
+        "RAM": {"update": "prediction_error", "update_fallback": "feedback_magnitude"},
+        "SRPI": {"mode": "agency", "mode_fallback": "legacy",
+                 "agency_null_permutations": 20}})
+    srpi = {**_SRPI_PARAMS, "modality": "fmri", "pre_window_sec": 2.0,
+            "response_lag_sec": 2.0, "response_window_sec": 4.0}
+    ram = {**RAM_PARAM_PRESETS["fmri"], "quality_null_samples": 5}
+    df = sc.compute_synergy_ci(
+        str(prep), "toy", [0.5], sessions=("awake", "deep"), tr=1.0,
+        stimulus_onsets=onsets, srpi_params=srpi, ram_params=ram,
+        mpc_metrics=("RAM", "SRPI"), compute_ci=False, protocol=proto,
+    )
+    awake, deep = _row(df, "awake"), _row(df, "deep")
+    assert awake["SRPI_estimator"] == f"compute_SRPI:agency@{VERSIONS['SRPI']}"
+    assert awake["SRPI_mode_reason"] == ""
+    assert awake["SRPI_null_n"] == 20
+    assert deep["SRPI_estimator"] == f"compute_SRPI:legacy@{VERSIONS['SRPI']}"
+    assert deep["SRPI_mode_reason"] == "no_agency_events:agency->legacy"
+    for row in (awake, deep):  # neither run logs choices and rewards
+        assert row["RAM_estimator"] == (
+            f"compute_RAM:feedback_magnitude@{VERSIONS['RAM']}")
+        assert row["RAM_mode_reason"] == (
+            "no_choice_reward_log:prediction_error->feedback_magnitude")
+    assert (df["MPC_protocol_hash"] == proto.hash).all()
+    # without a declared fallback the primary mode is kept (and is undefined
+    # where its inputs are missing), never replaced silently
+    strict = E.Protocol(necessity_set=("SRPI",), estimators={
+        "SRPI": {"mode": "agency", "agency_null_permutations": 20}})
+    df2 = sc.compute_synergy_ci(
+        str(prep), "toy", [0.5], sessions=("deep",), tr=1.0,
+        stimulus_onsets=onsets, srpi_params=srpi, mpc_metrics=("SRPI",),
+        compute_ci=False, protocol=strict,
+    )
+    row = df2.iloc[0]
+    assert row["SRPI_estimator"] == f"compute_SRPI:agency@{VERSIONS['SRPI']}"
+    assert row["SRPI_mode_reason"] == "" and row["SRPI_status"] == "UNDEFINED"
+
+
+def test_mode_fallback_rules():
+    opts = {"update": "prediction_error", "update_fallback": "feedback_magnitude"}
+    with_log = {"choice_onsets": [1.0], "choices": [0], "rewards": [1.0]}
+    assert sc._run_mode_options("RAM", opts, with_log) == (
+        {"update": "prediction_error"}, None)
+    assert sc._run_mode_options("RAM", opts, {}) == (
+        {"update": "feedback_magnitude"},
+        "no_choice_reward_log:prediction_error->feedback_magnitude")
+    assert sc._run_mode_options("NAS", {"mode": "capacity"}, {}) == (
+        {"mode": "capacity"}, None)
+    with pytest.raises(ValueError, match="must be one of"):
+        sc._check_mode_fallback("SRPI", {"mode": "agency", "mode_fallback": "x"})
+    with pytest.raises(ValueError, match="requirements"):
+        sc._check_mode_fallback("SRPI", {"mode": "legacy", "mode_fallback": "legacy"})
+    # the default protocol does not pre-declare a family that depends on the
+    # mode each run uses
+    proto, modes, _, _ = sc._resolve_mpc_setup(
+        None, None, None, "awake",
+        {"SRPI": {"mode": "agency", "mode_fallback": "legacy"}})
+    assert "SRPI" not in proto.null_families
+    assert modes["SRPI"]["mode_fallback"] == "legacy"
+
+
 def test_pdi_surrogate_excess_and_iim_cut_mode_through_the_modes(tmp_path):
     prep, _ = _layout(tmp_path)
     proto = E.Protocol(necessity_set=("PDI", "IIM"), estimators={

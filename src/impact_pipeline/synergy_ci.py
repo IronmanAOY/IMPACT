@@ -152,7 +152,7 @@ MPC_EVENT_NULL_MIN_SHIFT_FRACTION = 0.1
 # options, selected through the Protocol's ``estimators`` or the params dicts
 # (``bearer_nodes`` is handled separately). Defaults keep the legacy modes.
 MPC_MODE_KEYS = {
-    "RAM": ("update", "impact_channel", "adaptation_locus"),
+    "RAM": ("update", "update_fallback", "impact_channel", "adaptation_locus"),
     "PDI": ("mode", "excess_components", "excess_weights", "excess_surrogate",
             "repertoire_window", "repertoire_features", "repertoire_folds",
             "repertoire_gap", "repertoire_components", "repertoire_max_states",
@@ -161,8 +161,33 @@ MPC_MODE_KEYS = {
     "NAS": ("mode", "transfer_lags", "transfer_components", "workspace_nodes"),
     "IIM": ("cut_mode", "tpm_estimator", "node_selection", "state_budget_policy",
             "psi_kernel"),
-    "SRPI": ("mode", "agency_null_permutations", "agency_components",
-             "agency_pre_components", "agency_random_state"),
+    "SRPI": ("mode", "mode_fallback", "agency_null_permutations",
+             "agency_components", "agency_pre_components", "agency_random_state"),
+}
+# Declared per-run fallbacks of modes that need inputs a run may lack (not a
+# silent fallback: the rule is part of the protocol, and every row records the
+# mode used in <P>_estimator and why in <P>_mode_reason). Keys: principle ->
+# (mode key, fallback key); the requirement of each primary mode: (reason,
+# test on the run's event bundle).
+MPC_MODE_FALLBACK_KEYS = {
+    "RAM": ("update", "update_fallback"),
+    "SRPI": ("mode", "mode_fallback"),
+}
+
+
+def _has_choice_reward_log(bundle):
+    b = bundle if isinstance(bundle, dict) else {}
+    return any(len(b.get(k) or []) > 0 for k in ("choice_onsets", "choices", "rewards"))
+
+
+def _has_agency_events(bundle):
+    b = bundle if isinstance(bundle, dict) else {}
+    return b.get("agency_events") is not None
+
+
+MPC_MODE_REQUIREMENTS = {
+    ("RAM", "prediction_error"): ("no_choice_reward_log", _has_choice_reward_log),
+    ("SRPI", "agency"): ("no_agency_events", _has_agency_events),
 }
 # Modes that compute their own null family inside the estimator (used for the
 # evidence whatever null_surrogates is; null_surrogates=0 selects the
@@ -209,6 +234,7 @@ MPC_EVIDENCE_FIELDS = (
     "reference",
     "reference_se",
     "estimator",
+    "mode_reason",
     "channels",
 )
 MPC_VERDICT_COLUMNS = (
@@ -801,6 +827,53 @@ def _internal_null_family(principle, opts):
 PDI_PER_RUN_OPTIONS = ("state_labels", "events", "tr")
 
 
+def _run_mode_options(principle, opts, bundle):
+    """
+    Estimator options of one run: with a declared fallback
+    (``update_fallback`` for RAM, ``mode_fallback`` for SRPI) the primary mode
+    is replaced by the fallback when the run's events lack its inputs (RAM
+    ``prediction_error``: a choice/reward log; SRPI ``agency``:
+    self_caused/other_caused events). Returns ``(options without the
+    fallback key, reason or None)``; the reason is
+    ``<requirement>:<primary>-><fallback>``.
+    """
+    opts = dict(opts or {})
+    spec = MPC_MODE_FALLBACK_KEYS.get(principle)
+    if spec is None:
+        return opts, None
+    key, fb_key = spec
+    fallback = opts.pop(fb_key, None)
+    if fallback is None:
+        return opts, None
+    primary = _mode_of(principle, opts)
+    req = MPC_MODE_REQUIREMENTS.get((principle, primary))
+    if req is None or req[1](bundle):
+        return opts, None
+    opts[key] = str(fallback)
+    return opts, f"{req[0]}:{primary}->{fallback}"
+
+
+def _check_mode_fallback(principle, opts):
+    """A declared fallback must be a valid mode and follow a mode with
+    requirements (anything else would never be used)."""
+    spec = MPC_MODE_FALLBACK_KEYS.get(principle)
+    if spec is None or spec[1] not in dict(opts or {}):
+        return
+    from impact_pipeline.mpc_metrics import RAM_UPDATE_MODES, SRPI_MODES
+
+    valid = RAM_UPDATE_MODES if principle == "RAM" else SRPI_MODES
+    fallback = opts[spec[1]]
+    if fallback not in valid:
+        raise ValueError(f"{principle} {spec[1]} must be one of {valid}")
+    primary = _mode_of(principle, opts)
+    if (principle, primary) not in MPC_MODE_REQUIREMENTS:
+        raise ValueError(
+            f"{principle} {spec[1]} needs a primary mode with requirements "
+            f"({sorted(m for p, m in MPC_MODE_REQUIREMENTS if p == principle)}), "
+            f"not {primary!r}"
+        )
+
+
 def _check_pdi_options(opts):
     bad = sorted(k for k in PDI_PER_RUN_OPTIONS if k in dict(opts or {}))
     if bad:
@@ -863,6 +936,7 @@ def _resolve_mpc_setup(
         modes[p] = _merge_estimator_options(p, p_opts, pr_opts)
         if p == "PDI":
             _check_pdi_options(modes[p])
+        _check_mode_fallback(p, modes[p])
         pr_bearer = proto_in.bearer_nodes.get(p) if proto_in is not None else None
         if p_bearer is not None and pr_bearer is not None and p_bearer != pr_bearer:
             raise ValueError(f"{p} bearer_nodes differ between the params and protocol")
@@ -886,6 +960,9 @@ def _resolve_mpc_setup(
         return proto_in, modes, bearers, kinds
     families = {}
     for p in CI_COMPONENTS:
+        spec = MPC_MODE_FALLBACK_KEYS.get(p)
+        if spec is not None and spec[1] in modes[p]:
+            continue  # the family depends on the mode each run uses
         fam = (
             _internal_null_family(p, modes[p])
             if _uses_internal_null(p, modes[p]) else kinds[p]
@@ -1073,6 +1150,9 @@ def _mpc_run_columns(run, proto, registry, refs, null_k, null_seed, boot_k,
         cols[f"{k}_reference"] = _as_float(ref.get("reference"))
         cols[f"{k}_reference_se"] = _as_float(ref.get("reference_se"))
         cols[f"{k}_estimator"] = "" if rec is None else str(rec["estimator"] or "")
+        cols[f"{k}_mode_reason"] = (
+            "" if rec is None else str(rec.get("mode_reason") or "")
+        )
         cols[f"{k}_channels"] = ",".join(
             f"{c}:{s.value}" for c, s in verdict.channels.get(k, {}).items()
         )
@@ -2196,7 +2276,9 @@ def compute_synergy_ci(
         n_node_sets = 0
         if compute_mpc:
             if do_ram:
-                ram_opts = dict(mpc_modes["RAM"])
+                ram_opts, ram_mode_reason = _run_mode_options(
+                    "RAM", mpc_modes["RAM"], subj_onsets
+                )
                 ram_declared = mpc_proto.channels_for("RAM")
                 ram_channels = (
                     list(ram_declared) if ram_declared
@@ -2250,6 +2332,7 @@ def compute_synergy_ci(
                         nulls.derive_seed(null_seed, "BOOT", "RAM", *ch_key, run_key),
                         boot_block_len, boot_tr,
                     )
+                    ram_rec["mode_reason"] = ram_mode_reason
                     ram_recs.append(ram_rec)
                 mpc_records["RAM"] = ram_recs
                 ram = _metric_value(ram_recs, null_k)
@@ -2587,7 +2670,9 @@ def compute_synergy_ci(
                 iim_raw = np.nan
                 iim_raw_scaled = np.nan
             if do_srpi:
-                srpi_opts = dict(mpc_modes["SRPI"])
+                srpi_opts, srpi_mode_reason = _run_mode_options(
+                    "SRPI", mpc_modes["SRPI"], subj_onsets
+                )
                 srpi_mode = _mode_of("SRPI", srpi_opts)
                 srpi_internal = _uses_internal_null("SRPI", srpi_opts)
                 srpi_events = subj_onsets if isinstance(subj_onsets, dict) else {}
@@ -2650,6 +2735,7 @@ def compute_synergy_ci(
                     nulls.derive_seed(null_seed, "BOOT", "SRPI", run_key),
                     boot_block_len, boot_tr, statistic=srpi_statistic,
                 )
+                srpi_rec["mode_reason"] = srpi_mode_reason
                 mpc_records["SRPI"] = [srpi_rec]
                 srpi = _metric_value([srpi_rec], null_k)
             else:
