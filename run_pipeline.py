@@ -508,6 +508,16 @@ def _json_safe(value):
     return value
 
 
+def _portable_ci_reference(ci_reference):
+    """--ci-reference as recorded/forwarded: a JSON path becomes absolute."""
+    if ci_reference is None or isinstance(ci_reference, dict):
+        return ci_reference
+    text = str(ci_reference).strip()
+    if text == "cohort_high_state":
+        return text
+    return str(Path(text).expanduser().resolve())
+
+
 def _ensure_provenance_columns(df: pd.DataFrame, provenance) -> pd.DataFrame:
     out = df.copy()
     for key, value in provenance.as_result_metadata().items():
@@ -1373,6 +1383,7 @@ def _run_hunter_stage(
     iim_settings=None,
     run_parameters=None,
     atlas_robustness=True,
+    ci_reference=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
@@ -1422,6 +1433,8 @@ def _run_hunter_stage(
             "subjects": (None if subjects is None else list(subjects)),
             "mpc_metrics": (None if mpc_metrics is None else list(mpc_metrics)),
             "compute_ci": bool(compute_ci),
+            # Finalize recomputes CI; it must use the reference of this build.
+            "ci_reference": _portable_ci_reference(ci_reference),
             "dataset_id": str(dataset_id),
             "data_origin": str(data_origin),
             "dataset_role": str(dataset_role),
@@ -1552,6 +1565,7 @@ def _run_hunter_stage(
         thetas_fine=np.arange(0.4, 0.81, 0.02),
         mpc_metrics=ctx["mpc_metrics"],
         compute_ci=bool(ctx["compute_ci"]),
+        ci_reference=ctx.get("ci_reference", ci_reference),
         condition=ctx["condition"],
         tr=ctx["tr"],
         onsets=None,
@@ -1899,6 +1913,7 @@ def main(
             hardware_target=requested_hardware_target,
             hunter_array_index=hunter_array_index,
             hunter_shards_per_node=hunter_shards_per_node,
+            ci_reference=ci_reference,
         )
         return
     if not bids_root.exists():
@@ -2072,6 +2087,7 @@ def main(
         "subjects": subjects,
         "mpc_metrics": mpc_metrics,
         "compute_ci": bool(compute_ci),
+        "ci_reference": _portable_ci_reference(ci_reference),
         "reuse_step2": bool(reuse_step2),
         "atlas": atlas,
         "sessions": sessions,
@@ -2264,6 +2280,7 @@ def main(
             iim_settings=iim_settings,
             run_parameters=run_parameters,
             atlas_robustness=atlas_robustness,
+            ci_reference=ci_reference,
         )
         _write_run_provenance_manifest(
             status="hunter_campaign_built",

@@ -172,6 +172,27 @@ def test_fmri_resolution_has_no_cross_session_fallback(tmp_path):
     assert rs._resolve_events_file(tmp_path, "01", "deep") is None
 
 
+def test_explicit_task_alias_only_for_the_listed_subject_and_state(tmp_path):
+    # ds003171 sub-10JR's awake audio run is labelled task-audio; the alias
+    # table (dataset_catalog.DATASET_TASK_ALIASES) maps it to audioawake.
+    func = tmp_path / "sub-10JR" / "func"
+    audio = _touch(func / "sub-10JR_task-audio_run-01_events.tsv")
+    assert ep.resolve_events_file(tmp_path, "10JR", "awake") == audio
+    scoped = ep.resolve_events_file(tmp_path, "10JR", "awake", dataset_id="ds003171")
+    assert scoped == audio
+    assert rd._resolve_events_file(tmp_path, "10JR", "awake") == audio
+    # Scoped to its dataset, and never a cross-session fallback.
+    other = ep.resolve_events_file(tmp_path, "10JR", "awake", dataset_id="ds002547")
+    assert other is None
+    assert ep.resolve_events_file(tmp_path, "10JR", "deep") is None
+    # The canonical label still wins when both exist.
+    awake = _touch(func / "sub-10JR_task-audioawake_run-01_events.tsv")
+    assert ep.resolve_events_file(tmp_path, "10JR", "awake") == awake
+    # Other subjects get no alias.
+    _touch(tmp_path / "sub-02CB" / "func" / "sub-02CB_task-audio_run-01_events.tsv")
+    assert ep.resolve_events_file(tmp_path, "02CB", "awake") is None
+
+
 def test_bids_session_folders_are_searched(tmp_path):
     func = tmp_path / "sub-02" / "ses-1" / "func"
     f = _touch(func / "sub-02_ses-1_task-self_run-1_events.tsv")

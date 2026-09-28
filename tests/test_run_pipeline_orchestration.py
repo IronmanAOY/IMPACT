@@ -207,19 +207,26 @@ def test_atlas_robustness_in_hunter_finalize_excludes_undistributed_iim(
     assert "skipped" in disabled
 
 
-def test_old_atlas_step_crashed_on_missing_robustness_timeseries(tmp_path):
-    """Evidence for the original finding: atlas_check on absent atlas files raises."""
+def test_atlas_check_records_missing_robustness_timeseries_instead_of_crashing(
+    tmp_path,
+):
+    """
+    Original finding: absent atlas files made compute_synergy_ci raise
+    FileNotFoundError out of step 6. Besides the run_pipeline pre-check above,
+    atlas_check itself (CI/statistics stream) now records the atlas as skipped
+    (real compute_synergy_ci, nothing mocked).
+    """
     from impact_pipeline.atlas_robustness import atlas_check
 
     prep = _prep_tree(tmp_path / "prep", atlases=("schaefer400",))
-    with pytest.raises(FileNotFoundError):
-        atlas_check(
-            str(prep),
-            atlases=("aal90",),
-            sessions=("awake", "deep"),
-            tr=2.0,
-            mpc_metrics=[],
-        )
+    res = atlas_check(
+        str(prep),
+        atlases=("aal90",),
+        sessions=("awake", "deep"),
+        tr=2.0,
+        mpc_metrics=[],
+    )
+    assert "missing time series for atlas 'aal90'" in res["aal90"]["skipped"]
 
 
 # ------------------------------------------------------------------ main() guards

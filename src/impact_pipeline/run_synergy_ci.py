@@ -119,15 +119,19 @@ def _extract_run_id_from_name(fname: str):
     return extract_run_id_from_name(fname)
 
 
-def _resolve_events_file(bids_root, subject, session, condition="audio"):
+def _resolve_events_file(
+    bids_root, subject, session, condition="audio", dataset_id=None
+):
     """
     Resolve an events.tsv for either fMRI or EEG sessions.
 
     Delegates to :func:`impact_pipeline.event_parsing.resolve_events_file`
     (shared with the readiness check; session-exact, no cross-session
-    fallback).
+    fallback; explicit per-subject task aliases only).
     """
-    return resolve_events_file(bids_root, subject, session, condition=condition)
+    return resolve_events_file(
+        bids_root, subject, session, condition=condition, dataset_id=dataset_id
+    )
 
 
 def _events_to_ram_bundle(
@@ -157,8 +161,11 @@ def load_onsets(
     condition="audio",
     allow_implicit_stimuli=False,
     allow_response_time_feedback=False,
+    dataset_id=None,
 ):
-    fn = _resolve_events_file(bids_root, subject, session, condition=condition)
+    fn = _resolve_events_file(
+        bids_root, subject, session, condition=condition, dataset_id=dataset_id
+    )
     if fn is None:
         log.warning(
             (

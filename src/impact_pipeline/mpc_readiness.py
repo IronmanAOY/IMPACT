@@ -40,8 +40,11 @@ def _resolve_events_file(
     subject: str,
     session: str,
     condition: str = "audio",
+    dataset_id: Optional[str] = None,
 ) -> Optional[Path]:
-    return resolve_events_file(bids_root, subject, session, condition=condition)
+    return resolve_events_file(
+        bids_root, subject, session, condition=condition, dataset_id=dataset_id
+    )
 
 
 def _read_events_table(events_file: Path) -> Optional[pd.DataFrame]:

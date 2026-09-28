@@ -15,7 +15,11 @@ Contract ("measured inputs only"):
   * ``response_time`` is a behavioural latency, not environmental feedback,
     and is used as a feedback value only with ``allow_response_time_feedback``;
   * events files are resolved per session exactly; there is no cross-session
-    glob fallback.
+    glob fallback. The only other task labels accepted are the explicit
+    per-subject aliases of ``dataset_catalog.DATASET_TASK_ALIASES`` (e.g.
+    ds003171 sub-10JR's ``task-audio`` for ``audioawake``), the same table
+    preprocessing uses, so event-based run selection matches the
+    preprocessed tree.
 """
 import re
 from pathlib import Path
@@ -23,6 +27,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+from impact_pipeline.dataset_catalog import DATASET_TASK_ALIASES, task_labels_for_state
 
 # Label patterns (case-insensitive). Stimulus/goal/feedback patterns match
 # substrings of ``trial_type`` (e.g. "audio_stim", "goal_cue",
@@ -99,8 +105,24 @@ def _first_match(base_dir: Path, patterns: List[str]) -> Optional[Path]:
     return None
 
 
+def _task_alias_labels(subject, state, condition, dataset_id=None) -> List[str]:
+    """
+    Raw BIDS task labels that the explicit alias table maps to
+    ``<condition><state>`` for this subject (e.g. ds003171 sub-10JR: ``audio``
+    for ``audioawake``). Without ``dataset_id`` every dataset's table is
+    consulted for this subject label; nothing is inferred.
+    """
+    datasets = [dataset_id] if dataset_id else list(DATASET_TASK_ALIASES)
+    labels: List[str] = []
+    for ds in datasets:
+        for label in task_labels_for_state(ds, subject, state, condition)[1:]:
+            if label not in labels:
+                labels.append(label)
+    return labels
+
+
 def resolve_events_file(
-    bids_root, subject, session, condition="audio"
+    bids_root, subject, session, condition="audio", dataset_id=None
 ) -> Optional[Path]:
     """
     Resolve the events.tsv of one subject/session (fMRI ``func`` first, then EEG).
@@ -109,11 +131,20 @@ def resolve_events_file(
     label, so ``task-sed`` never matches ``task-sed2`` and ``task-audio`` never
     matches ``task-audioawake``. There is no fallback to other sessions' files.
     BIDS session folders (``sub-X/ses-<session>/func``) are searched too.
+    Explicit per-subject task aliases (``dataset_catalog.DATASET_TASK_ALIASES``,
+    scoped to ``dataset_id`` when given) are tried right after the canonical
+    ``<condition><session>`` label.
     """
     subject = str(subject)
     subj_root = Path(bids_root) / f"sub-{subject}"
     session_key = str(session).strip().lower()
     condition_key = str(condition or "").strip().lower()
+
+    def _alias_patterns(cond):
+        return [
+            f"sub-{subject}_task-{label}_*events.tsv"
+            for label in _task_alias_labels(subject, session_key, cond, dataset_id)
+        ]
 
     fmri_patterns = []
     if condition_key and condition_key != "audio":
@@ -123,7 +154,9 @@ def resolve_events_file(
                 f"sub-{subject}_task-{condition_key}_ses-{session_key}_*events.tsv",
             ]
         )
+        fmri_patterns.extend(_alias_patterns(condition_key))
     fmri_patterns.append(f"sub-{subject}_task-audio{session_key}_*events.tsv")
+    fmri_patterns.extend(_alias_patterns("audio"))
     if session_key not in {"awake", "deep"}:
         fmri_patterns.append(f"sub-{subject}_task-{session_key}_*events.tsv")
 

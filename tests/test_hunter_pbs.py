@@ -527,3 +527,58 @@ def test_hunter_stage_names_are_validated():
         run_pipeline.main(
             str(Path("unused")), execution_mode="hunter", hunter_stage="phase1-shrad"
         )
+
+
+def test_ci_reference_is_forwarded_to_the_campaign_and_finalize(tmp_path, monkeypatch):
+    """--ci-reference given at build time reaches the finalize stage's CI."""
+    from impact_pipeline import run_synergy_ci
+
+    bids, out = _tiny_bids_and_prep(tmp_path)
+    ref = tmp_path / "refs" / "ci_reference.json"
+    ref.parent.mkdir()
+    comps = ("RAM", "PDI", "NAS", "IIM", "SRPI")
+    ref.write_text(json.dumps({"references": {c: 1.0 for c in comps}}))
+    monkeypatch.chdir(tmp_path)  # a relative path must survive the batch jobs
+    common = dict(
+        dataset_id="ds003171",
+        bids_root_override=str(bids),
+        execution_mode="hunter",
+        mpc_metrics=["IIM"],
+        compute_ci=False,
+        iim_max_nodes_override=3,
+        iim_n_parts_override=2,
+    )
+    run_pipeline.main(
+        str(out),
+        hunter_stage="build-campaign",
+        ci_reference="refs/ci_reference.json",
+        **common,
+    )
+    campaign = out / "cache" / "hunter_iim_campaign"
+    ctx = json.loads((campaign / "campaign_manifest.json").read_text())[
+        "step2_context"
+    ]
+    assert ctx["ci_reference"] == str(ref.resolve())
+    prov = json.loads((out / "cache" / "provenance_manifest.json").read_text())
+    assert prov["parameters"]["ci_reference"] == str(ref.resolve())
+
+    captured = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_run_s_ci(**kwargs):
+        captured.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(run_synergy_ci, "run_s_ci", fake_run_s_ci)
+    monkeypatch.setattr(run_pipeline, "collect_iim_results_by_path", lambda d: {})
+    with pytest.raises(_Stop):
+        # the finalize job's own command line does not repeat --ci-reference
+        run_pipeline.main(
+            str(out),
+            hunter_stage="finalize-pipeline",
+            hunter_campaign_dir=str(campaign),
+            **common,
+        )
+    assert captured["ci_reference"] == str(ref.resolve())
