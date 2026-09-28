@@ -489,6 +489,117 @@ def test_reducers_reject_shards_from_mixed_code_versions(tmp_path, monkeypatch):
         hunter_iim.run_cut_reduce(campaign_dir, 0)
 
 
+def _psi_problem():
+    prep = mm.prepare_iim_problem(
+        np.random.RandomState(0).rand(5, 200),
+        bins=2,
+        lag_trs=1,
+        n_parts=2,
+        rng=0,
+        partition_mode="all",
+        max_nodes=5,
+        max_mechanism_size=2,
+        max_purview_size=2,
+    )
+    return dict(
+        tpm=prep["tpm_full"],
+        curr_obs=prep["curr_obs"],
+        states_full=prep["states_full"],
+        base=int(prep["bins_used"]),
+        mechanisms=prep["mechanisms_all"],
+        purviews=prep["purviews_all"],
+        phase1_chunk_size=2,
+        phase1_shared_memory=False,
+    )
+
+
+def test_parallel_psi_with_the_shared_kernel_cache_does_not_fail(tmp_path):
+    """
+    Hunter shards run the Psi chunks in a worker pool that shares one SQLite
+    kernel cache. Opening a new cache file from several workers at once raced
+    on the WAL switch ("database is locked") in most runs, failing the shard.
+    """
+    problem = _psi_problem()
+    reference = hunter_iim._compute_psi_for_problem(
+        **problem, phase1_parallel_workers=1
+    )
+    for attempt in range(4):
+        psi = hunter_iim._compute_psi_for_problem(
+            **problem,
+            phase1_parallel_workers=4,
+            kernel_cache_path=str(tmp_path / f"kernel_{attempt}.sqlite3"),
+        )
+        assert psi == pytest.approx(reference, rel=1e-12, abs=1e-15)
+
+
+def test_parallel_psi_recomputes_without_cache_when_sqlite_fails(
+    tmp_path, monkeypatch, caplog
+):
+    class CorruptAfterCreation(mm._IIMDiskKernelCache):
+        def close(self):
+            super().close()
+            (tmp_path / "kernel.sqlite3").write_bytes(b"not a database" * 64)
+
+    problem = _psi_problem()
+    reference = hunter_iim._compute_psi_for_problem(
+        **problem, phase1_parallel_workers=1
+    )
+    monkeypatch.setattr(hunter_iim, "_IIMDiskKernelCache", CorruptAfterCreation)
+    psi = hunter_iim._compute_psi_for_problem(
+        **problem,
+        phase1_parallel_workers=3,
+        kernel_cache_path=str(tmp_path / "kernel.sqlite3"),
+    )
+    assert psi == pytest.approx(reference, rel=1e-12, abs=1e-15)
+    assert "without the cache" in caplog.text
+
+
+def test_shard_timing_counts_worker_process_cpu(tmp_path):
+    """The Psi work runs in worker processes; their CPU time must be reported."""
+    data_dir = tmp_path / "prep"
+    run_dir = data_dir / "s1" / "awake" / "audio"
+    run_dir.mkdir(parents=True)
+    np.save(
+        run_dir / "s1_run-1_schaefer400_ts.npy",
+        np.random.RandomState(0).rand(200, 6),
+        allow_pickle=False,
+    )
+    profile = dataclasses.replace(
+        get_execution_profile("hunter"),
+        hunter_phase1_shards_per_run=1,
+        hunter_cut_shards_per_run=1,
+        hunter_phase1_workers_per_task=2,
+        hunter_phase1_chunk_size=2,
+        hunter_shared_memory=False,
+    )
+    campaign_dir = tmp_path / "campaign"
+    prepare_hunter_campaign(
+        data_dir=data_dir,
+        atlas="schaefer400",
+        sessions=("awake",),
+        condition="audio",
+        stimulus_onsets=None,
+        subjects=None,
+        campaign_dir=campaign_dir,
+        execution_profile=profile,
+        iim_bins=2,
+        iim_lag_trs=1,
+        iim_n_parts=2,
+        iim_max_timepoints=None,
+        iim_max_nodes=5,
+        iim_max_mechanism_size=2,
+        iim_max_purview_size=2,
+        step2_context={"hardware_target": "cpu"},
+    )
+    timing = hunter_iim.run_phase1_shard(campaign_dir, 0)["timing"]
+    assert timing["children_cpu_seconds"] > 0
+    assert timing["cpu_seconds"] == pytest.approx(
+        timing["process_cpu_seconds"] + timing["children_cpu_seconds"]
+    )
+    summary = hunter_iim.summarize_campaign_timing(campaign_dir)["phase1-shard"]
+    assert summary["cpu_seconds_total"] >= summary["process_cpu_seconds_total"]
+
+
 def test_packed_shard_uses_the_built_packing(tmp_path):
     campaign_dir, manifest, _paths = _multi_run_campaign(tmp_path)
     assert manifest["scheduler"]["shards_per_node"] == 4

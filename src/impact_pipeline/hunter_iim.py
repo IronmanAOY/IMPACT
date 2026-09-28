@@ -11,6 +11,7 @@ import os
 import shlex
 import shutil
 import socket
+import sqlite3
 import sys
 import tempfile
 import time
@@ -573,11 +574,22 @@ def _peak_rss_mb() -> float | None:
     return float(usage) / divisor
 
 
+def _children_cpu_seconds() -> float | None:
+    """CPU time of terminated, reaped child processes (the Psi worker pools)."""
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - non-POSIX
+        return None
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return float(usage.ru_utime + usage.ru_stime)
+
+
 def _timing_start() -> dict:
     return {
         "started_unix": float(time.time()),
         "_t0": time.perf_counter(),
         "_cpu0": time.process_time(),
+        "_child_cpu0": _children_cpu_seconds(),
     }
 
 
@@ -590,11 +602,22 @@ def _timing_finish(start: dict, **extra) -> dict:
         "SLURM_JOB_ID",
         "SLURM_ARRAY_TASK_ID",
     )
+    process_cpu = float(time.process_time() - start["_cpu0"])
+    child_cpu0, child_cpu1 = start.get("_child_cpu0"), _children_cpu_seconds()
+    # Worker pools do the Psi work in child processes: their CPU time is only
+    # visible through RUSAGE_CHILDREN (pools are joined before this point).
+    children_cpu = (
+        None
+        if child_cpu0 is None or child_cpu1 is None
+        else max(0.0, float(child_cpu1 - child_cpu0))
+    )
     out = {
         "started_unix": start["started_unix"],
         "finished_unix": float(time.time()),
         "wall_seconds": float(time.perf_counter() - start["_t0"]),
-        "process_cpu_seconds": float(time.process_time() - start["_cpu0"]),
+        "process_cpu_seconds": process_cpu,
+        "children_cpu_seconds": children_cpu,
+        "cpu_seconds": process_cpu + (children_cpu or 0.0),
         "peak_rss_mb": _peak_rss_mb(),
         "host": socket.gethostname(),
         "pid": int(os.getpid()),
@@ -810,6 +833,17 @@ def _compute_psi_for_problem(
             if cache is not None:
                 cache.close()
 
+    if cache_spec is not None:
+        # All workers open this one SQLite file. Creating it (WAL switch and
+        # schema) concurrently fails with "database is locked" (no busy wait
+        # for the journal-mode change), so the parent creates it first.
+        _IIMDiskKernelCache(
+            str(kernel_cache_path),
+            signature=None,
+            memory_entries=int(kernel_cache_memory_entries),
+            flush_batch=int(kernel_cache_flush_batch),
+        ).close()
+
     owner_shms = []
     owner_files = []
     tmp_dir = tempfile.mkdtemp(prefix="hunter_iim_psi_")
@@ -838,28 +872,47 @@ def _compute_psi_for_problem(
             owner_shms,
             owner_files,
         )
-        psi_terms = []
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=int(workers_eff),
-            initializer=_iim_phase_worker_init_static,
-            initargs=(spec_curr, spec_states, int(base), purviews),
-        ) as ex:
-            futures = [
-                ex.submit(
-                    _iim_phase_worker_run_chunk_for_tpm,
-                    spec_tpm,
-                    chunk,
-                    cache_spec,
-                    (None if cut_mask_a is None else int(cut_mask_a)),
-                    bool(cache_spec is not None),
-                    False,
-                )
-                for chunk in chunks
-            ]
-            for fut in concurrent.futures.as_completed(futures):
-                psi_chunk, _chunk_len = fut.result()
-                psi_terms.append(float(psi_chunk))
-        return float(math.fsum(psi_terms)) if psi_terms else 0.0
+
+        def _run_pool(spec):
+            # Every chunk is (re)computed into a fresh list: a retry never
+            # double counts chunks of an aborted attempt.
+            psi_terms = []
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=int(workers_eff),
+                initializer=_iim_phase_worker_init_static,
+                initargs=(spec_curr, spec_states, int(base), purviews),
+            ) as ex:
+                futures = [
+                    ex.submit(
+                        _iim_phase_worker_run_chunk_for_tpm,
+                        spec_tpm,
+                        chunk,
+                        spec,
+                        (None if cut_mask_a is None else int(cut_mask_a)),
+                        bool(spec is not None),
+                        False,
+                    )
+                    for chunk in chunks
+                ]
+                for fut in concurrent.futures.as_completed(futures):
+                    psi_chunk, _chunk_len = fut.result()
+                    psi_terms.append(float(psi_chunk))
+            return float(math.fsum(psi_terms)) if psi_terms else 0.0
+
+        try:
+            return _run_pool(cache_spec)
+        except sqlite3.Error as exc:  # locked, read-only, corrupt cache file
+            if cache_spec is None:
+                raise
+            # The cache only memoises kernel values; without it the result is
+            # identical, so keep the parallel run instead of failing the shard.
+            log.warning(
+                "IIM kernel cache %s failed in a worker (%s); recomputing this "
+                "Psi in parallel without the cache.",
+                kernel_cache_path,
+                exc,
+            )
+            return _run_pool(None)
     finally:
         _cleanup_specs(owner_shms, owner_files, tmp_dir)
 
@@ -2316,7 +2369,7 @@ def summarize_campaign_timing(campaign_dir, write=True) -> dict:
     root = campaign_dir / "timing"
     if root.exists():
         for stage_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-            walls, rss, cpu = [], [], []
+            walls, rss, cpu, cpu_all = [], [], [], []
             for path in sorted(stage_dir.glob("*.json")):
                 try:
                     rec = _json_load(path)
@@ -2324,6 +2377,10 @@ def summarize_campaign_timing(campaign_dir, write=True) -> dict:
                     continue
                 walls.append(float(rec.get("wall_seconds") or 0.0))
                 cpu.append(float(rec.get("process_cpu_seconds") or 0.0))
+                # parent + worker processes (older records: parent only)
+                cpu_all.append(
+                    float(rec.get("cpu_seconds", rec.get("process_cpu_seconds")) or 0.0)
+                )
                 if rec.get("peak_rss_mb") is not None:
                     rss.append(float(rec["peak_rss_mb"]))
             if walls:
@@ -2333,6 +2390,7 @@ def summarize_campaign_timing(campaign_dir, write=True) -> dict:
                     "wall_seconds_mean": float(np.mean(walls)),
                     "wall_seconds_max": float(max(walls)),
                     "process_cpu_seconds_total": float(sum(cpu)),
+                    "cpu_seconds_total": float(sum(cpu_all)),
                     "peak_rss_mb_max": (None if not rss else float(max(rss))),
                 }
     if write:
