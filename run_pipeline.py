@@ -1385,6 +1385,7 @@ def _run_hunter_stage(
     hunter_iim_null_surrogates=0,
     repo_root=None,
     mpc_evidence_options=None,
+    hunter_iim_bootstrap_se=0,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
@@ -1461,6 +1462,14 @@ def _run_hunter_stage(
             # Finalize computes the MPC verdict with the options of this build.
             "mpc_evidence": _json_safe(dict(mpc_evidence_options or {})),
         }
+        if int((mpc_evidence_options or {}).get("bootstrap_se") or 0) > 0 and not int(
+            hunter_iim_bootstrap_se or 0
+        ):
+            log.warning(
+                "--bootstrap-se is set but --hunter-iim-bootstrap-se is 0: the "
+                "Hunter IIM results carry no sampling SE, so IIM evidence is "
+                "UNDEFINED (NO_SAMPLING_SE) at finalize."
+            )
         manifest = prepare_hunter_campaign(
             data_dir=prep_out,
             atlas=atlas,
@@ -1484,9 +1493,18 @@ def _run_hunter_stage(
             build_hardware_backend=build_hardware_backend,
             # K circular-shift surrogate runs per real run (IIM null calibration).
             iim_null_surrogates=int(hunter_iim_null_surrogates or 0),
+            # B block-bootstrap replicate runs per real run (sampling SE of
+            # Delta_Psi), drawn as the local pipeline draws them (null_seed 0,
+            # the evidence options' block length).
+            iim_bootstrap_n=int(hunter_iim_bootstrap_se or 0),
+            iim_bootstrap_seed=0,
+            iim_bootstrap_block_len=(mpc_evidence_options or {}).get(
+                "bootstrap_block_len"
+            ),
             # Checkout the jobs run: --repo-root > IMPACT_REPO_ROOT > package
             # checkout > this script's directory (non-editable installs).
             repo_root=resolve_repo_root(repo_root, fallback=root),
+            **_hunter_iim_protocol_options(mpc_evidence_options),
         )
         sched = manifest.get("scheduler") or {}
         log.info(
@@ -1798,6 +1816,40 @@ def _mpc_evidence_options(
     }
 
 
+def _hunter_iim_protocol_options(mpc_evidence_options) -> dict:
+    """
+    IIM estimator options and bearer nodes of the protocol, as
+    ``prepare_hunter_campaign`` keywords, so a Hunter campaign computes IIM as
+    the local pipeline would under the same protocol (the finalize stage
+    rejects results computed with other options: ``iim_option_mismatch``).
+    """
+    from impact_pipeline.evidence import Protocol
+
+    payload = (mpc_evidence_options or {}).get("protocol")
+    if payload is None:
+        return {}
+    proto = Protocol.from_dict(payload)
+    opts = proto.estimator_options("IIM")
+    keys = {
+        "cut_mode": "iim_cut_mode",
+        "tpm_estimator": "iim_tpm_estimator",
+        "node_selection": "iim_node_selection",
+        "state_budget_policy": "iim_state_budget_policy",
+        "psi_kernel": "iim_psi_kernel",
+    }
+    unknown = sorted(set(opts) - set(keys))
+    if unknown:
+        raise ValueError(
+            f"IIM protocol options {unknown} are not supported by the Hunter "
+            f"campaign (supported: {sorted(keys)})"
+        )
+    out = {keys[k]: v for k, v in opts.items()}
+    bearer = proto.bearer_nodes.get("IIM")
+    if bearer is not None:
+        out["iim_bearer_nodes"] = list(bearer)
+    return out
+
+
 def _mpc_protocol_provenance(mpc_evidence_options, protocol_source=None):
     """Hash (SHA-256) and source of the protocol used for the MPC verdicts."""
     from impact_pipeline.evidence import Protocol
@@ -1889,6 +1941,7 @@ def main(
     protocol=None,
     bootstrap_se=0,
     bootstrap_block_len=None,
+    hunter_iim_bootstrap_se=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
@@ -2258,6 +2311,7 @@ def main(
                 "workers_per_task": hunter_workers_per_task,
                 "shards_per_node": hunter_shards_per_node,
                 "iim_null_surrogates": int(hunter_iim_null_surrogates or 0),
+                "iim_bootstrap_se": int(hunter_iim_bootstrap_se or 0),
                 "repo_root": (None if repo_root is None else str(repo_root)),
             }
         ),
@@ -2416,6 +2470,7 @@ def main(
             hunter_iim_null_surrogates=int(hunter_iim_null_surrogates or 0),
             repo_root=repo_root,
             mpc_evidence_options=mpc_evidence_options,
+            hunter_iim_bootstrap_se=int(hunter_iim_bootstrap_se or 0),
         )
         _write_run_provenance_manifest(
             status="hunter_campaign_built",
@@ -2731,6 +2786,18 @@ if __name__ == '__main__':
             "build-campaign: add K circular-shift surrogate runs per real run "
             "(seeded as compute_IIM's null calibration); finalize then reports "
             "IIM_null_mean/IIM_null_sd/IIM_z and the calibrated IIM (default 0)."
+        ),
+    )
+    parser.add_argument(
+        "--hunter-iim-bootstrap-se",
+        type=int,
+        default=None,
+        help=(
+            "build-campaign: add B moving-block bootstrap replicate runs per "
+            "real run (drawn as --bootstrap-se draws them locally, with "
+            "--bootstrap-block-len); finalize then has the sampling SE of IIM "
+            "(Delta_Psi_bootstrap_se). Default 0: Hunter IIM evidence is "
+            "UNDEFINED (NO_SAMPLING_SE)."
         ),
     )
     parser.add_argument(
@@ -3053,6 +3120,7 @@ if __name__ == '__main__':
         atlas_robustness=not args.no_atlas_robustness,
         cli_argv=sys.argv,
         hunter_iim_null_surrogates=args.hunter_iim_null_surrogates,
+        hunter_iim_bootstrap_se=args.hunter_iim_bootstrap_se,
         repo_root=args.repo_root,
         null_surrogates=args.null_surrogates,
         necessity_set=args.necessity_set,

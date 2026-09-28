@@ -100,7 +100,7 @@ def _campaign(tmp_path, *, n_null=K_NULL, target="cpu", null_min_shift=None,
         iim_bins=IIM_KW["bins"],
         iim_lag_trs=IIM_KW["lag_trs"],
         iim_n_parts=IIM_KW["n_parts"],
-        iim_max_timepoints=None,
+        iim_max_timepoints=extra.pop("iim_max_timepoints", None),
         iim_max_nodes=IIM_KW["max_nodes"],
         iim_max_mechanism_size=IIM_KW["max_mechanism_size"],
         iim_max_purview_size=IIM_KW["max_purview_size"],
@@ -500,7 +500,9 @@ def test_run_pipeline_passes_the_job_target_to_the_shards(tmp_path, monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-def test_main_build_with_null_surrogates_and_finalize_table(tmp_path, monkeypatch):
+def _tiny_hunter_layout(tmp_path, monkeypatch):
+    """Two runs (awake coupled, deep) of one subject for run_pipeline.main in
+    Hunter mode, with the non-IIM steps stubbed."""
     import run_pipeline
 
     bids = tmp_path / "bids"
@@ -542,6 +544,13 @@ def test_main_build_with_null_surrogates_and_finalize_table(tmp_path, monkeypatc
         iim_max_purview_size_override=2,
         iim_n_parts_override=3,
     )
+    return out, common
+
+
+def test_main_build_with_null_surrogates_and_finalize_table(tmp_path, monkeypatch):
+    import run_pipeline
+
+    out, common = _tiny_hunter_layout(tmp_path, monkeypatch)
     run_pipeline.main(
         str(out),
         hunter_stage="build-campaign",
@@ -593,3 +602,155 @@ def test_main_build_with_null_surrogates_and_finalize_table(tmp_path, monkeypatc
         assert row["IIM_null_method"] == "circular_shift"
     prov = json.loads((out / "cache" / "provenance_manifest.json").read_text())
     assert prov["status"] == "completed"
+
+
+# --------------------------------------------------------------------------
+# Hunter IIM sampling SE: block-bootstrap replicate runs
+# --------------------------------------------------------------------------
+K_BOOT = 4
+BOOT_FIELDS = ("Delta_Psi_bootstrap_se", "Delta_Psi_bootstrap_n",
+               "Delta_Psi_bootstrap_failed", "Delta_Psi_bootstrap_block_len")
+
+
+def _local_pipeline_iim(path, *, max_timepoints=None, block_len=None, **opts):
+    """The local pipeline's IIM worker (compute_IIM + _iim_bootstrap)."""
+    from impact_pipeline import synergy_ci as sc
+
+    _, info = sc._iim_worker_from_path(
+        str(path), IIM_KW["bins"], IIM_KW["lag_trs"], IIM_KW["n_parts"],
+        max_timepoints, IIM_KW["max_nodes"], IIM_KW["max_mechanism_size"],
+        IIM_KW["max_purview_size"], None, False, 1, 10 ** 9, None, 8, False,
+        "cpu", 0, 0, "circular_shift", opts or None, K_BOOT, block_len,
+    )
+    return info
+
+
+@pytest.mark.parametrize("max_timepoints,block_len", [(None, None), (40, 12)])
+def test_hunter_bootstrap_se_matches_the_local_pipeline(
+    tmp_path, max_timepoints, block_len
+):
+    """Parity: the Hunter campaign's bootstrap replicate runs reproduce the
+    local pipeline's IIM bootstrap (same replicates, seeds, block length
+    rescaled by the time subsampling step, pinned subsystem), so the finalize
+    stage gets the same Delta_Psi_bootstrap_se."""
+    campaign_dir, manifest, paths = _campaign(
+        tmp_path, n_null=0, t=80, iim_bootstrap_n=K_BOOT,
+        iim_max_timepoints=max_timepoints, iim_bootstrap_block_len=block_len,
+    )
+    boot = [r for r in manifest["runs"] if r.get("is_bootstrap_replicate")]
+    real = [r for r in manifest["runs"] if not r.get("is_bootstrap_replicate")]
+    assert len(real) == 2 and len(boot) == 2 * K_BOOT
+    for r in real:
+        plan = r["iim_bootstrap"]
+        assert plan["n_replicates"] == K_BOOT and len(plan["run_keys"]) == K_BOOT
+        assert plan["node_indices"] == r["selected_nodes"]
+    results = _run_all(campaign_dir, manifest)
+    # replicate runs are not reported as runs of their own
+    keys = {str(q.resolve()) for q in paths} | {str(q) for q in paths}
+    assert set(results) == keys
+    for p in paths:
+        hunter = results[str(p.resolve())]
+        local = _local_pipeline_iim(p, max_timepoints=max_timepoints,
+                                    block_len=block_len)
+        assert hunter["defined"] and local["defined"]
+        assert hunter["Delta_Psi_bootstrap_n"] == local["Delta_Psi_bootstrap_n"]
+        assert hunter["Delta_Psi_bootstrap_failed"] == local[
+            "Delta_Psi_bootstrap_failed"]
+        assert hunter["Delta_Psi_bootstrap_block_len"] == local[
+            "Delta_Psi_bootstrap_block_len"]
+        se_l = local["Delta_Psi_bootstrap_se"]
+        if np.isfinite(se_l):
+            assert hunter["Delta_Psi_bootstrap_se"] == pytest.approx(
+                se_l, rel=1e-9, abs=1e-12)
+        else:
+            assert hunter["Delta_Psi_bootstrap_se"] is None
+        assert hunter["Delta_Psi"] == pytest.approx(local["Delta_Psi"], rel=1e-9)
+    assert any(results[str(p.resolve())]["Delta_Psi_bootstrap_se"] for p in paths)
+    with open(campaign_dir / "iim_results.csv", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 2 and all(row["Delta_Psi_bootstrap_n"] for row in rows)
+
+
+def test_hunter_bootstrap_se_reaches_the_evidence_record(tmp_path):
+    """The finalize stage reads the Hunter SE: the IIM record is no longer
+    NO_SAMPLING_SE, and se_df = valid replicates - 1."""
+    from impact_pipeline import synergy_ci as sc
+
+    campaign_dir, manifest, paths = _campaign(
+        tmp_path, n_null=2, n_runs=1, t=80, iim_bootstrap_n=K_BOOT)
+    results = _run_all(campaign_dir, manifest)
+    info = results[str(paths[0].resolve())]
+    assert info["IIM_null_n"] == 2
+    rec = sc._iim_record(info, "circular_shift", nodes=(0, 1, 2, 3))
+    n_valid = info["Delta_Psi_bootstrap_n"]
+    assert n_valid >= 2 and np.isfinite(rec["se"])
+    assert rec["se"] == pytest.approx(info["Delta_Psi_bootstrap_se"])
+    assert sc._se_df(rec) == n_valid - 1
+    # without replicate runs the Hunter IIM evidence has no sampling SE
+    plain_dir, plain_manifest, plain_paths = _campaign(
+        tmp_path / "plain", n_null=2, n_runs=1, t=80)
+    plain = _run_all(plain_dir, plain_manifest)[str(plain_paths[0].resolve())]
+    assert "Delta_Psi_bootstrap_se" not in plain
+    assert not np.isfinite(sc._iim_record(plain, "circular_shift")["se"])
+
+
+def test_protocol_iim_options_reach_the_hunter_campaign():
+    import run_pipeline
+    from impact_pipeline.evidence import Protocol
+
+    proto = Protocol(necessity_set=("IIM",), estimators={
+        "IIM": {"cut_mode": "directional", "tpm_estimator": "node_laplace"}},
+        bearer_nodes={"IIM": [0, 1, 2]})
+    opts = run_pipeline._hunter_iim_protocol_options({"protocol": proto.to_dict()})
+    assert opts == {"iim_cut_mode": "directional",
+                    "iim_tpm_estimator": "node_laplace",
+                    "iim_bearer_nodes": [0, 1, 2]}
+    assert run_pipeline._hunter_iim_protocol_options({"protocol": None}) == {}
+    bad = Protocol(estimators={"IIM": {"bins": 4}})
+    with pytest.raises(ValueError, match="not supported"):
+        run_pipeline._hunter_iim_protocol_options({"protocol": bad.to_dict()})
+
+
+def test_main_build_with_bootstrap_replicates_and_finalize(tmp_path, monkeypatch):
+    """--hunter-iim-bootstrap-se: the build adds replicate runs, the reducer
+    reports the SE and the finalize stage hands it to the evidence layer."""
+    import run_pipeline
+    from impact_pipeline import run_synergy_ci
+
+    out, common = _tiny_hunter_layout(tmp_path, monkeypatch)
+    run_pipeline.main(
+        str(out), hunter_stage="build-campaign", hunter_phase1_shards_per_run=1,
+        hunter_cut_shards_per_run=1, hunter_workers_per_task=1,
+        hunter_iim_null_surrogates=2, hunter_iim_bootstrap_se=3,
+        null_surrogates=2, bootstrap_se=3, **common,
+    )
+    campaign = out / "cache" / "hunter_iim_campaign"
+    manifest = json.loads((campaign / "campaign_manifest.json").read_text())
+    assert manifest["iim_settings"]["bootstrap_n"] == 3
+    assert sum(bool(r.get("is_bootstrap_replicate")) for r in manifest["runs"]) == 6
+    prov = json.loads((out / "cache" / "provenance_manifest.json").read_text())
+    assert prov["parameters"]["hunter"]["iim_bootstrap_se"] == 3
+    for i in range(len(manifest["phase1_tasks"])):
+        hunter_iim.run_phase1_shard(campaign, i)
+    for i in range(len(manifest["cut_tasks"])):
+        hunter_iim.run_cut_shard(campaign, i)
+    run_pipeline.main(
+        str(out), hunter_stage="reduce-all", hunter_campaign_dir=str(campaign), **common
+    )
+    captured = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_run_s_ci(**kwargs):
+        captured.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(run_synergy_ci, "run_s_ci", fake_run_s_ci)
+    with pytest.raises(_Stop):
+        run_pipeline.main(str(out), hunter_stage="finalize-pipeline",
+                          hunter_campaign_dir=str(campaign), **common)
+    assert captured["bootstrap_se"] == 3
+    infos = [v for k, v in captured["iim_precomputed_by_path"].items()]
+    assert infos and all(v["Delta_Psi_bootstrap_n"] + v["Delta_Psi_bootstrap_failed"]
+                         == 3 for v in infos if v.get("defined"))

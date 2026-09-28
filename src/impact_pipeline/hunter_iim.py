@@ -57,7 +57,8 @@ from impact_pipeline.provenance import (
     collect_code_version,
     resolve_repo_root,
 )
-from impact_pipeline.synergy_ci import build_ci_run_specs
+from impact_pipeline import nulls
+from impact_pipeline.synergy_ci import _run_null_key, build_ci_run_specs
 
 log = logging.getLogger(__name__)
 
@@ -1097,6 +1098,139 @@ def _register_defined_run(run_dir: Path, meta: dict, prep, profile, iim_bins) ->
     return meta
 
 
+def _add_bootstrap_runs(
+    campaign_dir,
+    runs,
+    add_tasks,
+    meta,
+    spec,
+    ts_iim,
+    step,
+    prep,
+    *,
+    step2_context,
+    profile,
+    hardware_backend,
+    settings,
+    iim_bins,
+    iim_lag_trs,
+    iim_n_parts,
+    iim_max_nodes,
+    iim_max_mechanism_size,
+    iim_max_purview_size,
+    iim_bearer_nodes,
+) -> dict:
+    """
+    Block-bootstrap replicate runs of one defined real run (see
+    :func:`prepare_hunter_campaign`); returns the run's bootstrap plan. The
+    replicates and their preparation reproduce ``synergy_ci._iim_bootstrap``
+    (``compute_IIM`` on each replicate with the subsystem pinned to the
+    selected nodes).
+    """
+    run_key = str(meta["run_key"])
+    n_boot = int(settings["bootstrap_n"])
+    seed = nulls.derive_seed(
+        int(settings["bootstrap_seed"]), "BOOT", "IIM",
+        _run_null_key(spec["ts_path_input"]),
+    )
+    block_len = settings["bootstrap_block_len"]
+    if block_len is not None:
+        block_len = max(1, int(np.ceil(int(block_len) / max(1, int(step)))))
+    else:
+        block_len = nulls.default_block_len(ts_iim.shape[1])
+    selected = [int(i) for i in prep["selected_nodes"]]
+    info = {
+        "n_replicates": n_boot,
+        "seed": int(seed),
+        "block_len": int(block_len),
+        "node_indices": selected,
+        "run_keys": [],
+        "unavailable_reason": None,
+    }
+    try:
+        replicates = list(
+            nulls.block_bootstrap(ts_iim, None, block_len, n_boot, seed)
+        )
+    except ValueError as exc:
+        info["unavailable_reason"] = f"bootstrap_unavailable: {exc}"
+        return info
+    for k, (ts_b, _events) in enumerate(replicates):
+        boot_key = f"{run_key}__boot{k:03d}"
+        boot_dir = _run_artifact_dir(campaign_dir, boot_key)
+        boot_dir.mkdir(parents=True, exist_ok=True)
+        for name in _DERIVED_RESULT_FILES:
+            with contextlib.suppress(FileNotFoundError):
+                (boot_dir / name).unlink()
+        np.save(boot_dir / "bootstrap_ts.npy", ts_b, allow_pickle=False)
+        boot_prep = prepare_iim_problem(
+            ts_b,
+            bins=int(iim_bins),
+            lag_trs=int(iim_lag_trs),
+            n_parts=iim_n_parts,
+            rng=0,
+            partition_mode="all",
+            max_nodes=iim_max_nodes,
+            max_mechanism_size=iim_max_mechanism_size,
+            max_purview_size=iim_max_purview_size,
+            hardware_backend=hardware_backend,
+            tpm_estimator=str(settings["tpm_estimator"]),
+            node_selection=str(settings["node_selection"]),
+            node_indices=selected,
+            state_budget_policy=str(settings["state_budget_policy"]),
+            bearer_nodes=iim_bearer_nodes,
+            cut_mode=str(settings["cut_mode"]),
+            log_label=boot_key,
+        )
+        boot_meta = {
+            "run_index": int(len(runs)),
+            "run_key": boot_key,
+            "subject": str(spec["subject"]),
+            "session": str(spec["session"]),
+            "ts_path": None,
+            "ts_path_input": None,
+            "bootstrap_ts_path": str(boot_dir / "bootstrap_ts.npy"),
+            "dataset_id": step2_context.get("dataset_id"),
+            "data_origin": step2_context.get("data_origin"),
+            "dataset_role": step2_context.get("dataset_role"),
+            "provenance_label": step2_context.get("provenance_label"),
+            "defined": bool(boot_prep.get("defined", False)),
+            "undefined_reason": boot_prep.get("undefined_reason"),
+            "created_unix": float(time.time()),
+            "iim_bins": int(iim_bins),
+            "iim_lag_trs": int(iim_lag_trs),
+            "iim_n_parts": (None if iim_n_parts is None else int(iim_n_parts)),
+            "iim_max_timepoints": meta["iim_max_timepoints"],
+            "iim_max_nodes": meta["iim_max_nodes"],
+            "iim_max_mechanism_size": meta["iim_max_mechanism_size"],
+            "iim_max_purview_size": meta["iim_max_purview_size"],
+            "iim_settings": dict(settings),
+            "is_null_surrogate": False,
+            "is_bootstrap_replicate": True,
+            "bootstrap_of": run_key,
+            "bootstrap_index": int(k),
+            "iim_null": None,
+        }
+        if bool(boot_prep.get("defined", False)):
+            boot_meta = _register_defined_run(
+                boot_dir, boot_meta, boot_prep, profile, iim_bins
+            )
+            add_tasks(boot_meta)
+        else:
+            boot_meta.update(
+                _undefined_prep_record(
+                    boot_prep,
+                    tpm_estimator=settings["tpm_estimator"],
+                    cut_mode=settings["cut_mode"],
+                    state_budget_policy=settings["state_budget_policy"],
+                    bearer_nodes=iim_bearer_nodes,
+                )
+            )
+            _write_undefined_run(boot_dir, boot_meta, boot_prep, profile)
+        runs.append(boot_meta)
+        info["run_keys"].append(boot_key)
+    return info
+
+
 def prepare_hunter_campaign(
     *,
     data_dir,
@@ -1130,6 +1264,9 @@ def prepare_hunter_campaign(
     iim_null_min_shift=None,
     iim_psi_kernel="auto",
     repo_root=None,
+    iim_bootstrap_n=0,
+    iim_bootstrap_seed=0,
+    iim_bootstrap_block_len=None,
 ):
     """
     Build a Hunter IIM campaign: one prepared IIM problem per unique run plus
@@ -1155,6 +1292,19 @@ def prepare_hunter_campaign(
     same bins, lag, cut sample and mechanism/purview sizes. The reducer then
     computes IIM_null_mean/IIM_null_sd/IIM_z and the calibrated canonical value
     with the same function as compute_IIM(null_surrogates=K).
+
+    Sampling SE: with ``iim_bootstrap_n`` = B > 0 every defined real run gets
+    B extra campaign runs holding moving-block bootstrap replicates of its IIM
+    input, drawn exactly as the local pipeline draws them
+    (``synergy_ci._iim_bootstrap``: ``nulls.block_bootstrap`` with seed
+    ``derive_seed(iim_bootstrap_seed, 'BOOT', 'IIM', <run key>)``, block
+    length ``iim_bootstrap_block_len`` run samples rescaled by the time
+    subsampling step, default ``ceil(sqrt(n_time))``), prepared with the
+    requested bins and sizes and the subsystem pinned to the nodes selected on
+    the real run (no null, no checkpoint). The reducer then reports
+    ``Delta_Psi_bootstrap_se`` (SD of the valid replicates' Delta_Psi),
+    ``_n``, ``_failed`` and ``_block_len``, which the finalize stage uses as
+    the sampling SE of the IIM evidence.
     """
     campaign_dir = Path(campaign_dir).resolve()
     requested_target = normalize_hardware_target(hardware_target)
@@ -1164,6 +1314,10 @@ def prepare_hunter_campaign(
         hardware_backend = configure_process_for_hardware(build_hardware_backend)
     if int(iim_null_surrogates) < 0:
         raise ValueError("iim_null_surrogates must be >= 0")
+    if int(iim_bootstrap_n) < 0:
+        raise ValueError("iim_bootstrap_n must be >= 0")
+    if iim_bootstrap_block_len is not None and int(iim_bootstrap_block_len) < 1:
+        raise ValueError("iim_bootstrap_block_len must be >= 1")
     resolve_iim_psi_kernel(iim_psi_kernel, "cpu")  # validates the name at build time
     overrides = dict(settings_overrides or {})
     if repo_root is not None:
@@ -1217,6 +1371,11 @@ def prepare_hunter_campaign(
         "null_min_shift": (
             None if iim_null_min_shift is None else int(iim_null_min_shift)
         ),
+        "bootstrap_n": int(iim_bootstrap_n),
+        "bootstrap_seed": int(iim_bootstrap_seed),
+        "bootstrap_block_len": (
+            None if iim_bootstrap_block_len is None else int(iim_bootstrap_block_len)
+        ),
     }
     runs = []
     phase1_tasks = []
@@ -1246,6 +1405,7 @@ def prepare_hunter_campaign(
 
         ts_time_region = np.load(ts_path)
         ts_iim = np.asarray(ts_time_region.T, dtype=float)
+        step = 1
         if iim_max_timepoints is not None and int(iim_max_timepoints) > 0 and ts_iim.shape[1] > int(iim_max_timepoints):
             step = int(np.ceil(ts_iim.shape[1] / float(int(iim_max_timepoints))))
             ts_iim = ts_iim[:, ::step]
@@ -1317,6 +1477,30 @@ def prepare_hunter_campaign(
         meta = _register_defined_run(run_dir, meta, prep, effective_profile, iim_bins)
         runs.append(meta)
         _add_tasks(meta)
+
+        if int(iim_bootstrap_n) > 0:
+            meta["iim_bootstrap"] = _add_bootstrap_runs(
+                campaign_dir,
+                runs,
+                _add_tasks,
+                meta,
+                spec,
+                ts_iim,
+                step,
+                prep,
+                step2_context=step2_context,
+                profile=effective_profile,
+                hardware_backend=hardware_backend,
+                settings=iim_settings,
+                iim_bins=iim_bins,
+                iim_lag_trs=iim_lag_trs,
+                iim_n_parts=iim_n_parts,
+                iim_max_nodes=iim_max_nodes,
+                iim_max_mechanism_size=iim_max_mechanism_size,
+                iim_max_purview_size=iim_max_purview_size,
+                iim_bearer_nodes=iim_bearer_nodes,
+            )
+            _json_dump(run_dir / "meta.json", meta)
 
         n_null = int(iim_null_surrogates)
         if n_null <= 0:
@@ -2469,7 +2653,61 @@ def _run_provenance_fields(run_meta) -> dict:
     if out["is_null_surrogate"]:
         out["null_of"] = run_meta.get("null_of")
         out["null_index"] = run_meta.get("null_index")
+    if bool(run_meta.get("is_bootstrap_replicate", False)):
+        out["is_bootstrap_replicate"] = True
+        out["bootstrap_of"] = run_meta.get("bootstrap_of")
+        out["bootstrap_index"] = run_meta.get("bootstrap_index")
     return out
+
+
+def _is_auxiliary_run(run_meta) -> bool:
+    """Null-surrogate and bootstrap-replicate runs only feed their real run."""
+    return bool(run_meta.get("is_null_surrogate", False)) or bool(
+        run_meta.get("is_bootstrap_replicate", False)
+    )
+
+
+def _bootstrap_fields(campaign_dir, manifest, run_meta, clamp, scale) -> dict:
+    """
+    Sampling SE of Delta_Psi from the run's bootstrap replicate runs, as
+    ``nulls.component_bootstrap_se`` computes it locally: the SD (ddof=1) of
+    the valid replicates' Delta_Psi (NaN -> None with fewer than two);
+    undefined replicates count as failed. Empty without a bootstrap plan.
+    """
+    info = run_meta.get("iim_bootstrap") or {}
+    if not info:
+        return {}
+    index_by_key = {
+        str(r["run_key"]): i for i, r in enumerate(manifest.get("runs", []))
+    }
+    vals, failed = [], 0
+    for key in info.get("run_keys") or []:
+        if key not in index_by_key:
+            raise RuntimeError(
+                f"Bootstrap run {key} of {run_meta['run_key']} is missing from the "
+                "campaign manifest; rebuild the campaign."
+            )
+        res = run_cut_reduce(campaign_dir, index_by_key[key], clamp=clamp, scale=scale)
+        val = float("nan")
+        if bool(res.get("defined", False)):
+            full, mip = res.get("Psi_full"), res.get("Psi_mip_preserved")
+            if full is not None and mip is not None:
+                val = float(full) - float(mip)
+        if np.isfinite(val):
+            vals.append(val)
+        else:
+            failed += 1
+    failed += int(info.get("n_replicates", 0)) - len(info.get("run_keys") or [])
+    arr = np.asarray(vals, dtype=float)
+    se = float(np.std(arr, ddof=1)) if arr.size > 1 else float("nan")
+    return {
+        "Delta_Psi_bootstrap_se": se if np.isfinite(se) else None,
+        "Delta_Psi_bootstrap_n": int(arr.size),
+        "Delta_Psi_bootstrap_failed": int(failed),
+        "Delta_Psi_bootstrap_block_len": info.get("block_len"),
+        "Delta_Psi_bootstrap_seed": info.get("seed"),
+        "Delta_Psi_bootstrap_unavailable_reason": info.get("unavailable_reason"),
+    }
 
 
 def _run_null_plan(run_meta) -> dict:
@@ -2481,7 +2719,7 @@ def _run_null_plan(run_meta) -> dict:
     settings = dict(run_meta.get("iim_settings") or {})
     null_info = run_meta.get("iim_null") or {}
     n_null = 0
-    if not bool(run_meta.get("is_null_surrogate", False)):
+    if not _is_auxiliary_run(run_meta):
         n_null = int(
             null_info.get("n_surrogates", settings.get("null_surrogates", 0)) or 0
         )
@@ -2677,6 +2915,7 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
     value = iim_calibrated_value(
         null_fields, canonical, raw, plan["n_surrogates"], clamp=clamp, scale=scale
     )
+    boot_fields = _bootstrap_fields(campaign_dir, manifest, run_meta, clamp, scale)
     payload = {
         "value": value,
         "raw": raw,
@@ -2721,6 +2960,7 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
         "psi_kernel": (",".join(sorted(kernels)) if kernels else None),
         **provenance,
         **null_fields,
+        **boot_fields,
         "defined": True,
         "undefined_reason": None,
         **build_fields,
@@ -2792,6 +3032,10 @@ IIM_RESULTS_COLUMNS = (
     "IIM_null_min_shift",
     "IIM_null_failed",
     "IIM_null_undefined_reason",
+    "Delta_Psi_bootstrap_se",
+    "Delta_Psi_bootstrap_n",
+    "Delta_Psi_bootstrap_failed",
+    "Delta_Psi_bootstrap_block_len",
     "iim_algorithm_version",
     "tpm_estimator",
     "cut_mode",
@@ -2816,13 +3060,14 @@ def write_iim_results_table(campaign_dir, out_path=None) -> list[dict]:
     algorithm version, node selection, budget adjustments, null fields) as
     ``iim_results.json`` / ``iim_results.csv`` in the campaign directory, and
     optionally as CSV at ``out_path`` (e.g. next to the step-2 outputs).
-    Surrogate runs are not listed; they enter through the null fields.
+    Surrogate and bootstrap-replicate runs are not listed; they enter through
+    the null and bootstrap fields.
     """
     campaign_dir = Path(campaign_dir).resolve()
     manifest = _load_manifest(campaign_dir)
     rows = []
     for run_meta in manifest.get("runs", []):
-        if bool(run_meta.get("is_null_surrogate", False)):
+        if _is_auxiliary_run(run_meta):
             continue
         run_dir = _run_artifact_dir(campaign_dir, run_meta["run_key"])
         final_path = run_dir / "final_result.json"
@@ -2996,9 +3241,8 @@ def collect_iim_results_by_path(campaign_dir):
     manifest = _load_manifest(campaign_dir)
     out = {}
     for run_meta in manifest.get("runs", []):
-        is_null = bool(run_meta.get("is_null_surrogate", False))
-        if is_null or not run_meta.get("ts_path"):
-            # Surrogate runs only feed the calibration of their real run.
+        if _is_auxiliary_run(run_meta) or not run_meta.get("ts_path"):
+            # Surrogate and bootstrap runs only feed their real run.
             continue
         run_dir = _run_artifact_dir(campaign_dir, run_meta["run_key"])
         final_path = run_dir / "final_result.json"
