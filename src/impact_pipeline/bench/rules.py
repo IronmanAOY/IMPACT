@@ -402,17 +402,27 @@ def component_status_z(
     Three-valued component status from null-standardised margins ``z`` (and
     SEs in null-SD units): PRESENT / ABSENT (TOST) / UNDEFINED, with NaN
     undefined. Mirrors ``evidence.component_status`` with null_mean = 0,
-    null_sd = 1.
+    null_sd = 1, including its parameter checks (finite thresholds,
+    ``0 <= delta_equiv <= z_present`` so PRESENT and ABSENT cannot overlap,
+    ``0 < alpha <= 0.5``) and an UNDEFINED status for a negative SE.
     """
+    z_present, delta_equiv, alpha = float(z_present), float(delta_equiv), float(alpha)
+    if not (np.isfinite(z_present) and np.isfinite(delta_equiv)):
+        raise ValueError("z_present and delta_equiv must be finite")
+    if not 0.0 <= delta_equiv <= z_present:
+        raise ValueError("need 0 <= delta_equiv <= z_present")
+    if not 0.0 < alpha <= 0.5:
+        raise ValueError("alpha must be in (0, 0.5]")
     z = np.asarray(z, dtype=float)
     se = np.broadcast_to(np.asarray(se, dtype=float), z.shape)
-    zc = norm.ppf(1.0 - float(alpha))
-    present = (z - zc * se) > float(z_present)
-    absent = (np.abs(z) + zc * se) <= float(delta_equiv)
+    zc = norm.ppf(1.0 - alpha)
+    with np.errstate(invalid="ignore"):
+        present = (z - zc * se) > z_present
+        absent = ~present & ((np.abs(z) + zc * se) <= delta_equiv)
     out = np.full(z.shape, UNDEFINED, dtype=object)
     out[absent] = ABSENT
     out[present] = PRESENT
-    out[~np.isfinite(z) | ~np.isfinite(se)] = UNDEFINED
+    out[~np.isfinite(z) | ~np.isfinite(se) | (se < 0)] = UNDEFINED
     return out
 
 

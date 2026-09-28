@@ -187,11 +187,9 @@ def test_run_in_memory_components_and_nulls():
     assert cal["NAS"]["n_null"] == 3 and np.isfinite(cal["NAS"]["null_sd"])
     assert cal["NAS"]["null_family"] == "circular_shift"
     assert cal["IIM"]["statistic"] == "Delta_Psi_bits" and cal["IIM"]["n_null"] == 3
-    assert cal["SRPI"]["n_null"] == 3
-    assert cal["SRPI"]["null_family"] in (
-        "circular_shift_fallback",
-        "nulls.component_null",
-    )
+    assert cal["SRPI"]["n_null"] + cal["SRPI"]["n_null_failed"] == 3
+    assert cal["SRPI"]["null_family"] == "label_permutation"
+    assert cal["SRPI"]["null_impl"] in ("bench_local", "impact_pipeline.nulls")
     again = export.run_in_memory(s, metrics=("NAS",), null_surrogates=3, null_seed=5)
     assert again["components"]["NAS"]["null_mean"] == cal["NAS"]["null_mean"]
     with pytest.raises(ValueError):
@@ -236,9 +234,14 @@ def test_optional_modes_are_detected_by_signature():
 def test_evidence_verdict_degrades_without_evidence_layer(monkeypatch):
     import sys
 
+    import impact_pipeline
+
     s = g.simulate_family_a(None, SMALL, seed=3)
     res = export.run_in_memory(s, metrics=("NAS",), null_surrogates=2)
+    # Hide the module even when another test has already imported it (the
+    # package attribute would otherwise satisfy the import).
     monkeypatch.setitem(sys.modules, "impact_pipeline.evidence", None)
+    monkeypatch.delattr(impact_pipeline, "evidence", raising=False)
     out = export.evidence_verdict(res, s.meta)
     assert out["verdict"] is None and out["reasons"] == ["evidence_layer_unavailable"]
 
@@ -248,7 +251,136 @@ def test_evidence_verdict_uses_evidence_layer_when_available():
     s = g.simulate_family_a(None, SMALL, seed=3)
     res = export.run_in_memory(s, metrics=("NAS", "SRPI"), null_surrogates=2)
     out = export.evidence_verdict(res, s.meta)
-    assert out["verdict"] in (None, "ATTRIBUTED", "NOT_ATTRIBUTED", "UNDETERMINED")
+    # The layer is installed: its API must be driven without error.
+    assert out["verdict"] in ("ATTRIBUTED", "NOT_ATTRIBUTED", "UNDETERMINED")
+    assert not any(r.startswith("evidence_layer_") for r in out["reasons"])
+    assert set(out["component_status"]) >= {"NAS", "SRPI"}
+
+
+def _without_nulls_module(monkeypatch):
+    import sys
+
+    import impact_pipeline
+
+    monkeypatch.setitem(sys.modules, "impact_pipeline.nulls", None)
+    monkeypatch.delattr(impact_pipeline, "nulls", raising=False)
+
+
+def test_local_event_surrogates_keep_the_declared_structure():
+    s = g.simulate_family_a(None, SMALL, seed=6)
+    ev = s.events
+    rng = np.random.default_rng(0)
+    t_max = s.n_time * s.dt
+    kw = export._event_null_kwargs("RAM", s.n_time, s.dt)
+    assert kw == {"common": True, "t_max": t_max, "min_shift": 0.1 * t_max}
+    shifted = export._local_event_surrogate("onset_jitter", ev, rng, **kw)
+    d = np.mod(shifted["onset"].to_numpy() - ev["onset"].to_numpy(), t_max)
+    # One rigid shift for every event, >= 10% of the run from either end.
+    assert np.allclose(d, d[0]) and 0.1 * t_max <= d[0] <= 0.9 * t_max
+    assert shifted["onset"].between(0, t_max, inclusive="left").all()
+    assert list(shifted["trial_type"]) == list(ev["trial_type"])
+    kw = export._event_null_kwargs("SRPI", s.n_time, s.dt)
+    perm = export._local_event_surrogate("label_permutation", ev, rng, **kw)
+    assert np.array_equal(perm["onset"].to_numpy(), ev["onset"].to_numpy())
+    agency = ev["trial_type"].isin(export.SRPI_NULL_LABELS).to_numpy()
+    assert list(perm.loc[~agency, "trial_type"]) == list(ev.loc[~agency, "trial_type"])
+    before = ev[agency].groupby(["phase_bin", "trial_type"]).size()
+    after = perm[agency].groupby(["phase_bin", "trial_type"]).size()
+    pd.testing.assert_series_equal(before, after)
+    # Across draws the labels are really re-dealt.
+    draws = [
+        export._local_event_surrogate("label_permutation", ev, rng, **kw)
+        for _ in range(5)
+    ]
+    assert any(
+        not np.array_equal(p["trial_type"].to_numpy(), ev["trial_type"].to_numpy())
+        for p in draws
+    )
+    with pytest.raises(ValueError):
+        export._local_event_surrogate("circular_shift", ev, rng)
+
+
+def test_event_nulls_feed_surrogate_events_to_the_estimator(monkeypatch):
+    _without_nulls_module(monkeypatch)
+    s = g.simulate_family_a(None, SMALL, seed=6)
+    seen = []
+
+    def fn(ts, ev):
+        seen.append(ev)
+        return {"value": float(len(ev))}
+
+    vals, kind, impl, n_failed = export._event_null(
+        "SRPI", fn, s.ts, s.events, 4, 3, s.dt
+    )
+    assert (kind, impl, n_failed) == ("label_permutation", "bench_local", 0)
+    assert len(vals) == 4 and len(seen) == 4
+    assert all(isinstance(e, pd.DataFrame) and e is not s.events for e in seen)
+    again = export._event_null("SRPI", fn, s.ts, s.events, 4, 3, s.dt)
+    assert again[0] == vals
+
+    def failing(ts, ev):
+        raise ValueError("degenerate surrogate")
+
+    vals, _, _, n_failed = export._event_null(
+        "RAM", failing, s.ts, s.events, 3, 0, s.dt
+    )
+    assert n_failed == 3 and np.all(np.isnan(vals))
+
+
+def test_event_nulls_use_the_installed_nulls_module(monkeypatch):
+    """With impact_pipeline.nulls installed, its ComponentNull result is used
+    with the declared kind and options; its errors are not masked."""
+    import sys
+    import types
+    from typing import NamedTuple
+
+    class ComponentNull(NamedTuple):
+        null_mean: float
+        null_sd: float
+        samples: np.ndarray
+        n_failed: int
+
+    calls = []
+
+    def component_null(fn, ts, events, kind="circular_shift", n=100, seed=0, **kw):
+        calls.append((kind, n, seed, kw))
+        vals = np.array([float(fn(ts, events)["value"]) + i for i in range(n - 1)])
+        return ComponentNull(float(vals.mean()), float(vals.std(ddof=1)), vals, 1)
+
+    fake = types.ModuleType("impact_pipeline.nulls")
+    fake.component_null = component_null
+    monkeypatch.setitem(sys.modules, "impact_pipeline.nulls", fake)
+    monkeypatch.setattr("impact_pipeline.nulls", fake, raising=False)
+    s = g.simulate_family_a(None, SMALL, seed=6)
+    vals, kind, impl, n_failed = export._event_null(
+        "RAM", lambda ts, ev: {"value": 1.0}, s.ts, s.events, 4, 9, s.dt
+    )
+    assert (kind, impl, n_failed) == ("onset_jitter", "impact_pipeline.nulls", 1)
+    assert vals == [1.0, 2.0, 3.0]
+    t_max = s.n_time * s.dt
+    assert calls[-1] == (
+        "onset_jitter",
+        4,
+        9,
+        {"common": True, "t_max": t_max, "min_shift": 0.1 * t_max},
+    )
+    res = export.run_in_memory(s, metrics=("SRPI",), null_surrogates=4)
+    comp = res["components"]["SRPI"]
+    assert comp["null_impl"] == "impact_pipeline.nulls"
+    assert comp["null_family"] == "label_permutation" and comp["n_null"] == 3
+    assert calls[-1][3] == {
+        "among": export.SRPI_NULL_LABELS,
+        "stratify_col": "phase_bin",
+    }
+
+    def broken(*args, **kwargs):
+        raise TypeError("API drift")
+
+    fake.component_null = broken
+    with pytest.raises(TypeError, match="API drift"):
+        export._event_null(
+            "RAM", lambda ts, ev: {"value": 1.0}, s.ts, s.events, 2, 0, s.dt
+        )
 
 
 # --------------------------------------------------------------------------
@@ -304,15 +436,42 @@ def test_confirmatory_guard_requires_clean_tree(tmp_path):
     assert info["freeze_tag"] == "freeze-v1" and "freeze-v1" in info["tags_at_head"]
     with pytest.raises(RuntimeError, match="not found"):
         run_bench.confirmatory_guard(repo, freeze_tag="nope")
+    # The code-freeze tag is required.
+    with pytest.raises(RuntimeError, match="freeze tag"):
+        run_bench.confirmatory_guard(repo)
     (repo / "src" / "new.py").write_text("y = 2\n")
     with pytest.raises(RuntimeError, match="untracked"):
-        run_bench.confirmatory_guard(repo)
+        run_bench.confirmatory_guard(repo, freeze_tag="freeze-v1")
     (repo / "src" / "new.py").unlink()
     (repo / "src" / "a.py").write_text("x = 2\n")
     with pytest.raises(RuntimeError, match="clean"):
-        run_bench.confirmatory_guard(repo)
+        run_bench.confirmatory_guard(repo, freeze_tag="freeze-v1")
+    # Later commits may touch other paths but not the frozen code.
+    (repo / "src" / "a.py").write_text("x = 1\n")
+    (repo / "NOTES.md").write_text("results\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "docs")
+    info = run_bench.confirmatory_guard(repo, freeze_tag="freeze-v1")
+    assert info["freeze_tag_sha"] != info["git_sha"]
+    (repo / "src" / "a.py").write_text("x = 3\n")
+    _git(repo, "commit", "-q", "-am", "post-freeze code change")
+    with pytest.raises(RuntimeError, match="changed since freeze tag"):
+        run_bench.confirmatory_guard(repo, freeze_tag="freeze-v1")
     with pytest.raises(RuntimeError):
-        run_bench.confirmatory_guard(tmp_path / "not_a_repo")
+        run_bench.confirmatory_guard(tmp_path / "not_a_repo", freeze_tag="freeze-v1")
+
+
+def test_confirmatory_runs_need_guard_provenance(tmp_path):
+    tasks = factorial_tasks([10000], cells=["b11111"], config=SMALL_DICT)
+    with pytest.raises(RuntimeError, match="confirmatory_guard"):
+        run_bench.run_tasks(tasks, tmp_path / "run", confirmatory=True)
+    assert not (tmp_path / "run").exists()
+    # The CLI refuses --confirmatory without the freeze tag (exit code 2).
+    rc = run_bench.main(
+        ["factorial", "--seeds", "10000", "--cells", "b11111", "--confirmatory"]
+        + ["--out", str(tmp_path / "cli")]
+    )
+    assert rc == 2 and not (tmp_path / "cli" / run_bench.RESULTS_JSONL).exists()
 
 
 def test_run_tasks_writes_results_with_provenance_and_resumes(tmp_path):
@@ -341,9 +500,14 @@ def test_run_tasks_writes_results_with_provenance_and_resumes(tmp_path):
     df = pd.read_csv(out / run_bench.RESULTS_CSV)
     assert list(df["cell_id"]) == ["b01111", "b11111"]
     assert set(df["intended_bits"]) == {"b01111", "b11111"}
-    assert {"NAS_z", "SRPI_estimate", "marker_LZc", "oracle_q_range", "git_sha"} <= set(
-        df.columns
-    )
+    assert {
+        "NAS_z",
+        "SRPI_estimate",
+        "SRPI_null_family",
+        "marker_LZc",
+        "oracle_q_range",
+        "git_sha",
+    } <= set(df.columns)
     manifest = json.loads((out / run_bench.MANIFEST).read_text())
     assert manifest["n_run"] == 2 and "estimator_params" in manifest
     assert manifest["runtime"]["python"]

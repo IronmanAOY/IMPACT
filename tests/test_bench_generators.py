@@ -279,6 +279,66 @@ def test_family_c_switch_semantics(nominal_c):
     assert np.all(np.isfinite(nominal_c.ts)) and np.all(np.isfinite(off.ts))
 
 
+def _hub_periphery_corr(system):
+    """Mean |corr| between the hub mean and each periphery module mean."""
+    hub = system.ts[np.asarray(system.meta["workspace_nodes"])].mean(axis=0)
+    return float(
+        np.mean(
+            [
+                abs(np.corrcoef(hub, system.ts[np.asarray(v)].mean(axis=0))[0, 1])
+                for v in system.meta["iim_macro_nodes"].values()
+            ]
+        )
+    )
+
+
+def _backward_granger_gain(system, lag=2):
+    """Mean fraction of residual variance of an upstream periphery module
+    explained by a downstream module's past beyond its own past (lag-2 OLS)."""
+    x = np.stack(
+        [
+            system.ts[np.asarray(v)].mean(axis=0)
+            for v in system.meta["iim_macro_nodes"].values()
+        ]
+    )
+    x = (x - x.mean(axis=1, keepdims=True)) / x.std(axis=1, keepdims=True)
+    gains = []
+    for i in range(len(x)):
+        for j in range(i + 1, len(x)):
+            y, own, other = x[i, lag:], x[i, :-lag], x[j, :-lag]
+            r_own = np.linalg.lstsq(own[:, None], y, rcond=None)[1][0]
+            r_both = np.linalg.lstsq(np.c_[own, other], y, rcond=None)[1][0]
+            gains.append(1.0 - r_both / r_own)
+    return float(np.mean(gains))
+
+
+def _assert_coupling_switches_act(simulate):
+    for seed in (0, 1, 2):
+        nom = simulate(None, SMALL, seed)
+        gb0 = simulate(g.NOMINAL_KNOBS.replace(g_b=0.0), SMALL, seed)
+        c0 = simulate(g.NOMINAL_KNOBS.replace(c_int=0.0), SMALL, seed)
+        # Workspace off: hub and periphery decouple.
+        assert _hub_periphery_corr(gb0) < 0.6 * _hub_periphery_corr(nom), seed
+        # Loops off: downstream modules no longer predict upstream ones.
+        assert _backward_granger_gain(c0) < 0.5 * _backward_granger_gain(nom), seed
+
+
+def test_family_a_coupling_switches_change_the_dynamics():
+    """Manipulation check on simple observables (not MPC estimators): the
+    NAS and IIM switches act on the recorded dynamics, not only on the oracle."""
+    _assert_coupling_switches_act(g.simulate_family_a)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="family C at the default sl_* constants: coupling (0.3 W z) is small "
+    "against the detuned oscillators and the 4x input drive, so g_b and c_int "
+    "barely change the dynamics; retune before the code freeze",
+)
+def test_family_c_coupling_switches_change_the_dynamics():
+    _assert_coupling_switches_act(g.simulate_family_c)
+
+
 def test_rest_run():
     s = g.simulate_family_a(None, SMALL.replace(rest_sec=20.0), seed=2)
     assert s.rest_ts is not None and s.rest_ts.shape == (s.n_nodes, 400)
@@ -350,6 +410,49 @@ def test_binary_connectivity_and_structure():
         g.family_b_network("xor_loop", 2)
     with pytest.raises(ValueError):
         g.family_b_network("lattice", 4)
+
+
+@pytest.mark.parametrize("n", [3, 4, 5])
+def test_reducible_chains_get_a_valid_stationary_distribution(n):
+    # A noise-free XOR loop is deterministic and reducible (several closed
+    # classes); the direct linear solve is singular for n = 3, 5.
+    net = g.family_b_network("xor_loop", n, noise=0.0)
+    pi = net.stationary
+    assert np.all(pi >= 0) and pi.sum() == pytest.approx(1.0)
+    assert np.allclose(pi @ net.tpm, pi, atol=1e-10)
+    # Cesaro limit from the uniform start: the empirical occupancy of the
+    # deterministic map averaged over every start state and a long horizon.
+    k = 2**n
+    occ = np.zeros(k)
+    nxt = net.tpm.argmax(axis=1)
+    for s0 in range(k):
+        s = s0
+        for _ in range(4 * k):
+            s = nxt[s]
+        for _ in range(840):  # multiple of every cycle length for n <= 5
+            occ[s] += 1
+            s = nxt[s]
+    assert np.allclose(pi, occ / occ.sum(), atol=1e-9)
+    traj = g.sample_binary_trajectory(net, 20, seed=1)
+    assert traj.shape == (20, n)
+    if n == 4:
+        # The n = 4 XOR map is nilpotent: every state reaches 0000.
+        assert pi[0] == pytest.approx(1.0)
+
+
+def test_near_deterministic_ising_chains_are_handled():
+    for kind in g.BINARY_NETWORK_KINDS:
+        net = g.family_b_network(kind, 4, beta=50.0)
+        T = net.observational_tpm if net.observational_tpm is not None else net.tpm
+        assert np.allclose(T.sum(axis=1), 1.0)
+        assert np.allclose(net.stationary @ T, net.stationary, atol=1e-8), kind
+    # An irreducible chain keeps the exact linear-solve solution.
+    ring = g.family_b_network("ring", 4)
+    a = ring.tpm.T - np.eye(16)
+    a[-1] = 1.0
+    b = np.zeros(16)
+    b[-1] = 1.0
+    assert np.allclose(ring.stationary, np.linalg.solve(a, b), atol=1e-14)
 
 
 @pytest.mark.parametrize("kind", g.BINARY_NETWORK_KINDS)
@@ -533,6 +636,14 @@ def test_knob_validation():
         g.Knobs(eta=-0.1)
     with pytest.raises(ValueError):
         g.Knobs(K=0)
+    for bad in ({"eta": float("nan")}, {"g_b": float("inf")}, {"c_int": np.nan}):
+        with pytest.raises(ValueError, match="finite"):
+            g.Knobs(**bad)
+    # Euler steps longer than the unit time constant are refused.
+    with pytest.raises(ValueError, match="tau"):
+        g.AgentConfig(dt=0.3, tau=0.1)
+    with pytest.raises(ValueError):
+        g.AgentConfig(sl_substeps=0)
     with pytest.raises(ValueError):
         g.knobs_from_dict({"gain": 1})
     kn = g.Knobs.from_bits([1, 0, 1, 0, 1])

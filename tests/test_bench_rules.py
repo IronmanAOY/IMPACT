@@ -135,6 +135,22 @@ def test_impact_rule_kleene_truth_table():
     assert list(st) == [R.PRESENT, R.UNDEFINED, R.ABSENT, R.UNDEFINED]
 
 
+def test_component_status_parameters_match_evidence_layer_checks():
+    # Overlapping PRESENT / ABSENT regions, non-finite thresholds and a bad
+    # alpha are refused (as in evidence.component_status).
+    with pytest.raises(ValueError):
+        R.component_status_z(1.0, delta_equiv=2.0, z_present=1.645)
+    with pytest.raises(ValueError):
+        R.component_status_z(1.0, z_present=np.inf)
+    with pytest.raises(ValueError):
+        R.component_status_z(1.0, alpha=0.0)
+    with pytest.raises(ValueError):
+        R.component_status_z(1.0, delta_equiv=-0.1)
+    # A negative SE is invalid evidence: UNDEFINED, never ABSENT or PRESENT.
+    st = R.component_status_z(np.array([0.0, 5.0]), se=np.array([-0.5, -0.5]))
+    assert list(st) == [R.UNDEFINED, R.UNDEFINED]
+
+
 def test_impact_rule_never_attributes_from_missing_components():
     rng = np.random.default_rng(2)
     Z = rng.normal(2.0, 2.0, size=(20000, 5))

@@ -137,13 +137,12 @@ class Knobs:
     e: float = 1.0
 
     def __post_init__(self):
-        if float(self.eta) < 0:
-            raise ValueError("eta must be >= 0")
+        for name in ("eta", "k_gain", "g_b", "c_int", "e"):
+            val = float(getattr(self, name))
+            if not (math.isfinite(val) and val >= 0):
+                raise ValueError(f"{name} must be a finite value >= 0")
         if int(self.K) != self.K or int(self.K) < 1 or int(self.K) > _N_PATTERN_BANK:
             raise ValueError(f"K must be an integer in [1, {_N_PATTERN_BANK}]")
-        for name in ("k_gain", "g_b", "c_int", "e"):
-            if float(getattr(self, name)) < 0:
-                raise ValueError(f"{name} must be >= 0")
 
     def bits(self) -> Tuple[int, int, int, int, int]:
         """Mechanism-present pattern in ``PRINCIPLES`` order (1 = present)."""
@@ -288,6 +287,12 @@ class AgentConfig:
             raise ValueError("units_per_module must be in [4, 8]")
         if not (self.dt > 0 and self.tau > 0):
             raise ValueError("dt and tau must be > 0")
+        if self.dt > self.tau:
+            # Euler step dt/tau > 1 overshoots the fixed point (oscillating or
+            # divergent rate dynamics).
+            raise ValueError("dt must be <= tau (Euler step dt/tau <= 1)")
+        if int(self.sl_substeps) < 1:
+            raise ValueError("sl_substeps must be >= 1")
         if self.n_trials < 1 or self.n_reafference_pairs < 1:
             raise ValueError("n_trials and n_reafference_pairs must be >= 1")
         if self.n_phase_bins < 1:
@@ -1458,17 +1463,60 @@ def sbn_to_sbs(tpm_sbn: np.ndarray, states: np.ndarray) -> np.ndarray:
     return out
 
 
-def stationary_distribution(tpm: np.ndarray) -> np.ndarray:
-    """Stationary distribution pi = pi T (unique for an ergodic chain)."""
+def _is_stationary(pi: np.ndarray, tpm: np.ndarray, atol: float = 1e-9) -> bool:
+    return bool(
+        np.all(np.isfinite(pi))
+        and pi.min() > -atol
+        and abs(pi.sum() - 1.0) < 1e-6
+        and np.allclose(pi @ tpm, pi, atol=atol)
+    )
+
+
+def stationary_distribution(tpm: np.ndarray, max_squarings: int = 80) -> np.ndarray:
+    """
+    Stationary distribution pi = pi T.
+
+    For an irreducible chain it is unique and solved directly. For a
+    reducible chain (several closed classes, e.g. a noise-free XOR loop), or
+    when the direct solution is not a valid stationary distribution
+    (numerically reducible chains, e.g. a very large ``beta``), the Cesaro
+    limit reached from the uniform distribution is returned: the limit of the
+    lazy chain (I + T) / 2, which has the same stationary distributions and is
+    aperiodic, computed by repeated squaring. It is the unique stationary
+    distribution whenever that exists.
+    """
+    from scipy.sparse.csgraph import connected_components
+
     tpm = np.asarray(tpm, dtype=float)
     k = tpm.shape[0]
+    n_classes = connected_components(tpm > 0, directed=True, connection="strong")[0]
     a = tpm.T - np.eye(k)
     a[-1, :] = 1.0
     b = np.zeros(k)
     b[-1] = 1.0
-    pi = np.linalg.solve(a, b)
-    pi = np.clip(pi, 0.0, None)
-    return pi / pi.sum()
+    pi = None
+    if n_classes == 1:
+        try:
+            pi = np.linalg.solve(a, b)
+        except np.linalg.LinAlgError:
+            pi = None
+    if pi is not None and _is_stationary(pi, tpm):
+        pi = np.clip(pi, 0.0, None)
+        return pi / pi.sum()
+    lazy = 0.5 * (np.eye(k) + tpm)
+    p = np.full(k, 1.0 / k)
+    for _ in range(int(max_squarings)):
+        q = p @ lazy
+        if np.max(np.abs(q - p)) < 1e-13:
+            break
+        lazy = lazy @ lazy
+        lazy /= lazy.sum(axis=1, keepdims=True)
+        p = np.full(k, 1.0 / k) @ lazy
+    p = np.clip(p, 0.0, None)
+    p = p / p.sum()
+    if not _is_stationary(p, tpm, atol=1e-7):
+        raise ValueError("stationary distribution did not converge")
+    return p
 
 
 def _sigmoid(x):
@@ -1565,7 +1613,10 @@ def family_b_network(
                     joint[row, dj::2] = per_driver[di][s] * p_d
         pi_joint = stationary_distribution(joint).reshape(k, 2)
         p_s = pi_joint.sum(axis=1, keepdims=True)
-        post = pi_joint / np.where(p_s > 0, p_s, 1.0)
+        # P(d | s) under stationarity; for states of zero stationary mass the
+        # conditional is undefined and the driver prior (1/2, 1/2) is used,
+        # i.e. those rows equal the interventional TPM.
+        post = np.where(p_s > 0, pi_joint / np.where(p_s > 0, p_s, 1.0), 0.5)
         observational = post[:, [0]] * per_driver[0] + post[:, [1]] * per_driver[1]
     else:
         J = np.eye(n) * float(self_coupling)

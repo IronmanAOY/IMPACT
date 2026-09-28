@@ -131,6 +131,13 @@ witnesses:
       IIT-conformant ground truth needs directional (unidirectional) cuts;
       bidirectional cuts can score a feedforward chain above zero. Report the
       witness as unrealised when the estimator's cut family cannot separate it.
+      Removing every backward edge makes the hub a relay: it still receives
+      (from upstream modules) and broadcasts (to downstream modules), but no
+      periphery module both sends to and receives from it, so the NAS
+      receive-and-return is only partly realised (a receive-and-return loop
+      is itself a recurrent loop, so NAS = 1 with IIM = 0 cannot hold exactly
+      on one grain). A NAS deficit measured on this witness is confounded,
+      not an estimator error.
 
   - id: W_SRPI_no_efference
     class: single_deficit

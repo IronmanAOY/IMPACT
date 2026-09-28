@@ -94,7 +94,21 @@ OPTIONAL_MODES = {
     "NAS": {"mode": "capacity"},
     "SRPI": {"mode": "agency"},
 }
-EVENT_NULL_SURROGATE = "circular_shift"
+# Event-level null families of RAM and SRPI (the pipeline's declared defaults,
+# see ``synergy_ci.MPC_NULL_KINDS_DEFAULT`` of the evidence layer): RAM shifts
+# the whole event train rigidly by >= EVENT_NULL_MIN_SHIFT_FRACTION of the run
+# (relative task timing kept, alignment with the recording destroyed); SRPI
+# re-deals the self_caused / other_caused labels within slow-phase bins
+# (counts kept). Surrogates act on the events table, and the estimator is fed
+# the bundle parsed from the surrogate table (and that table, for optional
+# modes that read ``events``), so onsets and table always agree.
+EVENT_NULL_KINDS = {"RAM": "onset_jitter", "SRPI": "label_permutation"}
+EVENT_NULL_MIN_SHIFT_FRACTION = 0.1
+SRPI_NULL_LABELS = ("self_caused", "other_caused")
+EVENT_NULL_STRATUM = "phase_bin"
+# Estimator failures on a degenerate surrogate count as failed draws (as in
+# ``impact_pipeline.nulls``); anything else propagates.
+_NULL_DRAW_ERRORS = (ValueError, ArithmeticError, np.linalg.LinAlgError)
 
 _EVENT_COLUMN_DESCRIPTIONS = {
     "onset": "Event onset (s) from the start of the run.",
@@ -482,20 +496,6 @@ def _details_value(d):
     return d
 
 
-def _circular_shift_null(fn, ts: np.ndarray, n: int, seed: int) -> list:
-    """Event-locked null: independent circular shift of the whole node x time
-    array relative to the (fixed) event times, >= 10% of the run."""
-    rng = np.random.default_rng(int(seed))
-    t = ts.shape[1]
-    lo = max(1, int(np.ceil(0.1 * t)))
-    vals = []
-    for _ in range(int(n)):
-        shift = int(rng.integers(lo, t - lo + 1))
-        v = fn(np.roll(ts, shift, axis=1))
-        vals.append(float(_details_value(v)) if v is not None else np.nan)
-    return vals
-
-
 def _null_moments(vals) -> Tuple[float, float, int]:
     arr = np.asarray(vals, dtype=float)
     arr = arr[np.isfinite(arr)]
@@ -505,22 +505,93 @@ def _null_moments(vals) -> Tuple[float, float, int]:
     return float(np.mean(arr)), sd, int(arr.size)
 
 
-def _event_null(principle, fn, ts, events, n, seed):
-    """RAM/SRPI null: ``impact_pipeline.nulls.component_null`` when available,
-    otherwise the circular-shift fallback above."""
+def _event_null_kwargs(principle: str, n_time: int, dt: float) -> dict:
+    """Surrogate options of the RAM/SRPI null (see ``EVENT_NULL_KINDS``)."""
+    if EVENT_NULL_KINDS[principle] == "onset_jitter":
+        t_max = float(n_time) * float(dt)
+        return {
+            "common": True,
+            "t_max": t_max,
+            "min_shift": EVENT_NULL_MIN_SHIFT_FRACTION * t_max,
+        }
+    return {"among": SRPI_NULL_LABELS, "stratify_col": EVENT_NULL_STRATUM}
+
+
+def _local_event_surrogate(kind, events: pd.DataFrame, rng, **kw) -> pd.DataFrame:
+    """
+    One event surrogate of ``kind`` computed in the bench (same families as
+    ``impact_pipeline.nulls.make_surrogate`` for events tables):
+    ``onset_jitter`` with ``common=True`` shifts every onset by one draw of
+    U(min_shift, t_max - min_shift) and wraps it into [0, t_max);
+    ``label_permutation`` exchanges the ``trial_type`` labels in ``among``
+    within strata of ``stratify_col`` (label counts per stratum kept).
+    """
+    out = events.copy()
+    if kind == "onset_jitter":
+        if not kw.get("common"):
+            raise ValueError("the bench RAM null is the common (rigid) shift")
+        t_max = float(kw["t_max"])
+        lo, hi = float(kw.get("min_shift", 0.0)), t_max - float(kw.get("min_shift", 0))
+        if not (np.isfinite(t_max) and t_max > 0) or hi < lo:
+            raise ValueError("run too short for the rigid event-train shift")
+        shift = float(rng.uniform(lo, hi))
+        onset = pd.to_numeric(out["onset"], errors="coerce").to_numpy(dtype=float)
+        ok = np.isfinite(onset)
+        onset[ok] = np.mod(onset[ok] + shift, t_max)
+        out["onset"] = onset
+        return out
+    if kind == "label_permutation":
+        labels = out["trial_type"].to_numpy(dtype=object, copy=True)
+        rows = np.flatnonzero(out["trial_type"].isin(tuple(kw["among"])).to_numpy())
+        col = kw.get("stratify_col")
+        if col is not None and col in out.columns:
+            strata = out[col].astype(object).where(out[col].notna(), "__nan__")
+            strata = strata.to_numpy()[rows]
+        else:
+            strata = np.zeros(rows.size, dtype=object)
+        dealt = labels[rows].copy()
+        for key in pd.unique(strata):
+            idx = np.flatnonzero(strata == key)
+            dealt[idx] = dealt[idx][rng.permutation(idx.size)]
+        labels[rows] = dealt
+        out["trial_type"] = labels
+        return out
+    raise ValueError(f"unknown event surrogate kind {kind!r}")
+
+
+def _event_null(principle, fn, ts, events, n, seed, dt):
+    """
+    RAM/SRPI null distribution of ``fn(ts, events_table)`` under the declared
+    event surrogate (``EVENT_NULL_KINDS``). ``impact_pipeline.nulls`` is used
+    when it can be imported (``component_null`` returns a ``ComponentNull``
+    with the finite ``samples``); otherwise the same surrogate family is
+    computed here. Only a missing module selects the local implementation:
+    errors of an installed ``nulls`` module propagate. Returns
+    ``(values, kind, implementation, n_failed)``.
+    """
+    kind = EVENT_NULL_KINDS[principle]
+    kwargs = _event_null_kwargs(principle, ts.shape[1], dt)
     try:
         from impact_pipeline import nulls  # optional (stream I1)
-
+    except ImportError:
+        nulls = None
+    if nulls is not None:
         res = nulls.component_null(
-            fn, ts, events, surrogate=EVENT_NULL_SURROGATE, n=int(n), seed=int(seed)
+            fn, ts, events, kind=kind, n=int(n), seed=int(seed), **kwargs
         )
-        vals = res.get("values") if isinstance(res, dict) else res
-        return list(np.asarray(vals, dtype=float).reshape(-1)), "nulls.component_null"
-    except Exception:
-        return (
-            _circular_shift_null(lambda x: fn(x, events), ts, n, seed),
-            "circular_shift_fallback",
-        )
+        samples = np.asarray(res.samples, dtype=float).reshape(-1)
+        return samples.tolist(), kind, "impact_pipeline.nulls", int(res.n_failed)
+    rng = np.random.default_rng(int(seed))
+    vals = []
+    for _ in range(int(n)):
+        ev_s = _local_event_surrogate(kind, events, rng, **kwargs)
+        try:
+            v = float(_details_value(fn(ts, ev_s)))
+        except _NULL_DRAW_ERRORS:
+            v = np.nan
+        vals.append(v)
+    n_failed = int(np.sum(~np.isfinite(np.asarray(vals, dtype=float))))
+    return vals, kind, "bench_local", n_failed
 
 
 BEARER_MODES = ("system", "principle")
@@ -582,11 +653,13 @@ def run_in_memory(
     principle (:func:`bearer_view`). With ``null_surrogates > 0`` each
     component gets a null family: the estimators' own surrogate calibration
     for PDI (phase-randomised), NAS (circular shift) and IIM (circular shift of
-    macro nodes; statistic Delta_Psi in bits), and an event-locked null for
-    RAM/SRPI (circular shift of the time series against the fixed events).
+    macro nodes; statistic Delta_Psi in bits), and the declared event nulls
+    of RAM (rigid event-train shift) and SRPI (self/other label permutation
+    within phase bins); see ``EVENT_NULL_KINDS``.
     Returns per-component ``estimate`` (raw statistic), ``value`` (returned
-    value), ``null_mean``, ``null_sd``, ``n_null``, ``defined``, ``reason``,
-    ``bearer_id`` and ``seconds``, plus the optional ``estimator_modes`` used.
+    value), ``null_mean``, ``null_sd``, ``n_null``, ``null_family``,
+    ``null_impl``, ``n_null_failed``, ``defined``, ``reason``, ``bearer_id``
+    and ``seconds``, plus the optional ``estimator_modes`` used.
     """
     from impact_pipeline import mpc_metrics as mm
     from impact_pipeline.event_parsing import events_table_to_bundle
@@ -618,6 +691,8 @@ def run_in_memory(
         n_null=0,
         null_family=None,
         statistic="value",
+        null_impl=None,
+        n_null_failed=0,
     ):
         value = float(_details_value(details)) if details is not None else np.nan
         reason = details.get("undefined_reason") if isinstance(details, dict) else None
@@ -630,6 +705,8 @@ def run_in_memory(
             "null_sd": float(null_sd),
             "n_null": int(n_null),
             "null_family": null_family,
+            "null_impl": null_impl,
+            "n_null_failed": int(n_null_failed),
             "defined": defined,
             "reason": None if defined else (reason or "undefined"),
             "bearer_id": view["bearer_id"],
@@ -642,28 +719,42 @@ def run_in_memory(
             return {}, {}
         return _optional_kwargs(principle, fn, events)
 
+    def _event_inputs(ev, kw):
+        """Bundle and optional-mode kwargs for an events table (the observed
+        one or an event surrogate), so both always describe the same events."""
+        if ev is None or ev is events:
+            return bundle, kw
+        kw = dict(kw)
+        if "events" in kw:
+            kw["events"] = ev
+        return events_table_to_bundle(ev), kw
+
+    def _event_component(principle, fn, view, seed, t0):
+        d = fn(view["ts"])
+        est = float(_details_value(d))
+        nm = nsd = np.nan
+        nn = n_failed = 0
+        fam = impl = None
+        if k_null > 0 and np.isfinite(est):
+            vals, fam, impl, n_failed = _event_null(
+                principle, fn, view["ts"], events, k_null, seed, dt
+            )
+            nm, nsd, nn = _null_moments(vals)
+        _record(principle, t0, d, est, view, nm, nsd, nn, fam, "value", impl, n_failed)
+
     if "RAM" in metrics:
         t0 = time.perf_counter()
         view = bearer_view(system, "RAM", bearer_mode)
-        kw, used = _modes("RAM", mm.compute_RAM)
+        ram_kw, used = _modes("RAM", mm.compute_RAM)
         out["estimator_modes"]["RAM"] = used
 
         def ram_fn(x, ev=None):
+            b, kw = _event_inputs(ev, ram_kw)
             return mm.compute_RAM(
-                x, tr=dt, stimulus_onsets=bundle, return_details=True, **p["RAM"], **kw
+                x, tr=dt, stimulus_onsets=b, return_details=True, **p["RAM"], **kw
             )
 
-        d = ram_fn(view["ts"])
-        est = float(_details_value(d))
-        nm = nsd = np.nan
-        nn = 0
-        fam = None
-        if k_null > 0 and np.isfinite(est):
-            vals, fam = _event_null(
-                "RAM", ram_fn, view["ts"], events, k_null, null_seed
-            )
-            nm, nsd, nn = _null_moments(vals)
-        _record("RAM", t0, d, est, view, nm, nsd, nn, fam)
+        _event_component("RAM", ram_fn, view, null_seed, t0)
 
     if "PDI" in metrics:
         t0 = time.perf_counter()
@@ -776,31 +867,22 @@ def run_in_memory(
     if "SRPI" in metrics:
         t0 = time.perf_counter()
         view = bearer_view(system, "SRPI", bearer_mode)
-        kw, used = _modes("SRPI", mm.compute_SRPI)
+        srpi_kw, used = _modes("SRPI", mm.compute_SRPI)
         out["estimator_modes"]["SRPI"] = used
 
         def srpi_fn(x, ev=None):
+            b, kw = _event_inputs(ev, srpi_kw)
             return mm.compute_SRPI(
                 x,
                 tr=dt,
-                self_onsets=bundle["self_onsets"],
-                nonself_onsets=bundle["nonself_onsets"],
+                self_onsets=b["self_onsets"],
+                nonself_onsets=b["nonself_onsets"],
                 return_details=True,
                 **p["SRPI"],
                 **kw,
             )
 
-        d = srpi_fn(view["ts"])
-        est = float(_details_value(d))
-        nm = nsd = np.nan
-        nn = 0
-        fam = None
-        if k_null > 0 and np.isfinite(est):
-            vals, fam = _event_null(
-                "SRPI", srpi_fn, view["ts"], events, k_null, null_seed + 1
-            )
-            nm, nsd, nn = _null_moments(vals)
-        _record("SRPI", t0, d, est, view, nm, nsd, nn, fam)
+        _event_component("SRPI", srpi_fn, view, null_seed + 1, t0)
 
     return out
 

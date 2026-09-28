@@ -26,6 +26,7 @@ import contextlib
 import json
 import logging
 import math
+import multiprocessing
 import os
 import shlex
 import subprocess
@@ -125,8 +126,10 @@ def confirmatory_guard(repo_root=REPO_ROOT, freeze_tag: Optional[str] = None) ->
     """
     Code identity for a confirmatory run. Raises ``RuntimeError`` unless the
     checkout is a git work tree with no modified tracked files and no
-    untracked files under ``src/`` or ``scripts/``; with ``freeze_tag`` the tag
-    must exist and be an ancestor of (or equal to) HEAD.
+    untracked files under ``src/`` or ``scripts/``, and ``freeze_tag`` (the
+    code-freeze tag; required) exists, is an ancestor of (or equal to) HEAD
+    and has the same ``src/`` and ``scripts/`` trees as HEAD (later commits
+    may only touch other paths, e.g. documentation or results).
     """
     from impact_pipeline.provenance import collect_code_version
 
@@ -149,30 +152,35 @@ def confirmatory_guard(repo_root=REPO_ROOT, freeze_tag: Optional[str] = None) ->
             "files under src/ or scripts/)"
         )
     info["tags_at_head"] = (_git(root, "tag", "--points-at", "HEAD") or "").split()
-    if freeze_tag:
-        tag_sha = _git(root, "rev-list", "-n", "1", str(freeze_tag))
-        if not tag_sha:
-            raise RuntimeError(f"freeze tag {freeze_tag!r} not found")
-        ok = (
+    if not freeze_tag:
+        raise RuntimeError(
+            "--confirmatory needs the code-freeze tag (--freeze-tag): "
+            "confirmatory seeds and family C run only on frozen code"
+        )
+    tag_sha = _git(root, "rev-list", "-n", "1", str(freeze_tag))
+    if not tag_sha:
+        raise RuntimeError(f"freeze tag {freeze_tag!r} not found")
+
+    def _git_ok(*args) -> bool:
+        return (
             subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(root),
-                    "merge-base",
-                    "--is-ancestor",
-                    tag_sha,
-                    "HEAD",
-                ],
+                ["git", "-C", str(root), *args],
                 capture_output=True,
                 check=False,
+                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
             ).returncode
             == 0
         )
-        if not ok:
-            raise RuntimeError(f"HEAD does not descend from freeze tag {freeze_tag!r}")
-        info["freeze_tag"] = str(freeze_tag)
-        info["freeze_tag_sha"] = tag_sha
+
+    if not _git_ok("merge-base", "--is-ancestor", tag_sha, "HEAD"):
+        raise RuntimeError(f"HEAD does not descend from freeze tag {freeze_tag!r}")
+    if not _git_ok("diff", "--quiet", tag_sha, "HEAD", "--", "src", "scripts"):
+        raise RuntimeError(
+            f"src/ or scripts/ changed since freeze tag {freeze_tag!r}: "
+            "confirmatory runs must use the frozen code"
+        )
+    info["freeze_tag"] = str(freeze_tag)
+    info["freeze_tag_sha"] = tag_sha
     info["confirmatory"] = True
     return info
 
@@ -372,6 +380,9 @@ def flatten_record(rec: dict) -> dict:
         row[f"{p}_value"] = c.get("value")
         row[f"{p}_null_mean"] = nm
         row[f"{p}_null_sd"] = nsd
+        row[f"{p}_n_null"] = c.get("n_null")
+        row[f"{p}_null_family"] = c.get("null_family")
+        row[f"{p}_null_impl"] = c.get("null_impl")
         z = None
         if est is not None and nm is not None and nsd not in (None, 0):
             z = (est - nm) / nsd
@@ -512,17 +523,25 @@ def run_tasks(
     Run tasks (skipping task ids already completed in ``out_dir``) and append
     records to ``results.jsonl``; ``results.csv`` and ``run_manifest.json`` are
     rewritten at the end. Returns the records produced by this call.
+    ``confirmatory=True`` requires provenance whose ``code_version`` came from
+    :func:`confirmatory_guard` (frozen, clean code).
     """
     check_seed_policy(tasks, confirmatory)
+    prov = provenance if provenance is not None else collect_provenance()
+    if confirmatory and not (prov.get("code_version") or {}).get("confirmatory"):
+        raise RuntimeError(
+            "confirmatory runs need provenance from confirmatory_guard "
+            "(clean checkout of the code-freeze tag)"
+        )
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     jsonl = out / RESULTS_JSONL
     done = load_done(jsonl) if resume else set()
     todo = [t for t in tasks if t.task_id not in done]
-    prov = provenance if provenance is not None else collect_provenance()
     small_prov = {
         "code_version": prov.get("code_version"),
         "bench_version": BENCH_VERSION,
+        "confirmatory": bool(confirmatory),
     }
     records = []
     t_start = time.time()
@@ -548,10 +567,15 @@ def run_tasks(
                         )
                     )
         else:
+            # Spawned (not forked) workers start a fresh interpreter, so the
+            # one-thread BLAS/OpenMP settings take effect on every platform
+            # (a forked child inherits the parent's initialised BLAS pool).
             with (
                 _single_threaded_children(),
                 concurrent.futures.ProcessPoolExecutor(
-                    max_workers=int(n_workers), initializer=_worker_init
+                    max_workers=int(n_workers),
+                    initializer=_worker_init,
+                    mp_context=multiprocessing.get_context("spawn"),
                 ) as ex,
             ):
                 futs = [
