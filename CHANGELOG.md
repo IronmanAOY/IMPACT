@@ -21,29 +21,56 @@ unchanged unless listed under "Changed".
   component status PRESENT / ABSENT / UNDEFINED, strong-Kleene OR over the
   evidence channels of a principle and AND over the necessity set, and the MPC
   verdict `EXCLUDED` / `MPC_CONSISTENT` / `UNDETERMINED` with stable reason codes
-  (`MISSING`, `NO_NULL_CALIBRATION`, `INCONCLUSIVE`, `UNDEFINED`,
-  `NOT_IMPLEMENTED`, `ESTIMATOR_NOT_VALIDATED`, `ABSENT`, `BEARER_MISMATCH`,
-  `PROTOCOL_MISMATCH`). The verdict is recoverable from its reasons.
-  Two-anchor normalisation, the MPC degree (capped weighted power mean,
-  geometric by default, only for `MPC_CONSISTENT` rows), `weakest_link`,
-  `degree_interval` (delta method and bootstrap), `verdict_stability`, the
-  JSON `ApplicabilityRegistry` of validated estimator configurations and the
-  `bearer_coherence` diagnostic. Property tests on seeded random configurations
-  cover missingness safety, monotone resolution, determinacy iff all completions
-  agree, veto, permutation symmetry, channel disjunction and reason-code
-  decomposability.
+  (`MISSING`, `MISSING_CHANNEL`, `NO_NULL_CALIBRATION`, `NO_SAMPLING_SE`,
+  `INVALID_ANCHORS`, `INCONCLUSIVE`, `UNDEFINED` (e.g. `DEGENERATE_NULL`,
+  `INVALID_SE`, `NULL_FAMILY_MISMATCH`), `NOT_IMPLEMENTED`,
+  `ESTIMATOR_NOT_VALIDATED`, `ABSENT`, `BEARER_MISMATCH`, `PROTOCOL_MISMATCH`,
+  `SOURCE_INCOHERENT`). The verdict is recoverable from its reasons. The
+  component status is judged on the construct scale `c = (m - nu)/(rho - nu)`
+  with a sampling SE (bootstrap/jackknife, plus the Monte-Carlo error of the
+  null mean and the reference SE), declared cutoffs `(z, delta)` and
+  Student-t bounds for SEs from few replicates (`se_df`, Welch-Satterthwaite
+  degrees of freedom). `Protocol` (JSON schema `impact-mpc-protocol/2`, SHA-256
+  hash): necessity set, declared channels, cutoffs, alpha, null families,
+  reference (cohort high state or external), source rule, estimator modes and
+  bearer nodes. `joint_dependence` (single-source constraint: Gaussian total
+  correlation of the node sets' summaries against independent circular
+  shifts). Applicability registry schema `impact-mpc-registry/2` with entry
+  criteria (null false-PRESENT rate, recovery slope, forward-model substrates
+  for human EEG/fMRI). The MPC degree (capped weighted power mean of the
+  construct-scale components, geometric by default, only for `MPC_CONSISTENT`
+  rows), `weakest_link`, `degree_interval` (delta method and bootstrap),
+  `verdict_stability` and the `bearer_coherence` diagnostic. Property tests on
+  seeded random configurations cover missingness safety, monotone resolution,
+  determinacy iff all completions agree, veto, permutation symmetry, channel
+  disjunction, reason-code decomposability, declared channels without items
+  and missing SEs.
 - **Generic nulls** (`impact_pipeline.nulls`): circular shift, uni- and
   multivariate phase randomisation, IAAFT, label permutation (optionally
   stratified by phase bin), onset jitter and `component_null`, with seeds derived
-  per run.
+  per run; the moving-block bootstrap `block_bootstrap` /
+  `component_bootstrap_se` (events move with their blocks, yoked pairs stay
+  intact).
 - **Verdict wiring**: `compute_synergy_ci(..., null_surrogates, necessity_set,
-  applicability_registry, null_seed, null_kinds)` and the CLI flags
-  `--null-surrogates K`, `--necessity-set`, `--applicability-registry`. New
-  step-2 columns `MPC_verdict`, `MPC_reason`, `MPC_degree`, `MPC_necessity_set`,
-  `MPC_null_surrogates`, `MPC_null_seed`, `MPC_null_families` and per principle
-  `<P>_status`, `<P>_margin`, `<P>_estimate`, `<P>_null_mean`, `<P>_null_sd`,
-  `<P>_null_n`. With K = 0 every verdict is `UNDETERMINED`
-  (`NO_NULL_CALIBRATION`).
+  applicability_registry, null_seed, null_kinds, protocol, bootstrap_se,
+  bootstrap_block_len)` and the CLI flags `--protocol`, `--null-surrogates K`,
+  `--bootstrap-se B`, `--bootstrap-block-len`, `--necessity-set`,
+  `--applicability-registry`. New step-2 columns `MPC_verdict`, `MPC_reason`,
+  `MPC_degree`, `MPC_necessity_set`, `MPC_null_surrogates`, `MPC_null_seed`,
+  `MPC_null_families`, `MPC_bootstrap_se`, `MPC_bootstrap_block_len`,
+  `MPC_protocol_hash`, `MPC_joint_dependence(_p)` and per principle
+  `<P>_status`, `<P>_margin`, `<P>_margin_absent`, `<P>_estimate`,
+  `<P>_null_mean`, `<P>_null_sd`, `<P>_null_n`, `<P>_se`, `<P>_se_df`,
+  `<P>_boot_n`, `<P>_boot_failed`, `<P>_c`, `<P>_c_se`, `<P>_c_df`,
+  `<P>_c_lower`, `<P>_c_upper`, `<P>_reference(_se)`, `<P>_estimator`,
+  `<P>_mode_reason`, `<P>_channels`. Estimator modes come from the protocol
+  (or the params dicts), with declared per-run fallbacks for modes that need
+  inputs a run may lack (RAM `update_fallback`, SRPI `mode_fallback`). With
+  K = 0 the legacy modes are `NO_NULL_CALIBRATION` and with B = 0 every
+  component is `NO_SAMPLING_SE`, so every verdict is `UNDETERMINED`.
+- **Protocols** (`protocols/`): `mpc_default_v1.json` (default for empirical
+  data) and the provisional MPC-Bench protocol `mpc_bench_v1.json`, with their
+  rationale and hashes.
 - **Null calibration of PDI, NAS and IIM** (`null_surrogates=K`): excess over
   surrogates, z-score, one-sided p-value and calibrated value. IIM reports the
   integration mass `Delta_Psi` (bits) and `canonical_calibrated`, which is about
@@ -57,9 +84,16 @@ unchanged unless listed under "Changed".
     return Gaussian transfer entropy between a declared hub and the periphery
     against block circular-shift surrogates; the weaker direction is gated;
     metastability and L/B/H are profile descriptors; `confounds` option.
+  - `compute_PDI(mode="repertoire")`: the repertoire of distinguishable
+    states in bits, labelled (cross-validated decoding of declared states,
+    Miller-Madow mutual information, block label-permutation null) or
+    unlabelled (held-out count of recurring, persisting, separated states
+    against circular-shift or Fourier surrogates); selectable in the pipeline
+    through the protocol (unlabelled) and used by MPC-Bench.
   - `compute_PDI(mode="surrogate_excess")`: repertoire entropy, LZ76 diversity
     and binarised effective dimensionality as signed excess over multivariate
-    spectrum-preserving surrogates.
+    spectrum-preserving surrogates; a documented negative result (the Gaussian
+    null is maximum-entropy for the given spectra), kept for reference.
   - `compute_RAM`: typed `impact_channel` evidence channels and
     `compute_RAM_by_channel`; `update="prediction_error"` (Rescorla-Wagner fit to
     logged choices and rewards, permutation null); declared `adaptation_locus`.
@@ -77,10 +111,17 @@ unchanged unless listed under "Changed".
   catalogue (`witnesses.yaml`), export to the pipeline layout, an in-memory
   runner, factorial and dose-response designs, a process-pool runner with
   resume, sharding, provenance and a PBS Pro array template, a development /
-  confirmatory seed policy with a code-freeze guard, rival attribution rules
+  confirmatory seed policy with a code-freeze guard, rival decision rules
   (union, count-k, means, weakest link, naive Bayes, product of credences,
   logistic classifier, single markers) and comparators (LZ76, closed-form
-  Gaussian Φ_R for VAR(1)).
+  Gaussian Φ_R for VAR(1)). MPC-Bench v2 adds family C manipulation checks, the
+  whole-brain Hopf generator on the shipped connectome with EEG-like and
+  BOLD-like forward models, adversarial constructions, graded patchworks, a
+  rule audit on estimated statuses with risk-coverage curves
+  (`scripts/benchmark_attribution_rules.py`), jackknife SEs (`--se-groups`,
+  G - 1 degrees of freedom), verdicts under the bench protocol (`--protocol`)
+  whose external reference is the positive control on development seeds
+  (`scripts/bench_reference.py`), and PDI in `repertoire` mode.
 - **HLRS Hunter PBS Pro backend** (default for `--execution-mode hunter`;
   `--hunter-scheduler pbs|slurm`): `*.pbs` scripts with
   `select=1:node_type=mi300a`, walltime checks (24 h; 25 min on `test`), arrays
@@ -91,7 +132,11 @@ unchanged unless listed under "Changed".
   queue; skip-if-complete shards, per-cut checkpoints, atomic writes, per-task
   timing JSON and `timing_summary.json`; `--hunter-stage status`;
   `--hunter-iim-null-surrogates K` (surrogate runs in the campaign, reduced with
-  the same function as the local path); `iim_results.csv` and
+  the same function as the local path); `--hunter-iim-bootstrap-se B`
+  (block-bootstrap replicate runs, drawn as the local pipeline draws them, so
+  the reducer reports `Delta_Psi_bootstrap_se` and Hunter IIM evidence has a
+  sampling SE); the protocol's IIM options and bearer nodes reach the
+  campaign; `iim_results.csv` and
   `cache/hunter_iim_results.csv`; `--repo-root` / `IMPACT_REPO_ROOT`;
   configurable packing, shard and worker counts; campaigns can be built on login
   nodes without an APU.
@@ -112,6 +157,14 @@ unchanged unless listed under "Changed".
 - Packaging: `pyproject.toml` (installable package, extras `dashboard`,
   `hunter`, `dev`), `LICENSE`, `licenses/THIRD_PARTY_NOTICES.md`,
   `.dockerignore`, `.flake8`, pre-commit and GitHub Actions workflows that work.
+- **Analysis and preregistration tooling**: `impact_pipeline.necessity` (NCA
+  ceilings, symmetric three-outcome necessity criteria, verdict-level
+  summaries), `scripts/audit_aggregation.py`, `scripts/necessity_power.py`
+  (component and verdict level), `scripts/simulate_rule_recovery.py`,
+  `scripts/definedness_audit.py`, `scripts/null_calibration.py` (v2 evidence
+  rule under a protocol), `scripts/run_predictions.py` with the draft
+  hypothesis registry `predictions/registry.yaml` (H0-H10) and its schema,
+  and one script per figure (`scripts/figures/`).
 - Documentation: `docs/HLRS_HUNTER_RUNBOOK.md`, `docs/ARCHITECTURE.md`, this
   changelog; `docs/metrics.md` rewritten against the code.
 
@@ -121,7 +174,12 @@ unchanged unless listed under "Changed".
   credibly absent), `MPC_CONSISTENT` (all principles present; not an
   attribution of consciousness) and `UNDETERMINED`. The component status is
   judged on a two-anchor construct scale with a sampling SE and declared
-  smallest effects of interest (`docs/metrics.md`, section 8).
+  smallest effects of interest (`docs/metrics.md`, section 8). `<P>_margin`
+  is the construct-scale presence margin `c_lower - z`;
+  `assemble_mpc_degree(df, weights, p, cap)` reads the `<P>_c` columns and
+  returns the DataFrame; the evidence reference comes from the protocol only
+  (`--ci-reference` affects the legacy CI); a tie in `verdict_stability` gives
+  `UNDETERMINED`.
 - **Three-valued CI (D1).** An undefined component is NaN, never 0; CI is NaN
   when a weighted component or its reference is unusable, with `CI_defined`,
   `CI_missing` and `CI_reference` columns; statistics exclude undefined rows and

@@ -74,8 +74,12 @@ one node.
   `--iim-max-nodes` nodes (`docs/metrics.md`, section 5).
 - Phase-1 and cut shards are independent and run concurrently.
 - Surrogate-null calibration of IIM (`--hunter-iim-null-surrogates K`) adds
-  K surrogate runs per real run. They are sharded like real runs, so the
-  campaign costs (K+1) times as much.
+  K surrogate runs per real run, and the sampling SE of IIM
+  (`--hunter-iim-bootstrap-se B`) adds B block-bootstrap replicate runs per
+  real run. Both are sharded like real runs, so the campaign costs about
+  (K+B+1) times as much. Without them the IIM evidence has no null
+  (`NO_NULL_CALIBRATION:IIM`) or no sampling SE (`NO_SAMPLING_SE:IIM`), and
+  every verdict with IIM in the necessity set is UNDETERMINED.
 - Nothing in the campaign downloads anything. Compute nodes have no internet.
 - Not done on Hunter: dataset downloads, fMRIPrep (Docker is not available on
   Hunter), and normally the time-series extraction ("preprocessing"). See
@@ -586,17 +590,23 @@ guess IIM sizes: the cost of IIM grows steeply with the number of nodes.
 | IIM subsystem size | `--iim-max-nodes` | as given by the author. The pipeline uses 3 bins per node (3^N states; above 1500 states the bins drop to 2). Cost grows steeply with N |
 | IIM cut sample | `--iim-n-parts` | unset = exhaustive |
 | IIM mechanism/purview sizes | `--iim-max-mechanism-size`, `--iim-max-purview-size` | unset = all |
+| MPC protocol | `--protocol` | e.g. `protocols/mpc_default_v1.json` (estimator modes, cutoffs, null families, reference); its hash is recorded, and the campaign computes IIM with its IIM options |
 | IIM surrogate runs per real run | `--hunter-iim-null-surrogates K` | e.g. 19 (for `IIM_null_p`, K >= 19) |
-| Null surrogates for the evidence layer | `--null-surrogates K` | e.g. 19; 0 = every verdict UNDETERMINED |
-| Necessity set | `--necessity-set` | default all five |
+| IIM bootstrap replicate runs per real run | `--hunter-iim-bootstrap-se B` | as given by the author (e.g. the same B as `--bootstrap-se`); 0 = IIM has no sampling SE |
+| Null surrogates for the evidence layer | `--null-surrogates K` | e.g. 19; 0 = every legacy-mode component `NO_NULL_CALIBRATION` |
+| Bootstrap SE for the evidence layer | `--bootstrap-se B`, `--bootstrap-block-len L` | e.g. 100; 0 = every verdict UNDETERMINED (`NO_SAMPLING_SE`); block default ceil(sqrt(n_time)) samples |
+| Necessity set | `--necessity-set` | default all five (must match `--protocol`) |
 | Applicability registry | `--applicability-registry` | JSON path, if given |
-| CI reference | `--ci-reference` | default `cohort_high_state` |
+| CI reference | `--ci-reference` | legacy CI only; default `cohort_high_state` |
 | Walltimes | `IMPACT_HUNTER_PHASE1_TIME`, `..._CUT_TIME`, `..._REDUCE_TIME` | defaults 24 h / 24 h / 4 h |
 | Shards per run | `--hunter-phase1-shards-per-run`, `--hunter-cut-shards-per-run` | defaults 16 / 256 |
 
-With `--null-surrogates K > 0` the finalize job also computes K surrogate
-evaluations of RAM, PDI, NAS and SRPI per run on one node. Raise
-`IMPACT_HUNTER_REDUCE_TIME` (at most 24 h) if the author expects this to be long.
+With `--null-surrogates K > 0` and `--bootstrap-se B > 0` the finalize job
+also computes K surrogate and B bootstrap evaluations of RAM, PDI, NAS and SRPI
+per run on one node (the IIM ones come from the campaign). Raise
+`IMPACT_HUNTER_REDUCE_TIME` (at most 24 h) if the author expects this to be
+long. The finalize job uses the evidence options of the build (they are stored
+in the campaign manifest), so its command line does not repeat them.
 
 ### 9.2 Build
 
@@ -620,8 +630,9 @@ nice -n 19 python3 run_pipeline.py --execution-mode hunter --hunter-stage build-
     --out-dir "$WS/outputs/ds003171" \
     --mpc-metrics RAM PDI NAS IIM SRPI \
     --iim-max-nodes <N> \
-    --hunter-iim-null-surrogates <K> \
-    --null-surrogates <K>
+    --protocol protocols/mpc_default_v1.json \
+    --hunter-iim-null-surrogates <K> --null-surrogates <K> \
+    --hunter-iim-bootstrap-se <B> --bootstrap-se <B>
 ```
 
 What happens:
@@ -630,9 +641,9 @@ What happens:
   available on the build host and the campaign is prepared on the CPU. The TPMs
   are numerically identical; the jobs still request `hunter-apu`. This warning
   is expected.
-- The build estimates one TPM per run and per surrogate run. This is far cheaper
-  than the campaign, but it grows with the number of runs and with K (the tiny
-  checked build took seconds). If it approaches the login node's 2 h CPU limit,
+- The build estimates one TPM per run, per surrogate run and per bootstrap
+  replicate run. This is far cheaper than the campaign, but it grows with the
+  number of runs and with K and B (the tiny checked build took seconds). If it approaches the login node's 2 h CPU limit,
   run the same command in an interactive job.
 - The last log lines name the campaign directory and the submit command:
 
@@ -651,6 +662,7 @@ What happens:
   runs/<run-key>/               per run: tpm_full.npy, states_full.npy, curr_obs.npy, meta.json,
                                 mechanisms.json, purviews.json, cuts.json
   runs/<run-key>__nullNNN/      surrogate runs (with surrogate_ts.npy)
+  runs/<run-key>__bootNNN/      bootstrap replicate runs (with bootstrap_ts.npy)
   pbs/00_submit_all.sh          submits the three jobs with dependencies
   pbs/01_phase1_shards.pbs      array: phase-1 Ψ shards
   pbs/02_cut_shards.pbs         array: cut Ψ shards
@@ -872,7 +884,7 @@ run of every stage on a tiny campaign]**:
   cache/step2_df.csv                           per run x theta: metrics, CI, MPC verdict and evidence
   cache/step2_df_mean.csv                      per subject x session means
   cache/step2_theta_stats.csv                  exploratory S by theta
-  cache/hunter_iim_results.csv                 one row per real run: IIM value and calibration fields
+  cache/hunter_iim_results.csv                 one row per real run: IIM value, calibration and bootstrap-SE fields
   cache/provenance_manifest.json               code version, runtime versions, parameters, hardware
   cache/hunter_iim_campaign/
       iim_results.csv / iim_results.json       same IIM table as above

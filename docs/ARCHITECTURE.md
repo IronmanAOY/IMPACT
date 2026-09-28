@@ -50,7 +50,10 @@ calls the public estimators and the evidence layer like any other user.
 | `impact_pipeline.hardware_selftest` | CuPy-against-NumPy self-test (`python -m`) |
 | `impact_pipeline.provenance` | data origin (`real`/`dummy`) and output routing, code version, runtime versions, repository root |
 | `impact_pipeline.utils` | HypergraphSynergy (the exploratory statistic S) and helpers |
-| `impact_pipeline.bench.*` | MPC-Bench: generators, patchwork, witnesses, export, factorial, sweeps, runner, rival rules, LZ76, Gaussian Φ_R |
+| `impact_pipeline.bench.*` | MPC-Bench: generators (families A, B, C), patchwork, whole-brain Hopf model and forward models, adversarial constructions, manipulation checks, witnesses, export and in-memory runner, factorial, sweeps, runner, reference anchor (`reference`), rival rules, rule audit, LZ76, Gaussian Φ_R |
+| `impact_pipeline.necessity` | NCA ceilings, symmetric three-outcome necessity criteria, verdict-level summaries (paper-2 hypotheses) |
+| `protocols/`, `predictions/` | declared MPC protocols (JSON, hashed); the paper-2 hypothesis registry and its schema |
+| `scripts/run_bench.py`, `bench_reference.py`, `benchmark_attribution_rules.py`, `null_calibration.py`, `necessity_power.py`, `simulate_rule_recovery.py`, `audit_aggregation.py`, `definedness_audit.py`, `run_predictions.py`, `figures/` | MPC-Bench runs, bench reference, rule audit, null calibration, power and recovery simulations, aggregation audit, definedness audit, registry evaluation, figures |
 | `scripts/live_dashboard.py`, `impact_desktop_app.py` | browser dashboard and desktop launcher |
 | `scripts/generate_real_derived_synth_completed.py`, `inspect_real_sources_for_synth.py` | real-data-derived synthetic smoke-test objects |
 | `scripts/download_data.sh`, `download_atlases.sh`, `fetch_fmriprep*.sh`, `run_all.sh` | data, atlases, fMRIPrep, end-to-end local run |
@@ -65,7 +68,8 @@ calls the public estimators and the evidence layer like any other user.
                                                     <out>/preprocessed/<subj>/<ses>/rest/*_ts.npy
  (2) run_s_ci → compute_synergy_ci, per run:
        events.tsv ─► event_parsing ─► RAM / SRPI bundles
-       time series ─► RAM, PDI, NAS, IIM, SRPI  (+ K null surrogates each when --null-surrogates K)
+       time series ─► RAM, PDI, NAS, IIM, SRPI  (modes from --protocol; + K null surrogates
+                      each when --null-surrogates K; + B bootstrap replicates when --bootstrap-se B)
                   ─► ComponentEvidence per principle ─► evidence.mpc_verdict ─► MPC_* columns
                   ─► S for every theta (exploratory)
      then, per table: assemble_ci (legacy CI) and assemble_mpc_degree (MPC_CONSISTENT rows)
@@ -136,13 +140,16 @@ Design points:
 ## 5. The evidence layer in the data flow
 
 ```text
- estimator details ──► _component_record (estimate, null moments, reason, estimator id)
-                   ──► ComponentEvidence (+ bearer_id, protocol_id, substrate = modality,
-                                           grain = atlas, regime = {modality, n_time, n_nodes, tr})
+ estimator details ──► _component_record (estimate, null moments, bootstrap SE, reason,
+                                           estimator id)
+                   ──► reference anchors of the protocol (cohort high state or external)
+                   ──► ComponentEvidence (+ se_df, reference, bearer_id, protocol_id,
+                                           substrate = modality, grain = atlas, nodes, regime)
                    ──► ApplicabilityRegistry.is_validated (optional)
-                   ──► component status per channel ─► Kleene OR per principle
-                   ──► Kleene AND over the necessity set ─► verdict + reasons
-                   ──► MPC degree (MPC_CONSISTENT rows; two-anchor scale; capped power mean)
+                   ──► construct-scale status per channel ─► Kleene OR per principle
+                   ──► Kleene AND over the necessity set (+ single-source check)
+                                                         ─► verdict + reasons
+                   ──► MPC degree (MPC_CONSISTENT rows; construct scale; capped power mean)
 ```
 
 - Missing evidence is `MISSING`/UNDEFINED, never 0, and can only make the verdict
@@ -160,11 +167,14 @@ Design points:
          │ export_system                     │ oracle written separately, never read by estimators
          ▼                                   ▼
  synergy_ci layout on disk            run_in_memory (public estimators, optional modes,
- (compute_synergy_ci unchanged)       null calibration, bearer views) ─► evidence_verdict
+ (compute_synergy_ci unchanged)       null calibration, jackknife SEs, bearer views)
+                                             ─► evidence_verdict (bench protocol: external
+                                                reference = positive control, dev seeds)
                                              │
- factorial / sweeps / witness tasks ──► run_bench.run_tasks (process pool, resume, shards)
+ factorial / sweeps / witness / patchwork / adversarial / whole-brain tasks
+                                      ──► run_bench.run_tasks (process pool, resume, shards)
                                              ─► results.jsonl, results.csv, run_manifest.json
- rules.py: rival attribution rules on component matrices (rule audit)
+ rules.py + audit.py: rival decision rules and the rule audit on estimated statuses
 ```
 
 Seed policy: development seeds 0-999 (1000-9999 are refused); confirmatory
@@ -199,11 +209,12 @@ unchanged `src/` and `scripts/`, and records the tag and commit.
 
 | Area | Test files (examples) |
 |---|---|
-| estimators, known answers | `test_ram_ground_truth.py`, `test_srpi_ground_truth.py`, `test_srpi_agency.py`, `test_iim_ground_truth.py`, `test_iim_exact_tpm.py`, `test_iim_exact_reference.py`, `test_nas_capacity.py`, `test_pdi_surrogate_excess.py`, `test_pdi_nas_null.py` |
+| estimators, known answers | `test_ram_ground_truth.py`, `test_srpi_ground_truth.py`, `test_srpi_agency.py`, `test_iim_ground_truth.py`, `test_iim_exact_tpm.py`, `test_iim_exact_reference.py`, `test_nas_capacity.py`, `test_pdi_repertoire.py`, `test_pdi_surrogate_excess.py`, `test_pdi_nas_null.py` |
 | legacy defaults pinned | `test_construct_modes_legacy_pins.py` |
 | evidence layer | `test_evidence.py`, `test_evidence_properties.py`, `test_verdict_wiring.py`, `test_nulls.py` |
 | CI and statistics | `test_ci_assembly.py`, `test_ci_undefined.py`, `test_analysis_bootstrap.py`, `test_model_comparison.py` |
 | Hunter | `test_hunter_pbs.py`, `test_hunter_iim.py`, `test_hunter_calibration.py`, `test_hunter_scripts.py`, `test_hardware_selftest.py`, `test_iim_xp_kernel.py` |
-| MPC-Bench | `test_bench_generators.py`, `test_bench_export.py`, `test_bench_rules.py`, `test_phiid_gaussian.py` |
+| MPC-Bench | `test_bench_generators.py`, `test_bench_export.py`, `test_bench_rules.py`, `test_bench_audit.py`, `test_bench_reference.py`, `test_bench_runner_v2.py`, `test_phiid_gaussian.py` |
+| protocols, analysis and registry | `test_protocols.py`, `test_analysis_scripts.py`, `test_necessity.py`, `test_predictions_registry.py`, `test_definedness_audit.py`, `test_figures.py` |
 | preprocessing, events, orchestration | `test_preprocessing_fmri.py`, `test_preprocessing_eeg.py`, `test_event_parsing.py`, `test_run_pipeline_orchestration.py`, `test_tr_fallback.py` |
 | dashboard, packaging, synthetic objects | `test_dashboard_security.py`, `test_dashboard_run_plan.py`, `test_packaging_infra.py`, `test_synthetic_generator.py` |

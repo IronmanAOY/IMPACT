@@ -78,7 +78,9 @@ eigh).
 python3 run_pipeline.py --execution-mode hunter --hunter-stage build-campaign \
   --hardware-target hunter-apu --dataset-id ds003171 --bids-root <BIDS> --out-dir <OUT> \
   --mpc-metrics RAM PDI NAS IIM SRPI --iim-max-nodes <N> \
-  --hunter-iim-null-surrogates <K> --null-surrogates <K>
+  --protocol protocols/mpc_default_v1.json \
+  --hunter-iim-null-surrogates <K> --null-surrogates <K> \
+  --hunter-iim-bootstrap-se <B> --bootstrap-se <B>
 bash <OUT>/cache/hunter_iim_campaign/pbs/00_submit_all.sh
 ```
 
@@ -162,8 +164,26 @@ The Hunter results equal `compute_IIM(..., null_surrogates=K)` to 1e-9
 (`tests/test_hunter_calibration.py`). Use K >= 19 for inference with
 `IIM_null_p`.
 
+## Sampling SE of IIM (bootstrap replicate runs)
+
+`--hunter-iim-bootstrap-se B` (build-campaign) adds B moving-block bootstrap
+replicate runs per defined real run, drawn exactly as the local pipeline's IIM
+bootstrap (`nulls.block_bootstrap`, seed derived from 0, `BOOT`, `IIM` and the
+run path; block length `--bootstrap-block-len` rescaled by the time
+subsampling step, default ceil(sqrt(n_time))), prepared with the requested
+bins and sizes and the subsystem pinned to the nodes selected on the real run
+(no null). They are stored as `runs/<run>__bootNNN/bootstrap_ts.npy` and
+sharded like any other run (cost: about B more campaigns). The reducer reports
+`Delta_Psi_bootstrap_se` (SD of the valid replicates' `Delta_Psi`), `_n`,
+`_failed` and `_block_len`; the finalize stage uses them as the sampling SE of
+the IIM evidence (B - 1 degrees of freedom). Without replicate runs Hunter IIM
+evidence is `NO_SAMPLING_SE:IIM`. The Hunter SE equals the local pipeline's
+(`tests/test_hunter_calibration.py`). The campaign computes IIM with the
+protocol's IIM options (`cut_mode`, `tpm_estimator`, `node_selection`,
+`state_budget_policy`, `psi_kernel`) and IIM bearer nodes.
+
 `reduce-all` writes `iim_results.json/.csv` (one row per real run: value, raw,
-calibration fields, `tpm_estimator`, `iim_algorithm_version`, `cut_mode`,
+calibration and bootstrap-SE fields, `tpm_estimator`, `iim_algorithm_version`, `cut_mode`,
 `psi_kernel`, selected nodes, node-selection rule, bins requested/used,
 `budget_adjustments`, observed states, code version); finalize copies the table
 to `<out>/cache/hunter_iim_results.csv` next to the step-2 outputs. Each run's

@@ -26,9 +26,14 @@ missingness-safe rule:
   of consciousness. Anything else, including missing or inconclusive evidence,
   is `UNDETERMINED`. Missing evidence never becomes a zero and never flips a
   determinate verdict.
-- **MPC degree**: a capped power mean of the reference-normalised components,
+- **MPC degree**: a capped power mean of the construct-scale components,
   computed only for `MPC_CONSISTENT` rows. It is a reference-relative evidence
   summary, not a level of consciousness.
+
+Everything a verdict depends on besides the data (necessity set, channels,
+construct-scale cutoffs, null families, reference anchor, source rule and
+estimator modes) is declared in a protocol whose SHA-256 is recorded with every
+verdict; the shipped protocols are in [`protocols/`](protocols/README.md).
 
 The legacy geometric-mean Consciousness Index (`CI` column, `compute_CI`) is
 kept for backward compatibility. It is deprecated and is not a gate. The
@@ -92,10 +97,14 @@ python scripts/run_bench.py witnesses --seeds 0 \
 ```
 
 It writes `results.csv`, `results.jsonl` and `run_manifest.json` (with the code
-version) to `outputs/bench_smoke/`, one row per system with the estimates, null
-moments, z-scores, the verdict and its reasons. With only three of the five
-principles computed, RAM and SRPI are `MISSING` and no verdict can be
-`MPC_CONSISTENT`.
+version and the protocol hash) to `outputs/bench_smoke/`, one row per system
+with the estimates, null moments, z-scores, the verdict and its reasons. The
+verdicts use the bench protocol (`protocols/mpc_bench_v1.json`, whose reference
+anchor is the positive control on development seeds). With only three of the
+five principles computed, RAM and SRPI have no evidence
+(`MISSING_CHANNEL:RAM:default`, since the protocol declares the channels), and
+without `--se-groups` the components have no sampling SE (`NO_SAMPLING_SE`),
+so every verdict is `UNDETERMINED`.
 
 ### 3. Real-data-derived synthetic objects
 
@@ -121,10 +130,16 @@ The exit code is 0 when the smoke gate passes. Results go to
 Download the data, then run the pipeline. `--run-preprocessing` extracts the
 time series first (fMRI: from fMRIPrep derivatives at
 `<bids-root>/derivatives/fmriprep` or `--fmriprep-dir`; EEG: from the BrainVision
-files). `--null-surrogates K` calibrates every component against K surrogates,
-which the MPC verdict needs; with the default 0 every verdict is `UNDETERMINED`
-(`NO_NULL_CALIBRATION`). Runtime grows roughly (K+1)-fold. Use
-`--iim-max-nodes` to bound the IIM subsystem on a workstation.
+files). A determinate MPC verdict needs a null family and a sampling SE for
+every component: `--null-surrogates K` calibrates the legacy estimator modes
+against K surrogates (default 0: `NO_NULL_CALIBRATION:<P>`) and
+`--bootstrap-se B` adds B moving-block bootstrap replicates per run and
+component (default 0: `NO_SAMPLING_SE:<P>`); with either at 0 every verdict is
+`UNDETERMINED`. Runtime grows roughly (K+1)-fold and (B+1)-fold per component.
+`--protocol protocols/mpc_default_v1.json` selects the declared estimator modes
+(RAM prediction-error update, PDI repertoire, NAS capacity, SRPI agency, each
+with its declared fallback). Use `--iim-max-nodes` to bound the IIM subsystem
+on a workstation.
 
 fMRI (ds003171, propofol sedation; sessions `awake` and `deep`):
 
@@ -161,10 +176,12 @@ Useful options (`python run_pipeline.py --help` lists all):
 |---|---|
 | `--subjects A B` | restrict to some subjects |
 | `--mpc-metrics RAM PDI NAS IIM SRPI` | subset of estimators (default all) |
+| `--protocol protocol.json` | MPC protocol (`evidence.Protocol` JSON: necessity set, channels, cutoffs, null families, reference, source rule, estimator modes, bearer nodes); its hash is recorded |
 | `--null-surrogates K` | null calibration per run and component (0 = none) |
-| `--necessity-set RAM,PDI,NAS,IIM,SRPI` | principles the verdict requires (default all five) |
+| `--bootstrap-se B`, `--bootstrap-block-len L` | block-bootstrap sampling SE per run and component (0 = none; block default ceil(sqrt(n_time)) samples) |
+| `--necessity-set RAM,PDI,NAS,IIM,SRPI` | principles the verdict requires (default all five; must match `--protocol`) |
 | `--applicability-registry registry.json` | evidence from unvalidated estimators becomes UNDEFINED |
-| `--ci-reference cohort_high_state\|file.json` | reference means of the legacy CI and the MPC degree |
+| `--ci-reference cohort_high_state\|file.json` | reference means of the legacy CI (the evidence reference comes from the protocol) |
 | `--no-ci` | skip the legacy CI |
 | `--reuse-step2` | reuse `<out-dir>/cache/step2_*.csv` and rerun only the statistics and report |
 | `--hardware-target cpu\|auto\|gpu\|hunter-apu` | NumPy or CuPy kernels (explicit GPU/APU targets fail early if no device) |
@@ -200,11 +217,14 @@ Main columns of `step2_df.csv` (full list: `docs/metrics.md`, section 11):
 | `subject`, `session`, `theta` | run identity; theta of S |
 | `RAM`, `PDI`, `NAS`, `IIM`, `SRPI` | metric values; with `--null-surrogates K > 0` the excess over the null mean, floored at 0; NaN when undefined |
 | `MPC_verdict` | `EXCLUDED`, `MPC_CONSISTENT` or `UNDETERMINED` |
-| `MPC_reason` | `;`-joined reason codes, e.g. `MISSING:RAM`, `NO_NULL_CALIBRATION:IIM`, `ABSENT:NAS` |
+| `MPC_reason` | `;`-joined reason codes, e.g. `MISSING:RAM`, `NO_NULL_CALIBRATION:IIM`, `NO_SAMPLING_SE:PDI`, `INVALID_ANCHORS:NAS`, `ABSENT:NAS`, `UNDEFINED:SRPI:<reason>` |
 | `MPC_degree` | MPC degree (`MPC_CONSISTENT` rows only) |
 | `<P>_status` | PRESENT, ABSENT or UNDEFINED per principle |
-| `<P>_estimate`, `<P>_null_mean`, `<P>_null_sd`, `<P>_null_n`, `<P>_margin` | raw estimate, null moments and margin (IIM on the ΔΨ scale, bits) |
-| `MPC_necessity_set`, `MPC_null_surrogates`, `MPC_null_seed`, `MPC_null_families` | evidence configuration |
+| `<P>_estimate`, `<P>_null_mean`, `<P>_null_sd`, `<P>_null_n` | raw estimate and null moments (IIM on the ΔΨ scale, bits) |
+| `<P>_se`, `<P>_se_df`, `<P>_boot_n`, `<P>_boot_failed` | bootstrap sampling SE, its degrees of freedom, valid and failed replicates |
+| `<P>_c`, `<P>_c_se`, `<P>_c_df`, `<P>_c_lower`, `<P>_c_upper`, `<P>_margin`, `<P>_margin_absent` | construct scale `c = (m - nu)/(rho - nu)`, its SE, degrees of freedom, one-sided bounds and the margins to the cutoffs |
+| `<P>_reference`, `<P>_reference_se`, `<P>_estimator`, `<P>_mode_reason`, `<P>_channels` | reference anchor, estimator id `compute_<P>:<mode>@<version>`, fallback reason, per-channel statuses |
+| `MPC_necessity_set`, `MPC_null_surrogates`, `MPC_null_seed`, `MPC_null_families`, `MPC_bootstrap_se`, `MPC_bootstrap_block_len`, `MPC_protocol_hash`, `MPC_joint_dependence`, `MPC_joint_dependence_p` | evidence configuration and the single-source test |
 | `CI`, `CI_defined`, `CI_missing`, `CI_reference` | legacy CI (deprecated, not a gate); NaN with the missing components listed when undefined |
 | `PDI_anchor`, `PDI_task`, `*_reason`; `IIM_raw`, `IIM_defined`, `IIM_undefined_reason` | endpoints and reasons |
 | `S` | exploratory HypergraphSynergy at `theta` |
@@ -225,9 +245,19 @@ scripts and the configuration variables are described in
 python3 run_pipeline.py --execution-mode hunter --hunter-stage build-campaign \
     --hardware-target hunter-apu --dataset-id ds003171 \
     --bids-root <BIDS> --out-dir <OUT> --iim-max-nodes <N> \
-    --hunter-iim-null-surrogates <K> --null-surrogates <K>
+    --protocol protocols/mpc_default_v1.json \
+    --hunter-iim-null-surrogates <K> --null-surrogates <K> \
+    --hunter-iim-bootstrap-se <B> --bootstrap-se <B>
 bash <OUT>/cache/hunter_iim_campaign/pbs/00_submit_all.sh    # on a Hunter login node
 ```
+
+`--hunter-iim-null-surrogates K` adds K surrogate runs and
+`--hunter-iim-bootstrap-se B` B block-bootstrap replicate runs per real run to
+the campaign (drawn exactly as the local pipeline draws them), so the IIM
+evidence has a null family and a sampling SE; without them Hunter IIM evidence
+is `NO_NULL_CALIBRATION:IIM` / `NO_SAMPLING_SE:IIM`. The campaign computes IIM
+with the protocol's IIM options, and the finalize job uses the evidence
+options of the build.
 
 Check a GPU/APU node first with
 `PYTHONPATH=src python3 -m impact_pipeline.hardware_selftest --target hunter-apu`
@@ -237,30 +267,70 @@ section 7).
 ## MPC-Bench
 
 `impact_pipeline.bench` provides white-box systems for validating the
-estimators and the attribution rule: a modular rate-network agent with five
+estimators and the exclusion rule: a modular rate-network agent with five
 mechanism switches (family A), binary/kinetic-Ising networks with exact TPMs
-(family B), a held-out Stuart-Landau network (family C), a patchwork of five
-disconnected single-principle modules, null and hypersynchronous systems, a
-witness catalogue (`src/impact_pipeline/bench/witnesses.yaml`) and rival
-attribution rules (`bench/rules.py`). Generators never import the estimators;
-hidden ground truth is written to a separate oracle file.
+(family B), a held-out Stuart-Landau network (family C, with preregistered
+oracle manipulation checks, `bench/manipulation.py`), graded patchworks of
+five single-principle modules, a whole-brain Hopf model on the shipped
+structural connectome with EEG-like and BOLD-like forward models
+(`bench/whole_brain.py`, `bench/forward.py`), adversarial constructions that
+fool single estimators (`bench/adversarial.py`), null and hypersynchronous
+systems, a witness catalogue (`src/impact_pipeline/bench/witnesses.yaml`),
+rival decision rules (`bench/rules.py`) and the rule audit on estimated
+statuses (`bench/audit.py`, `scripts/benchmark_attribution_rules.py`).
+Generators never import the estimators; hidden ground truth is written to a
+separate oracle file.
 
 ```bash
 python scripts/run_bench.py --help
-python scripts/run_bench.py witnesses --seeds 0-9 --out outputs/bench_witnesses --workers 8
-python scripts/run_bench.py factorial --seeds 0-19 --out outputs/bench_factorial --workers 8
+python scripts/run_bench.py witnesses --seeds 0-9 --null-surrogates 19 --se-groups 5 \
+    --out outputs/bench_witnesses --workers 8
+python scripts/run_bench.py factorial --seeds 0-19 --null-surrogates 19 --se-groups 5 \
+    --out outputs/bench_factorial --workers 8
 python scripts/run_bench.py sweep --knobs eta,g_b --levels 10 --seeds 0-9 --out outputs/bench_sweep
 python scripts/run_bench.py timing --seeds 0
 ```
 
 Designs: `factorial` (2^5 mechanism cells x seeds), `sweep` (dose-response),
-`witnesses` (catalogue x seeds), `timing`. Results resume by default
-(`--no-resume` to recompute). Seed policy: development seeds are 0-999;
-confirmatory seeds start at 10000 (1000-9999 are refused), and they and family
-C run only with `--confirmatory --freeze-tag <tag>` on a clean checkout that
-descends from the code-freeze tag and has the same `src/` and `scripts/` as the
-tag. `--n-shards N --pbs-template bench.pbs` writes a PBS Pro array
-script for Hunter (set `BENCH_VENV` and `BENCH_OUT_DIR`; the bench is CPU-bound).
+`witnesses` (catalogue x seeds), `patchwork_sweep` (inter-module coupling 0 to
+nominal), `adversarial`, `whole_brain` (G sweep and lesions; source, EEG-like
+and BOLD-like observations), `manipulation` (oracle-only manipulation checks)
+and `timing`. The estimators run with `bench.export.OPTIONAL_MODES` (RAM
+prediction-error update, PDI repertoire, NAS capacity, SRPI agency).
+`--se-groups G` adds a delete-a-group jackknife SE per component (G - 1
+degrees of freedom, Student-t bounds); verdicts use `--protocol` (default
+`protocols/mpc_bench_v1.json`, `none` for the evidence layer's default
+protocol without an anchor), whose external reference is the nominal positive
+control on development seeds (`scripts/bench_reference.py`). Results resume by
+default (`--no-resume` to recompute).
+
+Development / confirmatory split: development runs use seeds 0-999 and
+families A/B (factorial, sweeps, witnesses, rate patchworks; reference seeds
+900-999 by convention); seeds >= 10000 (1000-9999 are refused), family C, the
+whole-brain and the adversarial sets are confirmatory and run only with
+`--confirmatory --freeze-tag <tag>` on a clean checkout that descends from the
+code-freeze tag and has the same `src/` and `scripts/` as the tag (the tag is
+recorded in the outputs). `--n-shards N --pbs-template bench.pbs` writes a PBS
+Pro array script for Hunter (set `BENCH_VENV` and `BENCH_OUT_DIR`; the bench
+is CPU-bound).
+
+## Analysis and preregistration
+
+Command-line tools for the paper's analyses (inputs and outputs in each
+script's docstring). Paper figures must be rendered from frozen-code result
+files, with `--out` pointing to the manuscript folder.
+
+| Script | Purpose |
+|---|---|
+| `scripts/audit_aggregation.py` | audit of the legacy CI aggregation (compensation, implied floors, sensitivity) |
+| `scripts/necessity_power.py` | power of the symmetric necessity criteria (`--level component`, H3-H7) and of the verdict-level EXCLUDED-rate criterion (`--level verdict`, H1) |
+| `scripts/simulate_rule_recovery.py` | recovery of the aggregation exponent of the MPC degree (H2) |
+| `scripts/definedness_audit.py` | which principle / channel is definable on which dataset, from BIDS metadata only, with an access log |
+| `scripts/null_calibration.py` | false-PRESENT rates on null families under a protocol (`--protocol`, `--se-groups`; `--status-rule legacy_v1` is a diagnostic only) |
+| `scripts/bench_reference.py` | positive-control reference anchor of the bench protocol |
+| `scripts/benchmark_attribution_rules.py` | rule audit of MPC-Bench on estimated statuses |
+| `scripts/run_predictions.py` | evaluates the hypothesis registry `predictions/registry.yaml` (refuses unregistered estimators, protocol hashes and datasets) |
+| `scripts/figures/fig*.py` | one script per figure (`synthetic_inputs.py` writes test inputs) |
 
 ## Dashboard
 
@@ -282,6 +352,8 @@ on macOS, `scripts/start_impact_desktop.bat` on Windows).
 run_pipeline.py            command-line entry point (local and Hunter modes)
 src/impact_pipeline/       package: estimators, evidence layer, nulls, assembly, statistics,
                            preprocessing, Hunter backend, MPC-Bench (bench/)
+protocols/                 MPC protocols (default and MPC-Bench) with their rationale
+predictions/               paper-2 hypothesis registry and its schema
 scripts/                   downloads, fMRIPrep, run_all, dashboard, synthetic objects, run_bench,
                            hunter/ (setup, install, smoke test)
 tests/                     regression, ground-truth and property tests

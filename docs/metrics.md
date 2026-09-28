@@ -49,8 +49,11 @@ The principles are measured by:
 - **Modes.** Each estimator keeps its original construct as the default mode
   (`legacy`), with values pinned by regression tests. The construct revisions
   are new modes (`mode=`/`update=` keywords). `run_pipeline.py` uses the default
-  modes. The new modes are available through the Python API and are used by
-  MPC-Bench (`impact_pipeline.bench.export.OPTIONAL_MODES`).
+  modes unless a protocol (`--protocol`, for example
+  [`protocols/mpc_default_v1.json`](../protocols/README.md)) or the params
+  dicts select others (section 8.6). MPC-Bench uses
+  `impact_pipeline.bench.export.OPTIONAL_MODES` (RAM `prediction_error`, PDI
+  `repertoire`, NAS `capacity`, SRPI `agency`).
 - **Bearer.** RAM, PDI, NAS and SRPI accept `bearer_nodes` (the declared system
   that bears the evidence; default all nodes); IIM draws its subsystem only from
   bearer nodes.
@@ -218,7 +221,7 @@ Uncalibrated PDI is positively biased under the null (gains are clipped at 0
 before weighting). Cross-condition comparisons should use the calibrated value
 (section 7).
 
-### 3.2 `mode="surrogate_excess"`
+### 3.2 `mode="surrogate_excess"` (documented negative result)
 
 Global-state differentiation beyond the linear (spectral) structure. Nodes are
 z-scored and reduced to their leading `excess_components` principal components
@@ -244,7 +247,64 @@ entropy, so entropy-type features of structured (for example multistable)
 dynamics typically fall **below** their surrogates. In the known-answer tests
 the aggregate is about 0 for linear Gaussian data but of either sign for
 multistable pattern switching. This mode is not a positive "more differentiated
-than chance" score.
+than chance" score: the Gaussian null is the maximum-entropy process for the
+given spectra, so an excess over it cannot index differentiation. It is kept
+for reference and is not used by the bench or registered for paper 2;
+`mode="repertoire"` replaces it.
+
+### 3.3 `mode="repertoire"`: repertoire of distinguishable states
+
+Differentiation as the repertoire of distinguishable multi-node states the
+system occupies (Tononi & Edelman 1998; Mensen et al. 2017), in bits, from
+short-window patterns: non-overlapping windows of `repertoire_window` samples
+(default 5) of the z-scored nodes, summarised by their mean
+(`repertoire_features="mean"`) or power. Two variants, selected by the inputs:
+
+- **Labelled** (`state_labels`, or `events` with `tr` and
+  `repertoire_label_column`, default `trial_type`, delayed by
+  `repertoire_label_delay` seconds): cross-validated multiclass shrinkage-LDA
+  decoding of the declared state of each window (time-blocked folds,
+  `repertoire_folds`, purged by `repertoire_gap` windows at every test-block
+  edge) and the Miller-Madow-corrected mutual information
+  $I(\mathrm{state}; \widehat{\mathrm{state}})$ of the pooled CV confusion
+  matrix. The null re-runs the whole CV with the label runs block-permuted
+  (run order shuffled, run lengths and label counts kept;
+  `PDI_null_method = block_label_permutation`). Windows whose samples carry
+  different labels, and states with fewer than 3 windows or fewer than 2
+  separate visits, are dropped (`dropped_states`).
+- **Unlabelled** (no labels): the number $\hat K$ of recurring,
+  distinguishable states, from k-means on the windows' leading
+  `repertoire_components` (default 10) principal components with a held-out
+  criterion: the partition at $k$ is fitted on one half of interleaved time
+  blocks and checked on the other half, in both directions, and $\hat K$ is
+  the largest $k$ (up to `repertoire_max_states`, default 12) that passes.
+  With `repertoire_criterion="separation"` (default) every state must recur
+  (at least 3 held-out windows), persist (mean held-out dwell at least
+  `repertoire_min_dwell` = 2.5 windows) and be separated from every other
+  state by a density valley (ratio at most `repertoire_valley` = 0.4, a
+  resolution of about $d' = 3.85$ after window averaging). The null is
+  `repertoire_null`: `circular_shift` (default; independent shifts per node),
+  `fourier` (multivariate phase randomisation) or `both` (the smaller excess
+  of the two, reported with the binding family).
+
+The evidence statistic `raw` is the observed $I$ (labelled) or
+$\log_2 \hat K$ (unlabelled) in bits; the value is the signed excess over the
+null mean (`PDI_excess`, not clipped; `PDI_calibrated` equals it).
+`null_surrogates` is the number of permutations or surrogates (0 selects 19;
+1 is rejected). `baseline_ts` and `null_method` are ignored (recorded).
+The number of states is an integer, so the null SD can be 0; the excess in
+bits, not `PDI_z`, is the construct-scale quantity.
+
+Limitations (see the docstring): states shorter than about 2.5 windows are not
+counted; exactly periodic, noise-free oscillations commensurate with the window
+grid can form lattice "states"; at most about `n_windows / 6` states are
+estimable without labels; the unlabelled count is conservative and falls with
+noise; the clustering geometry is Euclidean on z-scored nodes, so volume
+conduction, a common reference or a dominant global signal change it, and
+scalp-EEG use needs validation on forward-modelled data first (section 8.3,
+applicability registry). The pipeline runs the unlabelled variant (a protocol
+cannot carry per-run labels; `state_labels`, `events` and `tr` in the PDI
+options are rejected).
 
 ## 4. NAS
 
@@ -579,8 +639,14 @@ Pipeline defaults when `--null-surrogates K > 0`
   computed, never the raw value). The raw estimates are in `<P>_estimate`.
   With K = 0 (default) all metric and CI values are unchanged from the
   uncalibrated estimators.
-- The new modes calibrate internally: PDI `surrogate_excess` and NAS `capacity`
-  (19 surrogates by default) and SRPI `agency` (200 permutations).
+- The construct-revision modes calibrate internally, whatever K is (K = 0
+  selects their default size): PDI `repertoire` (state-count null,
+  `circular_shift` by default; labelled: `block_label_permutation`; 19 by
+  default), PDI `surrogate_excess` (multivariate Fourier, 19), NAS `capacity`
+  (`block_circular_shift`, 19) and SRPI `agency` (`yoked_label_permutation`,
+  200 permutations).
+- Under a protocol the declared null families are checked against the family
+  each component used (`NULL_FAMILY_MISMATCH`, section 8.4).
 
 ## 8. Evidence layer: MPC profile, verdict and degree
 
@@ -610,42 +676,61 @@ only:
 
 ### 8.2 Component status
 
-Each piece of evidence (`ComponentEvidence`: estimate, null moments, sampling
-SE, channel, bearer, protocol, substrate, grain, estimator, null family) gets a
-status PRESENT, ABSENT or UNDEFINED on a two-anchor **construct scale**:
+Each piece of evidence (`ComponentEvidence`: estimate, null moments and size,
+sampling SE and its degrees of freedom, reference anchor, channel, bearer,
+protocol, substrate, grain, estimator, null family, node set) gets a status
+PRESENT, ABSENT or UNDEFINED on a two-anchor **construct scale**
+(`evidence.component_assessment`):
 
 $$
 c = \frac{m - \nu}{\rho - \nu},
 $$
 
 where $m$ is the estimate, $\nu$ the mean of the declared null family and
-$\rho$ the reference anchor (for example the cohort high-state mean, or a
-registry reference). $c = 0$ at the null and $c = 1$ at the reference. If
-$\rho \le \nu$ or either anchor is not finite, the component is UNDEFINED
-(`INVALID_ANCHORS`).
+$\rho$ the reference anchor. $c = 0$ at the null and $c = 1$ at the reference.
+The anchor is given on the estimate scale (`reference_scale="estimate"`) or as
+the reference excess $\rho - \nu$ directly (`"excess"`; the pipeline's cohort
+reference and the bench reference use this scale). If $\rho \le \nu$ or an
+anchor is not finite, the component is UNDEFINED (`INVALID_ANCHORS`).
 
-- `se` is a sampling SE of $c$: a block bootstrap within the recording or across
-  epochs/runs, combined with the Monte-Carlo error of $\nu$ from $K$ finite
-  surrogates ($\sigma_{\mathrm{null}}/\sqrt K$, propagated through the ratio)
-  and, when available, the uncertainty of $\rho$. An empirical estimate without
-  a positive `se` is UNDEFINED (`NO_SAMPLING_SE`). Exact computations on a
-  known TPM are exempt.
-- With smallest effects of interest $z_j$ (presence) and $\delta_j$ (absence) on
-  the $c$ scale, declared in the protocol, $\delta_j \le z_j$, and
-  $q = z_{1-\alpha}$:
+- **SE of $c$.** By the delta method with independent parts,
+  $$
+  \mathrm{se}_c^2 = \frac{\mathrm{se}_m^2 + d_\nu^2\,\sigma_{\mathrm{null}}^2/K
+  + c^2\,\mathrm{se}_\rho^2}{(\rho - \nu)^2},
+  $$
+  with $\mathrm{se}_m$ the sampling SE of the estimate (moving-block bootstrap
+  in the pipeline, delete-a-group jackknife in the bench),
+  $\sigma_{\mathrm{null}}/\sqrt K$ the Monte-Carlo error of the null mean from
+  $K$ surrogates ($K = 0$ declares an analytic null mean), $d_\nu = c - 1$ on
+  the estimate scale ($-1$ on the excess scale) and $\mathrm{se}_\rho$ the SE
+  of the anchor when available. An empirical estimate without a positive
+  sampling SE is UNDEFINED (`NO_SAMPLING_SE`); exact computations on a known
+  TPM (`exact=True`) are exempt. $c$ is reported even then.
+- **Quantile.** $q = z_{1-\alpha}$, or, when the sampling SE comes from few
+  replicates and declares its degrees of freedom `se_df` (jackknife: groups
+  $- 1$; bootstrap: valid replicates $- 1$), the Student quantile
+  $t_{1-\alpha,\nu}$ with the Welch-Satterthwaite degrees of freedom
+  $\nu = \mathrm{se\_df}\,(\mathrm{se}_c^2/s_m^2)^2$ ($s_m = \mathrm{se}_m/(\rho-\nu)$;
+  the null and reference parts count as known), so $\nu = \mathrm{se\_df}$
+  when the sampling SE dominates.
+- With smallest effects of interest $z_j$ (presence) and $\delta_j$ (absence)
+  on the $c$ scale, declared in the protocol, $\delta_j \le z_j$:
   - **PRESENT** if the one-sided $(1-\alpha)$ lower bound exceeds $z_j$:
-    $c - q\,\mathrm{se} > z_j$;
+    $c - q\,\mathrm{se}_c > z_j$;
   - **ABSENT** if the one-sided $(1-\alpha)$ upper bound is below $\delta_j$:
-    $c + q\,\mathrm{se} < \delta_j$. This includes estimates significantly
-    below the null: there is no asymmetry that favours non-falsification;
+    $c + q\,\mathrm{se}_c < \delta_j$. This includes estimates credibly below
+    the null: there is no asymmetry that favours non-falsification;
   - **UNDEFINED** otherwise (`INCONCLUSIVE`).
-- Initial protocol defaults: $z_j = 0.25$, $\delta_j = 0.10$, $\alpha = 0.05$.
-  They are to be justified by MPC-Bench dose-response runs.
-- Evidence that is not defined, has no null (`NO_NULL_CALIBRATION`) or a
-  degenerate null (`DEGENERATE_NULL`, null SD not finite and positive) is
-  UNDEFINED with that reason.
-- Reported per component: $c$, `se`, the lower and upper bounds and the margin
-  to each cutoff.
+- Initial protocol defaults: $z_j = 0.25$, $\delta_j = 0.10$, $\alpha = 0.05$,
+  to be justified by MPC-Bench dose-response runs.
+- UNDEFINED reasons, in order: not defined (the estimator's reason), a
+  non-finite estimate, `NO_NULL_CALIBRATION` (no null mean),
+  `DEGENERATE_NULL` ($K > 0$ without a finite null SD $\ge 0$),
+  `INVALID_ANCHORS`, `INVALID_SE` (negative SE or anchor SE, or
+  `se_df` $\le 0$) and `NO_SAMPLING_SE`.
+- Reported per component: $c$, $\mathrm{se}_c$ and its parts, the degrees of
+  freedom and quantile, the lower and upper bounds and the margins to each
+  cutoff (`margin_present = lower - z`, `margin_absent = delta - upper`).
 
 ### 8.3 Combining evidence
 
@@ -655,39 +740,74 @@ $\rho \le \nu$ or either anchor is not finite, the component is UNDEFINED
 - **Principles** of $N$ are combined by strong-Kleene AND: T → `MPC_CONSISTENT`,
   F → `EXCLUDED`, U → `UNDETERMINED`. Any ABSENT principle vetoes (no
   compensation by the others).
-- **Protocol.** The analysis is declared up front as a protocol: the necessity
-  set, the declared channels per principle, the cutoffs $(z_j, \delta_j)$,
-  $\alpha$, the null families, the reference and the bearer rule; it is
-  serialisable to JSON with a hash. A declared channel without an evidence item
-  counts as UNDEFINED (`MISSING_CHANNEL:<P>:<channel>`), so a principle with an
-  unimplemented declared channel can never be ABSENT unless every declared
-  channel is ABSENT.
-- **Single-source constraint.** All gated evidence must come from one declared
-  bearer and one protocol. More than one `bearer_id` or `protocol_id` among the
-  gated evidence (undefined evidence included) forces `UNDETERMINED`
-  (`BEARER_MISMATCH`, `PROTOCOL_MISMATCH`). When components come from different
-  node sets, their summaries must show joint dependence above a null that
-  shifts each node set independently; otherwise the verdict is `UNDETERMINED`
-  (`SOURCE_INCOHERENT`). `evidence.bearer_coherence` is the pairwise
-  lagged-Gaussian-MI diagnostic of this kind (reason `BEARER_MISMATCH:COHERENCE`).
-- **Applicability registry.** Evidence from an estimator that is not validated
-  for its principle, substrate, grain and regime is UNDEFINED
-  (`ESTIMATOR_NOT_VALIDATED:<P>:<estimator>`). Registry JSON (`--applicability-registry`):
+- **Protocol** (`evidence.Protocol`, JSON schema `impact-mpc-protocol/2`; the
+  shipped protocols and their rationale are in
+  [`protocols/`](../protocols/README.md)). Fields: `necessity_set`;
+  `channels` (per principle the declared channels); `cutoffs` (per principle
+  $(z_j, \delta_j)$); `alpha`; `null_families` (per principle the declared
+  family); `reference` (`{"kind": "cohort_high_state", "session": ..}` or
+  `{"kind": "external", "values": {P or P:channel: ..}, "se": {..},
+  "scale": "excess"|"estimate", "source": ..}`); `source_rule`
+  (`single_source`, `same_bearer` or `none`); `estimators` (per principle the
+  estimator options, e.g. `{"NAS": {"mode": "capacity"}}`); `bearer_nodes`;
+  `name`. The hash is the SHA-256 of the canonical JSON of `to_dict()` (sorted
+  keys, compact separators, every cutoff written out); evidence records it as
+  `protocol_id = "sha256:<hash>"`. A declared channel without an evidence item
+  counts as UNDEFINED (`MISSING_CHANNEL:<P>:<channel>`), so a principle with a
+  declared channel that is not measured (or not implemented) is never ABSENT;
+  items of undeclared channels are ignored (`ignored_channels`); principles
+  without a declaration use the channels of their evidence. Evidence whose
+  null family differs from the declared one is UNDEFINED
+  (`NULL_FAMILY_MISMATCH`), and evidence carrying another protocol's id makes
+  the verdict UNDETERMINED (`PROTOCOL_MISMATCH`).
+- **Single-source constraint** (source rule `single_source`). All gated
+  evidence must come from one declared bearer (`BEARER_MISMATCH` otherwise)
+  and one protocol (`PROTOCOL_MISMATCH`). When the components come from
+  different node sets, `evidence.joint_dependence` must show joint dependence
+  above null: the Gaussian total correlation (bits) of the lag-embedded first
+  principal components of the node sets, against surrogates that circularly
+  shift each set independently (between-set dependence destroyed, within-set
+  structure kept); overlapping sets are tested on their disjoint atoms;
+  criterion `total` (default) or `each` (every block with the rest,
+  Holm-corrected). Otherwise the verdict is UNDETERMINED with
+  `SOURCE_INCOHERENT` (`SOURCE_INCOHERENT:UNTESTED` when no test covers
+  exactly the node sets of the evidence; `SOURCE_INCOHERENT:INSUFFICIENT_SURROGATES`
+  when the test had too few surrogates to reach its level). In the pipeline
+  the test uses `--null-surrogates` as its surrogate budget.
+  `evidence.bearer_coherence` is the older pairwise lagged-Gaussian-MI
+  diagnostic (reason `BEARER_MISMATCH:COHERENCE`).
+- **Applicability registry** (`--applicability-registry`, schema
+  `impact-mpc-registry/2`). Evidence from an estimator version that is not
+  validated for its principle, substrate, grain and regime is UNDEFINED
+  (`ESTIMATOR_NOT_VALIDATED:<P>:<estimator>`):
 
   ```json
-  {"version": 1,
-   "entries": [{"principle": "IIM", "estimator": "compute_IIM:*",
-                "substrate": "fmri", "grain": "schaefer*",
-                "regime": {"n_time": {"min": 300}},
-                "validated": true, "note": "MPC-Bench family B"}]}
+  {"schema": "impact-mpc-registry/2", "version": "2026-09",
+   "criteria": {"alpha": 0.05, "false_present_tolerance": 0.02},
+   "entries": [
+     {"estimator": "compute_NAS:capacity", "version": "nas-v2-2026.09",
+      "substrate": "eeg_like_forward", "grain": "*",
+      "regime": {"T_min": 2000, "nodes_min": 16, "nodes_max": 128},
+      "evidence": {"run_id": "bench-run-id", "null_false_present_rate": 0.01,
+                   "recovery_slope": 0.8, "cross_talk": 0.03},
+      "status": "validated"}]}
   ```
 
-  String fields match shell wildcards (case-insensitive) and may be lists;
-  `regime` values are a scalar (equality), a list (membership) or
-  `{"min", "max"}` (inclusive range); `validated` must be a JSON boolean; an
-  explicitly not-validated entry wins. The pipeline queries the registry with
-  substrate = modality, grain = atlas and regime keys `modality`, `n_time`,
-  `n_nodes`, `tr`.
+  Entry criteria for `status: validated`: a pinned `version`, a validation
+  substrate that is not empirical (human EEG/fMRI need the forward-modelled
+  `eeg_like_forward` / `bold_like_forward`; queries on `eeg` or `fmri` are
+  matched against them), and benchmark `evidence` with a null false-PRESENT
+  rate at most `alpha + false_present_tolerance` (one-sided by default: a
+  calibrated v2 rule has a rate far below alpha; `"two_sided": true` enforces
+  `alpha ± tolerance`), a positive recovery slope and, when `cross_talk_max` is
+  declared, cross-talk within it. Entries that fail are rejected when the file
+  is loaded. String fields match shell wildcards (case-insensitive) and may be
+  lists; `regime` values are a scalar (equality), a list (membership),
+  `{"min", "max"}` or the named bounds `T_min`, `nodes_min`, `nodes_max`,
+  `snr_min`. The pipeline queries with substrate = modality, grain = atlas and
+  the regime of the component (bearer size; for IIM the scored subsystem,
+  bins, series length and sample interval). Without a registry, determinate
+  verdicts are possible for unvalidated estimators (the registry is opt-in).
 
 ### 8.4 Reason codes
 
@@ -695,16 +815,18 @@ Stable strings, `;`-joined in the `MPC_reason` column:
 
 | Code | Meaning |
 |---|---|
-| `MISSING:<P>` | no evidence for a principle of $N$ |
+| `MISSING:<P>` | no evidence for a principle of $N$ (and no declared channel) |
 | `MISSING_CHANNEL:<P>:<channel>` | a declared channel has no evidence item |
-| `NO_NULL_CALIBRATION:<P>` | a defined estimate without a null family (e.g. `--null-surrogates 0`) |
+| `NO_NULL_CALIBRATION:<P>` | a defined estimate without a null family (e.g. `--null-surrogates 0` in a legacy mode) |
+| `NO_SAMPLING_SE:<P>` | an empirical estimate without a sampling SE (e.g. `--bootstrap-se 0`) |
+| `INVALID_ANCHORS:<P>` | the reference is not above the null mean (or not finite) |
 | `INCONCLUSIVE:<P>` | neither credibly present nor credibly absent |
-| `UNDEFINED:<P>:<reason>` | the estimator, the null, the anchors (`INVALID_ANCHORS`) or the SE (`NO_SAMPLING_SE`) is undefined |
+| `UNDEFINED:<P>:<reason>` | the estimator, the null or the SE is undefined: the estimator's reason, `DEGENERATE_NULL`, `INVALID_SE`, `NULL_FAMILY_MISMATCH:<declared>/<used>`, `null_undefined:<reason>`, `iim_option_mismatch:<option>` |
 | `NOT_IMPLEMENTED:<P>:<channel>` | the evidence channel is not implemented |
 | `ESTIMATOR_NOT_VALIDATED:<P>:<estimator>` | not validated for this substrate, grain or regime |
 | `ABSENT:<P>` | every channel of $P$ is credibly absent (veto) |
 | `BEARER_MISMATCH`, `PROTOCOL_MISMATCH` | evidence from more than one bearer or protocol |
-| `SOURCE_INCOHERENT`, `BEARER_MISMATCH:COHERENCE` | the single-source constraint failed |
+| `SOURCE_INCOHERENT[:<detail>]`, `BEARER_MISMATCH:COHERENCE` | the single-source constraint failed or was not tested (`UNTESTED`, `INSUFFICIENT_SURROGATES`) |
 
 Decomposition rule: the verdict is recoverable from the reasons alone. No reasons
 ⇔ `MPC_CONSISTENT`; a bearer, protocol or source code ⇒ `UNDETERMINED`;
@@ -719,14 +841,15 @@ missingness safety (making a component undefined never creates a determinate
 verdict that differs from the original), resolving an undefined component never
 reverses a determinate verdict, the verdict is determinate iff all completions
 of the undefined components agree, veto (any ABSENT in $N$ ⇒ `EXCLUDED`),
-permutation symmetry over principles, channel disjunction and reason-code
-decomposability.
+permutation symmetry over principles, channel disjunction, reason-code
+decomposability, a declared channel without an item is never ABSENT, and a
+missing SE gives UNDEFINED.
 
 ### 8.5 MPC degree
 
-For `MPC_CONSISTENT` rows only (NaN otherwise), each component of $N$ is put on
-the two-anchor scale ($0$ = null mean, $1$ = reference) and summarised by a
-capped weighted power mean:
+For `MPC_CONSISTENT` rows only (NaN otherwise), the construct-scale values
+$c_j$ of $N$ (`<P>_c`, 0 = null mean, 1 = reference anchor of the protocol)
+are summarised by a capped weighted power mean:
 
 $$
 \mathrm{degree} = \Big(\sum_j w_j \min(\max(c_j, 0), \mathrm{cap})^{p}\Big)^{1/p},
@@ -734,33 +857,73 @@ $$
 
 with $p = 0$ (geometric mean; the pipeline default, `MPC_DEGREE_P`),
 $p = -\infty$ (weakest link), $p = 1$ (arithmetic mean), cap 1
-(`MPC_DEGREE_CAP`) and equal weights by default. In the pipeline the reference
-is the D3 cohort high-state mean on the calibrated (excess over null) scale, or
-an external `--ci-reference` JSON on that scale. `evidence.degree_interval`
-gives delta-method or bootstrap intervals; `evidence.verdict_stability` gives
-the flip rate and modal verdict across repeated evaluations.
+(`MPC_DEGREE_CAP`) and equal weights by default
+(`synergy_ci.assemble_mpc_degree(df, weights, p, cap)`). The reference is the
+protocol's (by default the cohort high-state mean excess); `--ci-reference`
+affects only the legacy CI. `evidence.degree_interval` gives delta-method or
+bootstrap intervals; `evidence.verdict_stability` gives the flip rate and
+modal verdict across repeated evaluations (a tie for the top count gives
+`UNDETERMINED`).
 
 The MPC degree is a reference-relative evidence summary. It is **not** a level
 of consciousness and not an anaesthesia-depth index.
 
 ### 8.6 Pipeline wiring
 
-`compute_synergy_ci(..., null_surrogates=K, necessity_set=..., applicability_registry=...)`
-(CLI: `--null-surrogates`, `--necessity-set RAM,PDI,...`,
-`--applicability-registry path.json`) builds one `ComponentEvidence` per run and
-computed principle and adds the verdict columns (section 11).
+`compute_synergy_ci` (CLI: `--protocol`, `--null-surrogates`, `--bootstrap-se`,
+`--bootstrap-block-len`, `--necessity-set`, `--applicability-registry`) builds
+one `ComponentEvidence` per run, computed principle and channel, judges all
+runs once the reference anchors are known and adds the verdict columns
+(section 11).
 
-- `--null-surrogates 0` (default): no null family is run, so every defined
-  component is UNDEFINED (`NO_NULL_CALIBRATION:<P>`) and every verdict is
-  `UNDETERMINED`. This is the honest default, not an error.
+- **Protocol.** `--protocol file.json` declares $N$, channels, cutoffs,
+  $\alpha$, null families, reference, source rule, estimator modes and bearer
+  nodes (`protocols/mpc_default_v1.json` is the shipped default for empirical
+  data); its hash is `MPC_protocol_hash`. Without it a default protocol is
+  built from `--necessity-set`, the null kinds, the mode keys of the params
+  dicts (`synergy_ci.MPC_MODE_KEYS`) and the cohort reference; conflicting
+  settings raise an error.
+- **Modes.** The protocol's `estimators` select the construct revisions (RAM
+  `update="prediction_error"`, PDI `mode="repertoire"` with its `repertoire_*`
+  options, NAS `mode="capacity"`, IIM `cut_mode`/`tpm_estimator`, SRPI
+  `mode="agency"`). A declared fallback (`update_fallback` for RAM,
+  `mode_fallback` for SRPI) is used for runs that lack the primary mode's
+  inputs (a choice/reward log; self_caused/other_caused events); the mode used
+  is in `<P>_estimator` (`compute_<P>:<mode>@<version>`) and the reason in
+  `<P>_mode_reason` (e.g. `no_agency_events:agency->legacy`). Without a
+  declared fallback the primary mode is kept (and is undefined where its
+  inputs are missing). RAM channels declared by the protocol are computed one
+  by one (`impact_channel`).
+- `--null-surrogates 0` (default): the legacy estimator modes run no null
+  family, so their components are UNDEFINED (`NO_NULL_CALIBRATION:<P>`).
+  Modes with their own null (section 7) always use it.
+- `--bootstrap-se 0` (default): no sampling SE, so every empirical component
+  is UNDEFINED (`NO_SAMPLING_SE:<P>`) and every verdict `UNDETERMINED`. With
+  $B > 0$ each estimate gets a moving-block bootstrap SE
+  (`nulls.component_bootstrap_se`; block `--bootstrap-block-len`, default
+  $\lceil\sqrt{T}\rceil$ samples; events move with their blocks, replays without
+  their self-caused event are dropped; self-calibrating modes run with a
+  minimal null size, which does not change their evidence statistic) with
+  $B_{\mathrm{valid}} - 1$ degrees of freedom (`<P>_se_df`). The SE stays
+  undefined when fewer than two, or fewer than half
+  (`MPC_BOOTSTRAP_MIN_VALID_FRACTION`), of the replicates are valid; failures
+  are counted in `<P>_boot_failed`. Runtime is about $(B + 1)\times$ per
+  component on top of the null cost.
 - IIM evidence is on the integration-mass scale: `IIM_estimate` is $\Delta\Psi$
   and `IIM_null_mean`/`IIM_null_sd` in `step2_df.csv` are the $\Delta\Psi$ null
   moments in bits. (In `compute_IIM`'s details and in the Hunter table
   `hunter_iim_results.csv`, `IIM_null_mean`/`IIM_null_sd` are on the `IIM_raw`
-  ratio scale; `Delta_Psi` is the common quantity.)
-- Hunter campaigns without IIM surrogate runs
-  (`--hunter-iim-null-surrogates 0`) give `NO_NULL_CALIBRATION:IIM`, and at
-  K > 0 an IIM column of NaN (`null_calibration_unavailable`).
+  ratio scale; `Delta_Psi` is the common quantity.) IIM bootstrap replicates
+  score the subsystem selected on the original data.
+- **Hunter.** The campaign computes IIM with the protocol's IIM options and
+  bearer nodes. `--hunter-iim-null-surrogates K` adds K surrogate runs per real
+  run (otherwise `NO_NULL_CALIBRATION:IIM`, and at K > 0 locally an IIM column
+  of NaN, `null_calibration_unavailable`); `--hunter-iim-bootstrap-se B` adds B
+  block-bootstrap replicate runs per real run, drawn exactly as the local
+  pipeline draws them, and the reducer reports `Delta_Psi_bootstrap_se`
+  (otherwise Hunter IIM evidence is `NO_SAMPLING_SE:IIM`). A result computed
+  with other IIM options than the protocol's is UNDEFINED
+  (`iim_option_mismatch:<option>`).
 - Verdicts are per run. Aggregating runs of a subject is an analysis decision.
 
 ## 9. Legacy CI (deprecated)
@@ -819,15 +982,24 @@ subject x session means of the metric columns (no verdicts).
 | `MPC_verdict` | `EXCLUDED`, `MPC_CONSISTENT` or `UNDETERMINED` |
 | `MPC_reason` | `;`-joined reason codes (section 8.4) |
 | `MPC_degree` | MPC degree (`MPC_CONSISTENT` rows only) |
-| `MPC_necessity_set`, `MPC_null_surrogates`, `MPC_null_seed`, `MPC_null_families` | evidence configuration of the row |
-| `<P>_status` | PRESENT, ABSENT or UNDEFINED |
-| `<P>_margin` | margin of the component (see section 8.2) |
-| `<P>_estimate` | raw estimator value (IIM: $\Delta\Psi$ in bits) |
+| `MPC_necessity_set`, `MPC_null_surrogates`, `MPC_null_seed`, `MPC_null_families`, `MPC_bootstrap_se`, `MPC_bootstrap_block_len` | evidence configuration of the row |
+| `MPC_protocol_hash` | SHA-256 of the protocol (section 8.3) |
+| `MPC_joint_dependence`, `MPC_joint_dependence_p` | single-source test: `dependent`, `untested` or the failure reason (empty with one node set), and its p |
+| `<P>_status` | PRESENT, ABSENT or UNDEFINED (Kleene OR over the channels) |
+| `<P>_margin`, `<P>_margin_absent` | presence margin `c_lower - z` (> 0 iff PRESENT) and absence margin `delta - c_upper` (> 0 iff ABSENT) of the deciding channel |
+| `<P>_estimate` | raw estimator value (IIM: $\Delta\Psi$ in bits; PDI repertoire: bits) |
 | `<P>_null_mean`, `<P>_null_sd`, `<P>_null_n` | null moments on the scale of `<P>_estimate` |
+| `<P>_se`, `<P>_se_df`, `<P>_boot_n`, `<P>_boot_failed` | bootstrap sampling SE of the estimate, its degrees of freedom (valid replicates - 1), valid and failed replicates |
+| `<P>_c`, `<P>_c_se`, `<P>_c_df`, `<P>_c_lower`, `<P>_c_upper` | construct-scale value, its SE, effective degrees of freedom and one-sided bounds |
+| `<P>_reference`, `<P>_reference_se` | reference anchor (excess scale for the cohort reference) and its SE |
+| `<P>_estimator`, `<P>_mode_reason` | estimator id `compute_<P>:<mode>@<version>`; why a declared fallback mode was used (empty otherwise) |
+| `<P>_channels` | per-channel statuses `<channel>:<status>` |
 
 Hunter campaigns add `<out-dir>/cache/hunter_iim_results.csv` (one row per real
 run: `value`, `raw`, `canonical`, `Psi_full`, `Psi_mip_preserved`, `Delta_Psi`,
 the `IIM_null_*` fields, `IIM_z`, `IIM_null_p`, `IIM_excess`,
-`canonical_calibrated`, `iim_algorithm_version`, `tpm_estimator`, `cut_mode`,
-`psi_kernel`, selected nodes, node-selection rule, bins requested/used,
-`budget_adjustments`, observed states, transitions and `code_version`).
+`canonical_calibrated`, `Delta_Psi_bootstrap_se`, `Delta_Psi_bootstrap_n`,
+`Delta_Psi_bootstrap_failed`, `Delta_Psi_bootstrap_block_len`,
+`iim_algorithm_version`, `tpm_estimator`, `cut_mode`, `psi_kernel`, selected
+nodes, node-selection rule, bins requested/used, `budget_adjustments`, observed
+states, transitions and `code_version`).

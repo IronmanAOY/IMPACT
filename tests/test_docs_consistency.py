@@ -14,6 +14,7 @@ DOCS = (
     "docs/HLRS_HUNTER_RUNBOOK.md",
     "docs/synthetic_data.md",
     "scripts/hunter/README.md",
+    "protocols/README.md",
 )
 _FENCE = re.compile(r"```.*?```", flags=re.S)
 _LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
@@ -114,3 +115,119 @@ def test_hunter_defaults_in_docs_match_the_code():
     assert iim_xp._DEFAULT_MAX_ELEMENTS == 2**23
     assert iim_xp._DEFAULT_CACHE_ELEMENTS == 2**27
     assert "2^23 / 2^27" in readme
+
+
+# --------------------------------------------------------------------------
+# documented CLI flags, verdict names, reason codes and columns
+# --------------------------------------------------------------------------
+USER_DOCS = (
+    "README.md",
+    "docs/metrics.md",
+    "docs/ARCHITECTURE.md",
+    "docs/HLRS_HUNTER_RUNBOOK.md",
+    "scripts/hunter/README.md",
+    "protocols/README.md",
+)
+_FENCED = re.compile(r"```[a-z]*\n(.*?)```", flags=re.S)
+
+
+@pytest.fixture(scope="module")
+def pipeline_flags():
+    import subprocess
+    import sys
+
+    text = subprocess.run(
+        [sys.executable, str(REPO / "run_pipeline.py"), "--help"],
+        capture_output=True, text=True, timeout=180,
+    ).stdout
+    return set(re.findall(r"(--[a-z0-9][a-z0-9-]*)", text))
+
+
+def _commands(text, script):
+    """Arguments of the commands (continuation lines joined) in fenced blocks
+    that run script (the text after the script name)."""
+    out = []
+    for block in _FENCED.findall(text):
+        joined = re.sub(r"\\\n\s*", " ", block)
+        out += [ln.split(script, 1)[1] for ln in joined.splitlines() if script in ln]
+    return out
+
+
+def test_documented_pipeline_flags_exist(pipeline_flags):
+    new = {"--protocol", "--bootstrap-se", "--bootstrap-block-len",
+           "--null-surrogates", "--hunter-iim-null-surrogates",
+           "--hunter-iim-bootstrap-se"}
+    assert new <= pipeline_flags
+    for doc in ("README.md", "docs/HLRS_HUNTER_RUNBOOK.md"):
+        text = (REPO / doc).read_text(encoding="utf-8")
+        for flag in new:
+            assert f"`{flag}" in text or f"{flag} " in text, (doc, flag)
+    bad = []
+    for doc in USER_DOCS:
+        text = (REPO / doc).read_text(encoding="utf-8")
+        for cmd in _commands(text, "run_pipeline.py"):
+            bad += [(doc, f) for f in re.findall(r"(--[a-z0-9][a-z0-9-]*)", cmd)
+                    if f not in pipeline_flags]
+    assert not bad, f"undocumented run_pipeline flags in commands: {bad}"
+
+
+def test_documented_bench_flags_exist():
+    from impact_pipeline.bench.run_bench import build_parser
+
+    flags = set(build_parser()._option_string_actions)
+    bad = []
+    for doc in USER_DOCS:
+        text = (REPO / doc).read_text(encoding="utf-8")
+        for cmd in _commands(text, "run_bench.py"):
+            bad += [(doc, f) for f in re.findall(r"(--[a-z0-9][a-z0-9-]*)", cmd)
+                    if f not in flags]
+    assert not bad, f"unknown run_bench flags in documented commands: {bad}"
+
+
+def test_docs_use_the_v2_verdict_names():
+    for doc in USER_DOCS:
+        text = (REPO / doc).read_text(encoding="utf-8")
+        assert not re.search(r"(?<![A-Z_])(NOT_)?ATTRIBUTED\b", text), doc
+    # the changelog mentions the v1 names only where it says they were removed
+    for line in (REPO / "CHANGELOG.md").read_text(encoding="utf-8").splitlines():
+        if re.search(r"(?<![A-Z_])(NOT_)?ATTRIBUTED\b", line):
+            assert "verdict names" in line or "evidence-layer build" in line, line
+
+
+def test_metrics_doc_lists_every_reason_code_in_its_format():
+    from impact_pipeline import evidence as E
+
+    text = (REPO / "docs" / "metrics.md").read_text(encoding="utf-8")
+    table = text.split("### 8.4 Reason codes", 1)[1].split("Decomposition rule", 1)[0]
+    for kind in E.GLOBAL_REASON_KINDS:
+        assert f"`{kind}" in table, kind
+    for kind in E.PRINCIPLE_REASON_KINDS:
+        assert f"`{kind}:<P>" in table, kind
+    # bare codes are <KIND>:<P>, never nested under UNDEFINED
+    for kind in E._BARE_PRINCIPLE_REASONS:
+        assert f"`{kind}:<P>`" in table, kind
+        assert f"UNDEFINED:<P>:{kind}" not in text, kind
+    for detail in ("DEGENERATE_NULL", "INVALID_SE", "NULL_FAMILY_MISMATCH"):
+        assert detail in table, detail
+
+
+def test_metrics_doc_lists_every_evidence_column():
+    from impact_pipeline import synergy_ci as sc
+
+    text = (REPO / "docs" / "metrics.md").read_text(encoding="utf-8")
+    section = text.split("## 11. Output columns", 1)[1]
+    for col in sc.MPC_VERDICT_COLUMNS:
+        assert col in section, col
+    for field in sc.MPC_EVIDENCE_FIELDS:
+        assert f"`<P>_{field}`" in section, field
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for field in sc.MPC_EVIDENCE_FIELDS:
+        assert f"<P>_{field}" in readme, field
+
+
+def test_pdi_repertoire_and_protocols_are_documented():
+    text = (REPO / "docs" / "metrics.md").read_text(encoding="utf-8")
+    assert '### 3.3 `mode="repertoire"`' in text
+    for doc in ("README.md", "docs/metrics.md", "CHANGELOG.md"):
+        body = (REPO / doc).read_text(encoding="utf-8")
+        assert "repertoire" in body and "protocols/" in body, doc
