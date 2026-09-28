@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Figure 9: audit of attribution rules on estimated component statuses.
+Figure 9: audit of decision rules on estimated component statuses.
 
 Inputs (from the rule-audit runs of MPC-Bench):
 
@@ -13,9 +13,11 @@ Inputs (from the rule-audit runs of MPC-Bench):
   (``rule``, ``coverage``, ``risk``, optional ``scenario``) with the curves.
 
 Panels: A risk-coverage curves of each rule in ``--scenario`` (default: the
-first scenario); the IMPaCT rule (``impact``) takes the first colour, rules
-beyond eight are drawn in gray. B coverage and C selective accuracy per rule
-and scenario (first three scenarios coloured, the rest gray).
+first scenario); the IMPaCT rule (``impact_c``, the v2 construct-scale rule of
+``bench.audit``; the legacy ``impact`` when ``impact_c`` is absent) takes the
+first colour and a thick line, rules beyond eight are drawn in gray. B coverage
+and C selective accuracy per rule and scenario (first three scenarios
+coloured, the rest gray).
 """
 from __future__ import annotations
 
@@ -50,11 +52,20 @@ def curves_from_cases(cases: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+IMPACT_RULES = ("impact_c", "impact")
+
+
+def _lead_rule(rules):
+    """The IMPaCT rule among ``rules`` (v2 ``impact_c`` first), or None."""
+    return next((r for r in IMPACT_RULES if r in rules), None)
+
+
 def _rule_order(rules):
     rules = list(dict.fromkeys(rules))
-    if "impact" in rules:
-        rules.remove("impact")
-        rules.insert(0, "impact")
+    lead = _lead_rule(rules)
+    if lead is not None:
+        rules.remove(lead)
+        rules.insert(0, lead)
     return rules
 
 
@@ -93,7 +104,7 @@ def make_figure(summary_path, out_dir, cases_path=None, risk_coverage_path=None,
         if sub.empty:
             continue
         ax.step(sub["coverage"], sub["risk"], where="post", color=colors[r],
-                lw=2.0 if r == "impact" else 1.2, label=r)
+                lw=2.0 if r == rules[0] and _lead_rule(rules) else 1.2, label=r)
     ax.set_xlim(0, 1)
     ax.set_ylim(bottom=0)
     ax.set_xlabel("coverage")

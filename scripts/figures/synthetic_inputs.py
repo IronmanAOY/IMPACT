@@ -119,13 +119,13 @@ def patchwork_results(rng):
 
 
 def rule_tables(rng):
-    rules = ("impact", "geometric_mean_uncapped", "weakest_link", "count_3",
+    rules = ("impact_c", "geometric_mean_uncapped", "weakest_link", "count_3",
              "logistic", "IIM_only")
     scen = ("complete", "missing_20pct", "label_noise_10pct")
     summ, cases = [], []
     for i, r in enumerate(rules):
         for s in scen:
-            cov = 1.0 if r != "impact" else 0.7 - 0.1 * scen.index(s)
+            cov = 1.0 if r != "impact_c" else 0.7 - 0.1 * scen.index(s)
             summ.append({"rule": r, "scenario": s, "coverage": cov,
                          "selective_accuracy": 0.95 - 0.05 * i - 0.03 * scen.index(s)})
         for k in range(60):

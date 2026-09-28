@@ -1148,9 +1148,8 @@ def _add_bootstrap_runs(
         "unavailable_reason": None,
     }
     try:
-        replicates = list(
-            nulls.block_bootstrap(ts_iim, None, block_len, n_boot, seed)
-        )
+        # inputs are validated here; replicates are drawn one at a time
+        replicates = nulls.block_bootstrap(ts_iim, None, block_len, n_boot, seed)
     except ValueError as exc:
         info["unavailable_reason"] = f"bootstrap_unavailable: {exc}"
         return info
