@@ -33,6 +33,74 @@ def test_setup_template_follows_hunter_policy():
     assert "conda" not in text
 
 
+def test_setup_failure_returns_when_sourced_and_aborts_jobs(tmp_path):
+    """The setup file is sourced: an error must not close a login shell."""
+    stub = (
+        "module() { :; }\n"
+        "ws_find() { echo ''; }\n"
+        f"source {HUNTER / 'hunter_pbs_setup.sh'}\n"
+    )
+    interactive = subprocess.run(
+        ["bash", "-c", stub + 'echo "alive rc=$?"'],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert "alive rc=1" in interactive.stdout
+    assert "workspace 'impact' not found" in interactive.stderr
+    job = subprocess.run(
+        ["bash", "-c", "set -eo pipefail\n" + stub + "echo continued"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert job.returncode != 0 and "continued" not in job.stdout
+
+
+def test_login_node_commands_run_from_the_sourced_venv(tmp_path):
+    """
+    After `source hunter_pbs_setup.sh`, the documented login-node commands
+    (build-campaign, status) run from the cray-python venv, whose path does not
+    contain the workstation conda env name.
+    """
+    ws = tmp_path / "ws"
+    venv = ws / "venvs" / "impact-hunter"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "venv",
+            "--system-site-packages",
+            "--without-pip",
+            str(venv),
+        ],
+        check=True,
+        timeout=120,
+    )
+    script = (
+        "module() { :; }\n"
+        f"export IMPACT_WS={ws}\n"
+        f"source {HUNTER / 'hunter_pbs_setup.sh'}\n"
+        'exec "$IMPACT_HUNTER_PYTHON" '
+        f"{REPO / 'run_pipeline.py'} --execution-mode hunter --hunter-stage status "
+        f"--hunter-campaign-dir {tmp_path / 'no_campaign'} "
+        f"--out-dir {tmp_path / 'out'}\n"
+    )
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in {"CONDA_DEFAULT_ENV", "CONDA_PREFIX", "IMPACT_SKIP_ENV_CHECK"}
+        and not k.startswith("IMPACT_CONDA_ENV")
+    }
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    proc = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=180, env=env
+    )
+    assert "Invalid Python runtime" not in proc.stderr, proc.stderr[-1500:]
+    # it got past the runtime check and failed only on the missing campaign
+    assert "campaign_manifest.json" in proc.stderr
+
+
 def test_install_notes_default_to_dry_run():
     proc = subprocess.run(
         ["bash", str(HUNTER / "install_hunter_env.sh"), "--cupy", "source-13.6"],

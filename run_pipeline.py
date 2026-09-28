@@ -1333,7 +1333,12 @@ def _run_hunter_stage(
                 campaign_dir,
                 stage,
                 int(hunter_array_index),
-                int(hunter_shards_per_node or 1),
+                # None: the packing the campaign was built with
+                (
+                    None
+                    if hunter_shards_per_node is None
+                    else int(hunter_shards_per_node)
+                ),
             )
             return None
         if hunter_task_index is None:

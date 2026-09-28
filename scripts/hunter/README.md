@@ -63,6 +63,12 @@ bash <OUT>/cache/hunter_iim_campaign/pbs/00_submit_all.sh
 - Resubmission is safe: rerun `00_submit_all.sh`. Completed shards are skipped. The
   skip check uses the task identity: problem digest, shard range and code version.
   Cut shards also checkpoint after every cut. Set `IMPACT_HUNTER_FORCE=1` to recompute.
+  Reducers refuse shards from another build or from mixed code versions, and finalize
+  refuses final results from an earlier build of the same campaign directory.
+- `qsub` does not forward the login shell's environment to the jobs (no `-V`). Export
+  job-time variables (`IMPACT_HUNTER_FORCE`, `IMPACT_IIM_*`, `IMPACT_EIGH_BACKEND`,
+  `IMPACT_CODE_VERSION`) in the setup file that every job sources. The `IMPACT_HUNTER_*`
+  scheduler settings in the table below are read when the campaign is built.
 - Status and timing: `--hunter-stage status` writes `status.json`, which lists missing
   shard indices. Every task writes `timing/<stage>/<task>.json` (wall/CPU time, peak
   RSS, host, PBS ids). Finalize writes `timing_summary.json`.

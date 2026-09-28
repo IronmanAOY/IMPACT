@@ -648,9 +648,9 @@ def _task_identity(meta: dict, task: dict, stage: str, code_version: str) -> dic
     }
 
 
-def _completed_payload(path: Path, identity: dict):
-    """Return the stored payload when it is a completed result for ``identity``."""
-    if _env_flag(FORCE_ENV, False) or not path.exists():
+def _stored_completion(path: Path, identity: dict):
+    """The stored payload if it is a completed result for ``identity``, else None."""
+    if not path.exists():
         return None
     try:
         rec = _json_load(path)
@@ -659,6 +659,30 @@ def _completed_payload(path: Path, identity: dict):
     if rec.get("status") != "complete" or rec.get("identity") != identity:
         return None
     return rec
+
+
+def _completed_payload(path: Path, identity: dict):
+    """Return the stored payload when it is a completed result for ``identity``."""
+    if _env_flag(FORCE_ENV, False):
+        return None
+    return _stored_completion(path, identity)
+
+
+# Results derived from shards by the reducers; stale copies from an earlier
+# build of the same campaign directory must never be reused.
+_DERIVED_RESULT_FILES = ("phase1_result.json", "final_result.json")
+
+
+def _check_single_code_version(versions, run_key: str) -> str | None:
+    """All shards of a run must come from the same code version."""
+    distinct = sorted({str(v) for v in versions if v is not None})
+    if len(distinct) > 1:
+        raise RuntimeError(
+            f"Shards of {run_key} were computed by different code versions "
+            f"({', '.join(distinct)}). Resubmit the campaign so every shard is "
+            "recomputed with the current code (or set IMPACT_HUNTER_FORCE=1)."
+        )
+    return distinct[0] if distinct else None
 
 
 def _mk_readonly_array_spec(label, arr, use_shared_memory, tmp_dir, owner_shms, owner_files):
@@ -940,6 +964,11 @@ def prepare_hunter_campaign(
         run_key = f"run-{run_index:04d}_{_sanitize_token(spec['subject'])}_{_sanitize_token(spec['session'])}_{run_digest}"
         run_dir = _run_artifact_dir(campaign_dir, run_key)
         run_dir.mkdir(parents=True, exist_ok=True)
+        # A rebuild into an existing campaign directory invalidates the reduced
+        # results (shard files are kept: their identity decides reuse).
+        for name in _DERIVED_RESULT_FILES:
+            with contextlib.suppress(FileNotFoundError):
+                (run_dir / name).unlink()
 
         ts_time_region = np.load(ts_path)
         ts_iim = np.asarray(ts_time_region.T, dtype=float)
@@ -1425,7 +1454,9 @@ def _write_hunter_pbs_scripts(campaign_dir: Path, manifest) -> dict:
         "#!/bin/bash",
         "# Submit the IMPaCT Hunter IIM campaign (PBS Pro).",
         "# Run interactively on a Hunter login node. Re-running after a failure is",
-        "# safe: completed shards are skipped (IMPACT_HUNTER_FORCE=1 recomputes).",
+        "# safe: completed shards are skipped. qsub does not forward this shell's",
+        "# environment (no -V): job-time settings such as IMPACT_HUNTER_FORCE=1",
+        "# (recompute) belong in the setup file sourced by every job.",
         "set -euo pipefail",
         'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
         'campaign_dir="$(cd "${script_dir}/.." && pwd)"',
@@ -1806,9 +1837,7 @@ def run_phase1_shard(campaign_dir, task_index):
     return payload
 
 
-def _shard_record(
-    path: Path, meta: dict, shard: dict, stage: str, code_version: str | None
-):
+def _shard_record(path: Path, meta: dict, shard: dict, stage: str):
     if not path.exists():
         raise FileNotFoundError(f"Missing {stage} result: {path}")
     rec = _json_load(path)
@@ -1842,10 +1871,13 @@ def run_phase1_reduce(campaign_dir, run_index):
         return payload
 
     partials = []
+    versions = []
     for shard in run_meta["phase1_shards"]:
         shard_path = run_dir / "phase1_shards" / f"shard_{int(shard['task_index']):04d}.json"
-        rec = _shard_record(shard_path, run_meta, shard, "Phase1 shard", None)
+        rec = _shard_record(shard_path, run_meta, shard, "Phase1 shard")
         partials.append(float(rec["psi_partial"]))
+        versions.append((rec.get("identity") or {}).get("code_version"))
+    code_version = _check_single_code_version(versions, run_meta["run_key"])
 
     psi_full = float(math.fsum(partials)) if partials else 0.0
     payload = {
@@ -1853,6 +1885,8 @@ def run_phase1_reduce(campaign_dir, run_index):
         "defined": True,
         "psi_full": float(psi_full),
         "n_shards": int(len(partials)),
+        "problem_digest": run_meta.get("problem_digest"),
+        "code_version": code_version,
     }
     _json_dump(run_dir / "phase1_result.json", payload)
     return payload
@@ -2011,7 +2045,18 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
         return payload
 
     phase1 = _json_load(run_dir / "phase1_result.json")
+    if phase1.get("problem_digest", run_meta.get("problem_digest")) != run_meta.get(
+        "problem_digest"
+    ):
+        raise RuntimeError(
+            f"{run_dir / 'phase1_result.json'} belongs to a different campaign build; "
+            "rerun the phase-1 reduction."
+        )
     psi_full = float(phase1["psi_full"])
+    build_fields = {
+        "problem_digest": run_meta.get("problem_digest"),
+        "code_version": phase1.get("code_version"),
+    }
     if not np.isfinite(psi_full) or psi_full <= 0:
         payload = {
             "value": None,
@@ -2026,6 +2071,7 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
             "n_nodes_used": int(run_meta["n_nodes_used"]),
             "bins_used": int(run_meta["bins_used"]),
             "n_cuts_evaluated": int(run_meta["n_cuts_evaluated"]),
+            **build_fields,
         }
         _json_dump(run_dir / "final_result.json", payload)
         return payload
@@ -2033,9 +2079,11 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
     best_psi = -np.inf
     best_cut = None
     n_scored = 0
+    versions = [phase1.get("code_version")]
     for shard in run_meta["cut_shards"]:
         shard_path = run_dir / "cut_shards" / f"shard_{int(shard['task_index']):04d}.json"
-        rec = _shard_record(shard_path, run_meta, shard, "Cut shard", None)
+        rec = _shard_record(shard_path, run_meta, shard, "Cut shard")
+        versions.append((rec.get("identity") or {}).get("code_version"))
         n_scored += len(rec.get("cut_scores") or {})
         psi = rec.get("best_psi")
         if psi is None:
@@ -2049,6 +2097,10 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
             f"Cut shards for {run_meta['run_key']} scored {n_scored} cuts, "
             f"expected {int(run_meta['n_cuts_evaluated'])}."
         )
+    # Psi_full (phase 1) and the cut Psi values must come from the same code.
+    build_fields["code_version"] = _check_single_code_version(
+        versions, run_meta["run_key"]
+    )
 
     if not np.isfinite(best_psi):
         payload = {
@@ -2064,6 +2116,7 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
             "n_nodes_used": int(run_meta["n_nodes_used"]),
             "bins_used": int(run_meta["bins_used"]),
             "n_cuts_evaluated": int(run_meta["n_cuts_evaluated"]),
+            **build_fields,
         }
         _json_dump(run_dir / "final_result.json", payload)
         return payload
@@ -2115,6 +2168,7 @@ def run_cut_reduce(campaign_dir, run_index, clamp=True, scale=1.0):
         "induced_partition_cache_stats": None,
         "defined": True,
         "undefined_reason": None,
+        **build_fields,
     }
     _json_dump(run_dir / "final_result.json", payload)
     return payload
@@ -2157,11 +2211,13 @@ def run_reduce_all(campaign_dir):
 
 
 def run_packed_shard(
-    campaign_dir, stage: str, array_index: int, shards_per_node: int, env=None
+    campaign_dir, stage: str, array_index: int, shards_per_node=None, env=None
 ):
     """
     Run the shard of a packed launch (``shards_per_node`` ranks per node).
     Ranks beyond the last task of a partially filled node exit without work.
+    ``shards_per_node`` defaults to the packing the campaign was built with; a
+    different explicit value would skip or duplicate tasks and is rejected.
     """
     campaign_dir = Path(campaign_dir).resolve()
     manifest = _load_manifest(campaign_dir)
@@ -2169,6 +2225,15 @@ def run_packed_shard(
     if tasks_key is None:
         raise ValueError(
             f"Packed execution supports {PHASE1_STAGE} and {CUT_STAGE}, not '{stage}'."
+        )
+    built_spn = (manifest.get("scheduler") or {}).get("shards_per_node")
+    if shards_per_node is None:
+        shards_per_node = int(built_spn or 1)
+    elif built_spn is not None and int(shards_per_node) != int(built_spn):
+        raise ValueError(
+            f"--hunter-shards-per-node {int(shards_per_node)} does not match the "
+            f"campaign packing ({int(built_spn)} shards per node); the array index "
+            "would map to the wrong shards."
         )
     task_index = resolve_packed_task_index(array_index, shards_per_node, env=env)
     n_tasks = len(manifest.get(tasks_key, []))
@@ -2189,6 +2254,9 @@ def campaign_status(campaign_dir) -> dict:
     """Completed/missing shards and results of a campaign (written to status.json)."""
     campaign_dir = Path(campaign_dir).resolve()
     manifest = _load_manifest(campaign_dir)
+    runs_by_key = {str(r["run_key"]): r for r in manifest.get("runs", [])}
+    # 'complete' means a resubmission would skip the shard (same identity check).
+    code_version = _runtime_code_version()
     status = {
         "phase1-shard": {"complete": [], "missing": []},
         "cut-shard": {"complete": [], "missing": []},
@@ -2203,17 +2271,24 @@ def campaign_status(campaign_dir) -> dict:
                 / sub
                 / f"shard_{int(task['task_index']):04d}.json"
             )
-            ok = False
-            if path.exists():
-                try:
-                    ok = _json_load(path).get("status") == "complete"
-                except Exception:
-                    ok = False
+            identity = _task_identity(
+                runs_by_key.get(str(task["run_key"]), {}), task, stage, code_version
+            )
+            ok = _stored_completion(path, identity) is not None
             status[stage]["complete" if ok else "missing"].append(int(i))
-    finals = [
-        (_run_artifact_dir(campaign_dir, r["run_key"]) / "final_result.json").exists()
-        for r in manifest.get("runs", [])
-    ]
+
+    def _final_current(run_meta) -> bool:
+        run_dir = _run_artifact_dir(campaign_dir, run_meta["run_key"])
+        path = run_dir / "final_result.json"
+        if not path.exists():
+            return False
+        try:
+            rec = _json_load(path)
+        except Exception:
+            return False
+        return rec.get("problem_digest") == run_meta.get("problem_digest")
+
+    finals = [_final_current(r) for r in manifest.get("runs", [])]
     summary = {
         "campaign_dir": str(campaign_dir),
         "n_runs": len(finals),
@@ -2273,6 +2348,13 @@ def collect_iim_results_by_path(campaign_dir):
         if not final_path.exists():
             raise FileNotFoundError(f"Missing final IIM result: {final_path}")
         result = _json_load(final_path)
+        # Undefined runs have no digest; for defined runs the result must come
+        # from this build of the campaign (not a stale earlier reduction).
+        if result.get("problem_digest") != run_meta.get("problem_digest"):
+            raise RuntimeError(
+                f"Final IIM result {final_path} does not belong to the current "
+                "campaign build; run the reduce-all stage again."
+            )
         out[str(run_meta["ts_path"])] = result
         # Also key by the path as discovered (may differ from the resolved path
         # when the output directory is reached through a symlink).

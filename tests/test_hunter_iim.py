@@ -390,6 +390,120 @@ def test_reducers_reject_stale_or_missing_shards(tmp_path):
     ) or "phase1-reduce" in str(excinfo.value)
 
 
+def _rebuild_same_dir(tmp_path, *, max_nodes):
+    profile = dataclasses.replace(
+        get_execution_profile("hunter"),
+        hunter_phase1_shards_per_run=3,
+        hunter_cut_shards_per_run=2,
+        hunter_phase1_workers_per_task=1,
+        hunter_shared_memory=False,
+    )
+    return prepare_hunter_campaign(
+        data_dir=tmp_path / "prep",
+        atlas="schaefer400",
+        sessions=("awake", "deep"),
+        condition="audio",
+        stimulus_onsets=None,
+        subjects=None,
+        campaign_dir=tmp_path / "campaign",
+        execution_profile=profile,
+        iim_bins=2,
+        iim_lag_trs=1,
+        iim_n_parts=4,
+        iim_max_timepoints=None,
+        iim_max_nodes=max_nodes,
+        iim_max_mechanism_size=2,
+        iim_max_purview_size=2,
+        step2_context={"hardware_target": "cpu"},
+    )
+
+
+def test_rebuild_never_reuses_results_of_the_previous_build(tmp_path):
+    """
+    Rebuilding a campaign directory with other IIM settings must not let status
+    or finalize treat the previous build's reduced results as current.
+    """
+    campaign_dir, manifest, _paths = _multi_run_campaign(tmp_path, max_nodes=4)
+    _run_all_packed(campaign_dir, manifest)
+    hunter_iim.run_reduce_all(campaign_dir)
+    assert hunter_iim.campaign_status(campaign_dir)["final_results"] == 4
+    old_final = campaign_dir / "runs" / manifest["runs"][0]["run_key"]
+    old_final = json.loads((old_final / "final_result.json").read_text())
+    assert old_final["n_nodes_used"] == 4
+
+    rebuilt = _rebuild_same_dir(tmp_path, max_nodes=3)
+    status = hunter_iim.campaign_status(campaign_dir)
+    # nothing of the new build has run yet
+    assert status["final_results"] == 0
+    assert status["stages"]["phase1-shard"]["complete"] == 0
+    assert status["stages"]["cut-shard"]["missing"] == len(rebuilt["cut_tasks"])
+    with pytest.raises(FileNotFoundError, match="final IIM result"):
+        collect_iim_results_by_path(campaign_dir)
+
+    # a final result left over from another build is refused by finalize
+    run0 = campaign_dir / "runs" / rebuilt["runs"][0]["run_key"]
+    (run0 / "final_result.json").write_text(json.dumps(old_final))
+    for other in rebuilt["runs"][1:]:
+        (campaign_dir / "runs" / other["run_key"] / "final_result.json").write_text(
+            json.dumps({**old_final, "problem_digest": other["problem_digest"]})
+        )
+    with pytest.raises(RuntimeError, match="current campaign build"):
+        collect_iim_results_by_path(campaign_dir)
+
+    _run_all_packed(campaign_dir, rebuilt)
+    hunter_iim.run_reduce_all(campaign_dir)
+    results = collect_iim_results_by_path(campaign_dir)
+    assert {r["n_nodes_used"] for r in results.values()} == {3}
+    assert hunter_iim.campaign_status(campaign_dir)["final_results"] == 4
+
+
+def test_reducers_reject_shards_from_mixed_code_versions(tmp_path, monkeypatch):
+    campaign_dir, manifest, _paths = _multi_run_campaign(tmp_path)
+    run_key = manifest["runs"][0]["run_key"]
+    first_p1 = [t for t in manifest["phase1_tasks"] if t["run_key"] == run_key]
+    idx = [manifest["phase1_tasks"].index(t) for t in first_p1]
+    hunter_iim.run_phase1_shard(campaign_dir, idx[0])
+    # e.g. `git pull` while the phase-1 array is still running
+    monkeypatch.setattr(hunter_iim, "_runtime_code_version", lambda: "other-commit")
+    for i in idx[1:]:
+        hunter_iim.run_phase1_shard(campaign_dir, i)
+    with pytest.raises(RuntimeError, match="different code versions"):
+        hunter_iim.run_phase1_reduce(campaign_dir, 0)
+
+    # after a resubmission under one code version the run reduces again
+    hunter_iim.run_phase1_shard(campaign_dir, idx[0])
+    p1 = hunter_iim.run_phase1_reduce(campaign_dir, 0)
+    assert p1["code_version"] == "other-commit"
+    cut_idx = [
+        i for i, t in enumerate(manifest["cut_tasks"]) if t["run_key"] == run_key
+    ]
+    for i in cut_idx:
+        hunter_iim.run_cut_shard(campaign_dir, i)
+    final = hunter_iim.run_cut_reduce(campaign_dir, 0)
+    assert final["defined"] and final["code_version"] == "other-commit"
+
+    # cut shards computed by another version than Psi_full are refused as well
+    monkeypatch.setattr(hunter_iim, "_runtime_code_version", lambda: "third-commit")
+    hunter_iim.run_cut_shard(campaign_dir, cut_idx[0])
+    with pytest.raises(RuntimeError, match="different code versions"):
+        hunter_iim.run_cut_reduce(campaign_dir, 0)
+
+
+def test_packed_shard_uses_the_built_packing(tmp_path):
+    campaign_dir, manifest, _paths = _multi_run_campaign(tmp_path)
+    assert manifest["scheduler"]["shards_per_node"] == 4
+    # no explicit packing: the campaign's 4 shards per node, i.e. task 4*1 + 2
+    out = hunter_iim.run_packed_shard(
+        campaign_dir, "phase1-shard", 1, env={"PMI_LOCAL_RANK": "2"}
+    )
+    assert out["task_index"] == manifest["phase1_tasks"][6]["task_index"]
+    assert out["run_key"] == manifest["phase1_tasks"][6]["run_key"]
+    with pytest.raises(ValueError, match="does not match the campaign packing"):
+        hunter_iim.run_packed_shard(
+            campaign_dir, "phase1-shard", 1, 2, env={"PMI_LOCAL_RANK": "0"}
+        )
+
+
 def test_main_hunter_end_to_end_matches_local_iim(tmp_path, monkeypatch):
     import pandas as pd
 

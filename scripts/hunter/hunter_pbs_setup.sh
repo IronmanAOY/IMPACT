@@ -32,7 +32,7 @@ IMPACT_WS_NAME="${IMPACT_WS_NAME:-impact}"                          # created on
 IMPACT_WS="${IMPACT_WS:-$(ws_find "${IMPACT_WS_NAME}")}"            # [KB ws_find]
 if [ -z "${IMPACT_WS}" ] || [ ! -d "${IMPACT_WS}" ]; then
   echo "ERROR: workspace '${IMPACT_WS_NAME}' not found (see ws_list)" >&2
-  exit 1
+  return 1 2>/dev/null || exit 1   # sourced: do not close an interactive login shell
 fi
 export IMPACT_WS
 
@@ -40,11 +40,14 @@ export IMPACT_WS
 IMPACT_VENV="${IMPACT_VENV:-${IMPACT_WS}/venvs/impact-hunter}"
 if [ ! -f "${IMPACT_VENV}/bin/activate" ]; then
   echo "ERROR: venv '${IMPACT_VENV}' missing; run scripts/hunter/install_hunter_env.sh first" >&2
-  exit 1
+  return 1 2>/dev/null || exit 1   # sourced: do not close an interactive login shell
 fi
 # shellcheck disable=SC1091
 source "${IMPACT_VENV}/bin/activate"
 export IMPACT_HUNTER_PYTHON="${IMPACT_VENV}/bin/python3"           # HLRS: invoke as python3  [KB]
+# run_pipeline.py checks for the workstation environment name by default; the venv above pins the
+# interpreter here, so the check is skipped for login-node commands too (build-campaign, status).
+export IMPACT_SKIP_ENV_CHECK="${IMPACT_SKIP_ENV_CHECK:-1}"
 export PYTHONNOUSERSITE=1                                           # keep ~/.local out of sys.path  [UNVERIFIED on Hunter]
 # Deployments without .git metadata (e.g. a copied tarball) should record their version
 # for provenance, e.g.: export IMPACT_CODE_VERSION=1.1.0+<commit>
