@@ -54,11 +54,14 @@ deterministic given it.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 from typing import Callable, NamedTuple
 
 import numpy as np
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 SURROGATE_KINDS = (
     "circular_shift",
@@ -328,6 +331,8 @@ def jitter_onsets(
     Onset-jitter surrogate (see the module docstring). ``t_max`` (seconds) is
     the recording length; shifted onsets wrap into ``[0, t_max)``. Without
     ``t_max`` onsets are only floored at 0, and ``max_jitter`` is required.
+    ``min_shift`` (seconds) is the minimum magnitude of the common shift and
+    is only valid with ``common=True``.
     """
     rng = _as_rng(rng)
     if t_max is not None and not (np.isfinite(t_max) and float(t_max) > 0):
@@ -338,6 +343,10 @@ def jitter_onsets(
         raise ValueError("max_jitter must be > 0")
     if min_shift < 0:
         raise ValueError("min_shift must be >= 0")
+    if min_shift > 0 and not common:
+        # Independent jitter / re-placement has no minimum displacement; a
+        # silently ignored min_shift would misdeclare the null family.
+        raise ValueError("min_shift applies to the common (rigid) shift only")
     common_shift = None
     if common:
         if max_jitter is None:
@@ -460,7 +469,8 @@ def component_null(
     for _ in range(n):
         try:
             ts_s, ev_s = make_surrogate(kind, ts, events, rng, **surrogate_kwargs)
-        except ValueError:
+        except ValueError as exc:
+            log.warning("component null (%s): surrogates unavailable: %s", kind, exc)
             return ComponentNull(float("nan"), float("nan"), np.empty(0), n)
         try:
             val = _estimator_value(estimator_fn(ts_s, ev_s))

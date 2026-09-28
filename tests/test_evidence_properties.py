@@ -321,13 +321,15 @@ def test_component_status_array_matches_scalar(n):
     est[rng.random(n) < 0.02] = np.nan
     nsd[rng.random(n) < 0.02] = 0.0
     codes, margins = E.component_status_array(est, nm, nsd, se)
-    mismatches = 0
-    for i in range(0, n, 10):  # scalar path on every 10th draw
+    mismatches = compared = 0
+    for i in range(n):  # the scalar path on every draw
         st, m, _ = E.component_status(E.ComponentEvidence("RAM", est[i], nm[i], nsd[i],
                                                           se=se[i]))
         mismatches += E._STATUS_TO_CODE[st] != codes[i]
+        compared += 1
         if np.isfinite(m) or np.isfinite(margins[i]):
             assert m == pytest.approx(margins[i], rel=1e-12)
-    assert mismatches == 0
-    _report("status array", draws=n, present=int(np.sum(codes == T)),
-            absent=int(np.sum(codes == F)), undefined=int(np.sum(codes == U)))
+    assert mismatches == 0 and compared == n
+    _report("status array", draws=n, compared_with_scalar=compared,
+            present=int(np.sum(codes == T)), absent=int(np.sum(codes == F)),
+            undefined=int(np.sum(codes == U)))

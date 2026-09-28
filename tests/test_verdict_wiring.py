@@ -286,8 +286,10 @@ def test_real_ram_estimator_is_calibrated_by_the_onset_null(tmp_path):
         necessity_set=("RAM",),
     )
     row = df.iloc[0]
-    assert np.isfinite(row["RAM_estimate"]) and row["RAM_null_n"] >= 2
-    assert np.isfinite(row["RAM_margin"])
+    # Integration check with the real estimator (not a known-answer test):
+    # every shifted-train surrogate is scored and the null is not degenerate.
+    assert np.isfinite(row["RAM_estimate"]) and row["RAM_null_n"] == 4
+    assert np.isfinite(row["RAM_margin"]) and row["RAM_null_sd"] > 0
     assert row["RAM"] == pytest.approx(
         max(row["RAM_estimate"] - row["RAM_null_mean"], 0.0))
     assert row["MPC_verdict"] in {v.value for v in E.Verdict}
@@ -492,3 +494,58 @@ def test_evidence_options_reach_the_hunter_finalize_stage(tmp_path, monkeypatch)
         run_pipeline.main(str(out), hunter_stage="finalize-pipeline",
                           hunter_campaign_dir=str(campaign), **common)
     assert {k: captured[k] for k in expected} == expected
+
+
+# --------------------------------------------------------------------------
+# MPC degree known answer (review regression)
+# --------------------------------------------------------------------------
+def test_assemble_mpc_degree_known_answer():
+    # Two awake subjects; calibrated metric columns hold the excess over the
+    # null (the D3 reference is their cohort high-state mean): NAS ref =
+    # mean(2, 6) = 4, IIM ref = mean(4, 4) = 4. Row 0 is ATTRIBUTED with
+    # c_NAS = (3 - 1) / 4 = 0.5 and c_IIM = (5 - 1) / 4 = 1 -> geometric 0.5**0.5.
+    df = pd.DataFrame([
+        {"subject": "a", "session": "awake", "MPC_verdict": "ATTRIBUTED",
+         "MPC_necessity_set": "NAS,IIM", "NAS": 2.0, "NAS_estimate": 3.0,
+         "NAS_null_mean": 1.0, "IIM": 4.0, "IIM_estimate": 5.0, "IIM_null_mean": 1.0},
+        {"subject": "b", "session": "awake", "MPC_verdict": "UNDETERMINED",
+         "MPC_necessity_set": "NAS,IIM", "NAS": 6.0, "NAS_estimate": 7.0,
+         "NAS_null_mean": 1.0, "IIM": 4.0, "IIM_estimate": 6.0, "IIM_null_mean": 2.0},
+    ])
+    out, refs = sc.assemble_mpc_degree(df)
+    assert refs["NAS"] == pytest.approx(4.0) and refs["IIM"] == pytest.approx(4.0)
+    assert out.loc[0, "MPC_degree"] == pytest.approx(0.5 ** 0.5)
+    assert np.isnan(out.loc[1, "MPC_degree"])
+    # weights restricted to N; arithmetic mean on request
+    out_w, _ = sc.assemble_mpc_degree(df, weights={"NAS": 3.0, "IIM": 1.0}, p=1.0)
+    assert out_w.loc[0, "MPC_degree"] == pytest.approx(0.75 * 0.5 + 0.25 * 1.0)
+
+
+def test_degree_reference_is_not_read_without_attributed_rows(tmp_path):
+    # K=0 (all UNDETERMINED) with compute_ci=False must not start reading the
+    # CI reference: before the evidence layer such calls never touched it.
+    prep, _ = _layout(tmp_path)
+    df = _run(prep, sessions=("awake",), mpc_metrics=("NAS",), compute_ci=False,
+              ci_reference=str(tmp_path / "missing_reference.json"))
+    assert df["MPC_degree"].isna().all()
+    assert (df["MPC_verdict"] == "UNDETERMINED").all()
+
+
+def test_legacy_pdi_fallback_is_on_the_floored_excess_scale(tmp_path):
+    # No rest runs -> legacy surrogate baseline. With clip_negative=False the
+    # estimator's PDI_calibrated is the signed excess; the metric column must
+    # still be the excess over the null floored at 0 (as for every component).
+    rng = np.random.default_rng(4)
+    d = tmp_path / "prep" / "s1" / "awake" / "audio"
+    d.mkdir(parents=True)
+    np.save(d / "s1_run-1_toy_ts.npy", _var(rng, 0.0, 0.0).T)
+    row = sc.compute_synergy_ci(
+        str(tmp_path / "prep"), "toy", [0.5], sessions=("awake",), tr=TR,
+        pdi_params={**_PDI_PARAMS, "clip_negative": False}, mpc_metrics=("PDI",),
+        compute_ci=False, null_surrogates=6, necessity_set=("PDI",),
+    ).iloc[0]
+    assert row["PDI_primary_source"] == "legacy_surrogate"
+    assert row["PDI_null_n"] == 6
+    excess = row["PDI_estimate"] - row["PDI_null_mean"]
+    assert row["PDI"] == pytest.approx(max(excess, 0.0), abs=1e-12)
+    assert row["PDI"] >= 0.0

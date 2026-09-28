@@ -437,6 +437,16 @@ def mpc_verdict(
     :func:`component_status`.
     """
     nset = normalize_necessity_set(necessity_set)
+    # Validate the status thresholds up front, so that a bad setting fails
+    # even when no component reaches component_status (e.g. all missing).
+    unknown = sorted(set(status_kwargs) - {"z_present", "delta_equiv", "alpha"})
+    if unknown:
+        raise TypeError(f"unexpected status keyword(s): {unknown}")
+    _check_status_params(
+        status_kwargs.get("z_present", 1.645),
+        status_kwargs.get("delta_equiv", 1.0),
+        status_kwargs.get("alpha", 0.05),
+    )
     items_by_p = {}
     for key, items in dict(evidence or {}).items():
         if isinstance(items, ComponentEvidence):
@@ -584,13 +594,19 @@ def _power_mean_rows(x, w, p, cap):
         return x.min(axis=-1)
     if p == math.inf:
         return x.max(axis=-1)
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore", under="ignore"):
         if p == 0.0:
             return np.exp(np.log(x) @ w)
-        zero = (x <= 0).any(axis=-1)
-        pos = np.where(x > 0, x, 1.0)
-        val = ((pos ** p) @ w) ** (1.0 / p) if p < 0 else ((x ** p) @ w) ** (1.0 / p)
-        return np.where(zero & (p < 0), 0.0, val)
+        # Scale each row by the extreme that dominates the mean (max for p > 0,
+        # min for p < 0): the ratios then lie in [0, 1] (p > 0) or [1, inf)
+        # (p < 0), so ratio**p stays in [0, 1] and the weighted sum is at least
+        # the positive weight of the extreme; no overflow/underflow for large
+        # |p|. A zero row extreme gives 0 (all zero for p > 0; any zero for p < 0).
+        m = x.max(axis=-1) if p > 0 else x.min(axis=-1)
+        pos = m > 0
+        m_safe = np.where(pos, m, 1.0)
+        val = m_safe * (((x / m_safe[..., None]) ** p) @ w) ** (1.0 / p)
+        return np.where(pos, val, 0.0)
 
 
 def degree(c, weights=None, *, p=0.0, cap=1.0) -> float:
@@ -615,8 +631,16 @@ def weakest_link(c, weights=None, *, cap=1.0) -> float:
 
 
 def _degree_gradient(vals, w, p, cap, d):
+    """
+    Gradient of the capped, floored power mean with respect to the raw
+    components (chain rule through ``min(max(c, 0), cap)``): components at or
+    above the cap and strictly below the null (floored at 0) have zero
+    derivative; a component exactly at 0 with ``p <= 0`` gives NaN (the power
+    mean is not differentiable there).
+    """
     capped = (cap is not None) and math.isfinite(float(cap))
     active = (vals < float(cap)) if capped else np.ones(vals.size, dtype=bool)
+    active = active & ~(vals < 0.0)
     x = np.maximum(vals, 0.0)
     grad = np.zeros(vals.size, dtype=float)
     if p in (-math.inf, math.inf):
@@ -624,11 +648,10 @@ def _degree_gradient(vals, w, p, cap, d):
         j = int(np.argmin(xc) if p == -math.inf else np.argmax(xc))
         grad[j] = 1.0 if active[j] else 0.0
         return grad
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        if p == 0.0:
-            g = w * d / x
-        else:
-            g = w * x ** (p - 1.0) * d ** (1.0 - p)
+    # dM/dx_j = w_j (x_j / M)**(p - 1) (p = 0: w_j M / x_j), written as a
+    # ratio so that large |p| does not overflow.
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore", under="ignore"):
+        g = w * (x / d) ** (p - 1.0)
     return np.where(active, g, 0.0)
 
 
@@ -649,11 +672,13 @@ def degree_interval(
     Interval for the MPC degree.
 
     - ``method="delta"``: first-order delta method with independent component
-      SEs ``se`` (mapping or sequence aligned with ``c``); the cap is treated
-      as flat (zero derivative for components at or above it) and the weakest
-      link differentiates through its (first) minimising component. The SE is
-      NaN where the power mean is not differentiable (a zero component with
-      ``p <= 0``).
+      SEs ``se`` (mapping or sequence aligned with ``c``); the cap and the
+      floor at 0 are treated as flat (zero derivative for components at or
+      above the cap or strictly below 0) and the weakest link differentiates
+      through its (first) minimising component. The SE is NaN where the power
+      mean is not differentiable (a component exactly at 0 with ``p <= 0``);
+      a component strictly below 0 with ``p <= 0`` pins the degree at 0 and
+      gives SE 0 (use the bootstrap for the chance of leaving that floor).
     - ``method="bootstrap"``: percentile interval of the degree over bootstrap
       replicates of the components: ``samples`` (``B x J`` array aligned with
       ``c``, or a mapping of arrays), or else ``n_boot`` parametric draws
@@ -839,13 +864,19 @@ class ApplicabilityRegistry:
         regime = raw.get("regime") or {}
         if not isinstance(regime, Mapping):
             raise ValueError("registry entry 'regime' must be an object")
+        validated = raw.get("validated", True)
+        if not isinstance(validated, (bool, np.bool_)):
+            # bool("false") is True: a quoted flag must not validate silently.
+            raise ValueError(
+                f"registry entry 'validated' must be true or false, got {validated!r}"
+            )
         return RegistryEntry(
             principle=principle,
             estimator=raw["estimator"],
             substrate=raw.get("substrate", "*"),
             grain=raw.get("grain", "*"),
             regime=dict(regime),
-            validated=bool(raw.get("validated", True)),
+            validated=bool(validated),
             note=raw.get("note"),
         )
 

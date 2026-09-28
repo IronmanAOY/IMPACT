@@ -352,9 +352,18 @@ def assemble_mpc_degree(
     columns, which under null calibration hold the excess over the null, or an
     external dict/JSON on that scale). The degree is the capped power mean
     (``evidence.degree``) with ``weights`` restricted to the necessity set;
-    NaN for every other verdict. Returns ``(df_with_degree, references)``.
+    NaN for every other verdict. Returns ``(df_with_degree, references)``;
+    without ATTRIBUTED rows no reference is needed and none is resolved
+    (``references`` is then empty), so e.g. the uncalibrated default never
+    reads ``reference``.
     """
     out = df.copy()
+    attributed = mpc_evidence.Verdict.ATTRIBUTED.value
+    if "MPC_verdict" not in out.columns or not (
+        out["MPC_verdict"].astype(str) == attributed
+    ).any():
+        out["MPC_degree"] = float("nan")
+        return out, {}
     refs, _label = resolve_ci_references(
         out, reference=reference, high_state_session=high_state_session
     )
@@ -513,6 +522,19 @@ def _calibrated_value(rec):
     if not (np.isfinite(rec["estimate"]) and np.isfinite(rec["null_mean"])):
         return float("nan")
     return float(max(rec["estimate"] - rec["null_mean"], 0.0))
+
+
+def _legacy_pdi_value(det, null_k):
+    """
+    PDI of the legacy-baseline fallback: the estimator value at K=0 (unchanged
+    behaviour), and at K>0 the excess over the null floored at 0 like every
+    calibrated metric column (``PDI_calibrated`` is not floored when the
+    configured ``clip_negative`` is False).
+    """
+    if int(null_k) > 0:
+        excess = _as_float(det.get("PDI_excess"))
+        return float(max(excess, 0.0)) if np.isfinite(excess) else float("nan")
+    return float(det["value"])
 
 
 def _component_null_record(
@@ -1707,7 +1729,7 @@ def compute_synergy_ci(
                             **pdi_kwargs,
                             **pdi_null_kw,
                         ))
-                        pdi0 = float(pdi_primary_det["value"])
+                        pdi0 = _legacy_pdi_value(pdi_primary_det, null_k)
                         pdi_primary_source = "legacy_surrogate"
                     else:
                         legacy_ts, _paths, _reason = _load_pdi_baseline_ts(
@@ -1725,7 +1747,7 @@ def compute_synergy_ci(
                                 **pdi_kwargs,
                                 **pdi_null_kw,
                             ))
-                            pdi0 = float(pdi_primary_det["value"])
+                            pdi0 = _legacy_pdi_value(pdi_primary_det, null_k)
                             # Legacy pool provenance is carried by the source
                             # label; the state-matched baseline columns keep
                             # describing PDI_task only.

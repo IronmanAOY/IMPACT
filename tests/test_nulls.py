@@ -235,3 +235,22 @@ def test_derive_seed_is_stable_and_label_specific():
     assert a != nulls.derive_seed(0, "SRPI", "s1/awake/audio/f.npy")
     assert a != nulls.derive_seed(1, "RAM", "s1/awake/audio/f.npy")
     assert 0 <= a < 2 ** 32
+
+
+def test_derive_seed_known_values():
+    # sha256-based: identical on every platform and Python process
+    assert nulls.derive_seed(0, "RAM", "s1/awake/audio/f.npy") == 1689109511
+    assert nulls.derive_seed(7, "IIM", "a/b/c/d.npy") == 217286542
+
+
+def test_min_shift_requires_a_common_shift():
+    # an independent jitter has no minimum displacement; ignoring min_shift
+    # silently would misdeclare the null family
+    with pytest.raises(ValueError, match="common"):
+        nulls.jitter_onsets([1.0, 2.0], 0, max_jitter=1.0, min_shift=0.5)
+    with pytest.raises(ValueError, match="common"):
+        nulls.jitter_onsets([1.0, 2.0], 0, t_max=10.0, min_shift=0.5)
+    out = nulls.jitter_onsets([1.0, 2.0], 0, max_jitter=1.0, min_shift=0.5,
+                              common=True)
+    assert 0.5 <= abs(out[0] - 1.0) <= 1.0
+    assert out[1] - out[0] == pytest.approx(1.0)

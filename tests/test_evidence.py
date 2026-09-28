@@ -442,3 +442,74 @@ def test_bearer_coherence_edge_cases():
         bad = x.copy()
         bad[0, 0] = np.nan
         E.bearer_coherence(bad, {"A": [0], "B": [1]})
+
+
+# --------------------------------------------------------------------------
+# review regressions: numerical stability, floor derivative, strict inputs
+# --------------------------------------------------------------------------
+def _log_sum_exp_power_mean(x, w, p):
+    """Reference weighted power mean computed in log space."""
+    x = np.asarray(x, dtype=float)
+    w = np.asarray(w, dtype=float) / np.sum(w)
+    a = np.log(w) + p * np.log(x)
+    m = a.max()
+    return math.exp((m + math.log(np.exp(a - m).sum())) / p)
+
+
+def test_degree_is_stable_for_extreme_exponents():
+    # Old code: x**p underflowed/overflowed, e.g. p=1000 on (0.1, 0.2, 0.3)
+    # gave 0.0 instead of ~0.3 and p=-500 gave 0.0 instead of ~0.1.
+    c = [0.1, 0.2, 0.3]
+    assert E.degree(c, p=1000.0) == pytest.approx(0.3, abs=1e-3)
+    assert E.degree(c, p=-500.0) == pytest.approx(0.1, abs=1e-3)
+    rng = np.random.default_rng(3)
+    for _ in range(300):
+        x = rng.uniform(1e-3, 1.0, 5)
+        w = rng.uniform(0.1, 1.0, 5)
+        for p in (-3000.0, -300.0, -2.0, -0.3, 0.4, 3.0, 300.0, 3000.0):
+            assert E.degree(x, w, p=p) == pytest.approx(
+                _log_sum_exp_power_mean(x, w, p), rel=1e-12)
+    # zeros keep their meaning: 0 for p < 0, ignored mass for p > 0
+    assert E.degree([0.0, 0.5], p=-1000.0) == 0.0
+    assert E.degree([0.0, 0.5], p=1000.0) == pytest.approx(0.5 * 0.5 ** 1e-3)
+    assert E.degree([0.0, 0.0], p=3.0) == 0.0
+
+
+def test_degree_interval_delta_uses_the_chain_rule_through_floor_and_cap():
+    # A component below the null is floored at 0: zero derivative. Old code
+    # gave d/dx = w for p=1 (se 0.112 instead of 0.1) and 1 for the weakest
+    # link (se 0.1 instead of 0).
+    c, se = {"a": -0.3, "b": 0.8}, [0.1, 0.2]
+    assert E.degree_interval(c, se, p=1.0)["se"] == pytest.approx(0.5 * 0.2)
+    assert E.degree_interval(c, se, p=-math.inf)["se"] == 0.0
+    assert E.degree_interval(c, se, p=0.5)["se"] == pytest.approx(0.05)
+    # finite-difference check of the analytical gradient, large |p| included
+    rng = np.random.default_rng(11)
+    for p in (-60.0, -3.0, 0.0, 0.5, 2.0, 60.0):
+        x = rng.uniform(0.05, 0.95, 4)
+        h, s = 1e-7, 1e-3
+        g = [(E.degree(x + h * e, p=p) - E.degree(x - h * e, p=p)) / (2 * h)
+             for e in np.eye(4)]
+        out = E.degree_interval(list(x), [s] * 4, p=p)
+        assert out["se"] == pytest.approx(s * math.sqrt(sum(v * v for v in g)),
+                                          rel=1e-5)
+
+
+def test_registry_rejects_a_non_boolean_validated_flag():
+    # bool("false") is True: a quoted flag must not validate an estimator.
+    with pytest.raises(ValueError, match="validated"):
+        E.ApplicabilityRegistry.from_dict(
+            [{"principle": "NAS", "estimator": "x", "validated": "false"}])
+    reg = E.ApplicabilityRegistry.from_dict(
+        [{"principle": "NAS", "estimator": "x", "validated": False}])
+    assert reg.is_validated("NAS", "x") == (False, "MARKED_NOT_VALIDATED")
+
+
+def test_mpc_verdict_validates_status_settings_up_front():
+    # even when no component reaches component_status (all missing)
+    with pytest.raises(ValueError, match="delta_equiv"):
+        E.mpc_verdict({}, delta_equiv=5.0)
+    with pytest.raises(TypeError, match="z_presnt"):
+        E.mpc_verdict(_all(), z_presnt=2.0)
+    assert E.mpc_verdict(_all(), z_present=2.0, alpha=0.1).verdict == (
+        E.Verdict.ATTRIBUTED)
