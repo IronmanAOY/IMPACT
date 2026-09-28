@@ -530,8 +530,12 @@ def test_validate_only_on_relocated_copy_is_nondestructive(
     # Well-formed objects must pass the smoke gate (and exit 0).
     assert summary["smoke_test_passed"] is True, rep["smoke_test"]
     assert rc == 0
+    smoke = rep["smoke_test"]
+    assert smoke["dataset_checks"]["objects_and_reports_unmodified"] is True
+    assert smoke["dataset_checks"]["metric_table_has_required_columns"] is True
+    assert not smoke["stage_errors"]
     assert rep["iim_configuration"]["iim_max_nodes"] == 4
-    assert rep["smoke_test"]["n_rows"] == 3
+    assert smoke["n_rows"] == 3
     rows = {r["session"]: r for r in rep["rows"]}
     for row in rows.values():
         for name in (
@@ -539,8 +543,23 @@ def test_validate_only_on_relocated_copy_is_nondestructive(
             "no_zero_variance_nodes",
             "bids_data_matches_array",
             "task_shape_matches_manifest",
+            "CI_status_consistent",
+            "readiness_reasons_recorded",
         ):
             assert row["checks"][name], (row["session"], name)
+        # Spec D1: every value is finite or NaN with a recorded reason. The
+        # 24 s EEG runs hold 3 trials, so RAM is undefined (<6 goal pairs) and
+        # CI with it; that is a valid, explained outcome, not a failure.
+        for metric in gen.KNOWN_ANSWER_METRICS:
+            value = row["metric_values"][metric]
+            reason = row["undefined_reasons"].get(metric)
+            assert np.isfinite(value) or reason["reason"], (row["session"], metric)
+        assert row["undefined_reasons"]["RAM"]["reason"] == (
+            "insufficient_goal_response_pairs"
+        )
+        assert row["undefined_reasons"]["CI"]["source"] == "CI_missing"
+        assert "RAM" in row["undefined_reasons"]["CI"]["reason"].split(",")
+    assert smoke["undefined_metrics"]["RAM"] == {"with_reason": 3, "without_reason": 0}
     planted = rep["known_answer"]["contrasts"]["planted"]
     assert planted["sessions"] == ["awake", "deep"]
     assert set(planted["metrics"]) >= set(gen.KNOWN_ANSWER_METRICS)
@@ -608,6 +627,159 @@ def test_smoke_gate_fails_on_broken_arrays(gen, generated, tmp_path):
     }
     assert rows["awake"]["rest_array_exists"] is False
     assert rows["deep"]["rest_array_exists"] is True
+
+
+def _revalidate_1010(gen, synth: Path, out: Path) -> tuple[int, dict]:
+    rc = gen.main(
+        [
+            "--validate-only",
+            "--synth-root",
+            str(synth),
+            "--datasets",
+            "ds005620",
+            "--subjects",
+            "1010",
+            "--validation-out",
+            str(out),
+        ]
+        + TINY_IIM
+    )
+    return rc, json.loads((out / gen.SUMMARY_NAME).read_text())
+
+
+def test_smoke_gate_fails_when_an_undefined_value_has_no_reason(
+    gen, generated, tmp_path, monkeypatch
+):
+    """NaN is valid only with a recorded reason (spec D1)."""
+    real = gen.compute_synergy_ci
+
+    def reasonless(*args, **kwargs):
+        df = real(*args, **kwargs)
+        df["CI_missing"] = ""  # the undefined CI no longer says why
+        df["NAS"] = np.nan  # NAS undefined, but nothing records a reason
+        return df
+
+    monkeypatch.setattr(gen, "compute_synergy_ci", reasonless)
+    rc, summary = _revalidate_1010(gen, generated["synth"], tmp_path / "reval")
+    smoke = summary["validation"]["ds005620"]["smoke_test"]
+    assert rc == 1 and summary["smoke_test_passed"] is False
+    failed = smoke["failed_checks"]
+    assert "CI_finite_or_reasoned" in failed and "NAS_finite_or_reasoned" in failed
+    assert "CI_status_consistent" in failed
+    # RAM is also NaN, but its reason is recorded: it does not fail.
+    assert "RAM_finite_or_reasoned" not in failed
+    assert smoke["undefined_metrics"]["NAS"] == {"with_reason": 0, "without_reason": 3}
+
+
+def test_smoke_gate_fails_when_validation_modifies_the_objects(
+    gen, generated, tmp_path, monkeypatch
+):
+    moved = tmp_path / "objects"
+    shutil.copytree(generated["synth"], moved)
+    manifest = generated["manifests"]["ds005620"]
+    victim = moved / manifest["runs"][0]["bids_events"]
+    real = gen.compute_synergy_ci
+
+    def destructive(*args, **kwargs):
+        with open(victim, "a", encoding="utf-8") as fh:
+            fh.write("# touched by the metric code\n")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gen, "compute_synergy_ci", destructive)
+    rc, summary = _revalidate_1010(gen, moved, tmp_path / "reval")
+    smoke = summary["validation"]["ds005620"]["smoke_test"]
+    assert rc == 1
+    assert smoke["dataset_checks"]["objects_and_reports_unmodified"] is False
+    assert "objects_and_reports_unmodified" in smoke["failed_checks"]
+    assert smoke["modified_paths"]["modified"] == [
+        manifest["runs"][0]["bids_events"]
+    ]
+
+
+def test_smoke_gate_reports_a_corrupt_array_instead_of_crashing(
+    gen, generated, tmp_path
+):
+    moved = tmp_path / "corrupt"
+    shutil.copytree(generated["synth"], moved)
+    manifest = generated["manifests"]["ds005620"]
+    run = next(
+        r for r in manifest["runs"] if r["subject"] == "1010" and r["session"] == "deep"
+    )
+    path = moved / run["task_array"]
+    path.write_bytes(path.read_bytes()[:200])  # truncated .npy
+    rc, summary = _revalidate_1010(gen, moved, tmp_path / "reval")
+    smoke = summary["validation"]["ds005620"]["smoke_test"]
+    assert rc == 1 and summary["smoke_test_passed"] is False
+    assert "task_array_readable" in smoke["failed_checks"]
+    rows = {
+        r["session"]: r["checks"] for r in summary["validation"]["ds005620"]["rows"]
+    }
+    assert rows["deep"]["task_array_readable"] is False
+    assert rows["awake"]["task_array_readable"] is True
+
+
+def test_undefined_reason_sources_and_ci_status_known_answers(gen):
+    nan = float("nan")
+    # Metric-table reason columns come first; 'ok' and NaN are not reasons.
+    rec = {"IIM": nan, "IIM_undefined_reason": "constant_input", "IIM_reason": "x"}
+    assert gen._undefined_reason("IIM", rec) == {
+        "reason": "constant_input",
+        "source": "IIM_undefined_reason",
+    }
+    rec = {"PDI": nan, "PDI_primary_source": "anchor", "PDI_anchor_reason": "ok"}
+    assert gen._undefined_reason("PDI", rec) is None
+    rec["PDI_anchor_reason"] = "missing_anchor_baseline"
+    assert gen._undefined_reason("PDI", rec)["source"] == "PDI_anchor_reason"
+    # The direct call counts only when it is undefined as well.
+    direct = {"value": 0.3, "undefined_reason": "stale"}
+    assert gen._undefined_reason("RAM", {"RAM": nan}, direct=direct) is None
+    direct = {"value": nan, "undefined_reason": "insufficient_goal_response_pairs"}
+    assert gen._undefined_reason("RAM", {"RAM": nan}, direct=direct)["reason"] == (
+        "insufficient_goal_response_pairs"
+    )
+    ready = {"NAS_ready": False, "NAS_reason": "too_few_regions"}
+    assert gen._undefined_reason("NAS", {}, readiness=ready)["source"] == (
+        "readiness.NAS_reason"
+    )
+    assert gen._undefined_reason("NAS", {}, readiness={"NAS_ready": True}) is None
+    for value in (None, nan, "", "  ", "ok", "nan", 0.0, True):
+        assert gen._reason_text(value) is None
+    comps = {"RAM": 1.0, "PDI": 1.0, "NAS": 1.0, "IIM": 0.5, "SRPI": 0.2}
+    ok_defined = {**comps, "CI": 0.7, "CI_defined": True, "CI_missing": nan}
+    assert gen._ci_status_consistent(ok_defined)
+    assert not gen._ci_status_consistent({**ok_defined, "CI_defined": False})
+    undefined = {
+        **comps,
+        "RAM": nan,
+        "CI": nan,
+        "CI_defined": False,
+        "CI_missing": "RAM,NAS_reference",
+    }
+    assert gen._ci_status_consistent(undefined)
+    assert not gen._ci_status_consistent({**undefined, "CI_missing": ""})
+    assert not gen._ci_status_consistent({**undefined, "CI_missing": "NAS_reference"})
+    assert not gen._ci_status_consistent({**undefined, "CI_missing": "RAM,bogus"})
+    assert not gen._ci_status_consistent({**undefined, "CI_defined": True})
+
+
+def test_tree_fingerprint_sees_edits_and_skips_the_output_folder(gen, tmp_path):
+    (tmp_path / "objects" / "a").mkdir(parents=True)
+    (tmp_path / "objects" / "a" / "x.npy").write_bytes(b"123")
+    out = tmp_path / "objects" / "revalidation"
+    out.mkdir()
+    before = gen._tree_fingerprint([tmp_path / "objects"], exclude=[out])
+    (out / "report.json").write_text("{}")  # the validator's own output
+    assert gen._tree_fingerprint([tmp_path / "objects"], exclude=[out]) == before
+    (tmp_path / "objects" / "a" / "x.npy").write_bytes(b"1234")
+    (tmp_path / "objects" / "new.txt").write_text("n")
+    changes = gen._fingerprint_changes(
+        before, gen._tree_fingerprint([tmp_path / "objects"], exclude=[out]), tmp_path
+    )
+    assert changes == {
+        "added": ["objects/new.txt"],
+        "removed": [],
+        "modified": ["objects/a/x.npy"],
+    }
 
 
 def test_validate_only_accepts_legacy_manifest_with_foreign_absolute_paths(

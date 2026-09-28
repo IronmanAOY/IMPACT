@@ -15,9 +15,16 @@ What they are not
     real data.
 
 The validation report keeps three things apart:
-    1. smoke-test checks (schema, BIDS/array consistency, readiness, metric
-       definedness and documented bounds). Only these gate
-       ``smoke_test_passed``.
+    1. smoke-test checks. Only these gate ``smoke_test_passed``: schema
+       (metric table columns and one row per run), BIDS/array consistency,
+       non-destructiveness (the objects and shipped reports are unchanged by
+       validation), readable validation outputs, documented bounds, and the
+       three-valued definedness contract (spec D1): every metric/CI value is
+       either finite or NaN with a recorded reason (``CI_missing`` for CI,
+       ``undefined_reason``-style fields for the components). An undefined
+       metric with a reason is a valid outcome, not a failure; an undefined
+       metric without one fails. Readiness is reported, and every not-ready
+       row must carry a reason.
     2. generator self-checks, computed without the metric code, that the
        planted structure is present in the arrays
        (``planted_structure_verified``).
@@ -71,7 +78,7 @@ from impact_pipeline.synergy_ci import compute_synergy_ci  # noqa: E402
 
 load_onsets = _run_synergy_ci.load_onsets
 
-GENERATOR_VERSION = "2.1.0"
+GENERATOR_VERSION = "2.2.0"
 MANIFEST_VERSION = 2
 OBJECT_KIND = "software_smoke_test_objects"
 OBJECT_DISCLAIMER = (
@@ -267,6 +274,29 @@ KNOWN_ANSWER_CONTRASTS = {
     "ds005620": {"planted": ("awake", "deep"), "null": None},
 }
 KNOWN_ANSWER_METRICS = ("RAM", "PDI", "NAS", "IIM", "SRPI", "CI")
+CI_COMPONENT_METRICS = ("RAM", "PDI", "NAS", "IIM", "SRPI")
+# Columns the metric table must carry for the smoke checks (schema gate).
+REQUIRED_METRIC_COLUMNS = (
+    "subject",
+    "session",
+    *KNOWN_ANSWER_METRICS,
+    "CI_defined",
+    "CI_missing",
+)
+# Values that do not record why a metric is undefined.
+_NOT_A_REASON = {"", "ok", "nan", "none", "null", "n/a"}
+SMOKE_GATE_DESCRIPTION = (
+    "Passes when every run's arrays exist, load, are finite, have no zero-"
+    "variance nodes and match the manifest and BIDS objects; the metric table "
+    "has the required columns and a row per run; every RAM/PDI/NAS/IIM/SRPI/CI "
+    "value is finite and within its documented bounds, or NaN with a recorded "
+    "reason (CI: CI_defined=False and CI_missing; components: the metric "
+    "code's undefined reason); CI, CI_defined and CI_missing agree; every "
+    "not-ready readiness row names its reason; the validation outputs are "
+    "readable; and validation left the objects and shipped reports unchanged. "
+    "Readiness fractions, definedness counts and known-answer outcomes are "
+    "observations, not gates."
+)
 # Picked up automatically when the metric code reports them.
 KNOWN_ANSWER_OPTIONAL_METRICS = ("IIM_raw", "IIM_z", "PDI_z", "NAS_z", "SRPI_z")
 KNOWN_ANSWER_ALPHA = 0.05
@@ -2505,6 +2535,190 @@ def _opposing_structure(
     }
 
 
+def _as_float(value: Any) -> float:
+    try:
+        return float("nan") if value is None else float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _load_array(path: Path) -> np.ndarray | None:
+    """The array at ``path``, or None when it cannot be read (corrupt file)."""
+    try:
+        return np.load(path)
+    except Exception:
+        return None
+
+
+def _flag(value: Any) -> bool | None:
+    """Boolean table flag (True/False, 'true'/'false', 1/0); None if absent."""
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"true", "1", "1.0", "yes"}:
+        return True
+    if text in {"false", "0", "0.0", "no"}:
+        return False
+    return None
+
+
+def _reason_text(value: Any) -> str | None:
+    """The reason string recorded in ``value``, or None if it records none."""
+    if value is None or isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        float(value)
+        return None  # numbers (and NaN) are not reasons
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return None if text.lower() in _NOT_A_REASON else text
+
+
+def _undefined_reason(
+    metric: str,
+    rec: dict[str, Any],
+    *,
+    direct: dict[str, Any] | None = None,
+    readiness: dict[str, Any] | None = None,
+) -> dict[str, str] | None:
+    """Where the metric code recorded why ``metric`` is undefined in a row.
+
+    Sources, in this order: ``CI_missing`` (CI only); the metric table's own
+    reason columns (``<M>_undefined_reason``, ``<M>_reason``; for PDI the
+    reason of its primary endpoint); the direct compute_RAM / compute_SRPI call
+    on the same run (``undefined_reason``, only if it is undefined too); the
+    readiness table (``<M>_reason`` when ``<M>_ready`` is false). Returns
+    ``{"reason", "source"}`` or None when no reason is recorded anywhere.
+    """
+    candidates: list[tuple[str, Any]] = []
+    if metric == "CI":
+        candidates.append(("CI_missing", rec.get("CI_missing")))
+    candidates += [
+        (f"{metric}_undefined_reason", rec.get(f"{metric}_undefined_reason")),
+        (f"{metric}_reason", rec.get(f"{metric}_reason")),
+    ]
+    if metric == "PDI":
+        primary = _reason_text(rec.get("PDI_primary_source")) or _reason_text(
+            rec.get("PDI_primary_endpoint")
+        )
+        if primary:
+            candidates.append(
+                (f"PDI_{primary}_reason", rec.get(f"PDI_{primary}_reason"))
+            )
+    if direct is not None and not np.isfinite(_as_float(direct.get("value"))):
+        candidates.append(
+            ("direct_call.undefined_reason", direct.get("undefined_reason"))
+        )
+    if readiness is not None and _flag(readiness.get(f"{metric}_ready")) is False:
+        candidates.append(
+            (f"readiness.{metric}_reason", readiness.get(f"{metric}_reason"))
+        )
+    for source, value in candidates:
+        text = _reason_text(value)
+        if text is not None:
+            return {"reason": text, "source": source}
+    return None
+
+
+def _ci_status_consistent(rec: dict[str, Any]) -> bool:
+    """CI, CI_defined and CI_missing agree (spec D1).
+
+    A finite CI has CI_defined true and nothing missing. A NaN CI has
+    CI_defined false and lists only known tokens (a component or
+    ``<component>_reference``), including every undefined component.
+    """
+    ci = _as_float(rec.get("CI"))
+    defined = _flag(rec.get("CI_defined"))
+    missing = [
+        tok.strip()
+        for tok in (_reason_text(rec.get("CI_missing")) or "").split(",")
+        if tok.strip()
+    ]
+    if np.isfinite(ci):
+        return defined is not False and not missing
+    allowed = set(CI_COMPONENT_METRICS) | {
+        f"{c}_reference" for c in CI_COMPONENT_METRICS
+    }
+    undefined = {
+        c for c in CI_COMPONENT_METRICS if not np.isfinite(_as_float(rec.get(c)))
+    }
+    return (
+        defined is not True
+        and bool(missing)
+        and set(missing) <= allowed
+        and undefined <= set(missing)
+    )
+
+
+def _tree_fingerprint(
+    roots: list[Path], exclude: list[Path] | tuple[Path, ...] = ()
+) -> dict[str, tuple[int, int]]:
+    """(size, mtime_ns) of every file under ``roots``; links are not followed.
+
+    Used to show that validation leaves the objects and shipped reports
+    untouched. Paths under ``exclude`` (the validation output) are skipped.
+    """
+    skip = [os.path.abspath(str(p)) for p in exclude]
+
+    def _skipped(path: str) -> bool:
+        return any(path == s or path.startswith(s + os.sep) for s in skip)
+
+    out: dict[str, tuple[int, int]] = {}
+    for root in dict.fromkeys(os.path.abspath(str(r)) for r in roots):
+        if _skipped(root) or not os.path.lexists(root):
+            continue
+        if not os.path.isdir(root) or os.path.islink(root):
+            st = os.lstat(root)
+            out[root] = (int(st.st_size), int(st.st_mtime_ns))
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                d for d in dirnames if not _skipped(os.path.join(dirpath, d))
+            ]
+            for name in filenames:
+                path = os.path.join(dirpath, name)
+                if _skipped(path):
+                    continue
+                st = os.lstat(path)
+                out[path] = (int(st.st_size), int(st.st_mtime_ns))
+    return out
+
+
+def _fingerprint_changes(
+    before: dict[str, tuple[int, int]],
+    after: dict[str, tuple[int, int]],
+    base: Path,
+) -> dict[str, list[str]]:
+    def _names(paths) -> list[str]:
+        return sorted(_rel(p, base) for p in paths)[:20]
+
+    return {
+        "added": _names(set(after) - set(before)),
+        "removed": _names(set(before) - set(after)),
+        "modified": _names(
+            p for p in set(before) & set(after) if before[p] != after[p]
+        ),
+    }
+
+
+def _outputs_readable(csv_rows: dict[Path, int], json_paths: list[Path]) -> bool:
+    """The validation outputs exist and parse (CSV row counts as written)."""
+    try:
+        for path, n_rows in csv_rows.items():
+            try:
+                n_read = len(pd.read_csv(path))
+            except pd.errors.EmptyDataError:
+                n_read = 0  # an empty table written without columns
+            if n_read != int(n_rows):
+                return False
+        for path in json_paths:
+            _read_json(path)
+    except Exception:
+        return False
+    return True
+
+
 def _validate_dataset(
     manifest: dict[str, Any],
     *,
@@ -2538,26 +2752,40 @@ def _validate_dataset(
     cfg.update(iim_params or {})
     out_dir = Path(out_dir or (REPORTS_OUT / dataset_id))
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Non-destructiveness: the objects and the shipped reports must be left
+    # exactly as they were (the validation output folder is excluded).
+    watched = [bids_root, prep_root, prep_root.parent / "planted_truth", REPORTS_OUT]
+    fingerprint_before = _tree_fingerprint(watched, exclude=[out_dir])
+    # A crash in the metric code is a failed smoke check, not an aborted run.
+    stage_errors: dict[str, str] = {}
 
     readiness_csv = out_dir / "readiness_after.csv"
     readiness_json = out_dir / "readiness_after.json"
-    df_ready, ready_summary = check_mpc_readiness(
-        prep_root=str(prep_root),
-        bids_root=str(bids_root),
-        atlas=atlas,
-        condition=condition,
-        sessions=sessions,
-        subjects=subj_list,
-        require_explicit_feedback=True,
-        require_explicit_srpi=True,
-        srpi_min_events_per_class=3,
-        iim_bins=int(cfg["iim_bins"]),
-        iim_lag_trs=int(cfg["iim_lag_trs"]),
-        iim_max_state_space=int(cfg.get("iim_max_state_space", 1500)),
-        iim_max_nodes=cfg.get("iim_max_nodes"),
-    )
+    try:
+        df_ready, ready_summary = check_mpc_readiness(
+            prep_root=str(prep_root),
+            bids_root=str(bids_root),
+            atlas=atlas,
+            condition=condition,
+            sessions=sessions,
+            subjects=subj_list,
+            require_explicit_feedback=True,
+            require_explicit_srpi=True,
+            srpi_min_events_per_class=3,
+            iim_bins=int(cfg["iim_bins"]),
+            iim_lag_trs=int(cfg["iim_lag_trs"]),
+            iim_max_state_space=int(cfg.get("iim_max_state_space", 1500)),
+            iim_max_nodes=cfg.get("iim_max_nodes"),
+        )
+    except Exception as exc:
+        stage_errors["readiness"] = f"{type(exc).__name__}: {exc}"
+        df_ready, ready_summary = pd.DataFrame(columns=["subject", "session"]), {}
     df_ready.to_csv(readiness_csv, index=False)
     _write_json(readiness_json, ready_summary)
+    ready_rows = {
+        (str(r["subject"]), str(r["session"])): r
+        for r in df_ready.to_dict(orient="records")
+    }
 
     onsets: dict[str, dict[str, tuple]] = {}
     resolution = []
@@ -2602,46 +2830,52 @@ def _validate_dataset(
     nas_params = EEG_NAS_PARAMS if modality == "eeg" else FMRI_NAS_PARAMS
     srpi_params = EEG_SRPI_PARAMS if modality == "eeg" else FMRI_SRPI_PARAMS
     ram_params = EEG_RAM_PARAMS if modality == "eeg" else FMRI_RAM_PARAMS
-    df_ci = compute_synergy_ci(
-        str(prep_root),
-        atlas,
-        thetas=list(CI_THETAS),
-        sessions=sessions,
-        condition=condition,
-        tr=tr,
-        stimulus_onsets=onsets,
-        subjects=subj_list,
-        ram_params=ram_params,
-        pdi_params=PDI_PARAMS,
-        pdi_require_explicit_params=True,
-        pdi_require_strict_baseline=True,
-        pdi_primary_endpoint="anchor",
-        nas_params=nas_params,
-        srpi_params=srpi_params,
-        srpi_require_explicit_params=True,
-        iim_bins=int(cfg["iim_bins"]),
-        iim_lag_trs=int(cfg["iim_lag_trs"]),
-        iim_max_timepoints=cfg.get("iim_max_timepoints"),
-        iim_max_nodes=cfg.get("iim_max_nodes"),
-        iim_max_mechanism_size=cfg.get("iim_max_mechanism_size"),
-        iim_max_purview_size=cfg.get("iim_max_purview_size"),
-        iim_parallel_workers=1,
-        iim_enable_parallel=False,
-        iim_use_shared_memory=False,
-        iim_phase1_parallel_workers=1,
-        iim_phase1_chunk_size=4,
-        iim_phase1_shared_memory=False,
-        iim_checkpoint_dir=str(out_dir / "iim_checkpoints"),
-        iim_resume_checkpoint=True,
-        compute_mpc=True,
-        compute_ci=True,
-        dataset_id=dataset_id,
-        data_origin=DUMMY_DATA_ORIGIN,
-        dataset_role="real_data_derived_synthetic_smoke_test",
-        provenance_label="synthetic_validation",
-        modality=modality,
-    )
-    df_ci.to_csv(out_dir / "actual_metric_computation.csv", index=False)
+    try:
+        df_ci = compute_synergy_ci(
+            str(prep_root),
+            atlas,
+            thetas=list(CI_THETAS),
+            sessions=sessions,
+            condition=condition,
+            tr=tr,
+            stimulus_onsets=onsets,
+            subjects=subj_list,
+            ram_params=ram_params,
+            pdi_params=PDI_PARAMS,
+            pdi_require_explicit_params=True,
+            pdi_require_strict_baseline=True,
+            pdi_primary_endpoint="anchor",
+            nas_params=nas_params,
+            srpi_params=srpi_params,
+            srpi_require_explicit_params=True,
+            iim_bins=int(cfg["iim_bins"]),
+            iim_lag_trs=int(cfg["iim_lag_trs"]),
+            iim_max_timepoints=cfg.get("iim_max_timepoints"),
+            iim_max_nodes=cfg.get("iim_max_nodes"),
+            iim_max_mechanism_size=cfg.get("iim_max_mechanism_size"),
+            iim_max_purview_size=cfg.get("iim_max_purview_size"),
+            iim_parallel_workers=1,
+            iim_enable_parallel=False,
+            iim_use_shared_memory=False,
+            iim_phase1_parallel_workers=1,
+            iim_phase1_chunk_size=4,
+            iim_phase1_shared_memory=False,
+            iim_checkpoint_dir=str(out_dir / "iim_checkpoints"),
+            iim_resume_checkpoint=True,
+            compute_mpc=True,
+            compute_ci=True,
+            dataset_id=dataset_id,
+            data_origin=DUMMY_DATA_ORIGIN,
+            dataset_role="real_data_derived_synthetic_smoke_test",
+            provenance_label="synthetic_validation",
+            modality=modality,
+        )
+    except Exception as exc:
+        stage_errors["metric_computation"] = f"{type(exc).__name__}: {exc}"
+        df_ci = pd.DataFrame(columns=list(REQUIRED_METRIC_COLUMNS))
+    metric_csv = out_dir / "actual_metric_computation.csv"
+    df_ci.to_csv(metric_csv, index=False)
+    missing_columns = [c for c in REQUIRED_METRIC_COLUMNS if c not in df_ci.columns]
 
     srpi_details, ram_details, rows = [], [], []
     optional = [m for m in KNOWN_ANSWER_OPTIONAL_METRICS if m in df_ci.columns]
@@ -2655,9 +2889,13 @@ def _validate_dataset(
         rest_path = _resolve_manifest_path(run["rest_array"], synth_root)
         checks["task_array_exists"] = task_path.exists()
         checks["rest_array_exists"] = rest_path.exists()
-        # A missing array is a failed smoke check, not a crash.
-        arr = np.load(task_path) if checks["task_array_exists"] else None
-        rest = np.load(rest_path) if checks["rest_array_exists"] else None
+        # A missing or unreadable array is a failed smoke check, not a crash.
+        arr = _load_array(task_path) if checks["task_array_exists"] else None
+        rest = _load_array(rest_path) if checks["rest_array_exists"] else None
+        if checks["task_array_exists"]:
+            checks["task_array_readable"] = arr is not None
+        if checks["rest_array_exists"]:
+            checks["rest_array_readable"] = rest is not None
         have_arrays = arr is not None and rest is not None
         checks["arrays_finite"] = bool(
             have_arrays and np.isfinite(arr).all() and np.isfinite(rest).all()
@@ -2680,75 +2918,159 @@ def _validate_dataset(
                 )
             else:
                 checks["bids_data_matches_array"] = False
+        direct: dict[str, dict[str, Any]] = {}
         if arr is not None:
             ts = arr.T
             bundle = onsets[subj][ses][0]
-            srpi = compute_SRPI(
-                ts,
-                tr=tr,
-                self_onsets=bundle.get("self_onsets", []),
-                nonself_onsets=bundle.get("nonself_onsets", []),
-                return_details=True,
-                **srpi_params,
-            )
-            ram = compute_RAM(
-                ts, tr=tr, stimulus_onsets=bundle, return_details=True, **ram_params
-            )
-            srpi_details.append({"subject": subj, "session": ses, **srpi})
-            ram_details.append({"subject": subj, "session": ses, **ram})
+            try:
+                srpi = compute_SRPI(
+                    ts,
+                    tr=tr,
+                    self_onsets=bundle.get("self_onsets", []),
+                    nonself_onsets=bundle.get("nonself_onsets", []),
+                    return_details=True,
+                    **srpi_params,
+                )
+                ram = compute_RAM(
+                    ts, tr=tr, stimulus_onsets=bundle, return_details=True, **ram_params
+                )
+                checks["direct_metric_calls_completed"] = True
+                direct = {"RAM": ram, "SRPI": srpi}
+                srpi_details.append({"subject": subj, "session": ses, **srpi})
+                ram_details.append({"subject": subj, "session": ses, **ram})
+            except Exception as exc:
+                checks["direct_metric_calls_completed"] = False
+                stage_errors[f"direct_metric_calls:{subj}/{ses}"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
             if not legacy:
                 sync_values.setdefault(subj, {})[ses] = _zero_lag_synchrony(arr)
-        sel = df_ci[
-            (df_ci["subject"].astype(str) == subj)
-            & (df_ci["session"].astype(str) == ses)
-        ]
+        ready = ready_rows.get((subj, ses))
+        if "readiness" not in stage_errors:
+            checks["readiness_row_present"] = ready is not None
+            # Not being ready is a valid outcome; not saying why is not.
+            checks["readiness_reasons_recorded"] = ready is not None and all(
+                _flag(ready.get(f"{m}_ready")) is not False
+                or _reason_text(ready.get(f"{m}_reason")) is not None
+                for m in CI_COMPONENT_METRICS
+                if f"{m}_ready" in ready
+            )
+        if {"subject", "session"} <= set(df_ci.columns):
+            sel = df_ci[
+                (df_ci["subject"].astype(str) == subj)
+                & (df_ci["session"].astype(str) == ses)
+            ]
+        else:
+            sel = df_ci.iloc[0:0]
         if "theta" in sel.columns and len(sel) > 1:
             sel = sel[np.isclose(sel["theta"].astype(float), float(CI_THETAS[0]))]
         rec = sel.iloc[0].to_dict() if len(sel) else {}
         checks["metric_row_present"] = bool(len(sel))
         metric_values = {}
         for metric in metrics_all:
-            try:
-                val = float(rec.get(metric, np.nan))
-            except (TypeError, ValueError):
-                val = float("nan")
+            val = _as_float(rec.get(metric, np.nan))
             metric_values[metric] = val
             values[metric].setdefault(subj, {})[ses] = val
+        undefined_reasons: dict[str, dict[str, str] | None] = {}
         for metric in KNOWN_ANSWER_METRICS:
             val = metric_values[metric]
             checks[f"{metric}_column_present"] = metric in df_ci.columns
-            checks[f"{metric}_defined"] = bool(np.isfinite(val))
+            if not np.isfinite(val):
+                undefined_reasons[metric] = _undefined_reason(
+                    metric, rec, direct=direct.get(metric), readiness=ready
+                )
+            # Spec D1: finite, or undefined (NaN) with a recorded reason.
+            checks[f"{metric}_finite_or_reasoned"] = bool(
+                np.isfinite(val) or undefined_reasons[metric] is not None
+            )
             lo, hi = METRIC_BOUNDS[metric]
             in_bounds = (not np.isfinite(val)) or (
                 (lo is None or val >= lo - 1e-12) and (hi is None or val <= hi + 1e-12)
             )
             checks[f"{metric}_within_documented_bounds"] = bool(in_bounds)
+        if rec:
+            checks["CI_status_consistent"] = _ci_status_consistent(rec)
         rows.append(
             {
                 "subject": subj,
                 "session": ses,
                 "planted_level": run.get("planted_level"),
                 "metric_values": metric_values,
+                # Observations, not gates.
+                "metric_defined": {
+                    m: bool(np.isfinite(metric_values[m])) for m in KNOWN_ANSWER_METRICS
+                },
+                "undefined_reasons": undefined_reasons,
+                # MPC verdict of the metric code, when it reports one.
+                "mpc_verdict": {
+                    k: _reason_text(rec.get(k)) for k in ("MPC_verdict", "MPC_reason")
+                },
                 "checks": checks,
             }
         )
 
-    _write_json(out_dir / "srpi_details.json", {"rows": srpi_details})
-    _write_json(out_dir / "ram_details.json", {"rows": ram_details})
+    srpi_json = out_dir / "srpi_details.json"
+    ram_json = out_dir / "ram_details.json"
+    _write_json(srpi_json, {"rows": srpi_details})
+    _write_json(ram_json, {"rows": ram_details})
     ready_fraction = (
         ready_summary.get("metrics", {}).get("CI", {}).get("ready_fraction")
     )
-    failed = sorted({k for row in rows for k, ok in row["checks"].items() if not ok})
+    fingerprint_after = _tree_fingerprint(watched, exclude=[out_dir])
+    changes = _fingerprint_changes(fingerprint_before, fingerprint_after, synth_root)
+    dataset_checks = {
+        "metric_table_has_required_columns": not missing_columns,
+        "readiness_completed": "readiness" not in stage_errors,
+        "metric_computation_completed": "metric_computation" not in stage_errors,
+        "validation_outputs_readable": _outputs_readable(
+            {readiness_csv: len(df_ready), metric_csv: len(df_ci)},
+            [readiness_json, srpi_json, ram_json],
+        ),
+        "objects_and_reports_unmodified": not any(changes.values()),
+    }
+    failed = sorted(
+        {k for row in rows for k, ok in row["checks"].items() if not ok}
+        | {k for k, ok in dataset_checks.items() if not ok}
+    )
+    undefined_counts = {
+        m: {
+            "with_reason": int(
+                sum(r["undefined_reasons"].get(m) is not None for r in rows)
+            ),
+            "without_reason": int(
+                sum(
+                    m in r["undefined_reasons"] and r["undefined_reasons"][m] is None
+                    for r in rows
+                )
+            ),
+        }
+        for m in KNOWN_ANSWER_METRICS
+    }
     smoke = {
-        "passed": bool(ready_fraction == 1.0 and not failed),
+        "passed": bool(not failed),
+        "gate": SMOKE_GATE_DESCRIPTION,
+        "failed_checks": failed,
+        "dataset_checks": dataset_checks,
+        "stage_errors": stage_errors,
+        "missing_metric_columns": missing_columns,
+        "modified_paths": changes,
+        "n_rows": len(rows),
+        # Observations, not gates (spec D1: undefined with a reason is valid).
         "all_ready": bool(ready_fraction == 1.0),
         "ready_fraction_CI": ready_fraction,
-        "n_rows": len(rows),
-        "failed_checks": failed,
         "metric_definedness": {
             m: int(sum(np.isfinite(r["metric_values"][m]) for r in rows))
             for m in KNOWN_ANSWER_METRICS
         },
+        "undefined_metrics": undefined_counts,
+        "mpc_verdict_counts": (
+            {
+                str(k): int(v)
+                for k, v in df_ci["MPC_verdict"].value_counts(dropna=True).items()
+            }
+            if "MPC_verdict" in df_ci.columns
+            else None
+        ),
         # Not a gate: a metric that is defined but identical in every row (for
         # example 0 everywhere) runs but is degenerate on these objects.
         "constant_metrics": _constant_metrics(rows, KNOWN_ANSWER_METRICS),
@@ -3073,6 +3395,16 @@ def _print_outcome(summary: dict[str, Any]) -> None:
         print(f"  {ds}: smoke_test={status}")
         if failed:
             print(f"    failed checks: {', '.join(failed)}")
+        for stage, err in (rep["smoke_test"].get("stage_errors") or {}).items():
+            print(f"    error in {stage}: {err}")
+        undefined = {
+            m: c["with_reason"]
+            for m, c in (rep["smoke_test"].get("undefined_metrics") or {}).items()
+            if c.get("with_reason")
+        }
+        if undefined:
+            text = ", ".join(f"{m}={n}" for m, n in undefined.items())
+            print(f"    undefined with a recorded reason (valid, not a gate): {text}")
         constant = rep["smoke_test"].get("constant_metrics") or {}
         if constant:
             text = ", ".join(f"{m}={v:g}" for m, v in constant.items())

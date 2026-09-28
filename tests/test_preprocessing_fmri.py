@@ -180,3 +180,121 @@ def test_atlas_root_does_not_depend_on_cwd(tmp_path, monkeypatch):
     assert Path(globs["schaefer400"]).exists()
     with pytest.raises(FileNotFoundError, match="IMPACT_ATLAS_DIR"):
         preprocessing.get_atlas_globs(atlas_root=tmp_path / "nowhere")
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def test_atlas_root_is_the_repository_or_impact_atlas_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv(preprocessing.ATLAS_DIR_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert preprocessing._repository_root() == REPO
+    assert preprocessing._default_atlas_root() == REPO / "atlases"
+    # IMPACT_ATLAS_DIR wins, also after the repository atlases were cached.
+    monkeypatch.setattr(preprocessing, "ATLAS_GLOBS", None)
+    preprocessing.get_atlas_globs()
+    alt = tmp_path / "alt_atlases"
+    for key, parts in preprocessing.ATLAS_FILES.items():
+        dest = alt.joinpath(*parts)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.symlink_to(REPO.joinpath("atlases", *parts))
+    monkeypatch.setenv(preprocessing.ATLAS_DIR_ENV, str(alt))
+    globs = preprocessing.get_atlas_globs()
+    assert set(globs) == {"schaefer400", "aal116", "shen268"}
+    assert all(str(Path(p)).startswith(str(REPO / "atlases")) for p in globs.values())
+    assert preprocessing._default_atlas_root() == alt
+    monkeypatch.setattr(preprocessing, "ATLAS_GLOBS", None)
+
+
+def test_missing_atlas_error_lists_every_expected_file(tmp_path, monkeypatch):
+    partial = tmp_path / "atlases"
+    shen = partial.joinpath(*preprocessing.ATLAS_FILES["shen268"])
+    shen.parent.mkdir(parents=True)
+    shen.write_bytes(b"x")
+    monkeypatch.setenv(preprocessing.ATLAS_DIR_ENV, str(partial))
+    monkeypatch.setattr(preprocessing, "ATLAS_GLOBS", None)
+    with pytest.raises(FileNotFoundError) as err:
+        preprocessing.get_atlas_globs()
+    msg = str(err.value)
+    assert f"${preprocessing.ATLAS_DIR_ENV}" in msg and str(partial) in msg
+    assert "[found] shen268" in msg
+    for key in ("schaefer400", "aal116"):
+        expected = partial.joinpath(*preprocessing.ATLAS_FILES[key])
+        assert f"[missing] {key}: {expected}" in msg
+    assert "scripts/download_atlases.sh" in msg
+    monkeypatch.setattr(preprocessing, "ATLAS_GLOBS", None)
+
+
+class _Img:
+    def __init__(self, n_time):
+        self.header = _Header()
+        self.shape = (2, 2, 2, n_time)
+        self.affine = np.eye(4)
+
+    def get_fdata(self):
+        return np.random.default_rng(self.shape[-1]).normal(size=self.shape)
+
+
+class _Header:
+    def get_zooms(self):
+        return (3.0, 3.0, 3.0, 2.0)
+
+    def get_xyzt_units(self):
+        return ("mm", "sec")
+
+    def copy(self):
+        return self
+
+
+def test_mean_fd_is_written_per_run_not_overwritten_per_folder(tmp_path, monkeypatch):
+    """Two runs of one condition folder: each keeps its own FD (deferred D10 fix)."""
+    from impact_pipeline.motion_model import _weighted_session_fd
+
+    deriv = tmp_path / "fmriprep"
+    func = deriv / "sub-01" / "func"
+    func.mkdir(parents=True)
+    n_time = {1: 30, 2: 10}
+    fd_values = {1: [0.0, 0.2, 0.4], 2: [0.0, 0.9, 1.2]}  # means 0.2 and 0.7
+    for run in (1, 2):
+        stem = f"sub-01_task-audioawake_run-{run}"
+        (func / f"{stem}_desc-preproc_bold.nii.gz").write_bytes(b"")
+        (func / f"{stem}_desc-confounds_timeseries.tsv").write_text(
+            "framewise_displacement\ta_comp_cor_00\n"
+            + "".join(f"{v}\t{0.1 * i}\n" for i, v in enumerate(fd_values[run]))
+        )
+    current = {}
+
+    def load_img(path):
+        run = 1 if "run-1" in str(path) else 2
+        current["n"] = n_time[run]
+        return _Img(n_time[run])
+
+    class _Masker:
+        def fit_transform(self, img):
+            return np.zeros((current["n"], 3))
+
+    monkeypatch.setattr(preprocessing.image, "load_img", load_img)
+    monkeypatch.setattr(preprocessing, "clean", lambda signals, **k: signals.T)
+    monkeypatch.setattr(preprocessing, "NiftiLabelsMasker", lambda **k: _Masker())
+    monkeypatch.setattr(
+        preprocessing, "get_atlas_globs", lambda: {"schaefer400": "dummy.nii.gz"}
+    )
+    out = tmp_path / "prep" / "01" / "awake" / "audio"
+    records = []
+    for run in (1, 2):
+        bf = type("BF", (), {"entities": {"task": "audioawake", "run": run}})()
+        records.append(
+            preprocessing.preprocess_subject(
+                str(tmp_path / "bids"), str(deriv), "01", bf, str(out)
+            )
+        )
+    assert [r["mean_fd"] for r in records] == pytest.approx([0.2, 0.7])
+    assert float((out / "01_run-1_mean_fd.txt").read_text()) == pytest.approx(0.2)
+    assert float((out / "01_run-2_mean_fd.txt").read_text()) == pytest.approx(0.7)
+    # The folder file is the mean over runs, not the last run's value.
+    assert float((out / "mean_fd.txt").read_text()) == pytest.approx(0.45)
+    # The motion model weights each run's FD by that run's timepoints.
+    fd = _weighted_session_fd(
+        str(tmp_path / "prep"), "01", "awake", "schaefer400", "audio"
+    )
+    assert fd == pytest.approx((0.2 * 30 + 0.7 * 10) / 40)

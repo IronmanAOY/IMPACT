@@ -360,6 +360,11 @@ def run_preprocessing_eeg(
         except FileNotFoundError:
             log.warning("Missing EEG file at read time: %s", fn)
             reason = "missing_at_read_time"
+            data_file = re.sub(r"\.vhdr$", ".eeg", str(fn))
+            if os.path.islink(data_file) and not os.path.exists(data_file):
+                # git-annex/DataLad: the header is present, the data were
+                # never fetched (e.g. `datalad get` not run for this file).
+                reason = "annexed_data_not_fetched"
         except Exception as exc:
             log.warning("Unreadable EEG file %s (%s)", fn, type(exc).__name__)
             reason = f"header_read_error:{type(exc).__name__}"

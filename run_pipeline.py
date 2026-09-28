@@ -36,7 +36,8 @@ from impact_pipeline.analysis_bootstrap import (
 from impact_pipeline.motion_model import motion_covariate_analysis
 from impact_pipeline.atlas_robustness import atlas_check
 from impact_pipeline.replication import (
-    _find_fmriprep_derivatives,
+    check_replication_inputs,
+    default_replication_root,
     run_replication,
 )
 from impact_pipeline.model_comparison import compare_models
@@ -886,29 +887,15 @@ def _ci_reference_record(df):
 
 
 def _resolve_replication_root() -> Path:
-    return _first_existing_path(
-        root / "data" / "scratch" / "melbourne",
-        root / "data" / "scratch" / "melbourne_propofol",
-        root / "data" / "melbourne",
-        root / "data" / "melbourne_propofol",
-    )
+    # $IMPACT_REPLICATION_ROOT, else the legacy data/ folders (the public
+    # Melbourne source is gone; see impact_pipeline.replication).
+    return default_replication_root(root)
 
 
 def _check_replication_inputs(melb_root: Path) -> None:
     """Fail before the expensive steps when replication cannot run at all."""
-    if not melb_root.exists():
-        raise FileNotFoundError(
-            "--run-replication requested, but the replication dataset is missing at "
-            f"'{melb_root}'. Download it or run without --run-replication."
-        )
-    # Same derivative search as run_replication (single source of truth).
-    deriv_root, _n_files, searched = _find_fmriprep_derivatives(str(melb_root))
-    if deriv_root is None:
-        raise FileNotFoundError(
-            "--run-replication requested, but no fMRIPrep desc-preproc BOLD files "
-            f"were found (searched: {', '.join(searched)}). Run fMRIPrep for the "
-            "replication dataset first or run without --run-replication."
-        )
+    # Same checks and actionable messages as run_replication (single source).
+    check_replication_inputs(melb_root)
 
 
 def _missing_atlas_runs(prep_out, atlas, sessions, condition, subjects=None, limit=10):
@@ -1113,6 +1100,7 @@ def _postprocess_after_step2(
     condition=None,
     stats_seed=STATS_SEED,
     robustness_context=None,
+    replication_root=None,
 ):
     condition_eff = condition if condition is not None else (cfg or {}).get("condition")
     pair = tuple(str(s) for s in tuple(sessions)[:2])
@@ -1248,10 +1236,14 @@ def _postprocess_after_step2(
 
     repl = None
     if run_replication_flag and cfg.get("supports_replication", False):
-        log.info("7/9 Replication (Melbourne Propofol)")
-        melb_root = _resolve_replication_root()
+        log.info("7/9 Replication (Melbourne Propofol, local copy)")
         melb_out = out / 'melbourne' / 'preprocessed'
         try:
+            melb_root = (
+                Path(replication_root).expanduser()
+                if replication_root
+                else _resolve_replication_root()
+            )
             repl = run_replication(
                 data_root=str(melb_root),
                 out_dir=str(melb_out),
@@ -1384,6 +1376,7 @@ def _run_hunter_stage(
     run_parameters=None,
     atlas_robustness=True,
     ci_reference=None,
+    replication_root=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
@@ -1441,6 +1434,11 @@ def _run_hunter_stage(
             "provenance_label": str(provenance_label),
             "report_doc": str(report_doc),
             "run_replication_flag": bool(run_replication_flag),
+            "replication_root": (
+                None
+                if not replication_root
+                else str(Path(replication_root).expanduser().resolve())
+            ),
             "hardware_target": str(hardware_target),
             "pdi_params": pdi_params,
             "pdi_require_explicit_params": bool(pdi_require_explicit_params),
@@ -1691,6 +1689,7 @@ def _run_hunter_stage(
         srpi_params=ctx["srpi_params"],
         srpi_require_explicit_params=bool(ctx["srpi_require_explicit_params"]),
         run_replication_flag=bool(ctx["run_replication_flag"]),
+        replication_root=ctx.get("replication_root"),
         df_stats_by_theta=df_stats_by_theta,
         condition=ctx["condition"],
         robustness_context={
@@ -1774,6 +1773,7 @@ def main(
     hunter_workers_per_task=None,
     atlas_robustness=True,
     cli_argv=None,
+    replication_root=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
@@ -1910,6 +1910,7 @@ def main(
             cfg=cfg,
             report_doc=f"IMPaCT_Empirical_Validation_{dataset_id}.docx",
             run_replication_flag=run_replication_flag,
+            replication_root=replication_root,
             hardware_target=requested_hardware_target,
             hunter_array_index=hunter_array_index,
             hunter_shards_per_node=hunter_shards_per_node,
@@ -1927,7 +1928,11 @@ def main(
     )
     if replication_enabled:
         # Fail now rather than after hours of metric computation (step 7).
-        _check_replication_inputs(_resolve_replication_root())
+        _check_replication_inputs(
+            Path(replication_root).expanduser()
+            if replication_root
+            else _resolve_replication_root()
+        )
 
     atlas = atlas_override or cfg["atlas"]
     sessions = tuple(sessions_override) if sessions_override else tuple(cfg["sessions"])
@@ -2098,6 +2103,7 @@ def main(
         "run_fmriprep": bool(run_fmriprep),
         "run_preprocessing": bool(run_preprocessing_flag),
         "run_replication": bool(run_replication_flag),
+        "replication_root": (None if not replication_root else str(replication_root)),
         "fmriprep_dir": (None if fmriprep_out is None else str(fmriprep_out)),
         "eeg": {
             "target_sfreq": eeg_target_sfreq,
@@ -2268,6 +2274,7 @@ def main(
             cfg=cfg,
             report_doc=report_doc,
             run_replication_flag=run_replication_flag,
+            replication_root=replication_root,
             hardware_target=requested_hardware_target,
             hunter_scheduler=hunter_scheduler,
             hunter_settings_overrides={
@@ -2438,6 +2445,7 @@ def main(
         srpi_params=srpi_params,
         srpi_require_explicit_params=srpi_require_explicit_params,
         run_replication_flag=run_replication_flag,
+        replication_root=replication_root,
         df_stats_by_theta=df_stats_by_theta,
         condition=condition,
         robustness_context={
@@ -2493,6 +2501,16 @@ if __name__ == '__main__':
         '--run-replication',
         action='store_true',
         help="Run replication step if configured for selected dataset.",
+    )
+    parser.add_argument(
+        '--replication-root',
+        default=None,
+        help=(
+            "Local BIDS copy (with fMRIPrep derivatives) of the Melbourne propofol "
+            "replication dataset, whose public source is gone (HTTP 404). Default: "
+            "$IMPACT_REPLICATION_ROOT, then data/scratch/melbourne. Without it, "
+            "--run-replication fails before any computation."
+        ),
     )
     parser.add_argument(
         '--reuse-step2',
@@ -2787,6 +2805,7 @@ if __name__ == '__main__':
         run_fmriprep=args.run_fmriprep or RUN_FMRIPREP,
         run_preprocessing_flag=args.run_preprocessing or RUN_PREPROCESSING,
         run_replication_flag=args.run_replication or RUN_REPLICATION,
+        replication_root=args.replication_root,
         atlas_override=args.atlas,
         sessions_override=args.sessions,
         condition_override=args.condition,
