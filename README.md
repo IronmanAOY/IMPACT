@@ -230,7 +230,9 @@ bash <OUT>/cache/hunter_iim_campaign/pbs/00_submit_all.sh    # on a Hunter login
 ```
 
 Check a GPU/APU node first with
-`python -m impact_pipeline.hardware_selftest --target hunter-apu`.
+`PYTHONPATH=src python3 -m impact_pipeline.hardware_selftest --target hunter-apu`
+from the checkout (the package is not pip-installed on Hunter; runbook,
+section 7).
 
 ## MPC-Bench
 
@@ -254,9 +256,10 @@ python scripts/run_bench.py timing --seeds 0
 Designs: `factorial` (2^5 mechanism cells x seeds), `sweep` (dose-response),
 `witnesses` (catalogue x seeds), `timing`. Results resume by default
 (`--no-resume` to recompute). Seed policy: development seeds are 0-999;
-confirmatory seeds start at 10000, and they and family C run only with
-`--confirmatory --freeze-tag <tag>` on a clean checkout that descends from the
-code-freeze tag. `--n-shards N --pbs-template bench.pbs` writes a PBS Pro array
+confirmatory seeds start at 10000 (1000-9999 are refused), and they and family
+C run only with `--confirmatory --freeze-tag <tag>` on a clean checkout that
+descends from the code-freeze tag and has the same `src/` and `scripts/` as the
+tag. `--n-shards N --pbs-template bench.pbs` writes a PBS Pro array
 script for Hunter (set `BENCH_VENV` and `BENCH_OUT_DIR`; the bench is CPU-bound).
 
 ## Dashboard

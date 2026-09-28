@@ -223,9 +223,10 @@ login node may hit its CPU limit (section 8.3). `<WS path>` is the output of
 `ws_find impact` on Hunter.
 
 If you deploy a copy without `.git` (for example a tarball), record the version
-for provenance in the setup file: `export IMPACT_CODE_VERSION=<commit>`.
-Recorded code versions look like `1.1.0+g<40-hex commit>`, with `.dirty` when
-the checkout has local changes.
+for provenance in the setup file: `export IMPACT_CODE_VERSION=<commit>` (the
+commit only; it is recorded as `1.1.0+<commit>`). From a git checkout, recorded
+code versions look like `1.1.0+g<40-hex commit>`, with `.dirty` when the
+checkout has local changes.
 
 ## 5. Python environment
 
@@ -337,8 +338,10 @@ use `HLRS/APU/testing-2026.2` (open question 7):
 - in `constraints-hunter.txt` use `numpy==2.3.5` and `scipy==1.16.3`; in
   `requirements-hunter.txt` use `numba==0.62.1`;
 - install CuPy with `--cupy wheel-rocm7` (`cupy-rocm-7-0>=14.1`);
-- `mne==1.6.1` predates NumPy 2, so this route needs `mne>=1.7`, which the
-  pipeline has **not** been validated with. Tell the author if you use it.
+- `mne==1.6.1` predates NumPy 2. The reference environment runs it on NumPy
+  2.2 for the calls the pipeline uses (EEG reading, filtering, resampling), but
+  not on NumPy 2.3.5, and the pipeline has **not** been validated with
+  `mne>=1.7`. Tell the author if you use this route.
 
 ## 6. CuPy for ROCm
 
@@ -811,7 +814,8 @@ batchstat; pbsnodes            # queue and node overview
   ```
 
   It logs, and writes to `status.json`, the number of complete and missing
-  phase-1 and cut shards with the missing indices:
+  phase-1 and cut shards with the missing indices (abbreviated output of a
+  small check campaign before any shard had run):
 
   ```text
   INFO:pipeline:Hunter campaign status: {"phase1-shard": {"complete": 0, "missing": 12, "missing_indices": [0, 1, ...]}, "cut-shard": {...}}

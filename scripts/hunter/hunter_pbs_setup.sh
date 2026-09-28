@@ -50,7 +50,7 @@ export IMPACT_HUNTER_PYTHON="${IMPACT_VENV}/bin/python3"           # HLRS: invok
 export IMPACT_SKIP_ENV_CHECK="${IMPACT_SKIP_ENV_CHECK:-1}"
 export PYTHONNOUSERSITE=1                                           # keep ~/.local out of sys.path  [UNVERIFIED on Hunter]
 # Deployments without .git metadata (e.g. a copied tarball) should record their version
-# for provenance, e.g.: export IMPACT_CODE_VERSION=1.1.0+<commit>
+# for provenance, e.g.: export IMPACT_CODE_VERSION=<commit>   (recorded as 1.1.0+<commit>)
 
 # ---- 4. Caches/data off HOME ------------------------------------------------------------------------
 export CUPY_CACHE_DIR="${CUPY_CACHE_DIR:-${IMPACT_WS}/cache/cupy}"            # CuPy default: ${HOME}/.cupy  [VENDOR]

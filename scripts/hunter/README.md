@@ -33,8 +33,9 @@ Hunter, because `pyproject.toml` asks for scipy>=1.11.
 - Alternative testing stack `HLRS/APU/testing-2026.2` (ROCm 7.0.2, cray-python
   3.12.12, numpy 2.3.5, scipy 1.16.3), **UNVERIFIED**: change the constraints to
   numpy==2.3.5 / scipy==1.16.3, use numba==0.62.1 and `--cupy wheel-rocm7`
-  (`cupy-rocm-7-0>=14.1`). mne 1.6.1 predates NumPy 2, so this route needs
-  mne>=1.7, which the pipeline has not been validated with.
+  (`cupy-rocm-7-0>=14.1`). mne 1.6.1 predates NumPy 2; the reference
+  environment runs it on NumPy 2.2 for the calls the pipeline uses, but not on
+  2.3.5, and the pipeline has not been validated with mne>=1.7.
 
 ## Smoke test
 
@@ -64,8 +65,9 @@ The smoke job runs, in order:
 - finalize.
 
 The self-test is the first thing to run on a node (also standalone, in an
-interactive or `-q test` job): `python3 -m impact_pipeline.hardware_selftest
---target hunter-apu --json selftest.json`. Exit code 0 = all required cases
+interactive or `-q test` job), from the checkout: `PYTHONPATH=src python3 -m
+impact_pipeline.hardware_selftest --target hunter-apu --json selftest.json`.
+Exit code 0 = all required cases
 passed, 1 = a comparison failed (do not run a campaign), 2 = no accelerator
 visible. A failing `eigh` alone is not fatal (the pipeline then uses the CPU
 eigh).

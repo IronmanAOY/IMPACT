@@ -186,14 +186,12 @@ unchanged unless listed under "Changed".
 - Parallel IIM Ψ double-counted in the fallback path; a kernel-cache miss
   disabled parallelism permanently; SQLite kernel caches were left behind and
   raced when shared by pool workers.
-- DeLong variance without the covariance term; one-sided permutation tests;
-  undefined CI counted once per theta.
+- DeLong variance without the covariance term; one-sided permutation tests.
 - CI reference: a component missing from a supplied reference silently became
   1.0; a `None` reference raised `TypeError`.
 - PDI baseline routing could use the evaluated run as its own baseline.
 - Event resolution fell back across sessions (sed vs sed2, task-audio*);
   camelCase self/other labels were classified asymmetrically.
-- `--ci-reference` was ignored by Hunter finalize.
 - Dashboard: out-dir collisions between datasets, form reverted by polling,
   stored XSS, upload error handling, participant mappings that reused one source
   subject.
@@ -214,7 +212,6 @@ unchanged unless listed under "Changed".
   `IMPACT_HUNTER_SETUP_FILE`, `IMPACT_HUNTER_SETUP`,
   `IMPACT_HUNTER_PBS_GROUP_LIST`); they are still accepted.
 - Atlas key `aal90` (use `aal116`; still recognised for existing outputs).
-- `compute_IIM(use_induced_partition_cache=...)` is ignored.
 
 ### Removed
 

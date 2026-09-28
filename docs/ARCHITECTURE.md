@@ -167,9 +167,10 @@ Design points:
  rules.py: rival attribution rules on component matrices (rule audit)
 ```
 
-Seed policy: development seeds 0-999; confirmatory seeds from 10000 and family C
-only with `--confirmatory`, which requires a clean checkout descending from the
-code-freeze tag and records it.
+Seed policy: development seeds 0-999 (1000-9999 are refused); confirmatory
+seeds from 10000 and family C only with `--confirmatory --freeze-tag <tag>`,
+which requires a clean checkout that descends from the code-freeze tag with
+unchanged `src/` and `scripts/`, and records the tag and commit.
 
 ## 7. Design rules
 

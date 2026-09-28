@@ -363,7 +363,8 @@ Reported values:
 Why the ratio is not the calibrated statistic: for independent processes the
 estimated $\Psi$ is pure finite-sample bias, and cutting (which averages TPM
 rows) removes more of that bias than the intact TPM carries. The ratio then
-stays $O(1)$ (about 0.5 at $T = 30000$ in exact-TPM ground truth) and does not
+stays $O(1)$ (0.57 to 0.80 over three seeds for three independent binary units
+sampled for $T = 30000$ steps, whose exact $\Delta\Psi$ is 0) and does not
 increase with coupling, while $\Delta\Psi \to 0$.
 
 ### 5.2 TPM estimators (`tpm_estimator`)
@@ -529,16 +530,32 @@ excess when `clip_negative=False`). For IIM the null moments are also given as
 `IIM_calibrated` is the floored excess. A null that cannot be built gives NaN
 with `<P>_null_undefined_reason`.
 
-Surrogate families (`mpc_metrics.SURROGATE_METHODS`, `nulls.SURROGATE_KINDS`):
+There are two sets of surrogate families with different names.
+
+The estimators' own calibration (`null_method` of `compute_PDI`, `compute_NAS`
+and `compute_IIM`; `mpc_metrics.SURROGATE_METHODS`):
 
 | Family | Keeps | Destroys |
 |---|---|---|
 | `circular_shift` | each node's marginal and autocorrelation (node 0 fixed, others shifted independently by at least 10% of the run) | cross-node alignment |
 | `phase_randomize` | marginals, auto- and (approximately) cross-spectra; multivariate Fourier surrogate with shared phases, amplitude-adjusted by 10 IAAFT iterations | nonlinear / non-Gaussian structure |
-| `phase_randomize_independent` | each node's spectrum and marginal | cross-node coupling |
+| `phase_randomize_independent` | each node's spectrum and marginal (independent phases, amplitude-adjusted as above) | cross-node coupling |
 | `shuffle` | marginals | all temporal and cross-node structure |
+
+The generic driver `nulls.component_null` (`nulls.SURROGATE_KINDS`; the
+pipeline uses it for RAM and SRPI):
+
+| Kind | Keeps | Destroys |
+|---|---|---|
+| `circular_shift` | as above | cross-node alignment |
+| `phase` | amplitude spectra and all cross-spectra exactly (shared phases); marginals become Gaussian | nonlinear / non-Gaussian structure |
+| `phase_independent` | each node's amplitude spectrum | cross-node structure |
+| `iaaft`, `iaaft_independent` | each node's marginal exactly and its spectrum approximately (10 iterations by default, shared or independent initial phases) | nonlinear structure (and, for `iaaft_independent`, cross-node structure) |
 | `onset_jitter` (events) | the event design; with `common=True` the whole event train is shifted rigidly | alignment of events with the recording |
 | `label_permutation` (events) | class counts (stratified by `phase_bin` when given) | the self/non-self labelling |
+
+`nulls` also accepts the aliases `phase_randomize` (= `phase`, not
+amplitude-adjusted) and `phase_randomize_independent` (= `phase_independent`).
 
 Pipeline defaults when `--null-surrogates K > 0`
 (`synergy_ci.MPC_NULL_KINDS_DEFAULT`):
