@@ -21,7 +21,7 @@ Read-only and metadata-only by construction:
 
 Definedness rules mirror the pipeline contracts (``event_parsing`` patterns,
 ``mpc_metrics`` channels, with the pipeline's strict defaults): PDI
-(surrogate_excess), NAS (capacity) and IIM need a recording with its sampling
+(repertoire, unlabelled), NAS (capacity) and IIM need a recording with its sampling
 metadata (``RepetitionTime`` / ``SamplingFrequency``; no silent TR fallback);
 PDI's legacy baseline needs a rest recording of the same subject and
 modality; RAM needs an events table with ``trial_type`` goal, stimulus and
@@ -121,7 +121,7 @@ MAX_HEADER_BYTES = 65536
 CHANNELS = (
     ("RAM", "untyped"),
     *(("RAM", c) for c in IMPACT_CHANNELS),
-    ("PDI", "surrogate_excess"),
+    ("PDI", "repertoire"),
     ("PDI", "legacy_baseline"),
     ("NAS", "capacity"),
     ("IIM", "default"),
@@ -351,7 +351,7 @@ def evaluate_recording(rec, sidecar, columns, levels_by_col, subject_tasks):
         timing = (NOT_DEFINABLE, f"missing_{timing_key}")
     else:
         timing = (DEFINABLE, None)
-    out[("PDI", "surrogate_excess")] = timing
+    out[("PDI", "repertoire")] = timing
     out[("NAS", "capacity")] = timing
     out[("IIM", "default")] = timing
     has_rest = any(REST_TASK_RE.search(t or "") for t in subject_tasks)

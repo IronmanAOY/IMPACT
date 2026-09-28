@@ -142,7 +142,7 @@ def test_definedness_rules_on_synthetic_datasets(bids, tmp_path):
     assert _status(rec, "dsB", "agency", "RAM", "untyped") == (
         da.NOT_DEFINABLE, "missing_columns:feedback_value")
     # missing sampling frequency: no timing, nothing time-series based is definable
-    assert _status(rec, "dsB", "noev", "PDI", "surrogate_excess") == (
+    assert _status(rec, "dsB", "noev", "PDI", "repertoire") == (
         da.NOT_DEFINABLE, "missing_SamplingFrequency")
     assert _status(rec, "dsB", "noev", "SRPI", "agency") == (
         da.NOT_DEFINABLE, "no_events_file")

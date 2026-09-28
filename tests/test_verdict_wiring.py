@@ -471,6 +471,46 @@ def test_pdi_surrogate_excess_and_iim_cut_mode_through_the_modes(tmp_path):
     assert row["IIM_boot_n"] == 4 and np.isfinite(row["IIM_se"])
 
 
+def test_pdi_repertoire_through_a_protocol_file(tmp_path):
+    """PDI mode='repertoire' selected by a protocol JSON (as --protocol does):
+    the unlabelled repertoire with its own state-count null, the raw
+    log2(K_hat) in bits as the evidence statistic, bootstrap replicates with
+    the minimum null size."""
+    prep, _ = _layout(tmp_path)
+    proto = E.Protocol(necessity_set=("PDI",), estimators={
+        "PDI": {"mode": "repertoire", "repertoire_window": 4}},
+        null_families={"PDI": "circular_shift"})
+    path = tmp_path / "protocol.json"
+    proto.to_json(path)
+    opts = run_pipeline._mpc_evidence_options(0, None, None, protocol=path,
+                                              bootstrap_se=3)
+    assert opts["protocol"]["estimators"]["PDI"] == {
+        "mode": "repertoire", "repertoire_window": 4}
+    df = _run(prep, sessions=("awake", "deep"), mpc_metrics=("PDI",),
+              compute_ci=False, protocol=opts["protocol"], bootstrap_se=3)
+    for _, row in df.drop_duplicates("session").iterrows():
+        assert row["PDI_estimator"] == f"compute_PDI:repertoire@{VERSIONS['PDI']}"
+        assert row["PDI_null_n"] == mm.PDI_REPERTOIRE_DEFAULT_SURROGATES
+        assert row["MPC_null_families"] == "PDI:circular_shift"
+        assert row["PDI_primary_source"] == "repertoire"
+        assert row["PDI_anchor_reason"] == "not_used_by_mode:repertoire"
+        assert row["PDI_boot_n"] + row["PDI_boot_failed"] == 3
+        assert row["MPC_protocol_hash"] == proto.hash
+        # the evidence statistic is log2 of the number of distinguishable states
+        det = mm.compute_PDI(
+            np.load(tmp_path / "prep" / "s1" / row["session"] / "audio"
+                    / "s1_run-1_toy_ts.npy").T,
+            mode="repertoire", repertoire_window=4, return_details=True,
+            null_surrogates=2)
+        assert row["PDI_estimate"] == pytest.approx(det["raw"])
+    # the labelled variant needs per-run labels, which a protocol cannot carry
+    bad = E.Protocol(necessity_set=("PDI",), estimators={
+        "PDI": {"mode": "repertoire", "state_labels": [0, 1]}})
+    with pytest.raises(ValueError, match="labelled repertoire"):
+        _run(prep, sessions=("awake",), mpc_metrics=("PDI",), compute_ci=False,
+             protocol=bad)
+
+
 def test_declared_ram_channels_are_computed_one_by_one(tmp_path):
     prep, onsets = _layout(tmp_path, with_events=True)
     ram = {**RAM_PARAM_PRESETS["eeg"], "quality_null_samples": 5}

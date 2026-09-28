@@ -153,7 +153,11 @@ MPC_EVENT_NULL_MIN_SHIFT_FRACTION = 0.1
 # (``bearer_nodes`` is handled separately). Defaults keep the legacy modes.
 MPC_MODE_KEYS = {
     "RAM": ("update", "impact_channel", "adaptation_locus"),
-    "PDI": ("mode", "excess_components", "excess_weights", "excess_surrogate"),
+    "PDI": ("mode", "excess_components", "excess_weights", "excess_surrogate",
+            "repertoire_window", "repertoire_features", "repertoire_folds",
+            "repertoire_gap", "repertoire_components", "repertoire_max_states",
+            "repertoire_null", "repertoire_criterion", "repertoire_valley",
+            "repertoire_min_dwell"),
     "NAS": ("mode", "transfer_lags", "transfer_components", "workspace_nodes"),
     "IIM": ("cut_mode", "tpm_estimator", "node_selection", "state_budget_policy",
             "psi_kernel"),
@@ -172,6 +176,7 @@ MPC_MODE_NULL_FAMILIES = {
 # the per-direction NAS transfer entropies do not depend on the null draws).
 MPC_BOOTSTRAP_NULL_OVERRIDES = {
     ("PDI", "surrogate_excess"): {"null_surrogates": 2},
+    ("PDI", "repertoire"): {"null_surrogates": 2},
     ("NAS", "capacity"): {"null_surrogates": 3},
     ("SRPI", "agency"): {"agency_null_permutations": 5},
 }
@@ -783,7 +788,27 @@ def _internal_null_family(principle, opts):
         return MPC_MODE_NULL_FAMILIES[(principle, mode)]
     if principle == "PDI" and mode == "surrogate_excess":
         return str(opts.get("excess_surrogate") or "fourier")
+    if principle == "PDI" and mode == "repertoire":
+        # unlabelled repertoire: the declared state-count null ('both' reports
+        # the binding family per run, so it is not pre-declared)
+        fam = str(opts.get("repertoire_null") or "circular_shift")
+        return None if fam == "both" else fam
     return None  # unknown mode: the family the estimator reports is recorded
+
+
+# PDI mode='repertoire' options that need per-run inputs (the labelled
+# variant); compute_synergy_ci runs the unlabelled variant only.
+PDI_PER_RUN_OPTIONS = ("state_labels", "events", "tr")
+
+
+def _check_pdi_options(opts):
+    bad = sorted(k for k in PDI_PER_RUN_OPTIONS if k in dict(opts or {}))
+    if bad:
+        raise ValueError(
+            f"PDI options {bad} are per-run inputs of the labelled repertoire "
+            "variant; compute_synergy_ci runs mode='repertoire' unlabelled "
+            "(state labels are not part of a protocol)"
+        )
 
 
 def _same_option(a, b):
@@ -836,6 +861,8 @@ def _resolve_mpc_setup(
         p_opts, p_bearer = _params_modes(p, params_by_p.get(p))
         pr_opts = proto_in.estimator_options(p) if proto_in is not None else {}
         modes[p] = _merge_estimator_options(p, p_opts, pr_opts)
+        if p == "PDI":
+            _check_pdi_options(modes[p])
         pr_bearer = proto_in.bearer_nodes.get(p) if proto_in is not None else None
         if p_bearer is not None and pr_bearer is not None and p_bearer != pr_bearer:
             raise ValueError(f"{p} bearer_nodes differ between the params and protocol")
@@ -1598,9 +1625,11 @@ def compute_synergy_ci(
     - ``protocol`` (Protocol, dict or JSON path) declares the necessity set,
       channels, construct-scale cutoffs, alpha, null families, reference,
       source rule, estimator modes (``estimators``, e.g. SRPI
-      ``mode='agency'``, NAS ``mode='capacity'``, PDI
-      ``mode='surrogate_excess'``, RAM ``update='prediction_error'``) and
-      per-component ``bearer_nodes``. Without it a default protocol is built
+      ``mode='agency'``, NAS ``mode='capacity'``, PDI ``mode='repertoire'``
+      (unlabelled repertoire of distinguishable states, options
+      ``repertoire_*``; its evidence is ``raw`` in bits against the
+      estimator's own state-count null, default ``circular_shift``), RAM
+      ``update='prediction_error'``) and per-component ``bearer_nodes``. Without it a default protocol is built
       from ``necessity_set`` (default all five), ``null_kinds``, the mode keys
       of the params dicts (:data:`MPC_MODE_KEYS`, plus ``bearer_nodes``) and
       the cohort reference of ``ci_reference_session``; conflicting keywords
@@ -1611,8 +1640,9 @@ def compute_synergy_ci(
       family (``NO_NULL_CALIBRATION:<P>``). With ``K > 0`` PDI, NAS and IIM
       are calibrated by their estimators, RAM and SRPI by
       ``nulls.component_null`` (see ``MPC_NULL_KINDS_DEFAULT``); modes with
-      their own null (NAS capacity, SRPI agency, PDI surrogate_excess) always
-      use it (``K = 0`` selects the estimator's default size). Seeds are
+      their own null (NAS capacity, SRPI agency, PDI repertoire and
+      surrogate_excess) always use it (``K = 0`` selects the estimator's
+      default size). Seeds are
       derived from ``null_seed`` and the run path. The metric columns
       ``RAM``..``SRPI`` hold the calibrated values (excess over the null mean,
       floored at 0; NaN when a requested null failed) whenever a null was
@@ -1620,7 +1650,9 @@ def compute_synergy_ci(
     - ``bootstrap_se=K_b`` (default 0): the sampling SE of each estimate from
       ``K_b`` moving-block bootstrap replicates of the run and its events
       (``nulls.component_bootstrap_se``; ``bootstrap_block_len`` samples,
-      default ``ceil(sqrt(n_time))``). With ``K_b = 0`` every empirical
+      default ``ceil(sqrt(n_time))``), with ``B - 1`` degrees of freedom for
+      ``B`` valid replicates (``<P>_se_df``; Student-t bounds of ``c``,
+      ``<P>_c_df``). With ``K_b = 0`` every empirical
       component is UNDEFINED (``NO_SAMPLING_SE:<P>``) and the verdict is
       UNDETERMINED (the honest default). The SE also stays undefined when
       fewer than two replicates, or fewer than
