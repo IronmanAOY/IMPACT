@@ -1733,24 +1733,84 @@ def _run_hunter_stage(
 
 
 def _mpc_evidence_options(
-    null_surrogates=0, necessity_set=None, applicability_registry=None
+    null_surrogates=0,
+    necessity_set=None,
+    applicability_registry=None,
+    protocol=None,
+    bootstrap_se=0,
+    bootstrap_block_len=None,
 ):
-    """MPC evidence-layer options for step 2 (validated, JSON-safe, portable)."""
-    from impact_pipeline.evidence import normalize_necessity_set
+    """
+    MPC evidence-layer options for step 2 (validated, JSON-safe, portable).
+
+    The registry file is loaded once here, so entries that do not meet the
+    registry's entry criteria fail before any computation. A protocol (JSON
+    path, dict or Protocol) is validated and carried as its canonical dict, so
+    a Hunter finalize job does not depend on the file; with a protocol the
+    necessity set comes from it (an explicit ``necessity_set`` must agree).
+    """
+    from impact_pipeline.evidence import (
+        ApplicabilityRegistry,
+        normalize_necessity_set,
+        resolve_protocol,
+    )
 
     k = int(null_surrogates or 0)
     if k < 0:
         raise ValueError("--null-surrogates must be >= 0")
+    kb = int(bootstrap_se or 0)
+    if kb < 0:
+        raise ValueError("--bootstrap-se must be >= 0")
+    block = None if bootstrap_block_len is None else int(bootstrap_block_len)
+    if block is not None and block < 1:
+        raise ValueError("--bootstrap-block-len must be >= 1")
     registry = None
     if applicability_registry is not None:
         registry = Path(applicability_registry).expanduser().resolve()
         if not registry.is_file():
             raise FileNotFoundError(f"Applicability registry not found: {registry}")
+        ApplicabilityRegistry.from_json(registry)
+    proto = None
+    if protocol is not None:
+        if isinstance(protocol, (str, os.PathLike)):
+            path = Path(protocol).expanduser().resolve()
+            if not path.is_file():
+                raise FileNotFoundError(f"MPC protocol not found: {path}")
+            protocol = str(path)
+        proto = resolve_protocol(protocol)
+    if proto is not None:
+        if necessity_set is not None and (
+            normalize_necessity_set(necessity_set) != proto.necessity_set
+        ):
+            raise ValueError(
+                "--necessity-set differs from the protocol's necessity set"
+            )
+        nset = None
+    else:
+        nset = list(normalize_necessity_set(necessity_set))
     return {
         "null_surrogates": k,
-        "necessity_set": list(normalize_necessity_set(necessity_set)),
+        "necessity_set": nset,
         "applicability_registry": None if registry is None else str(registry),
+        "protocol": None if proto is None else proto.to_dict(),
+        "bootstrap_se": kb,
+        "bootstrap_block_len": block,
     }
+
+
+def _mpc_protocol_provenance(mpc_evidence_options, protocol_source=None):
+    """Hash (SHA-256) and source of the protocol used for the MPC verdicts."""
+    from impact_pipeline.evidence import Protocol
+
+    payload = (mpc_evidence_options or {}).get("protocol")
+    if payload is None:
+        return {"source": None, "hash": None, "note": "default protocol from flags"}
+    source = protocol_source
+    if isinstance(source, (str, os.PathLike)):
+        source = str(Path(source).expanduser().resolve())
+    elif source is not None:
+        source = "object"
+    return {"source": source, "hash": Protocol.from_dict(payload).hash}
 
 
 def _normalize_subjects(subjects):
@@ -1826,13 +1886,18 @@ def main(
     null_surrogates=0,
     necessity_set=None,
     applicability_registry=None,
+    protocol=None,
+    bootstrap_se=0,
+    bootstrap_block_len=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
     _assert_expected_runtime_env()
     subjects = _normalize_subjects(subjects)
     mpc_evidence_options = _mpc_evidence_options(
-        null_surrogates, necessity_set, applicability_registry
+        null_surrogates, necessity_set, applicability_registry,
+        protocol=protocol, bootstrap_se=bootstrap_se,
+        bootstrap_block_len=bootstrap_block_len,
     )
 
     catalog_entry = get_report_dataset(dataset_id)
@@ -2171,6 +2236,7 @@ def main(
         },
         "iim": iim_settings,
         "mpc_evidence": mpc_evidence_options,
+        "mpc_protocol": _mpc_protocol_provenance(mpc_evidence_options, protocol),
         "pdi_params": pdi_params,
         "pdi_require_explicit_params": pdi_require_explicit_params,
         "pdi_require_strict_baseline": pdi_require_strict_baseline,
@@ -2746,9 +2812,36 @@ if __name__ == '__main__':
         default=0,
         help=(
             "Surrogates per run and component for the null-anchored MPC verdict "
-            "(0 = no null calibration: every verdict is UNDETERMINED with "
-            "NO_NULL_CALIBRATION; K > 0 also puts the metric columns and CI on "
-            "the null-calibrated scale)."
+            "(0 = no null calibration of the legacy estimator modes: those "
+            "components are UNDEFINED with NO_NULL_CALIBRATION; K > 0 also puts "
+            "the metric columns and CI on the null-calibrated scale)."
+        ),
+    )
+    parser.add_argument(
+        '--bootstrap-se',
+        type=int,
+        default=0,
+        help=(
+            "Moving-block bootstrap replicates per run and component for the "
+            "sampling SE of the MPC evidence (0 = no sampling SE: every "
+            "empirical component is UNDEFINED with NO_SAMPLING_SE and every "
+            "verdict UNDETERMINED)."
+        ),
+    )
+    parser.add_argument(
+        '--bootstrap-block-len',
+        type=int,
+        default=None,
+        help="Bootstrap block length in samples (default ceil(sqrt(n_time))).",
+    )
+    parser.add_argument(
+        '--protocol',
+        default=None,
+        help=(
+            "MPC protocol JSON (impact_pipeline.evidence.Protocol: necessity "
+            "set, channels, construct-scale cutoffs, alpha, null families, "
+            "reference, source rule, estimator modes, bearer nodes); its "
+            "SHA-256 is recorded with the verdicts."
         ),
     )
     parser.add_argument(
@@ -2756,15 +2849,18 @@ if __name__ == '__main__':
         default=None,
         help=(
             "Comma-separated principles the MPC verdict requires "
-            "(e.g. RAM,PDI,NAS,IIM,SRPI; default all five)."
+            "(e.g. RAM,PDI,NAS,IIM,SRPI; default all five; with --protocol it "
+            "must match the protocol's necessity set)."
         ),
     )
     parser.add_argument(
         '--applicability-registry',
         default=None,
         help=(
-            "JSON registry of validated estimator configurations; evidence from "
-            "unvalidated estimators is UNDEFINED (ESTIMATOR_NOT_VALIDATED)."
+            "JSON applicability registry of validated estimator versions "
+            "(schema impact-mpc-registry/2, checked against its entry criteria); "
+            "evidence from unregistered estimators is UNDEFINED "
+            "(ESTIMATOR_NOT_VALIDATED)."
         ),
     )
     parser.add_argument(
@@ -2961,4 +3057,7 @@ if __name__ == '__main__':
         null_surrogates=args.null_surrogates,
         necessity_set=args.necessity_set,
         applicability_registry=args.applicability_registry,
+        protocol=args.protocol,
+        bootstrap_se=args.bootstrap_se,
+        bootstrap_block_len=args.bootstrap_block_len,
     )

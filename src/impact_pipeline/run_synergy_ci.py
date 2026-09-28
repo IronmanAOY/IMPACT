@@ -240,6 +240,9 @@ def run_s_ci(
     necessity_set=None,
     applicability_registry=None,
     null_seed=0,
+    protocol=None,
+    bootstrap_se=0,
+    bootstrap_block_len=None,
 ):
     """
     Step 2: synergy S, MPC metrics and CI over subjects/sessions/runs.
@@ -249,9 +252,12 @@ def run_s_ci(
     are keyword arguments forwarded to ``load_onsets_fn`` (e.g.
     ``allow_implicit_stimuli``/``allow_response_time_feedback``, both off by
     default so RAM stays undefined without measured goal/feedback structure).
-    ``null_surrogates``, ``necessity_set``, ``applicability_registry`` and
-    ``null_seed`` configure the MPC evidence layer (MPC verdict columns; see
-    :func:`impact_pipeline.synergy_ci.compute_synergy_ci`).
+    ``null_surrogates``, ``necessity_set``, ``applicability_registry``,
+    ``null_seed``, ``protocol`` (Protocol, dict or JSON path),
+    ``bootstrap_se`` (block-bootstrap replicates for the sampling SE; 0 leaves
+    every empirical component UNDEFINED, ``NO_SAMPLING_SE``) and
+    ``bootstrap_block_len`` configure the MPC evidence layer (MPC verdict
+    columns; see :func:`impact_pipeline.synergy_ci.compute_synergy_ci`).
     """
     if mpc_metrics is None and compute_ci:
         log.info("2/9 Computing Synergy & Consciousness Index (CI)")
@@ -350,6 +356,9 @@ def run_s_ci(
         necessity_set=necessity_set,
         applicability_registry=applicability_registry,
         null_seed=null_seed,
+        protocol=protocol,
+        bootstrap_se=bootstrap_se,
+        bootstrap_block_len=bootstrap_block_len,
     )
     df['session']=df['session'].replace({'audioawake':'awake','audiodeep':'deep'})
     meta_cols = [

@@ -6,6 +6,7 @@ import concurrent.futures
 import subprocess
 import hashlib
 import gc
+import functools
 from collections import deque
 from multiprocessing import shared_memory
 
@@ -19,6 +20,7 @@ from impact_pipeline.hardware_backend import (
     configure_process_for_hardware,
 )
 from impact_pipeline.mpc_metrics import (  # noqa: F401 (compute_CI re-exported)
+    ESTIMATOR_VERSIONS,
     SURROGATE_METHODS,
     compute_RAM,
     compute_PDI,
@@ -128,9 +130,10 @@ CI_REFERENCE_COHORT_HIGH_STATE = "cohort_high_state"
 CI_STATUS_COLUMNS = ("CI_defined", "CI_missing", "CI_reference")
 CI_NORM_COLUMNS = tuple(f"{k}_norm" for k in CI_COMPONENTS)
 
-# MPC evidence layer (see impact_pipeline.evidence). Null families used when
-# null_surrogates > 0: PDI, NAS and IIM use their estimators' own surrogate
-# calibration (methods of mpc_metrics.SURROGATE_METHODS); RAM and SRPI use
+# MPC evidence layer (see impact_pipeline.evidence). Null families of the
+# legacy estimator modes (run when null_surrogates > 0): PDI, NAS and IIM use
+# their estimators' own surrogate calibration (methods of
+# mpc_metrics.SURROGATE_METHODS); RAM and SRPI use
 # impact_pipeline.nulls.component_null (kinds of nulls.SURROGATE_KINDS).
 # The RAM null shifts the whole event train rigidly (goal/stimulus/feedback
 # timing is kept, only its alignment with the recording is destroyed). For a
@@ -145,10 +148,62 @@ MPC_NULL_KINDS_DEFAULT = {
 }
 # Minimum shift of the RAM/SRPI event-train null, as a fraction of the run.
 MPC_EVENT_NULL_MIN_SHIFT_FRACTION = 0.1
-# MPC degree: capped power mean (p=0: geometric) of two-anchor components.
+# Opt-in construct-revision modes of the estimators (mpc_metrics) and their
+# options, selected through the Protocol's ``estimators`` or the params dicts
+# (``bearer_nodes`` is handled separately). Defaults keep the legacy modes.
+MPC_MODE_KEYS = {
+    "RAM": ("update", "impact_channel", "adaptation_locus"),
+    "PDI": ("mode", "excess_components", "excess_weights", "excess_surrogate"),
+    "NAS": ("mode", "transfer_lags", "transfer_components", "workspace_nodes"),
+    "IIM": ("cut_mode", "tpm_estimator", "node_selection", "state_budget_policy",
+            "psi_kernel"),
+    "SRPI": ("mode", "agency_null_permutations", "agency_components",
+             "agency_pre_components", "agency_random_state"),
+}
+# Modes that compute their own null family inside the estimator (used for the
+# evidence whatever null_surrogates is; null_surrogates=0 selects the
+# estimator's default size) and the family they declare.
+MPC_MODE_NULL_FAMILIES = {
+    ("NAS", "capacity"): "block_circular_shift",
+    ("SRPI", "agency"): "yoked_label_permutation",
+}
+# Bootstrap replicates need only the evidence statistic. These internal null
+# sizes keep them cheap without changing it (the raw PDI/SRPI statistics and
+# the per-direction NAS transfer entropies do not depend on the null draws).
+MPC_BOOTSTRAP_NULL_OVERRIDES = {
+    ("PDI", "surrogate_excess"): {"null_surrogates": 2},
+    ("NAS", "capacity"): {"null_surrogates": 3},
+    ("SRPI", "agency"): {"agency_null_permutations": 5},
+}
+# A bootstrap SE needs at least two valid replicates and at least this
+# fraction of the replicates valid: when the estimator is undefined on most
+# resamples, the SD of the few survivors is neither stable nor unbiased (the
+# failures are not random), so the component has no sampling SE
+# (NO_SAMPLING_SE). ``<P>_boot_failed`` reports the failed replicates.
+MPC_BOOTSTRAP_MIN_VALID_FRACTION = 0.5
+# MPC degree: capped power mean (p=0: geometric) of construct-scale components.
 MPC_DEGREE_P = 0.0
 MPC_DEGREE_CAP = 1.0
-MPC_EVIDENCE_FIELDS = ("status", "margin", "estimate", "null_mean", "null_sd", "null_n")
+MPC_EVIDENCE_FIELDS = (
+    "status",
+    "margin",
+    "estimate",
+    "null_mean",
+    "null_sd",
+    "null_n",
+    "se",
+    "boot_n",
+    "boot_failed",
+    "c",
+    "c_se",
+    "c_lower",
+    "c_upper",
+    "margin_absent",
+    "reference",
+    "reference_se",
+    "estimator",
+    "channels",
+)
 MPC_VERDICT_COLUMNS = (
     "MPC_verdict",
     "MPC_reason",
@@ -157,6 +212,11 @@ MPC_VERDICT_COLUMNS = (
     "MPC_null_surrogates",
     "MPC_null_seed",
     "MPC_null_families",
+    "MPC_bootstrap_se",
+    "MPC_bootstrap_block_len",
+    "MPC_protocol_hash",
+    "MPC_joint_dependence",
+    "MPC_joint_dependence_p",
 )
 MPC_EVIDENCE_COLUMNS = MPC_VERDICT_COLUMNS + tuple(
     f"{k}_{f}" for k in CI_COMPONENTS for f in MPC_EVIDENCE_FIELDS
@@ -332,55 +392,26 @@ def assemble_ci(
     return out, refs
 
 
-def assemble_mpc_degree(
-    df,
-    reference=None,
-    weights=None,
-    high_state_session="awake",
-    p=MPC_DEGREE_P,
-    cap=MPC_DEGREE_CAP,
-):
+def assemble_mpc_degree(df, weights=None, p=MPC_DEGREE_P, cap=MPC_DEGREE_CAP):
     """
     Add ``MPC_degree`` to a per-run table that carries the evidence columns.
 
-    For ATTRIBUTED rows each component of the row's necessity set is put on the
-    two-anchor scale with the row's null mean as the origin and the D3
-    reference as the unit: ``c = (estimate - null_mean) / reference``
-    (``evidence.two_anchor_normalize(estimate, null_mean, null_mean +
-    reference)``). ``reference`` is resolved as for CI
-    (:func:`resolve_ci_references`: cohort high-state means of the metric
-    columns, which under null calibration hold the excess over the null, or an
-    external dict/JSON on that scale). The degree is the capped power mean
-    (``evidence.degree``) with ``weights`` restricted to the necessity set;
-    NaN for every other verdict. Returns ``(df_with_degree, references)``;
-    without ATTRIBUTED rows no reference is needed and none is resolved
-    (``references`` is then empty), so e.g. the uncalibrated default never
-    reads ``reference``.
+    For MPC_CONSISTENT rows the degree is the capped power mean
+    (``evidence.degree``) of the construct-scale components ``<P>_c`` over the
+    row's necessity set (``MPC_necessity_set``), with ``weights`` (a dict)
+    restricted to that set; NaN for every other verdict and when no weight in
+    the set is positive. It is a reference-relative evidence summary, not a
+    level of consciousness.
     """
     out = df.copy()
-    attributed = mpc_evidence.Verdict.ATTRIBUTED.value
-    if "MPC_verdict" not in out.columns or not (
-        out["MPC_verdict"].astype(str) == attributed
-    ).any():
-        out["MPC_degree"] = float("nan")
-        return out, {}
-    refs, _label = resolve_ci_references(
-        out, reference=reference, high_state_session=high_state_session
-    )
+    consistent = mpc_evidence.Verdict.MPC_CONSISTENT.value
     degrees = []
     for _, row in out.iterrows():
-        if str(row.get("MPC_verdict")) != mpc_evidence.Verdict.ATTRIBUTED.value:
+        if str(row.get("MPC_verdict")) != consistent:
             degrees.append(float("nan"))
             continue
         nset = mpc_evidence.normalize_necessity_set(str(row.get("MPC_necessity_set")))
-        comps = {}
-        for k in nset:
-            null_mean = _as_float(row.get(f"{k}_null_mean"))
-            comps[k] = mpc_evidence.two_anchor_normalize(
-                _as_float(row.get(f"{k}_estimate")),
-                null_mean,
-                null_mean + _as_float(refs.get(k)),
-            )
+        comps = {k: _as_float(row.get(f"{k}_c")) for k in nset}
         w = None
         if weights is not None:
             w = {k: float(weights.get(k, 0.0)) for k in nset}
@@ -389,33 +420,6 @@ def assemble_mpc_degree(
                 continue
         degrees.append(mpc_evidence.degree(comps, w, p=p, cap=cap))
     out["MPC_degree"] = degrees
-    return out, refs
-
-
-def _finish_mpc_evidence(df, reference, weights, high_state_session, registry):
-    """MPC degree for ATTRIBUTED rows, a verdict summary log and provenance."""
-    if "MPC_verdict" not in df.columns:
-        return df
-    attrs = dict(df.attrs)
-    out, refs = assemble_mpc_degree(
-        df, reference=reference, weights=weights, high_state_session=high_state_session
-    )
-    counts = out["MPC_verdict"].value_counts().to_dict()
-    log.info(
-        "MPC verdicts (rows): %s; necessity set=%s; null surrogates=%s",
-        {k: int(v) for k, v in counts.items()},
-        out["MPC_necessity_set"].iloc[0] if len(out) else "na",
-        out["MPC_null_surrogates"].iloc[0] if len(out) else "na",
-    )
-    out.attrs.update(attrs)
-    out.attrs["mpc_evidence"] = {
-        "degree_p": MPC_DEGREE_P,
-        "degree_cap": MPC_DEGREE_CAP,
-        "degree_references": {k: _as_float(v) for k, v in refs.items()},
-        "applicability_registry": (
-            None if registry is None else registry.to_dict()
-        ),
-    }
     return out
 
 
@@ -426,6 +430,10 @@ def _resolve_null_kinds(null_kinds):
         if unknown:
             raise ValueError(f"null_kinds has unknown components: {unknown}")
         kinds.update({str(k): str(v) for k, v in dict(null_kinds).items()})
+    return _check_null_kinds(kinds)
+
+
+def _check_null_kinds(kinds):
     for k in ("PDI", "NAS", "IIM"):
         if kinds[k] not in SURROGATE_METHODS:
             raise ValueError(
@@ -438,16 +446,7 @@ def _resolve_null_kinds(null_kinds):
 
 
 def _resolve_applicability_registry(registry):
-    if registry is None or isinstance(registry, mpc_evidence.ApplicabilityRegistry):
-        return registry
-    if isinstance(registry, (str, os.PathLike)):
-        return mpc_evidence.ApplicabilityRegistry.from_json(os.fspath(registry))
-    if isinstance(registry, (dict, list, tuple)):
-        return mpc_evidence.ApplicabilityRegistry.from_dict(registry)
-    raise TypeError(
-        "applicability_registry must be None, an ApplicabilityRegistry, a JSON "
-        "path or a registry dict."
-    )
+    return mpc_evidence.resolve_registry(registry)
 
 
 def _run_null_key(ts_path):
@@ -483,8 +482,11 @@ def _component_record(
     null_n=0,
     null_family=None,
     null_reason=None,
+    channel="default",
+    nodes=None,
+    null_attempted=False,
 ):
-    """Per-run evidence record of one component (raw estimate + its null)."""
+    """Per-run evidence record of one component channel (estimate + its null)."""
     est = _as_float(estimate)
     defined = bool(np.isfinite(est))
     return {
@@ -497,13 +499,23 @@ def _component_record(
         "null_n": int(null_n or 0),
         "null_family": null_family,
         "null_reason": null_reason,
+        "null_attempted": bool(null_attempted),
+        "channel": str(channel),
+        "nodes": None if nodes is None else tuple(int(i) for i in nodes),
+        "se": float("nan"),
+        "boot_n": 0,
+        "boot_failed": 0,
     }
 
 
-def _record_from_null_fields(prefix, det, estimator, family):
-    """Evidence record from a PDI/NAS details dict (``<prefix>_null_*`` fields)."""
+def _record_from_null_fields(
+    prefix, det, estimator, family, channel="default", nodes=None,
+    null_attempted=False,
+):
+    """Evidence record from a details dict with ``<prefix>_null_*`` fields."""
     if not isinstance(det, dict):
-        return _component_record(det, estimator=estimator)
+        return _component_record(det, estimator=estimator, channel=channel,
+                                 nodes=nodes)
     n = int(det.get(f"{prefix}_null_n", 0) or 0)
     return _component_record(
         det.get("raw", det.get("value")),
@@ -514,6 +526,9 @@ def _record_from_null_fields(prefix, det, estimator, family):
         null_n=n,
         null_family=family if n else None,
         null_reason=det.get(f"{prefix}_null_undefined_reason"),
+        channel=channel,
+        nodes=nodes,
+        null_attempted=null_attempted,
     )
 
 
@@ -522,6 +537,23 @@ def _calibrated_value(rec):
     if not (np.isfinite(rec["estimate"]) and np.isfinite(rec["null_mean"])):
         return float("nan")
     return float(max(rec["estimate"] - rec["null_mean"], 0.0))
+
+
+def _metric_value(recs, null_k):
+    """
+    Legacy metric column of a component: the excess over the null floored at
+    0 when a null was run (always for estimator modes with their own null; at
+    ``null_k > 0`` a failed null gives NaN, never the raw value), else the
+    estimate. Several channels: the largest finite value.
+    """
+    vals = []
+    for rec in recs:
+        if rec["null_n"] > 0 or null_k > 0 or rec["null_attempted"]:
+            vals.append(_calibrated_value(rec))
+        else:
+            vals.append(rec["estimate"])
+    vals = [v for v in vals if np.isfinite(v)]
+    return float(max(vals)) if vals else float("nan")
 
 
 def _legacy_pdi_value(det, null_k):
@@ -555,6 +587,7 @@ def _component_null_record(
         null_n=int(res.samples.size),
         null_family=kind,
         null_reason=(None if res.samples.size else "all_surrogates_undefined"),
+        null_attempted=True,
     )
     log.debug(
         "%s null (%s, n=%d, failed=%d): estimate=%.6g null_mean=%.6g null_sd=%.6g",
@@ -564,22 +597,109 @@ def _component_null_record(
     return rec
 
 
+def _bootstrap_se_usable(n_valid, n_failed):
+    """At least two valid replicates and MPC_BOOTSTRAP_MIN_VALID_FRACTION."""
+    n_valid, n_failed = int(n_valid), int(n_failed)
+    total = n_valid + n_failed
+    return n_valid >= 2 and n_valid >= MPC_BOOTSTRAP_MIN_VALID_FRACTION * total
+
+
+def _attach_bootstrap(rec, fn, ts, events, n_boot, seed, block_len, tr,
+                      statistic=None):
+    """Block-bootstrap sampling SE of a defined record's statistic."""
+    if int(n_boot) <= 0 or not rec["defined"]:
+        return rec
+    res = nulls.component_bootstrap_se(
+        fn, ts, events, n=int(n_boot), seed=int(seed), block_len=block_len,
+        tr=float(tr), statistic=statistic,
+    )
+    rec = dict(rec)
+    se = float(res.se)
+    if not _bootstrap_se_usable(res.samples.size, res.n_failed):
+        log.warning(
+            "bootstrap SE of %s withheld: %d of %d replicates failed "
+            "(NO_SAMPLING_SE)", rec["estimator"], int(res.n_failed), int(n_boot),
+        )
+        se = float("nan")
+    rec.update(se=se, boot_n=int(res.samples.size), boot_failed=int(res.n_failed))
+    log.debug(
+        "bootstrap SE (%s, n=%d, failed=%d, block=%d): se=%.6g",
+        rec["estimator"], int(n_boot), int(res.n_failed), int(res.block_len),
+        rec["se"],
+    )
+    return rec
+
+
+def _raw_statistic(details):
+    """Evidence statistic of PDI/NAS/SRPI details: the raw estimator value."""
+    return _as_float(details.get("raw", details.get("value")))
+
+
+def _transfer_statistic(details, direction):
+    """NAS-capacity statistic: the transfer entropy of one direction (nats)."""
+    return _as_float(details["transfer"][f"te_{direction}"])
+
+
+def _iim_delta_psi(info):
+    """Integration mass Delta_Psi (bits) of an IIM details dict."""
+    delta_psi = info.get("Delta_Psi")
+    if delta_psi is None:
+        delta_psi = _as_float(info.get("Psi_full")) - _as_float(
+            info.get("Psi_mip_preserved")
+        )
+    return _as_float(delta_psi)
+
+
 _NULL_NOT_RUN = "not_run"
 
 
-def _iim_record(iim_info, null_kind):
-    """IIM evidence on the integration-mass scale Delta_Psi (bits)."""
+# Declared IIM options (protocol / params) and the details field that records
+# the setting actually used; checked for every IIM result (a precomputed Hunter
+# reduction is computed without the protocol's options).
+_IIM_OPTION_FIELDS = {
+    "cut_mode": "cut_mode",
+    "tpm_estimator": "tpm_estimator",
+    "node_selection": "node_selection_rule",
+    "state_budget_policy": "state_budget_policy",
+}
+
+
+def _iim_option_mismatch(iim_info, declared, bearer):
+    """First declared IIM option that the result was not computed with."""
+    for key, field_name in _IIM_OPTION_FIELDS.items():
+        want = dict(declared or {}).get(key)
+        got = iim_info.get(field_name)
+        if want is not None and got is not None and str(got) != str(want):
+            return f"{key}={want}/{got}"
+    if "bearer_nodes" in iim_info:
+        got = iim_info.get("bearer_nodes")
+        got = None if got is None else tuple(sorted(int(i) for i in got))
+        want = None if bearer is None else tuple(sorted(int(i) for i in bearer))
+        if got != want:
+            return "bearer_nodes"
+    return None
+
+
+def _iim_record(iim_info, null_kind, cut_mode="bidirectional", nodes=None,
+                declared=None, bearer=None, tr=None):
+    """
+    IIM evidence on the integration-mass scale Delta_Psi (bits). A result
+    computed with other options than the declared ones (``declared``: IIM
+    mode options, ``bearer``: IIM bearer nodes) is undefined
+    (``iim_option_mismatch:<option>``), never judged under the protocol.
+    """
     defined = bool(iim_info.get("defined", False))
     null_n = int(iim_info.get("IIM_null_n", 0) or 0)
-    delta_psi = iim_info.get("Delta_Psi")
-    if delta_psi is None:
-        delta_psi = _as_float(iim_info.get("Psi_full")) - _as_float(
-            iim_info.get("Psi_mip_preserved")
-        )
-    return _component_record(
-        delta_psi if defined else np.nan,
-        reason=iim_info.get("undefined_reason"),
-        estimator=f"compute_IIM:{iim_info.get('iim_algorithm_version', 'unknown')}",
+    version = iim_info.get("iim_algorithm_version") or ESTIMATOR_VERSIONS["IIM"]
+    cut = iim_info.get("cut_mode") or cut_mode
+    reason = iim_info.get("undefined_reason")
+    mismatch = _iim_option_mismatch(iim_info, declared, bearer) if defined else None
+    if mismatch is not None:
+        defined, reason = False, f"iim_option_mismatch:{mismatch}"
+    rec = _component_record(
+        _iim_delta_psi(iim_info) if defined else np.nan,
+        reason=reason,
+        estimator=mpc_evidence.estimator_id("IIM", cut, version),
         null_mean=iim_info.get("Delta_Psi_null_mean") if null_n else np.nan,
         null_sd=iim_info.get("Delta_Psi_null_sd") if null_n else np.nan,
         null_n=null_n,
@@ -591,85 +711,381 @@ def _iim_record(iim_info, null_kind):
             if "IIM_null_n" in iim_info
             else _NULL_NOT_RUN
         ),
+        nodes=nodes,
+    )
+    # The registry regime of IIM is the subsystem and the series actually
+    # scored: after a time subsampling of the IIM input (iim_max_timepoints)
+    # its length is n_transitions + lag and its sample interval step * tr.
+    selected = iim_info.get("selected_nodes")
+    n_time = iim_info.get("n_time_used")
+    if n_time is None and iim_info.get("n_transitions") is not None:
+        n_time = int(iim_info["n_transitions"]) + int(iim_info.get("lag_trs") or 1)
+    step = iim_info.get("iim_time_step")
+    rec["regime"] = {
+        k: v for k, v in (
+            ("n_nodes", None if selected is None else len(selected)),
+            ("bins", iim_info.get("bins_used")),
+            ("n_time", n_time),
+            ("tr", None if (tr is None or not step) else float(tr) * int(step)),
+        ) if v is not None
+    }
+    rec["null_attempted"] = rec["null_reason"] != _NULL_NOT_RUN and bool(
+        iim_info.get("IIM_null_undefined_reason") or null_n
+    )
+    se = _as_float(iim_info.get("Delta_Psi_bootstrap_se"))
+    boot_n = int(iim_info.get("Delta_Psi_bootstrap_n", 0) or 0)
+    boot_failed = int(iim_info.get("Delta_Psi_bootstrap_failed", 0) or 0)
+    if boot_n or boot_failed:
+        rec["boot_n"], rec["boot_failed"] = boot_n, boot_failed
+    if np.isfinite(se) and (
+        "Delta_Psi_bootstrap_n" not in iim_info
+        or _bootstrap_se_usable(boot_n, boot_failed)
+    ):
+        rec["se"] = se
+    return rec
+
+
+# --------------------------------------------------------------------------
+# protocol, modes and bearers of a compute_synergy_ci call
+# --------------------------------------------------------------------------
+def _mode_of(principle, opts):
+    if principle == "RAM":
+        return str(opts.get("update") or "feedback_magnitude")
+    if principle == "IIM":
+        return str(opts.get("cut_mode") or "bidirectional")
+    return str(opts.get("mode") or "legacy")
+
+
+def _uses_internal_null(principle, opts):
+    mode = _mode_of(principle, opts)
+    return (
+        (principle == "PDI" and mode != "legacy")
+        or (principle, mode) in MPC_MODE_NULL_FAMILIES
     )
 
 
-def _mpc_protocol_id(**config):
-    """Short digest of the protocol configuration shared by a run's evidence."""
-    payload = json.dumps(config, sort_keys=True, default=str)
-    return "protocol-" + hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+def _internal_null_family(principle, opts):
+    mode = _mode_of(principle, opts)
+    if (principle, mode) in MPC_MODE_NULL_FAMILIES:
+        return MPC_MODE_NULL_FAMILIES[(principle, mode)]
+    if principle == "PDI" and mode == "surrogate_excess":
+        return str(opts.get("excess_surrogate") or "fourier")
+    return None  # unknown mode: the family the estimator reports is recorded
 
 
-def _mpc_run_columns(
-    records,
-    nset,
-    null_k,
-    null_seed,
-    null_kinds,
-    registry,
-    bearer_id,
-    protocol_id,
-    substrate,
-    grain,
-    regime,
+def _same_option(a, b):
+    try:
+        return json.dumps(a, sort_keys=True, default=str) == json.dumps(
+            b, sort_keys=True, default=str
+        )
+    except TypeError:
+        return a == b
+
+
+def _merge_estimator_options(principle, from_params, from_protocol):
+    """Mode options of one principle from the params dict and the Protocol."""
+    out = {k: v for k, v in dict(from_params).items() if v is not None}
+    for k, v in dict(from_protocol).items():
+        if k in out and not _same_option(out[k], v):
+            raise ValueError(
+                f"{principle} option {k!r} differs between the params "
+                f"({out[k]!r}) and the protocol ({v!r})"
+            )
+        out[k] = v
+    return out
+
+
+def _params_modes(principle, params):
+    params = dict(params or {})
+    opts = {k: params[k] for k in MPC_MODE_KEYS[principle] if k in params}
+    bearer = params.get("bearer_nodes")
+    return opts, (None if bearer is None else mpc_evidence._node_tuple(
+        bearer, f"{principle} bearer_nodes"))
+
+
+def _resolve_mpc_setup(
+    protocol, necessity_set, null_kinds, ci_reference_session, params_by_p,
 ):
     """
-    ComponentEvidence per computed principle, the MPC verdict and the per-run
-    evidence columns (``MPC_degree`` is filled later by assemble_mpc_degree).
+    Effective Protocol, estimator mode options, bearer node sets and legacy
+    null kinds of a compute_synergy_ci call. Without a protocol a default one
+    is built from the keywords (so its hash covers the modes, bearers and null
+    families in use); with a protocol, conflicting keywords raise ValueError.
     """
-    evidence = {}
-    for k, rec in records.items():
-        defined, reason = rec["defined"], rec["reason"]
-        null_ran = rec.get("null_reason") != _NULL_NOT_RUN
-        if defined and null_k > 0 and rec["null_n"] == 0 and null_ran:
-            # Calibration was requested but the null family failed.
-            defined = False
-            reason = f"null_undefined:{rec.get('null_reason') or 'no_valid_surrogates'}"
-        evidence[k] = [
-            mpc_evidence.ComponentEvidence(
-                principle=k,
-                estimate=rec["estimate"],
-                null_mean=rec["null_mean"],
-                null_sd=rec["null_sd"],
-                se=0.0,
-                defined=defined,
-                reason=reason,
-                bearer_id=bearer_id,
-                protocol_id=protocol_id,
-                substrate=substrate,
-                grain=grain,
-                estimator=rec["estimator"],
-                null_family=rec["null_family"],
-                n_null=int(rec["null_n"]),
+    proto_in = mpc_evidence.resolve_protocol(protocol)
+    if proto_in is not None and necessity_set is not None:
+        if mpc_evidence.normalize_necessity_set(necessity_set) != (
+            proto_in.necessity_set
+        ):
+            raise ValueError("necessity_set differs from the protocol's necessity set")
+    modes, bearers = {}, {}
+    for p in CI_COMPONENTS:
+        p_opts, p_bearer = _params_modes(p, params_by_p.get(p))
+        pr_opts = proto_in.estimator_options(p) if proto_in is not None else {}
+        modes[p] = _merge_estimator_options(p, p_opts, pr_opts)
+        pr_bearer = proto_in.bearer_nodes.get(p) if proto_in is not None else None
+        if p_bearer is not None and pr_bearer is not None and p_bearer != pr_bearer:
+            raise ValueError(f"{p} bearer_nodes differ between the params and protocol")
+        bearers[p] = pr_bearer if pr_bearer is not None else p_bearer
+    kinds = _resolve_null_kinds(null_kinds)
+    if proto_in is not None:
+        for p, fam in proto_in.null_families.items():
+            if _uses_internal_null(p, modes[p]):
+                continue
+            if null_kinds and p in null_kinds and str(null_kinds[p]) != fam:
+                raise ValueError(f"null_kinds[{p}] differs from the protocol's family")
+            kinds[p] = fam
+        kinds = _check_null_kinds(kinds)
+    for p in CI_COMPONENTS:
+        if _uses_internal_null(p, modes[p]) and null_kinds and p in null_kinds:
+            raise ValueError(
+                f"{p} mode {_mode_of(p, modes[p])!r} computes its own null family; "
+                "null_kinds does not apply"
             )
-        ]
-    verdict = mpc_evidence.mpc_verdict(
-        evidence, necessity_set=nset, registry=registry, regime=regime
-    )
-    families = ""
-    if null_k > 0:
-        families = ";".join(
-            f"{k}:{null_kinds[k]}" for k in CI_COMPONENTS if k in records
+    if proto_in is not None:
+        return proto_in, modes, bearers, kinds
+    families = {}
+    for p in CI_COMPONENTS:
+        fam = (
+            _internal_null_family(p, modes[p])
+            if _uses_internal_null(p, modes[p]) else kinds[p]
         )
+        if fam is not None:
+            families[p] = fam
+    proto = mpc_evidence.Protocol(
+        necessity_set=necessity_set,
+        null_families=families,
+        reference={"kind": "cohort_high_state", "session": str(ci_reference_session)},
+        estimators={p: o for p, o in modes.items() if o},
+        bearer_nodes={p: b for p, b in bearers.items() if b is not None},
+    )
+    return proto, modes, bearers, kinds
+
+
+def _mpc_references(runs, proto):
+    """
+    Reference anchors per (principle, channel) from the protocol: the cohort
+    high-state mean excess ``estimate - null_mean`` (subject means first; SE =
+    SD of the subject means / sqrt(n) with >= 2 subjects, else unavailable) on
+    the excess scale, or the protocol's external values.
+    """
+    ref = proto.reference
+    keys = {
+        (p, rec["channel"]) for run in runs for p, recs in run["records"].items()
+        for rec in recs
+    }
+    out = {}
+    if ref["kind"] == "external":
+        for p, ch in keys:
+            key = f"{p}:{ch}" if f"{p}:{ch}" in ref["values"] else p
+            out[(p, ch)] = {
+                "reference": ref["values"].get(key, float("nan")),
+                "reference_se": ref["se"].get(key, float("nan")),
+                "scale": ref["scale"],
+                "n_subjects": 0,
+            }
+        return out
+    session = str(ref["session"])
+    for p, ch in keys:
+        by_subject = {}
+        for run in runs:
+            if str(run["session"]) != session:
+                continue
+            for rec in run["records"].get(p, []):
+                if rec["channel"] != ch or not rec["defined"]:
+                    continue
+                excess = rec["estimate"] - rec["null_mean"]
+                if np.isfinite(excess):
+                    by_subject.setdefault(str(run["subject"]), []).append(excess)
+        means = np.asarray([np.mean(v) for v in by_subject.values()], dtype=float)
+        n = int(means.size)
+        out[(p, ch)] = {
+            "reference": float(means.mean()) if n else float("nan"),
+            "reference_se": (
+                float(means.std(ddof=1) / np.sqrt(n)) if n >= 2 else float("nan")
+            ),
+            "scale": "excess",
+            "n_subjects": n,
+        }
+    return out
+
+
+def _joint_dependence_label(jd, n_sets):
+    if n_sets <= 1:
+        return ""
+    if jd is None:
+        return "untested"
+    return "dependent" if jd.get("dependent") else str(
+        jd.get("reason") or mpc_evidence.REASON_SOURCE_INCOHERENT
+    )
+
+
+def _item_regime(rec):
+    """
+    Per-component regime for the registry: the size of the component's bearer
+    node set, or for IIM the subsystem and series actually scored (nodes,
+    bins and, after time subsampling, n_time and tr).
+    """
+    regime = {} if rec["nodes"] is None else {"n_nodes": len(rec["nodes"])}
+    regime.update(rec.get("regime") or {})
+    return regime or None
+
+
+def _mpc_run_columns(run, proto, registry, refs, null_k, null_seed, boot_k,
+                     boot_block_len):
+    """ComponentEvidence, the MPC verdict and the evidence columns of one run."""
+    evidence = {}
+    for p, recs in run["records"].items():
+        items = []
+        for rec in recs:
+            defined, reason = rec["defined"], rec["reason"]
+            if defined and rec["null_attempted"] and rec["null_n"] == 0:
+                # A null family was requested but produced no valid surrogate.
+                defined = False
+                reason = (
+                    f"null_undefined:{rec.get('null_reason') or 'no_valid_surrogates'}"
+                )
+            ref = refs.get((p, rec["channel"]), {})
+            items.append(
+                mpc_evidence.ComponentEvidence(
+                    principle=p,
+                    estimate=rec["estimate"],
+                    null_mean=rec["null_mean"],
+                    null_sd=rec["null_sd"],
+                    se=rec["se"],
+                    channel=rec["channel"],
+                    defined=defined,
+                    reason=reason,
+                    reference=ref.get("reference"),
+                    reference_se=ref.get("reference_se"),
+                    reference_scale=ref.get("scale", "excess"),
+                    bearer_id=run["bearer_id"],
+                    protocol_id=proto.protocol_id,
+                    substrate=run["substrate"],
+                    grain=run["grain"],
+                    estimator=rec["estimator"],
+                    null_family=rec["null_family"],
+                    n_null=int(rec["null_n"]),
+                    nodes=rec["nodes"],
+                    regime=_item_regime(rec),
+                )
+            )
+        evidence[p] = items
+    verdict = mpc_evidence.mpc_verdict(
+        evidence, proto, registry=registry, regime=run["regime"],
+        joint_dependence=run["joint"],
+    )
+    families = ";".join(
+        f"{p}:{rec['null_family']}"
+        for p in CI_COMPONENTS
+        for rec in run["records"].get(p, [])
+        if rec["null_n"] > 0 and rec["null_family"]
+    )
+    jd = run["joint"]
     cols = {
         "MPC_verdict": verdict.verdict.value,
         "MPC_reason": verdict.reason_string,
         "MPC_degree": float("nan"),
-        "MPC_necessity_set": ",".join(nset),
+        "MPC_necessity_set": ",".join(verdict.necessity_set),
         "MPC_null_surrogates": int(null_k),
         "MPC_null_seed": int(null_seed),
         "MPC_null_families": families,
+        "MPC_bootstrap_se": int(boot_k),
+        "MPC_bootstrap_block_len": (
+            float("nan") if boot_block_len is None else int(boot_block_len)
+        ),
+        "MPC_protocol_hash": proto.hash,
+        "MPC_joint_dependence": _joint_dependence_label(jd, run["n_node_sets"]),
+        "MPC_joint_dependence_p": (
+            float("nan") if jd is None else _as_float(jd.get("p"))
+        ),
     }
     undefined = mpc_evidence.ComponentStatus.UNDEFINED
+    nan = float("nan")
     for k in CI_COMPONENTS:
-        rec = records.get(k)
+        recs = run["records"].get(k, [])
+        a = verdict.principle_assessment.get(k)
+        ch = next(
+            (c for c, x in verdict.assessments.get(k, {}).items() if x is a), None
+        )
+        rec = next((r for r in recs if r["channel"] == ch), recs[0] if recs else None)
+        ref = refs.get((k, ch), {}) if ch is not None else {}
         cols[f"{k}_status"] = verdict.component_status.get(k, undefined).value
-        cols[f"{k}_margin"] = float(verdict.margins.get(k, float("nan")))
-        cols[f"{k}_estimate"] = float("nan") if rec is None else rec["estimate"]
-        cols[f"{k}_null_mean"] = float("nan") if rec is None else rec["null_mean"]
-        cols[f"{k}_null_sd"] = float("nan") if rec is None else rec["null_sd"]
+        # presence margin of the deciding channel (the one c, c_lower, ...
+        # describe), not the largest margin over the channels
+        cols[f"{k}_margin"] = nan if a is None else float(a.margin_present)
+        cols[f"{k}_estimate"] = nan if rec is None else rec["estimate"]
+        cols[f"{k}_null_mean"] = nan if rec is None else rec["null_mean"]
+        cols[f"{k}_null_sd"] = nan if rec is None else rec["null_sd"]
         cols[f"{k}_null_n"] = 0 if rec is None else int(rec["null_n"])
+        cols[f"{k}_se"] = nan if rec is None else rec["se"]
+        cols[f"{k}_boot_n"] = 0 if rec is None else int(rec["boot_n"])
+        cols[f"{k}_boot_failed"] = 0 if rec is None else int(rec["boot_failed"])
+        cols[f"{k}_c"] = nan if a is None else float(a.c)
+        cols[f"{k}_c_se"] = nan if a is None else float(a.se)
+        cols[f"{k}_c_lower"] = nan if a is None else float(a.lower)
+        cols[f"{k}_c_upper"] = nan if a is None else float(a.upper)
+        cols[f"{k}_margin_absent"] = nan if a is None else float(a.margin_absent)
+        cols[f"{k}_reference"] = _as_float(ref.get("reference"))
+        cols[f"{k}_reference_se"] = _as_float(ref.get("reference_se"))
+        cols[f"{k}_estimator"] = "" if rec is None else str(rec["estimator"] or "")
+        cols[f"{k}_channels"] = ",".join(
+            f"{c}:{s.value}" for c, s in verdict.channels.get(k, {}).items()
+        )
     return cols
+
+
+def _finish_mpc_evidence(
+    df, runs, proto, registry, null_k, null_seed, boot_k, boot_block_len, weights,
+):
+    """
+    Verdict stage (after all runs, once the reference anchors are known): the
+    evidence columns of every run, the MPC degree of MPC_CONSISTENT rows, a
+    verdict summary log and the provenance in ``df.attrs['mpc_evidence']``.
+    """
+    if not runs:
+        return df
+    attrs = dict(df.attrs)
+    refs = _mpc_references(runs, proto)
+    rows = {}
+    for run in runs:
+        cols = _mpc_run_columns(run, proto, registry, refs, null_k, null_seed, boot_k,
+                                boot_block_len)
+        for i in run["rows"]:
+            rows[i] = cols
+    mpc_df = pd.DataFrame.from_dict(rows, orient="index")
+    mpc_df = mpc_df.reindex(df.index)
+    out = df.drop(columns=[c for c in mpc_df.columns if c in df.columns])
+    out = pd.concat([out, mpc_df], axis=1)
+    out = assemble_mpc_degree(out, weights=weights)
+    counts = out["MPC_verdict"].value_counts().to_dict()
+    log.info(
+        "MPC verdicts (rows): %s; necessity set=%s; null surrogates=%s; "
+        "bootstrap SE replicates=%s; protocol=%s",
+        {k: int(v) for k, v in counts.items()},
+        ",".join(proto.necessity_set), null_k, boot_k, proto.hash[:12],
+    )
+    out.attrs.update(attrs)
+    out.attrs["mpc_evidence"] = {
+        "protocol": proto.to_dict(),
+        "protocol_hash": proto.hash,
+        "degree_p": MPC_DEGREE_P,
+        "degree_cap": MPC_DEGREE_CAP,
+        "references": {
+            f"{p}:{ch}": {k: (_as_float(v) if k != "scale" else v)
+                          for k, v in r.items()}
+            for (p, ch), r in sorted(refs.items())
+        },
+        "null_surrogates": int(null_k),
+        "null_seed": int(null_seed),
+        "bootstrap_se": int(boot_k),
+        "bootstrap_block_len": boot_block_len,
+        "estimator_versions": dict(ESTIMATOR_VERSIONS),
+        "applicability_registry": (
+            None if registry is None else registry.to_dict()
+        ),
+    }
+    return out
 
 
 def _parse_vm_stat_pages(vm_stat_text: str) -> dict:
@@ -740,6 +1156,9 @@ def _iim_worker_from_path(
     iim_null_surrogates=0,
     iim_null_seed=0,
     iim_null_method=MPC_NULL_KINDS_DEFAULT["IIM"],
+    iim_options=None,
+    iim_bootstrap_n=0,
+    iim_bootstrap_block_len=None,
 ):
     # Keep each worker single-threaded for predictable scaling when many workers are used.
     backend = configure_process_for_hardware(hardware_target)
@@ -762,6 +1181,7 @@ def _iim_worker_from_path(
         ts_path = str(ts_source)
         ts_time_region = np.load(ts_path)
     ts_iim = ts_time_region.T
+    step = 1
     if iim_max_timepoints is not None and int(iim_max_timepoints) > 0:
         max_tp = int(iim_max_timepoints)
         if ts_iim.shape[1] > max_tp:
@@ -786,6 +1206,10 @@ def _iim_worker_from_path(
                 f"|null={int(iim_null_surrogates)}|null_seed={int(iim_null_seed)}|"
                 f"null_method={iim_null_method}"
             )
+        if iim_options:
+            # Protocol-selected IIM options (cut mode, bearer, ...); default
+            # checkpoints keep their historical names.
+            sig += "|opts=" + json.dumps(iim_options, sort_keys=True, default=str)
         digest = hashlib.sha1(sig.encode("utf-8")).hexdigest()[:16]
         checkpoint_path = os.path.join(
             iim_checkpoint_dir,
@@ -801,33 +1225,79 @@ def _iim_worker_from_path(
                 int(iim_null_seed), "IIM", _run_null_key(ts_path)
             ),
         }
+    common = dict(
+        bins=iim_bins,
+        lag_trs=iim_lag_trs,
+        n_parts=iim_n_parts,
+        max_nodes=iim_max_nodes,
+        max_mechanism_size=iim_max_mechanism_size,
+        max_purview_size=iim_max_purview_size,
+        partition_mode="all",
+        clamp=True,
+        return_details=True,
+        phase1_parallel_workers=iim_phase1_parallel_workers,
+        phase1_chunk_size=iim_phase1_chunk_size,
+        phase1_shared_memory=bool(iim_phase1_shared_memory),
+        hardware_backend=backend,
+        **dict(iim_options or {}),
+    )
     try:
         iim_info = compute_IIM(
             ts_iim,
-            bins=iim_bins,
-            lag_trs=iim_lag_trs,
-            n_parts=iim_n_parts,
-            max_nodes=iim_max_nodes,
-            max_mechanism_size=iim_max_mechanism_size,
-            max_purview_size=iim_max_purview_size,
-            partition_mode="all",
-            clamp=True,
-            return_details=True,
             checkpoint_path=checkpoint_path,
             resume_from_checkpoint=bool(iim_resume_checkpoint),
             checkpoint_every_cuts=int(iim_checkpoint_every_cuts),
             progress_log_every_cuts=int(iim_progress_log_every_cuts),
             progress_label=os.path.basename(ts_path),
-            phase1_parallel_workers=iim_phase1_parallel_workers,
-            phase1_chunk_size=iim_phase1_chunk_size,
-            phase1_shared_memory=bool(iim_phase1_shared_memory),
-            hardware_backend=backend,
+            **common,
             **null_kwargs,
         )
+        # the series IIM actually scored (for the registry regime)
+        iim_info = dict(iim_info, iim_time_step=int(step),
+                        n_time_used=int(ts_iim.shape[1]))
+        if int(iim_bootstrap_n) > 0 and bool(iim_info.get("defined", False)):
+            iim_info = _iim_bootstrap(
+                iim_info, ts_iim, common, int(iim_bootstrap_n),
+                nulls.derive_seed(int(iim_null_seed), "BOOT", "IIM",
+                                  _run_null_key(ts_path)),
+                iim_bootstrap_block_len, step,
+            )
     finally:
         if shm is not None:
             shm.close()
     return ts_path, iim_info
+
+
+def _iim_bootstrap(iim_info, ts_iim, common, n_boot, seed, block_len, step=1):
+    """
+    Block-bootstrap SE of Delta_Psi on the IIM input (after any time
+    subsampling; ``block_len`` in run samples is rescaled accordingly). The
+    subsystem is pinned to the nodes selected on the original data, so every
+    replicate scores the same subsystem; replicates run without null or
+    checkpoint.
+    """
+    kw = dict(common)
+    selected = iim_info.get("selected_nodes")
+    if selected is not None and kw.get("node_indices") is None:
+        kw["node_indices"] = [int(i) for i in selected]
+    if block_len is not None:
+        block_len = max(1, int(np.ceil(int(block_len) / max(1, int(step)))))
+
+    def _fn(x, _events):
+        return compute_IIM(x, progress_log_every_cuts=10 ** 9, **kw)
+
+    res = nulls.component_bootstrap_se(
+        _fn, ts_iim, None, n=n_boot, seed=seed, block_len=block_len,
+        statistic=lambda d: _iim_delta_psi(d) if d.get("defined") else float("nan"),
+    )
+    out = dict(iim_info)
+    out.update(
+        Delta_Psi_bootstrap_se=float(res.se),
+        Delta_Psi_bootstrap_n=int(res.samples.size),
+        Delta_Psi_bootstrap_failed=int(res.n_failed),
+        Delta_Psi_bootstrap_block_len=int(res.block_len),
+    )
+    return out
 
 
 def _resolve_pdi_kwargs(pdi_params, require_explicit):
@@ -869,7 +1339,15 @@ def _resolve_ram_kwargs(ram_params):
     return params
 
 
-def _resolve_nas_kwargs(nas_params):
+def _resolve_nas_kwargs(nas_params, mode="legacy"):
+    if str(mode) == "capacity":
+        # NAS-capacity (receive-transform-return transfer between a declared
+        # hub and the periphery) needs only the declared hub; the legacy
+        # L/B/H settings are optional profile descriptors.
+        params = {k: dict(nas_params or {}).get(k, NAS_PARAM_DEFAULTS[k])
+                  for k in NAS_PARAM_KEYS}
+        params["baseline_ts"] = None
+        return params
     if nas_params is None:
         raise ValueError(
             "NAS hyperparameters must be provided explicitly; fallback defaults are disabled."
@@ -1075,6 +1553,9 @@ def compute_synergy_ci(
     applicability_registry=None,
     null_seed=0,
     null_kinds=None,
+    protocol=None,
+    bootstrap_se=0,
+    bootstrap_block_len=None,
 ):
     """
     Per-run MPC metrics, the exploratory legacy statistic S (one row per theta)
@@ -1092,33 +1573,81 @@ def compute_synergy_ci(
     never used as its own baseline. Missing baselines give NaN with a reason.
 
     MPC evidence layer (``impact_pipeline.evidence``): every run gets one
-    ComponentEvidence per computed principle and a three-valued verdict over
-    ``necessity_set`` (default all five; a sequence or ``"RAM,PDI,..."``),
-    emitted as ``MPC_verdict``, ``MPC_reason`` (``;``-joined reason codes),
-    ``MPC_degree`` (only for ATTRIBUTED rows, see :func:`assemble_mpc_degree`),
-    ``MPC_necessity_set``, ``MPC_null_surrogates``, ``MPC_null_seed``,
-    ``MPC_null_families`` and, per principle ``<P>``, ``<P>_status``,
-    ``<P>_margin`` (null-SD units), ``<P>_estimate`` (raw estimator value),
-    ``<P>_null_mean``, ``<P>_null_sd`` and ``<P>_null_n`` (null moments on the
-    scale of ``<P>_estimate``; for IIM the integration mass Delta_Psi in bits).
+    ComponentEvidence per computed principle and channel, on the construct
+    scale ``c = (m - nu) / (rho - nu)``, and a three-valued verdict (an
+    exclusion rule: ``EXCLUDED`` / ``MPC_CONSISTENT`` / ``UNDETERMINED``) under
+    a :class:`~impact_pipeline.evidence.Protocol`:
 
-    - ``null_surrogates=0`` (default): no null family is run, so every defined
-      component is UNDEFINED (``NO_NULL_CALIBRATION:<P>``) and the verdict is
-      UNDETERMINED. All metric and CI columns keep their previous values.
-    - ``null_surrogates=K > 0``: PDI, NAS and IIM are calibrated by their
-      estimators (``null_surrogates=K``; PDI on the primary endpoint), RAM and
-      SRPI by ``nulls.component_null`` (default event-train circular shift and
-      self/non-self label permutation; see ``MPC_NULL_KINDS_DEFAULT``,
-      overridable per component with ``null_kinds``). Seeds are derived from
-      ``null_seed`` and the run path. The metric columns ``RAM``..``SRPI`` then
-      hold the calibrated values (excess over the null mean, floored at 0; NaN
-      when the null could not be computed, never the raw value), so the legacy
-      CI and its reference are on the calibrated scale. Precomputed IIM results
-      (Hunter) without null fields give NaN IIM and ``NO_NULL_CALIBRATION:IIM``.
+    - ``protocol`` (Protocol, dict or JSON path) declares the necessity set,
+      channels, construct-scale cutoffs, alpha, null families, reference,
+      source rule, estimator modes (``estimators``, e.g. SRPI
+      ``mode='agency'``, NAS ``mode='capacity'``, PDI
+      ``mode='surrogate_excess'``, RAM ``update='prediction_error'``) and
+      per-component ``bearer_nodes``. Without it a default protocol is built
+      from ``necessity_set`` (default all five), ``null_kinds``, the mode keys
+      of the params dicts (:data:`MPC_MODE_KEYS`, plus ``bearer_nodes``) and
+      the cohort reference of ``ci_reference_session``; conflicting keywords
+      raise ValueError. Its SHA-256 is recorded in ``MPC_protocol_hash`` and
+      ``df.attrs['mpc_evidence']``. RAM channels declared by the protocol are
+      computed one by one (``impact_channel``).
+    - ``null_surrogates=0`` (default): the legacy estimator modes run no null
+      family (``NO_NULL_CALIBRATION:<P>``). With ``K > 0`` PDI, NAS and IIM
+      are calibrated by their estimators, RAM and SRPI by
+      ``nulls.component_null`` (see ``MPC_NULL_KINDS_DEFAULT``); modes with
+      their own null (NAS capacity, SRPI agency, PDI surrogate_excess) always
+      use it (``K = 0`` selects the estimator's default size). Seeds are
+      derived from ``null_seed`` and the run path. The metric columns
+      ``RAM``..``SRPI`` hold the calibrated values (excess over the null mean,
+      floored at 0; NaN when a requested null failed) whenever a null was
+      run, so the legacy CI is then on the calibrated scale.
+    - ``bootstrap_se=K_b`` (default 0): the sampling SE of each estimate from
+      ``K_b`` moving-block bootstrap replicates of the run and its events
+      (``nulls.component_bootstrap_se``; ``bootstrap_block_len`` samples,
+      default ``ceil(sqrt(n_time))``). With ``K_b = 0`` every empirical
+      component is UNDEFINED (``NO_SAMPLING_SE:<P>``) and the verdict is
+      UNDETERMINED (the honest default). The SE also stays undefined when
+      fewer than two replicates, or fewer than
+      :data:`MPC_BOOTSTRAP_MIN_VALID_FRACTION` of them, are valid (the
+      estimator is undefined on most resamples). Precomputed IIM results
+      carry an SE only with ``Delta_Psi_bootstrap_se``.
+    - Reference anchors come from the protocol only (``ci_reference`` is used
+      for the legacy CI): by default the cohort high-state mean excess
+      ``estimate - null_mean`` per component and channel (subject means
+      first; its SE enters ``se_c`` with >= 2 subjects). The high-state runs
+      are part of their own reference (their ``c`` averages 1 by
+      construction, and a component that is not above its null in the high
+      state has no construct scale, ``INVALID_ANCHORS``), so their verdicts
+      are not independent tests of necessity: tests among report-positive
+      (high-state) episodes need an external reference (``{"kind":
+      "external", ...}``, e.g. from MPC-Bench).
+    - Single-source constraint: when the components of the necessity set come
+      from different node sets (``bearer_nodes``), ``evidence.joint_dependence``
+      is run per run with ``null_surrogates`` circular-shift surrogates;
+      without dependence above null the verdict is UNDETERMINED
+      (``SOURCE_INCOHERENT``; ``:UNTESTED`` with ``K = 0``,
+      ``:INSUFFICIENT_SURROGATES`` when ``1 / (K + 1)`` exceeds alpha).
     - ``applicability_registry`` (ApplicabilityRegistry, dict or JSON path):
-      evidence from estimators not validated for the substrate (``modality``),
-      grain (``atlas``) and regime (``modality``, ``n_time``, ``n_nodes``,
-      ``tr``) is UNDEFINED (``ESTIMATOR_NOT_VALIDATED``).
+      evidence from estimator versions not validated for the substrate
+      (``modality``), grain (``atlas``) and regime (``modality``, ``n_time``,
+      ``n_nodes`` of the component's bearer, ``tr``, ``bins``; for IIM the
+      scored subsystem and series: selected nodes, bins used and, after
+      ``iim_max_timepoints`` subsampling, its length and sample interval) is
+      UNDEFINED (``ESTIMATOR_NOT_VALIDATED``).
+
+    Columns: ``MPC_verdict``, ``MPC_reason`` (``;``-joined reason codes),
+    ``MPC_degree`` (MPC_CONSISTENT rows only, see :func:`assemble_mpc_degree`),
+    ``MPC_necessity_set``, ``MPC_null_surrogates``, ``MPC_null_seed``,
+    ``MPC_null_families``, ``MPC_bootstrap_se``, ``MPC_bootstrap_block_len``,
+    ``MPC_protocol_hash``, ``MPC_joint_dependence``/``_p`` and, per principle
+    ``<P>`` (for the channel that decides its status), ``<P>_status``,
+    ``<P>_margin`` (``c_lower - z``), ``<P>_margin_absent`` (``delta -
+    c_upper``), ``<P>_estimate``, ``<P>_null_mean``, ``<P>_null_sd``,
+    ``<P>_null_n``, ``<P>_se``, ``<P>_boot_n``, ``<P>_boot_failed``,
+    ``<P>_c``, ``<P>_c_se``,
+    ``<P>_c_lower``, ``<P>_c_upper``, ``<P>_reference`` (reference excess),
+    ``<P>_reference_se``, ``<P>_estimator`` (``compute_<P>:<mode>@<version>``)
+    and ``<P>_channels``. IIM evidence is on the integration-mass scale
+    Delta_Psi (bits).
     """
     if ci_reference is None and ci_human_refs is not None:
         ci_reference = dict(ci_human_refs)
@@ -1126,9 +1655,19 @@ def compute_synergy_ci(
     if null_k < 0:
         raise ValueError("null_surrogates must be >= 0")
     null_seed = int(null_seed)
-    mpc_nset = mpc_evidence.normalize_necessity_set(necessity_set)
+    boot_k = int(bootstrap_se or 0)
+    if boot_k < 0:
+        raise ValueError("bootstrap_se must be >= 0")
+    if bootstrap_block_len is not None and int(bootstrap_block_len) < 1:
+        raise ValueError("bootstrap_block_len must be >= 1")
+    boot_block_len = None if bootstrap_block_len is None else int(bootstrap_block_len)
+    mpc_proto, mpc_modes, mpc_bearers, mpc_null_kinds = _resolve_mpc_setup(
+        protocol, necessity_set, null_kinds, ci_reference_session,
+        {"RAM": ram_params, "PDI": pdi_params, "NAS": nas_params,
+         "SRPI": srpi_params},
+    )
+    mpc_nset = mpc_proto.necessity_set
     mpc_registry = _resolve_applicability_registry(applicability_registry)
-    mpc_null_kinds = _resolve_null_kinds(null_kinds)
     hardware_backend = configure_process_for_hardware(hardware_target)
     log.info("MPC hardware backend: %s", backend_summary(hardware_backend))
 
@@ -1184,6 +1723,7 @@ def compute_synergy_ci(
     nas_kwargs = (
         _resolve_nas_kwargs(
             nas_params=nas_params,
+            mode=_mode_of("NAS", mpc_modes["NAS"]),
         )
         if do_nas
         else {}
@@ -1206,16 +1746,25 @@ def compute_synergy_ci(
 
     pdi_anchor_session = str(pdi_anchor_session)
     # All components of a run are measured on one declared bearer (the run's
-    # node x time matrix) under one protocol (this call's configuration).
-    mpc_protocol_id = _mpc_protocol_id(
-        atlas=atlas,
-        condition=condition,
-        tr=tr,
-        modality=modality,
-        null_surrogates=null_k,
-        null_seed=null_seed,
-        null_kinds=mpc_null_kinds if null_k > 0 else None,
-    )
+    # node x time matrix) under one protocol (mpc_proto); the evidence of all
+    # runs is collected first and judged once the reference anchors are known.
+    mpc_runs = []
+    boot_tr = 1.0 if tr is None else float(tr)
+    ram_version = ESTIMATOR_VERSIONS["RAM"]
+    pdi_version = ESTIMATOR_VERSIONS["PDI"]
+    nas_version = ESTIMATOR_VERSIONS["NAS"]
+    srpi_version = ESTIMATOR_VERSIONS["SRPI"]
+    iim_options = dict(mpc_modes["IIM"])
+    if mpc_bearers["IIM"] is not None:
+        iim_options["bearer_nodes"] = list(mpc_bearers["IIM"])
+
+    def _bearer_kw(principle):
+        b = mpc_bearers[principle]
+        return {} if b is None else {"bearer_nodes": list(b)}
+
+    def _nodes(principle, n_nodes):
+        b = mpc_bearers[principle]
+        return tuple(range(int(n_nodes))) if b is None else tuple(b)
 
     def _select_pdi_rest_runs(subj, session_name):
         # Rest baselines live under <subj>/<session>/rest (fMRI preprocessing and,
@@ -1496,6 +2045,9 @@ def compute_synergy_ci(
                         null_k,
                         null_seed,
                         mpc_null_kinds["IIM"],
+                        iim_options,
+                        boot_k,
+                        boot_block_len,
                     )
                     iim_by_path[ts_path] = iim_info
                     if (i == len(unique_paths)) or (i % max(1, len(unique_paths) // 20) == 0):
@@ -1537,6 +2089,9 @@ def compute_synergy_ci(
                                         null_k,
                                         null_seed,
                                         mpc_null_kinds["IIM"],
+                                        iim_options,
+                                        boot_k,
+                                        boot_block_len,
                                     )
                                     futures[fut] = ts_path
                                     free_slots -= 1
@@ -1586,42 +2141,126 @@ def compute_synergy_ci(
         ts_region_time = ts_time_region.T
 
         run_key = _run_null_key(ts_path)
+        n_nodes_run = int(ts_region_time.shape[0])
         mpc_records = {}
+        run_joint = None
+        n_node_sets = 0
         if compute_mpc:
             if do_ram:
-                ram_det = _as_details(compute_RAM(
-                    ts_region_time,
-                    tr=tr,
-                    stimulus_onsets=subj_onsets,
-                    **ram_kwargs,
-                    hardware_backend=hardware_backend,
-                    return_details=True,
-                ))
-                ram_rec = _component_record(
-                    ram_det.get("value"),
-                    reason=ram_det.get("undefined_reason"),
-                    estimator="compute_RAM",
+                ram_opts = dict(mpc_modes["RAM"])
+                ram_declared = mpc_proto.channels_for("RAM")
+                ram_channels = (
+                    list(ram_declared) if ram_declared
+                    else [str(ram_opts.get("impact_channel") or "default")]
                 )
-                if null_k > 0 and ram_rec["defined"]:
-                    def _ram_fn(ts_s, ev_s):
+                ram_recs = []
+                for ram_channel in ram_channels:
+                    ram_kw = {**ram_kwargs, **ram_opts, **_bearer_kw("RAM")}
+                    if ram_declared:
+                        ram_kw["impact_channel"] = (
+                            None if ram_channel == "default" else ram_channel
+                        )
+                    ram_det = _as_details(compute_RAM(
+                        ts_region_time,
+                        tr=tr,
+                        stimulus_onsets=subj_onsets,
+                        **ram_kw,
+                        hardware_backend=hardware_backend,
+                        return_details=True,
+                    ))
+                    ram_rec = _component_record(
+                        ram_det.get("value"),
+                        reason=ram_det.get("undefined_reason"),
+                        estimator=mpc_evidence.estimator_id(
+                            "RAM", _mode_of("RAM", ram_kw), ram_version
+                        ),
+                        channel=ram_channel,
+                        nodes=_nodes("RAM", n_nodes_run),
+                    )
+
+                    def _ram_fn(ts_s, ev_s, _kw=ram_kw):
                         return compute_RAM(
                             ts_s,
                             tr=tr,
                             stimulus_onsets=ev_s,
-                            **ram_kwargs,
+                            **_kw,
                             hardware_backend=hardware_backend,
                         )
 
-                    ram_rec = _component_null_record(
-                        "RAM", _ram_fn, ts_region_time, subj_onsets,
-                        mpc_null_kinds["RAM"], null_k,
-                        nulls.derive_seed(null_seed, "RAM", run_key), ram_rec, tr,
+                    # Seeds of the default channel are those of earlier releases.
+                    ch_key = () if ram_channel == "default" else (ram_channel,)
+                    if null_k > 0 and ram_rec["defined"]:
+                        ram_rec = _component_null_record(
+                            "RAM", _ram_fn, ts_region_time, subj_onsets,
+                            mpc_null_kinds["RAM"], null_k,
+                            nulls.derive_seed(null_seed, "RAM", *ch_key, run_key),
+                            ram_rec, tr,
+                        )
+                    ram_rec = _attach_bootstrap(
+                        ram_rec, _ram_fn, ts_region_time, subj_onsets, boot_k,
+                        nulls.derive_seed(null_seed, "BOOT", "RAM", *ch_key, run_key),
+                        boot_block_len, boot_tr,
                     )
-                mpc_records["RAM"] = ram_rec
-                ram = _calibrated_value(ram_rec) if null_k > 0 else ram_rec["estimate"]
+                    ram_recs.append(ram_rec)
+                mpc_records["RAM"] = ram_recs
+                ram = _metric_value(ram_recs, null_k)
             else:
                 ram = np.nan
             if do_pdi:
+                pdi_opts = dict(mpc_modes["PDI"])
+                pdi_mode = _mode_of("PDI", pdi_opts)
+                pdi_nodes = _nodes("PDI", n_nodes_run)
+                pdi_boot_seed = nulls.derive_seed(null_seed, "BOOT", "PDI", run_key)
+            if do_pdi and pdi_mode != "legacy":
+                # Construct-revision modes (surrogate_excess, ...): one call on
+                # the run with the estimator's own multivariate surrogate null;
+                # the rest baselines are not used.
+                pdi_kw = {**pdi_kwargs_raw, **pdi_opts, **_bearer_kw("PDI")}
+                pdi_seed = nulls.derive_seed(null_seed, "PDI", run_key)
+                pdi_det = _as_details(compute_PDI(
+                    ts_region_time,
+                    baseline_ts=None,
+                    hardware_backend=hardware_backend,
+                    return_details=True,
+                    null_surrogates=null_k,
+                    null_seed=pdi_seed,
+                    **pdi_kw,
+                ))
+                pdi_rec = _record_from_null_fields(
+                    "PDI", pdi_det,
+                    mpc_evidence.estimator_id("PDI", pdi_mode, pdi_version),
+                    pdi_det.get("PDI_null_method"), nodes=pdi_nodes,
+                    null_attempted="PDI_null_n" in pdi_det,
+                )
+                pdi_boot_kw = {
+                    **pdi_kw,
+                    **MPC_BOOTSTRAP_NULL_OVERRIDES.get(
+                        ("PDI", pdi_mode), {"null_surrogates": null_k}
+                    ),
+                }
+
+                def _pdi_boot(ts_s, _ev, _kw=pdi_boot_kw, _seed=pdi_seed):
+                    return compute_PDI(
+                        ts_s, baseline_ts=None, hardware_backend=hardware_backend,
+                        return_details=True, null_seed=_seed, **_kw,
+                    )
+
+                pdi_rec = _attach_bootstrap(
+                    pdi_rec, _pdi_boot, ts_region_time, None, boot_k, pdi_boot_seed,
+                    boot_block_len, boot_tr, statistic=_raw_statistic,
+                )
+                mpc_records["PDI"] = [pdi_rec]
+                pdi0 = _metric_value([pdi_rec], null_k)
+                pdi_anchor_raw = np.nan
+                pdi_task_raw = np.nan
+                pdi_anchor_reason = f"not_used_by_mode:{pdi_mode}"
+                pdi_task_reason = f"not_used_by_mode:{pdi_mode}"
+                pdi_primary_source = pdi_mode
+                pdi_baseline_policy = "none"
+                deep_rest_paths = []
+                state_rest_paths = []
+            elif do_pdi:
+                pdi_bearer = _bearer_kw("PDI")
                 deep_rest_cands = _select_pdi_anchor_rest_runs(subj)
                 state_rest_cands = _select_pdi_state_rest_runs(subj, ses)
                 (
@@ -1662,6 +2301,8 @@ def compute_synergy_ci(
                         "null_seed": nulls.derive_seed(null_seed, "PDI", run_key),
                     }
                 pdi_primary_det = None
+                # (baseline, kwargs) of the primary endpoint, for its bootstrap
+                pdi_primary_call = None
 
                 if deep_rest_ts:
                     pdi_anchor_det = _as_details(compute_PDI(
@@ -1670,6 +2311,7 @@ def compute_synergy_ci(
                         hardware_backend=hardware_backend,
                         return_details=True,
                         **pdi_kwargs_raw,
+                        **pdi_bearer,
                         **(pdi_null_kw if pdi_endpoint == "anchor" else {}),
                     ))
                     pdi_anchor_raw = float(pdi_anchor_det["raw"])
@@ -1679,6 +2321,7 @@ def compute_synergy_ci(
                     )
                     if pdi_endpoint == "anchor":
                         pdi_primary_det = pdi_anchor_det
+                        pdi_primary_call = (deep_rest_ts, pdi_kwargs_raw)
                 if state_rest_ts:
                     pdi_task_det = _as_details(compute_PDI(
                         ts_region_time,
@@ -1686,6 +2329,7 @@ def compute_synergy_ci(
                         hardware_backend=hardware_backend,
                         return_details=True,
                         **pdi_kwargs_raw,
+                        **pdi_bearer,
                         **(pdi_null_kw if pdi_endpoint == "task" else {}),
                     ))
                     pdi_task_raw = float(pdi_task_det["raw"])
@@ -1695,6 +2339,7 @@ def compute_synergy_ci(
                     )
                     if pdi_endpoint == "task":
                         pdi_primary_det = pdi_task_det
+                        pdi_primary_call = (state_rest_ts, pdi_kwargs_raw)
 
                 if pdi_endpoint == "anchor":
                     pdi_primary_raw = pdi_anchor_raw
@@ -1713,6 +2358,7 @@ def compute_synergy_ci(
                 else:
                     pdi0 = np.nan
                     pdi_primary_det = None
+                    pdi_primary_call = None
 
                 # The legacy fallback replaces an undefined primary endpoint
                 # only (a failed null never triggers it).
@@ -1727,10 +2373,12 @@ def compute_synergy_ci(
                             hardware_backend=hardware_backend,
                             return_details=True,
                             **pdi_kwargs,
+                            **pdi_bearer,
                             **pdi_null_kw,
                         ))
                         pdi0 = _legacy_pdi_value(pdi_primary_det, null_k)
                         pdi_primary_source = "legacy_surrogate"
+                        pdi_primary_call = (None, pdi_kwargs)
                     else:
                         legacy_ts, _paths, _reason = _load_pdi_baseline_ts(
                             legacy_cands,
@@ -1745,6 +2393,7 @@ def compute_synergy_ci(
                                 hardware_backend=hardware_backend,
                                 return_details=True,
                                 **pdi_kwargs,
+                                **pdi_bearer,
                                 **pdi_null_kw,
                             ))
                             pdi0 = _legacy_pdi_value(pdi_primary_det, null_k)
@@ -1752,17 +2401,36 @@ def compute_synergy_ci(
                             # label; the state-matched baseline columns keep
                             # describing PDI_task only.
                             pdi_primary_source = "legacy_rest_pool"
+                            pdi_primary_call = (legacy_ts, pdi_kwargs)
                         else:
                             pdi0 = np.nan
+                pdi_estimator = mpc_evidence.estimator_id(
+                    "PDI", f"legacy-{pdi_primary_source}", pdi_version
+                )
                 if pdi_primary_det is not None:
-                    mpc_records["PDI"] = _record_from_null_fields(
-                        "PDI", pdi_primary_det, f"compute_PDI:{pdi_primary_source}",
-                        mpc_null_kinds["PDI"],
+                    pdi_rec = _record_from_null_fields(
+                        "PDI", pdi_primary_det, pdi_estimator, mpc_null_kinds["PDI"],
+                        nodes=pdi_nodes, null_attempted=null_k > 0,
+                    )
+                    pdi_base, pdi_base_kw = pdi_primary_call
+
+                    def _pdi_boot(ts_s, _ev, _base=pdi_base, _kw=pdi_base_kw):
+                        return compute_PDI(
+                            ts_s, baseline_ts=_base, hardware_backend=hardware_backend,
+                            return_details=True, **_kw, **pdi_bearer,
+                        )
+
+                    pdi_rec = _attach_bootstrap(
+                        pdi_rec, _pdi_boot, ts_region_time, None, boot_k,
+                        pdi_boot_seed, boot_block_len, boot_tr,
+                        statistic=_raw_statistic,
                     )
                 else:
-                    mpc_records["PDI"] = _component_record(
-                        np.nan, reason=pdi_primary_reason, estimator="compute_PDI"
+                    pdi_rec = _component_record(
+                        np.nan, reason=pdi_primary_reason, estimator=pdi_estimator,
+                        nodes=pdi_nodes,
                     )
+                mpc_records["PDI"] = [pdi_rec]
             else:
                 pdi0 = np.nan
                 pdi_anchor_raw = np.nan
@@ -1774,24 +2442,65 @@ def compute_synergy_ci(
                 deep_rest_paths = []
                 state_rest_paths = []
             if do_nas:
+                nas_opts = dict(mpc_modes["NAS"])
+                nas_mode = _mode_of("NAS", nas_opts)
+                nas_internal = _uses_internal_null("NAS", nas_opts)
+                nas_kw = {**nas_kwargs, **nas_opts, **_bearer_kw("NAS")}
+                nas_seed = nulls.derive_seed(null_seed, "NAS", run_key)
                 nas_null_kw = {}
-                if null_k > 0:
+                if nas_internal:
+                    nas_null_kw = {"null_surrogates": null_k, "null_seed": nas_seed}
+                elif null_k > 0:
                     nas_null_kw = {
                         "null_surrogates": null_k,
                         "null_method": mpc_null_kinds["NAS"],
-                        "null_seed": nulls.derive_seed(null_seed, "NAS", run_key),
+                        "null_seed": nas_seed,
                     }
                 nas_det = _as_details(compute_NAS(
                     ts_region_time,
                     tr=tr,
                     hardware_backend=hardware_backend,
                     return_details=True,
-                    **nas_kwargs,
+                    **nas_kw,
                     **nas_null_kw,
                 ))
-                nas = float(nas_det["value"])
-                mpc_records["NAS"] = _record_from_null_fields(
-                    "NAS", nas_det, "compute_NAS", mpc_null_kinds["NAS"]
+                nas_rec = _record_from_null_fields(
+                    "NAS", nas_det,
+                    mpc_evidence.estimator_id("NAS", nas_mode, nas_version),
+                    nas_det.get("NAS_null_method") if nas_internal
+                    else mpc_null_kinds["NAS"],
+                    nodes=_nodes("NAS", n_nodes_run),
+                    null_attempted=nas_internal or null_k > 0,
+                )
+                nas_boot_kw = dict(nas_kw)
+                nas_statistic = _raw_statistic
+                if nas_internal:
+                    # The statistic is the transfer entropy of the direction
+                    # that limited the observed value (its null is nas_det's).
+                    nas_boot_kw.update(
+                        MPC_BOOTSTRAP_NULL_OVERRIDES.get(("NAS", nas_mode), {}),
+                        null_seed=nas_seed,
+                    )
+                    nas_statistic = functools.partial(
+                        _transfer_statistic,
+                        direction=str(nas_det.get("limiting_direction")),
+                    )
+
+                def _nas_boot(ts_s, _ev, _kw=nas_boot_kw):
+                    return compute_NAS(
+                        ts_s, tr=tr, hardware_backend=hardware_backend,
+                        return_details=True, **_kw,
+                    )
+
+                nas_rec = _attach_bootstrap(
+                    nas_rec, _nas_boot, ts_region_time, None, boot_k,
+                    nulls.derive_seed(null_seed, "BOOT", "NAS", run_key),
+                    boot_block_len, boot_tr, statistic=nas_statistic,
+                )
+                mpc_records["NAS"] = [nas_rec]
+                nas = (
+                    _metric_value([nas_rec], null_k) if nas_internal
+                    else float(nas_det["value"])
                 )
             else:
                 nas = np.nan
@@ -1806,11 +2515,16 @@ def compute_synergy_ci(
                 iim_raw_scaled = (
                     iim_raw * float(iim_display_scale) if np.isfinite(iim_raw) else np.nan
                 )
-                mpc_records["IIM"] = _iim_record(iim_info, mpc_null_kinds["IIM"])
+                mpc_records["IIM"] = [_iim_record(
+                    iim_info, mpc_null_kinds["IIM"],
+                    cut_mode=_mode_of("IIM", mpc_modes["IIM"]),
+                    nodes=_nodes("IIM", n_nodes_run),
+                    declared=mpc_modes["IIM"], bearer=mpc_bearers["IIM"], tr=tr,
+                )]
                 if null_k > 0 and iim_defined:
                     # Calibrated canonical IIM (bits); never the raw ratio.
                     iim = _as_float(iim_info.get("canonical_calibrated"))
-                    if not (mpc_records["IIM"]["null_n"] and np.isfinite(iim)):
+                    if not (mpc_records["IIM"][0]["null_n"] and np.isfinite(iim)):
                         iim = np.nan
                         iim_defined = False
                         iim_undefined_reason = "null_calibration_unavailable:" + str(
@@ -1824,61 +2538,101 @@ def compute_synergy_ci(
                 iim_raw = np.nan
                 iim_raw_scaled = np.nan
             if do_srpi:
+                srpi_opts = dict(mpc_modes["SRPI"])
+                srpi_mode = _mode_of("SRPI", srpi_opts)
+                srpi_internal = _uses_internal_null("SRPI", srpi_opts)
                 srpi_events = subj_onsets if isinstance(subj_onsets, dict) else {}
-                srpi_det = _as_details(compute_SRPI(
-                    ts_region_time,
-                    tr=tr,
-                    self_onsets=srpi_events.get("self_onsets", []),
-                    nonself_onsets=srpi_events.get("nonself_onsets", []),
-                    hardware_backend=hardware_backend,
-                    return_details=True,
-                    **srpi_kwargs,
-                ))
-                srpi_rec = _component_record(
-                    srpi_det.get("value"),
-                    reason=srpi_det.get("undefined_reason"),
-                    estimator="compute_SRPI",
-                )
-                if null_k > 0 and srpi_rec["defined"]:
-                    def _srpi_fn(ts_s, ev_s):
-                        return compute_SRPI(
-                            ts_s,
-                            tr=tr,
-                            self_onsets=ev_s.get("self_onsets", []),
-                            nonself_onsets=ev_s.get("nonself_onsets", []),
-                            hardware_backend=hardware_backend,
-                            **srpi_kwargs,
-                        )
+                srpi_kw = {**srpi_kwargs, **srpi_opts, **_bearer_kw("SRPI")}
 
-                    srpi_rec = _component_null_record(
-                        "SRPI", _srpi_fn, ts_region_time, dict(srpi_events),
-                        mpc_null_kinds["SRPI"], null_k,
-                        nulls.derive_seed(null_seed, "SRPI", run_key), srpi_rec, tr,
+                def _srpi_call(ts_s, ev_s, _kw=srpi_kw, details=False,
+                               _agency=srpi_internal):
+                    ev_s = ev_s if isinstance(ev_s, dict) else {}
+                    extra = (
+                        {"agency_events": ev_s.get("agency_events")} if _agency else {}
                     )
-                mpc_records["SRPI"] = srpi_rec
-                srpi = (
-                    _calibrated_value(srpi_rec) if null_k > 0 else srpi_rec["estimate"]
+                    return compute_SRPI(
+                        ts_s,
+                        tr=tr,
+                        self_onsets=ev_s.get("self_onsets", []),
+                        nonself_onsets=ev_s.get("nonself_onsets", []),
+                        hardware_backend=hardware_backend,
+                        return_details=details,
+                        **extra,
+                        **_kw,
+                    )
+
+                srpi_det = _as_details(_srpi_call(ts_region_time, srpi_events,
+                                                  details=True))
+                srpi_estimator = mpc_evidence.estimator_id(
+                    "SRPI", srpi_mode, srpi_version
                 )
+                srpi_nodes = _nodes("SRPI", n_nodes_run)
+                if srpi_internal:
+                    srpi_rec = _record_from_null_fields(
+                        "SRPI", srpi_det, srpi_estimator,
+                        srpi_det.get("SRPI_null_method"), nodes=srpi_nodes,
+                        null_attempted=True,
+                    )
+                    srpi_boot_kw = {
+                        **srpi_kw,
+                        **MPC_BOOTSTRAP_NULL_OVERRIDES.get(("SRPI", srpi_mode), {}),
+                    }
+                    srpi_boot = functools.partial(
+                        _srpi_call, _kw=srpi_boot_kw, details=True
+                    )
+                    srpi_statistic = _raw_statistic
+                else:
+                    srpi_rec = _component_record(
+                        srpi_det.get("value"),
+                        reason=srpi_det.get("undefined_reason"),
+                        estimator=srpi_estimator,
+                        nodes=srpi_nodes,
+                    )
+                    if null_k > 0 and srpi_rec["defined"]:
+                        srpi_rec = _component_null_record(
+                            "SRPI", _srpi_call, ts_region_time, dict(srpi_events),
+                            mpc_null_kinds["SRPI"], null_k,
+                            nulls.derive_seed(null_seed, "SRPI", run_key), srpi_rec, tr,
+                        )
+                    srpi_boot = _srpi_call
+                    srpi_statistic = None
+                srpi_rec = _attach_bootstrap(
+                    srpi_rec, srpi_boot, ts_region_time, dict(srpi_events), boot_k,
+                    nulls.derive_seed(null_seed, "BOOT", "SRPI", run_key),
+                    boot_block_len, boot_tr, statistic=srpi_statistic,
+                )
+                mpc_records["SRPI"] = [srpi_rec]
+                srpi = _metric_value([srpi_rec], null_k)
             else:
                 srpi = np.nan
-            mpc_cols = _mpc_run_columns(
-                mpc_records,
-                nset=mpc_nset,
-                null_k=null_k,
-                null_seed=null_seed,
-                null_kinds=mpc_null_kinds,
-                registry=mpc_registry,
-                bearer_id=f"{subj}/{ses}/{os.path.basename(ts_path)}",
-                protocol_id=mpc_protocol_id,
-                substrate=modality,
-                grain=atlas,
-                regime={
-                    "modality": modality,
-                    "n_time": int(ts_region_time.shape[1]),
-                    "n_nodes": int(ts_region_time.shape[0]),
-                    "tr": tr,
-                },
-            )
+            # Single-source constraint: components of N measured on different
+            # node sets need joint dependence above null (tested with the
+            # run's null budget; untested at K = 0).
+            gated_sets = {
+                p: mpc_records[p][0]["nodes"]
+                for p in mpc_nset if mpc_records.get(p)
+            }
+            n_node_sets = len(set(gated_sets.values()))
+            if (
+                mpc_proto.source_rule == "single_source" and n_node_sets > 1
+                and null_k > 0
+            ):
+                try:
+                    run_joint = mpc_evidence.joint_dependence(
+                        ts_region_time,
+                        {p: list(s) for p, s in gated_sets.items()},
+                        lag=1,
+                        n_surrogates=null_k,
+                        seed=nulls.derive_seed(null_seed, "JOINT", run_key),
+                        alpha=mpc_proto.alpha,
+                    )
+                except ValueError as exc:
+                    run_joint = {
+                        "dependent": False,
+                        "reason": f"joint_dependence_failed:{exc}",
+                        "sets": [list(s) for s in set(gated_sets.values())],
+                        "p": float("nan"),
+                    }
         else:
             ram = np.nan
             pdi0 = np.nan
@@ -1897,8 +2651,8 @@ def compute_synergy_ci(
             iim_defined = False
             iim_undefined_reason = "not_computed"
             srpi = np.nan
-            mpc_cols = {}
 
+        run_rows_start = len(records)
         for theta in thetas:
             S = HypergraphSynergy.compute(ts_time_region, theta)
             rec = dict(result_metadata)
@@ -1940,8 +2694,26 @@ def compute_synergy_ci(
                     })
                 if do_srpi:
                     rec['SRPI'] = srpi
-                rec.update(mpc_cols)
             records.append(rec)
+        if compute_mpc:
+            mpc_runs.append({
+                "rows": list(range(run_rows_start, len(records))),
+                "records": mpc_records,
+                "subject": subj,
+                "session": ses,
+                "bearer_id": f"{subj}/{ses}/{os.path.basename(ts_path)}",
+                "substrate": modality,
+                "grain": atlas,
+                "regime": {
+                    "modality": modality,
+                    "n_time": int(ts_region_time.shape[1]),
+                    "n_nodes": n_nodes_run,
+                    "tr": tr,
+                    "bins": iim_bins,
+                },
+                "joint": run_joint,
+                "n_node_sets": n_node_sets,
+            })
 
     hardware_cols = ['hardware_target', 'hardware_backend', 'hardware_runtime']
     cols_empty = list(PROVENANCE_COLUMNS) + hardware_cols + ['subject', 'session', 'theta', 'S']
@@ -2003,7 +2775,8 @@ def compute_synergy_ci(
             if extra in df.columns:
                 ordered_cols.append(extra)
         df = _finish_mpc_evidence(
-            df, ci_reference, ci_weights, ci_reference_session, mpc_registry
+            df, mpc_runs, mpc_proto, mpc_registry, null_k, null_seed, boot_k,
+            boot_block_len, ci_weights,
         )
         ordered_cols.extend(c for c in MPC_EVIDENCE_COLUMNS if c in df.columns)
         return df[ordered_cols]
@@ -2045,7 +2818,8 @@ def compute_synergy_ci(
         *MPC_EVIDENCE_COLUMNS,
     ]
     df = _finish_mpc_evidence(
-        df, ci_reference, ci_weights, ci_reference_session, mpc_registry
+        df, mpc_runs, mpc_proto, mpc_registry, null_k, null_seed, boot_k,
+        boot_block_len, ci_weights,
     )
     ordered_cols = [c for c in ordered_cols if c in df.columns]
     return df[ordered_cols]
