@@ -19,14 +19,18 @@ KW = dict(
 )
 
 
-def _agency_task(seed, tag=1.0, motor_ramp=0.0, n_pairs=40, n_regions=20, n_stim=2):
+def _agency_task(
+    seed, tag=1.0, motor_ramp=0.0, n_pairs=40, n_regions=20, n_stim=2, attenuation=0.0
+):
     """
     Reafference task: every self-caused event (onset jittered within the
     oscillation period) is replayed one period later as an other-caused event
     with the identical stimulus and phase bin. With ``tag > 0`` self-caused
     responses carry an efference-copy signature (attenuated sensory response
     plus a tag pattern); ``motor_ramp`` adds activity in the pre-event window
-    of self-caused events only (motor preparation, no efference effect).
+    of self-caused events only (motor preparation, no efference effect);
+    ``attenuation`` scales the self-caused sensory response down by that
+    fraction (pure sensory attenuation, no tag pattern needed).
     """
     rng = np.random.default_rng(seed)
     base = 30 + 2 * PERIOD * np.arange(n_pairs)
@@ -46,7 +50,8 @@ def _agency_task(seed, tag=1.0, motor_ramp=0.0, n_pairs=40, n_regions=20, n_stim
     for i in range(n_pairs):
         s, o = int(self_on[i]), int(other_on[i])
         a_s, a_o = 1.0 + 0.3 * rng.standard_normal(2)
-        resp_s = a_s * ((1.0 - 0.3 * tag) * stim_pats[sid[i]] + 0.8 * tag * tag_pat)
+        gain_s = 1.0 - 0.3 * tag - attenuation
+        resp_s = a_s * (gain_s * stim_pats[sid[i]] + 0.8 * tag * tag_pat)
         ts[:, s + 2 : s + 6] += resp_s[:, None]
         ts[:, o + 2 : o + 6] += (a_o * stim_pats[sid[i]])[:, None]
         if motor_ramp:
@@ -185,6 +190,49 @@ def test_legacy_one_sided_srpi_misses_efference_attenuation():
     assert legacy["value"] == 0.0
     assert agency["signed_reactivity_bias"] < 0.0
     assert agency["value"] > 0.1
+
+
+def _term_z(d, name):
+    return (d["components_raw"][name] - d["components_null_mean"][name]) / d[
+        "components_null_sd"
+    ][name]
+
+
+def test_pure_sensory_attenuation_is_credited_by_two_sided_reactivity():
+    # Self-caused responses are the same stimulus pattern at half the gain
+    # (one stimulus, no tag pattern). The reactivity term must see the gain
+    # difference. Regression: removing the grand-mean response in the
+    # pre-state partialling left only deviations from the mean, whose sizes
+    # are equal for the two classes (reactivity z was -1.2 to 1.2 here).
+    for seed in range(3):
+        ts, rows = _agency_task(seed, tag=0.0, n_stim=1, attenuation=0.5)
+        d = mm.compute_SRPI(ts, agency_events=rows, **KW)
+        z = _term_z(d, "reactivity_bias")
+        print("pure attenuation: reactivity z", round(z, 2))
+        assert d["signed_reactivity_bias"] < -0.05
+        assert z > 3.0
+        assert d["SRPI_z"] > 1.645
+    for seed in range(3):
+        ts, rows = _agency_task(seed, tag=0.0, n_stim=1, attenuation=0.0)
+        d = mm.compute_SRPI(ts, agency_events=rows, **KW)
+        assert abs(_term_z(d, "reactivity_bias")) < 3.0
+
+
+def test_pre_state_adjustment_removes_the_slope_and_keeps_the_mean_response():
+    rng = np.random.default_rng(0)
+    n, p = 60, 8
+    pre = rng.standard_normal((n, p))
+    delta = 2.0 + pre @ rng.standard_normal((p, p)) + rng.standard_normal((n, p))
+    adj = mm._partial_pre_state(pre, delta, 3)(pre, delta)
+    # The grand-mean response is kept (ANCOVA adjustment to the mean pre-state)...
+    np.testing.assert_allclose(adj.mean(axis=0), delta.mean(axis=0), atol=1e-10)
+    # ...and the adjusted changes are orthogonal to the partialled pre-state PCs.
+    mu, vp = mm._pca_basis(pre, 3)
+    scores = (pre - mu) @ vp
+    np.testing.assert_allclose(scores.T @ (adj - adj.mean(axis=0)), 0.0, atol=1e-8)
+    # 0 components disables the partialling.
+    unchanged = mm._partial_pre_state(pre, delta, 0)(pre, delta)
+    np.testing.assert_array_equal(unchanged, delta)
 
 
 def test_agency_mode_is_deterministic_and_ignores_legacy_onsets():

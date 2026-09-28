@@ -185,6 +185,87 @@ def test_capacity_contract_and_validation():
     assert np.isnan(mm.compute_NAS(bad, tr=1.0, mode="capacity", workspace_nodes=HUB))
 
 
+def test_declared_hub_and_lags_are_never_repaired_silently():
+    # Regression: the hub was parsed with np.asarray(..., dtype=int64), so a
+    # boolean mask became nodes {0, 1} and 1.7 became node 1; lags were
+    # truncated the same way.
+    x, _ = _hub_network("bidir", 0, n_time=400)
+    mask = np.zeros(N_NODES, dtype=bool)
+    mask[HUB] = True
+    by_idx = _cap(x)
+    by_mask = mm.compute_NAS(
+        x,
+        tr=1.0,
+        mode="capacity",
+        workspace_nodes=mask,
+        null_seed=0,
+        return_details=True,
+    )
+    assert by_mask["workspace_nodes"] == HUB.tolist()
+    assert by_mask["value"] == by_idx["value"]
+    # A full-space mask is also accepted together with a bearer.
+    with_bearer = mm.compute_NAS(
+        x,
+        tr=1.0,
+        mode="capacity",
+        workspace_nodes=mask,
+        bearer_nodes=np.arange(12),
+        null_seed=0,
+        return_details=True,
+    )
+    assert with_bearer["workspace_nodes"] == HUB.tolist()
+    for bad, msg in (
+        ([0.5, 1.7, 2.2], "integer"),
+        ([0, 0, 1], "duplicate"),
+        ([-1, 2], "out of range"),
+        ([N_NODES], "out of range"),
+        (np.ones(5, dtype=bool), "length"),
+    ):
+        with pytest.raises(ValueError, match=f"workspace_nodes.*{msg}"):
+            mm.compute_NAS(x, tr=1.0, mode="capacity", workspace_nodes=bad)
+        with pytest.raises(ValueError, match="workspace_nodes"):
+            mm.compute_NAS(
+                x,
+                tr=1.0,
+                mode="capacity",
+                workspace_nodes=bad,
+                bearer_nodes=np.arange(12),
+            )
+    for lags in ((1.5,), (), (1, np.nan), ("a",)):
+        with pytest.raises(ValueError, match="transfer_lags"):
+            _cap(x, transfer_lags=lags)
+
+
+def test_profile_descriptors_use_the_declared_hub_or_are_undefined():
+    # Regression: with a 1-node hub the legacy L/B/H call silently inferred
+    # its own workspace (legacy needs >= 2 declared nodes).
+    x, _ = _hub_network("bidir", 0, n_time=600)
+    prof = dict(bands=[(0.05, 0.2)], tau=0.2, window_len=100, step_len=50)
+    one = mm.compute_NAS(
+        x, tr=1.0, mode="capacity", workspace_nodes=[0], return_details=True, **prof
+    )
+    desc = one["profile_descriptors"]
+    assert desc["reason"] == "workspace_too_small_for_profile_descriptors"
+    assert all(np.isnan(desc[k]) for k in ("L", "B", "H"))
+    assert np.isfinite(one["value"])
+    two = mm.compute_NAS(
+        x, tr=1.0, mode="capacity", workspace_nodes=[0, 1], return_details=True, **prof
+    )
+    legacy = mm.compute_NAS(
+        x,
+        tr=1.0,
+        workspace_nodes=[0, 1],
+        return_details=True,
+        normalize=False,
+        band_weights=[1.0],
+        **prof,
+    )
+    assert two["profile_descriptors"]["reason"] is None
+    assert two["profile_descriptors"]["L"] == pytest.approx(
+        legacy["band_components"][0]["L"]
+    )
+
+
 def test_capacity_is_deterministic_and_scalar_matches_details():
     x, _ = _hub_network("bidir", 2, n_time=600)
     a = _cap(x, seed=5)

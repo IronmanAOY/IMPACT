@@ -2205,12 +2205,22 @@ def _resolve_bearer_nodes(bearer_nodes, n_regions):
     """
     if bearer_nodes is None:
         return None
+    return _resolve_node_indices(bearer_nodes, n_regions, "bearer_nodes")
+
+
+def _resolve_node_indices(nodes, n_regions, name):
+    """
+    Validated, sorted indices of a declared node set (see
+    :func:`_resolve_bearer_nodes`): distinct integer indices or a boolean
+    mask of length ``n_regions``; anything else is a ``ValueError`` naming
+    ``name``.
+    """
     n_regions = int(n_regions)
-    arr = np.asarray(bearer_nodes)
+    arr = np.asarray(nodes)
     if arr.dtype == bool:
         if arr.shape != (n_regions,):
             raise ValueError(
-                f"boolean bearer_nodes mask must have length {n_regions}, "
+                f"boolean {name} mask must have length {n_regions}, "
                 f"got shape {arr.shape}"
             )
         idx = np.flatnonzero(arr).astype(np.int64)
@@ -2220,20 +2230,20 @@ def _resolve_bearer_nodes(bearer_nodes, n_regions):
             try:
                 val = arr.astype(float)
             except (TypeError, ValueError):
-                raise ValueError("bearer_nodes must be integer node indices")
+                raise ValueError(f"{name} must be integer node indices")
             if (not np.all(np.isfinite(val))) or np.any(val != np.round(val)):
-                raise ValueError("bearer_nodes must be integer node indices")
+                raise ValueError(f"{name} must be integer node indices")
             arr = val
         idx = arr.astype(np.int64)
     if idx.size == 0:
-        raise ValueError("bearer_nodes must contain at least one node")
+        raise ValueError(f"{name} must contain at least one node")
     if np.any(idx < 0) or np.any(idx >= n_regions):
         raise ValueError(
-            f"bearer_nodes out of range for {n_regions} nodes: "
+            f"{name} out of range for {n_regions} nodes: "
             f"{idx[(idx < 0) | (idx >= n_regions)].tolist()}"
         )
     if np.unique(idx).size != idx.size:
-        raise ValueError("bearer_nodes contains duplicate node indices")
+        raise ValueError(f"{name} contains duplicate node indices")
     return np.sort(idx)
 
 
@@ -3462,7 +3472,8 @@ def compute_PDI(
         baseline run, which must have the same number of nodes as ``ts``).
     excess_components : int, optional
         Number of leading principal components forming the global-state words
-        (``mode='surrogate_excess'``).
+        (``mode='surrogate_excess'``; capped at the data rank and at 30, the
+        number used is reported as ``n_state_components``).
     excess_weights : tuple(float, float, float), optional
         Non-negative weights of (repertoire entropy, LZ diversity, effective
         dimensionality) in the ``'surrogate_excess'`` aggregate.
@@ -3993,9 +4004,13 @@ NAS_MODES = ("legacy", "capacity")
 NAS_CAPACITY_DEFAULT_SURROGATES = 19
 
 
-def _map_nodes_into_bearer(nodes, bearer_idx):
-    """Positions of full-space node indices within the bearer (must be a subset)."""
-    arr = np.unique(np.asarray(nodes, dtype=np.int64).reshape(-1))
+def _map_nodes_into_bearer(nodes, bearer_idx, n_full):
+    """
+    Positions within the bearer of full-space ``workspace_nodes`` (integer
+    indices or a boolean mask over all ``n_full`` nodes; must be a subset of
+    the bearer). Invalid declarations raise, as for ``bearer_nodes``.
+    """
+    arr = _resolve_node_indices(nodes, n_full, "workspace_nodes")
     missing = arr[~np.isin(arr, bearer_idx)]
     if missing.size:
         raise ValueError(
@@ -4197,6 +4212,10 @@ def _nas_capacity(
     descriptors = {"L": nan, "B": nan, "H": nan, "reason": None}
     if profile_kwargs is None:
         descriptors["reason"] = "profile_parameters_missing"
+    elif hub.size < 2:
+        # The legacy synchrony terms need >= 2 declared workspace nodes and
+        # would otherwise silently infer a different workspace.
+        descriptors["reason"] = "workspace_too_small_for_profile_descriptors"
     else:
         legacy = compute_NAS(
             x,
@@ -4206,11 +4225,16 @@ def _nas_capacity(
             normalize=False,
             **profile_kwargs,
         )
-        bw_p = np.asarray(profile_kwargs["band_weights"], dtype=float)
-        bw_p = bw_p / float(bw_p.sum())
-        for key in ("L", "B", "H"):
-            vals = [c.get(key, nan) for c in legacy["band_components"]]
-            descriptors[key] = float(np.dot(bw_p, np.asarray(vals, dtype=float)))
+        if legacy.get("workspace_nodes") != [int(v) for v in hub.tolist()]:
+            descriptors["reason"] = "profile_workspace_mismatch"
+        else:
+            bw_p = np.asarray(profile_kwargs["band_weights"], dtype=float)
+            bw_p = bw_p / float(bw_p.sum())
+            for key in ("L", "B", "H"):
+                vals = [c.get(key, nan) for c in legacy["band_components"]]
+                descriptors[key] = float(
+                    np.dot(bw_p, np.asarray(vals, dtype=float))
+                )
     info["profile_descriptors"] = descriptors
 
     z_pair = np.asarray([st_in["z"], st_out["z"]], dtype=float)
@@ -4261,12 +4285,24 @@ def _compute_nas_capacity_entry(
             "compute_NAS mode='capacity' requires declared workspace_nodes"
         )
     n_regions, n_time = ts.shape
-    hub = np.unique(np.asarray(workspace_nodes, dtype=np.int64).reshape(-1))
-    if hub.size == 0 or hub.min() < 0 or hub.max() >= n_regions:
-        raise ValueError("workspace_nodes must be valid node indices")
-    lags = tuple(sorted({int(v) for v in np.asarray(transfer_lags).reshape(-1)}))
-    if not lags or lags[0] < 1:
+    if bearer_idx is None:
+        # Declared hub: integer indices or a boolean mask, never repaired
+        # silently (with a bearer it was resolved in the full index space).
+        hub = _resolve_node_indices(workspace_nodes, n_regions, "workspace_nodes")
+    else:
+        hub = np.asarray(workspace_nodes, dtype=np.int64).reshape(-1)
+    try:
+        lag_arr = np.asarray(transfer_lags, dtype=float).reshape(-1)
+    except (TypeError, ValueError):
         raise ValueError("transfer_lags must be positive integers")
+    if (
+        lag_arr.size == 0
+        or not np.all(np.isfinite(lag_arr))
+        or np.any(lag_arr != np.round(lag_arr))
+        or np.any(lag_arr < 1)
+    ):
+        raise ValueError("transfer_lags must be positive integers")
+    lags = tuple(sorted({int(v) for v in lag_arr}))
     if int(transfer_components) < 1:
         raise ValueError("transfer_components must be >= 1")
     conf = None
@@ -4451,8 +4487,10 @@ def compute_NAS(
         ``'legacy'`` (default): the synchrony composite above.
         ``'capacity'`` (Network Availability Score, broadcast capacity):
         requires declared ``workspace_nodes`` (the hub; every other bearer node
-        is periphery). Receive (periphery -> hub) and return (hub ->
-        periphery) are lagged Gaussian transfer entropies between the leading
+        is periphery), given as distinct integer indices or a boolean mask;
+        invalid declarations raise instead of being repaired. Receive
+        (periphery -> hub) and return (hub -> periphery) are lagged Gaussian
+        transfer entropies between the leading
         principal components of the two blocks, each as excess over block
         circular-shift surrogates (``null_surrogates``; 0 selects
         ``NAS_CAPACITY_DEFAULT_SURROGATES`` = 19). The gated value is the
@@ -4503,13 +4541,16 @@ def compute_NAS(
     mode_norm = str(mode).strip().lower()
     if mode_norm not in NAS_MODES:
         raise ValueError(f"mode must be one of {NAS_MODES}")
-    bearer_idx = _resolve_bearer_nodes(bearer_nodes, ts.shape[0])
+    n_full = int(ts.shape[0])
+    bearer_idx = _resolve_bearer_nodes(bearer_nodes, n_full)
     if bearer_idx is not None:
         if baseline_ts is not None:
-            baseline_ts = _subset_baseline_nodes(baseline_ts, bearer_idx, ts.shape[0])
+            baseline_ts = _subset_baseline_nodes(baseline_ts, bearer_idx, n_full)
         ts = ts[bearer_idx]
         if workspace_nodes is not None:
-            workspace_nodes = _map_nodes_into_bearer(workspace_nodes, bearer_idx)
+            workspace_nodes = _map_nodes_into_bearer(
+                workspace_nodes, bearer_idx, n_full
+            )
     n_regions, n_time = ts.shape
     null_seed_eff = _resolve_null_seed(null_seed, random_state)
     mode_fields = {
@@ -7595,15 +7636,23 @@ def _partial_pre_state(pre_fit, delta_fit, n_pre):
     Pre-state partialling fitted on ``(pre_fit, delta_fit)``: regression of the
     response changes on an intercept and the ``n_pre`` leading principal
     components of the pre-event state (label-free). Returns a function that
-    maps ``(pre, delta)`` to residual response changes.
+    maps ``(pre, delta)`` to pre-state-adjusted response changes: only the
+    fitted pre-state slope is removed, i.e. every change is moved to the
+    average pre-event state of the fit (ANCOVA-style adjustment). The
+    intercept (the grand-mean response) is kept, so response size and
+    pattern keep their meaning for the reactivity and stability terms;
+    removing it would leave only deviations from the grand mean, whose sizes
+    are equal for two classes that differ only in response gain (pure
+    sensory attenuation would then be invisible to the reactivity term).
+    ``n_pre = 0`` leaves ``delta`` unchanged.
     """
     mu_p, vp = _pca_basis(pre_fit, n_pre)
     design = np.column_stack([np.ones(pre_fit.shape[0]), (pre_fit - mu_p) @ vp])
     coef, *_ = np.linalg.lstsq(design, delta_fit, rcond=None)
+    slope = coef[1:]
 
     def _apply(pre, delta):
-        d = np.column_stack([np.ones(pre.shape[0]), (pre - mu_p) @ vp])
-        return delta - d @ coef
+        return delta - ((pre - mu_p) @ vp) @ slope
 
     return _apply
 
@@ -7748,10 +7797,10 @@ def _srpi_agency(
     )
     n_ev = int(delta.shape[0])
     # Response changes with the linear effect of the pre-event state removed
-    # (label-free regression on its leading components). Conservative: a
-    # class difference that is collinear with a class difference in the
-    # pre-event state is removed too. Inside the separability CV the
-    # partialling is refitted on the training folds.
+    # (label-free regression on its leading components; the grand-mean
+    # response is kept). Conservative: a class difference that is collinear
+    # with a class difference in the pre-event state is removed too. Inside
+    # the separability CV the partialling is refitted on the training folds.
     k_pre = min(int(n_pre_components), n_ev // 5)
     d_res = _partial_pre_state(pre, delta, k_pre)(pre, delta)
     mag = np.sqrt(np.sum(d_res * d_res, axis=1))
@@ -7947,7 +7996,10 @@ def compute_SRPI(
         ``agency_random_state``), all computed on response changes from which
         the linear effect of the pre-event state (``agency_pre_components``
         principal components, label-free regression; refitted inside every
-        CV training fold) was removed: two-sided reactivity
+        CV training fold) was removed, i.e. each change is adjusted to the
+        average pre-event state and the grand-mean response is kept (so
+        response gain differences such as sensory attenuation stay visible
+        to the reactivity term): two-sided reactivity
         ``|G_s - G_n| / (G_s + G_n)``; separability ``2 * AUC_cv - 1`` of a
         shrinkage-LDA on PCA-reduced (``agency_components``) changes;
         stability ``|rho_s - rho_n| / 2``; coupling ``|corr_s - corr_n| / 2``
@@ -7972,7 +8024,8 @@ def compute_SRPI(
         Principal components of the response changes used by the LDA.
     agency_pre_components : int, optional
         Principal components of the pre-event state partialled out of the
-        response changes (0 disables the partialling).
+        response changes (0 disables the partialling: the raw changes are
+        used).
     agency_random_state : int, optional
         Seed of the permutation null.
     bearer_nodes : sequence of int or None, optional
