@@ -20,10 +20,23 @@ modules. Module-internal layout (sub-groups from ``np.array_split``):
 ``meta['principle_bearers']`` declares the node set supplying each principle;
 ``meta['iim_macro_nodes']`` is the system grain (one macro node per module),
 ``meta['principle_macro_nodes']['IIM']`` the IIM module's own sub-groups.
+
+Graded patchworks (spec v2, V2-4): ``inter_module_coupling = lambda`` in
+[0, 1] adds bidirectional random positive couplings between neighbouring
+modules of the ring RAM - PDI - NAS - IIM - SRPI - RAM, scaled by ``lambda``
+(0 = the disconnected patchwork, 1 = the nominal inter-module gain: the
+forward inter-module gain of the integrated family-A agent of the same
+config and seed, i.e. ``w_ff`` times its knob-invariant coupling scale).
+The inter-module blocks are drawn after every other structural draw, so
+``lambda = 0`` reproduces the disconnected
+patchwork exactly and a ``lambda`` sweep is paired (common random numbers).
+The mechanisms stay in their modules; only the joint dependence between the
+modules (the single-source constraint) is graded.
 """
 
 from __future__ import annotations
 
+import functools
 from typing import Optional
 
 import numpy as np
@@ -37,10 +50,16 @@ from impact_pipeline.bench.generators import (
     _Net,
     _pos_block,
     _simulate_modular,
+    build_family_a_network,
     draw_patterns,
 )
 
 PATCHWORK_MODULES = ("RAM", "PDI", "NAS", "IIM", "SRPI")
+# Neighbouring modules coupled by the graded patchwork (a ring).
+INTER_MODULE_EDGES = tuple(
+    (PATCHWORK_MODULES[k], PATCHWORK_MODULES[(k + 1) % len(PATCHWORK_MODULES)])
+    for k in range(len(PATCHWORK_MODULES))
+)
 
 
 def _local_block(rng: np.random.Generator, cfg: AgentConfig, m: int) -> np.ndarray:
@@ -126,10 +145,17 @@ def _build_patchwork_raw(
         },
         "principle_workspace_nodes": {"NAS": [int(i) for i in hub]},
     }
+    # Inter-module blocks of the graded patchwork: always drawn (last), used
+    # only when inter_module_coupling > 0 (see build_patchwork_network).
+    inter_blocks = {}
+    for a, b in INTER_MODULE_EDGES:
+        inter_blocks[(b, a)] = _pos_block(rng, m, m)  # a -> b
+        inter_blocks[(a, b)] = _pos_block(rng, m, m)  # b -> a
     extra_oracle = {
         "modules_connected": False,
         "iim_submodule_adjacency": sub_adj,
         "principle_bearers": {p: [int(i) for i in mods[p]] for p in PATCHWORK_MODULES},
+        "_inter_blocks": inter_blocks,
     }
     return _Net(
         W=W,
@@ -146,16 +172,26 @@ def _build_patchwork_raw(
 
 
 def build_patchwork_network(
-    knobs: Knobs, cfg: AgentConfig, rng: np.random.Generator
+    knobs: Knobs,
+    cfg: AgentConfig,
+    rng: np.random.Generator,
+    inter_module_coupling: float = 0.0,
 ) -> _Net:
     """
     Block-diagonal patchwork coupling (see module docstring). Each module is
     scaled separately by a knob-invariant factor so that its *nominal* block
     has spectral radius ``cfg.spectral_radius`` (every module is as close to
-    criticality as the integrated agent).
+    criticality as the integrated agent). With ``inter_module_coupling =
+    lambda > 0`` the ring of neighbouring modules is coupled in both
+    directions with gain ``lambda`` times the nominal inter-module gain of
+    the family-A agent (module docstring).
     """
+    lam = float(inter_module_coupling)
+    if not (np.isfinite(lam) and 0.0 <= lam <= 1.0):
+        raise ValueError("inter_module_coupling must be in [0, 1]")
     nominal_rng = np.random.Generator(type(rng.bit_generator)())
-    nominal_rng.bit_generator.state = rng.bit_generator.state
+    nominal_rng_state = rng.bit_generator.state
+    nominal_rng.bit_generator.state = nominal_rng_state
     nominal = _build_patchwork_raw(NOMINAL_KNOBS, cfg, nominal_rng)
     net = _build_patchwork_raw(knobs, cfg, rng)
     scales = {}
@@ -164,10 +200,31 @@ def build_patchwork_network(
         radius = float(np.max(np.abs(np.linalg.eigvals(blk))))
         scales[name] = float(cfg.spectral_radius) / radius if radius > 0 else 1.0
         net.W[np.ix_(idx, idx)] *= scales[name]
+    extra_oracle = dict(net.extra_oracle)
+    blocks = extra_oracle.pop("_inter_blocks")
+    pos = {p: k for k, p in enumerate(PATCHWORK_MODULES)}
+    madj = np.zeros((len(PATCHWORK_MODULES), len(PATCHWORK_MODULES)))
+    # Nominal inter-module gain: the forward inter-module gain of the
+    # integrated family-A agent with the same config (w_ff times its
+    # knob-invariant coupling scale), built from a copy of the stream.
+    ref_rng = np.random.Generator(type(rng.bit_generator)())
+    ref_rng.bit_generator.state = nominal_rng_state
+    ref = build_family_a_network(NOMINAL_KNOBS, cfg, ref_rng)
+    nominal_gain = float(cfg.w_ff) * float(ref.extra_meta["coupling_scale"])
+    if lam > 0:
+        for (tgt, src), blk in blocks.items():
+            gain = lam * nominal_gain
+            net.W[np.ix_(net.modules[tgt], net.modules[src])] += gain * blk
+            madj[pos[src], pos[tgt]] = gain
+    net.module_adjacency = madj
+    extra_oracle["modules_connected"] = bool(lam > 0)
+    extra_oracle["inter_module_coupling"] = lam
+    net.extra_oracle = extra_oracle
     net.extra_meta = dict(net.extra_meta)
     net.extra_meta["coupling_scale"] = scales
     net.extra_meta["nominal_spectral_radius"] = float(cfg.spectral_radius)
     net.extra_meta["spectral_radius"] = float(np.max(np.abs(np.linalg.eigvals(net.W))))
+    net.extra_meta["patchwork_inter_module_coupling"] = lam
     return net
 
 
@@ -176,13 +233,23 @@ def simulate_patchwork(
     config: Optional[AgentConfig] = None,
     seed: int = 0,
     dynamics: str = "rate",
+    inter_module_coupling: float = 0.0,
 ) -> BenchSystem:
     """
     Simulate the patchwork (rate units by default; ``dynamics='stuart_landau'``
-    for the held-out family-C variant) with the family-A task and events.
+    for the held-out family-C variant) with the family-A task and events;
+    ``inter_module_coupling`` in [0, 1] grades it (module docstring).
     """
     knobs = knobs if knobs is not None else NOMINAL_KNOBS
     family = "patchwork" if dynamics == "rate" else "patchwork_C"
-    return _simulate_modular(
-        family, dynamics, build_patchwork_network, knobs, config, seed
+    builder = functools.partial(
+        build_patchwork_network, inter_module_coupling=float(inter_module_coupling)
     )
+    return _simulate_modular(family, dynamics, builder, knobs, config, seed)
+
+
+def patchwork_sweep_levels(n_levels: int = 6) -> list:
+    """Inter-module coupling levels 0 .. 1 (first level: disconnected)."""
+    if int(n_levels) < 2:
+        raise ValueError("n_levels must be >= 2")
+    return [round(float(v), 6) for v in np.linspace(0.0, 1.0, int(n_levels))]

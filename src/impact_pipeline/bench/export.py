@@ -475,8 +475,15 @@ def _accepts(fn, name: str) -> bool:
         return False
 
 
-def _optional_kwargs(principle: str, fn, events: pd.DataFrame) -> Tuple[dict, dict]:
-    """Keyword arguments of optional construct revisions the estimator supports."""
+def _optional_kwargs(
+    principle: str, fn, events: pd.DataFrame, bundle: Optional[dict] = None
+) -> Tuple[dict, dict]:
+    """
+    Keyword arguments of optional construct revisions the estimator supports.
+    SRPI ``mode='agency'`` reads its events from ``agency_events`` (the
+    ``agency_events`` entry of the parsed bundle), so that keyword is passed
+    whenever the agency mode is used.
+    """
     kw, used = {}, {}
     for name, value in OPTIONAL_MODES.get(principle, {}).items():
         if _accepts(fn, name):
@@ -485,9 +492,28 @@ def _optional_kwargs(principle: str, fn, events: pd.DataFrame) -> Tuple[dict, di
     if _accepts(fn, "events"):
         kw["events"] = events
         used["events"] = "dataframe"
+    if kw.get("mode") == "agency" and _accepts(fn, "agency_events"):
+        kw["agency_events"] = (bundle or {}).get("agency_events")
+        used["agency_events"] = "bundle"
     # Bearer restriction is applied by slicing the node set (bearer_view), so
     # an estimator-level ``bearer_nodes`` keyword is never passed as well.
     return kw, used
+
+
+def _intrinsic_null(prefix: str, d) -> Tuple[float, float, int, Optional[str]]:
+    """``<prefix>_null_*`` moments that an estimator mode computed itself
+    (``n = 0`` when there are none)."""
+    if not isinstance(d, dict):
+        return np.nan, np.nan, 0, None
+    n = int(d.get(f"{prefix}_null_n", 0) or 0)
+    if n <= 0:
+        return np.nan, np.nan, 0, None
+    return (
+        float(d.get(f"{prefix}_null_mean", np.nan)),
+        float(d.get(f"{prefix}_null_sd", np.nan)),
+        n,
+        d.get(f"{prefix}_null_method"),
+    )
 
 
 def _details_value(d):
@@ -643,6 +669,7 @@ def run_in_memory(
     null_seed: int = 0,
     use_optional_modes: bool = True,
     bearer_mode: str = "system",
+    se_groups: int = 0,
 ) -> dict:
     """
     Run the public estimators directly on one system (no files).
@@ -656,10 +683,34 @@ def run_in_memory(
     macro nodes; statistic Delta_Psi in bits), and the declared event nulls
     of RAM (rigid event-train shift) and SRPI (self/other label permutation
     within phase bins); see ``EVENT_NULL_KINDS``.
+
+    Optional estimator modes that calibrate themselves (PDI
+    ``surrogate_excess``, NAS ``capacity``, SRPI ``agency``) always return
+    their own null (``<P>_null_*`` details; SRPI-agency: labels permuted
+    within yoked clusters). That null is recorded whatever
+    ``null_surrogates`` is (``null_impl='estimator'``), and for SRPI-agency it
+    replaces the event-table label permutation, which would break the
+    yoking of the replays. PDI/NAS use ``null_surrogates`` draws when it is
+    > 0 (the mode's default count otherwise).
+
+    ``se_groups = G >= 2`` adds a sampling SE of each defined estimate by a
+    delete-a-group jackknife within the recording (:func:`jackknife_se`):
+    time-series estimators (PDI, NAS, IIM) are re-run with each of ``G``
+    contiguous time blocks deleted (the remaining blocks concatenated),
+    event-locked estimators (RAM, SRPI) on the full recording with each of
+    ``G`` interleaved groups of trials / yoked pairs deleted; the replicates
+    use the same statistic as the estimate and no null (self-calibrating
+    modes use their minimum of 2 surrogates, which does not change the raw
+    statistic). ``se = sqrt((G - 1) / G * sum (theta_g - mean)^2)``.
+
+    Systems without events (e.g. the whole-brain generator) get RAM and SRPI
+    undefined with reason ``no_events`` (the estimators are not called).
+
     Returns per-component ``estimate`` (raw statistic), ``value`` (returned
     value), ``null_mean``, ``null_sd``, ``n_null``, ``null_family``,
-    ``null_impl``, ``n_null_failed``, ``defined``, ``reason``, ``bearer_id``
-    and ``seconds``, plus the optional ``estimator_modes`` used.
+    ``null_impl``, ``n_null_failed``, ``defined``, ``reason``, ``bearer_id``,
+    ``seconds`` and, with ``se_groups``, ``se``, ``se_method`` and ``se_n``,
+    plus the optional ``estimator_modes`` used.
     """
     from impact_pipeline import mpc_metrics as mm
     from impact_pipeline.event_parsing import events_table_to_bundle
@@ -671,8 +722,12 @@ def run_in_memory(
     meta = system.meta
     dt = float(system.dt)
     events = system.events
-    bundle = events_table_to_bundle(events)
+    has_events = events is not None and len(events) > 0
+    bundle = events_table_to_bundle(events) if has_events else {}
     k_null = int(null_surrogates)
+    n_groups = int(se_groups)
+    if n_groups == 1 or n_groups < 0:
+        raise ValueError("se_groups must be 0 (off) or >= 2")
     out = {
         "components": {},
         "estimator_modes": {},
@@ -714,10 +769,53 @@ def run_in_memory(
             "seconds": round(time.perf_counter() - t0, 4),
         }
 
+    def _set_se(principle, replicates, t0):
+        c = out["components"].get(principle)
+        if c is None:
+            return
+        se, n_ok = jackknife_se(replicates)
+        c["se"] = se
+        c["se_method"] = f"jackknife_delete_group_{n_groups}"
+        c["se_n"] = n_ok
+        c["se_seconds"] = round(time.perf_counter() - t0, 4)
+
+    def _no_events(principle, view):
+        _record(
+            principle,
+            time.perf_counter(),
+            {"undefined_reason": "no_events"},
+            np.nan,
+            view,
+        )
+
+    def _event_se(principle, stat):
+        """Jackknife over interleaved groups of trials (RAM) or pairs (SRPI)."""
+        t0, reps = time.perf_counter(), []
+        for g in range(n_groups):
+            ev_g = events_without_group(events, principle, n_groups, g)
+            try:
+                reps.append(float(stat(ev_g)))
+            except _NULL_DRAW_ERRORS:
+                reps.append(np.nan)
+        _set_se(principle, reps, t0)
+
+    def _ts_se(principle, stat, x):
+        t0, reps = time.perf_counter(), []
+        for g in range(n_groups):
+            keep = block_keep(x.shape[1], n_groups, g)
+            try:
+                reps.append(float(stat(x[:, keep])))
+            except _NULL_DRAW_ERRORS:
+                reps.append(np.nan)
+        _set_se(principle, reps, t0)
+
+    def _defined(principle):
+        return bool(out["components"].get(principle, {}).get("defined"))
+
     def _modes(principle, fn):
         if not use_optional_modes:
             return {}, {}
-        return _optional_kwargs(principle, fn, events)
+        return _optional_kwargs(principle, fn, events, bundle)
 
     def _event_inputs(ev, kw):
         """Bundle and optional-mode kwargs for an events table (the observed
@@ -725,12 +823,23 @@ def run_in_memory(
         if ev is None or ev is events:
             return bundle, kw
         kw = dict(kw)
+        b = events_table_to_bundle(ev)
         if "events" in kw:
             kw["events"] = ev
-        return events_table_to_bundle(ev), kw
+        if "agency_events" in kw:
+            kw["agency_events"] = b.get("agency_events")
+        return b, kw
 
     def _event_component(principle, fn, view, seed, t0):
         d = fn(view["ts"])
+        own = _intrinsic_null(principle, d)
+        if own[2] > 0:
+            # The mode's own null family (SRPI-agency: yoked label
+            # permutation of the statistic ``raw``).
+            est = float(d.get("raw", np.nan)) if isinstance(d, dict) else np.nan
+            nm, nsd, nn, fam = own
+            _record(principle, t0, d, est, view, nm, nsd, nn, fam, "raw", "estimator")
+            return
         est = float(_details_value(d))
         nm = nsd = np.nan
         nn = n_failed = 0
@@ -754,7 +863,16 @@ def run_in_memory(
                 x, tr=dt, stimulus_onsets=b, return_details=True, **p["RAM"], **kw
             )
 
-        _event_component("RAM", ram_fn, view, null_seed, t0)
+        if not has_events:
+            _no_events("RAM", view)
+        else:
+            _event_component("RAM", ram_fn, view, null_seed, t0)
+            if n_groups and _defined("RAM"):
+                stat = out["components"]["RAM"]["statistic"]
+                _event_se(
+                    "RAM",
+                    lambda ev: _details_stat(ram_fn(view["ts"], ev), stat),
+                )
 
     if "PDI" in metrics:
         t0 = time.perf_counter()
@@ -775,18 +893,36 @@ def run_in_memory(
             **kw,
         )
         est = float(d.get("raw", np.nan)) if isinstance(d, dict) else float(d)
+        nm, nsd, nn, fam = _intrinsic_null("PDI", d)
         _record(
             "PDI",
             t0,
             d,
             est,
             view,
-            d.get("PDI_null_mean", np.nan),
-            d.get("PDI_null_sd", np.nan),
-            d.get("PDI_null_n", 0),
-            d.get("PDI_null_method") if k_null else None,
+            nm,
+            nsd,
+            nn,
+            fam,
             statistic="raw",
+            null_impl="estimator" if nn else None,
         )
+        if n_groups and _defined("PDI"):
+            k_rep = 2 if kw.get("mode") == "surrogate_excess" else 0
+
+            def pdi_stat(x):
+                r = mm.compute_PDI(
+                    x,
+                    baseline_ts=baseline,
+                    return_details=True,
+                    null_surrogates=k_rep,
+                    null_seed=int(null_seed),
+                    **p["PDI"],
+                    **kw,
+                )
+                return float(r.get("raw", np.nan))
+
+            _ts_se("PDI", pdi_stat, view["ts"])
 
     if "NAS" in metrics:
         t0 = time.perf_counter()
@@ -807,18 +943,37 @@ def run_in_memory(
             **kw,
         )
         est = float(d.get("raw", np.nan))
+        nm, nsd, nn, fam = _intrinsic_null("NAS", d)
         _record(
             "NAS",
             t0,
             d,
             est,
             view,
-            d.get("NAS_null_mean", np.nan),
-            d.get("NAS_null_sd", np.nan),
-            d.get("NAS_null_n", 0),
-            d.get("NAS_null_method") if k_null else None,
+            nm,
+            nsd,
+            nn,
+            fam,
             statistic="raw",
+            null_impl="estimator" if nn else None,
         )
+        if n_groups and _defined("NAS"):
+            k_rep = 2 if kw.get("mode") == "capacity" else 0
+
+            def nas_stat(x):
+                r = mm.compute_NAS(
+                    x,
+                    tr=dt,
+                    workspace_nodes=view["workspace_nodes"],
+                    return_details=True,
+                    null_surrogates=k_rep,
+                    null_seed=int(null_seed),
+                    **nas_kw,
+                    **kw,
+                )
+                return float(r.get("raw", np.nan))
+
+            _ts_se("NAS", nas_stat, view["ts"])
 
     if "IIM" in metrics:
         t0 = time.perf_counter()
@@ -855,14 +1010,29 @@ def run_in_memory(
                 d.get("Delta_Psi_null_mean", np.nan),
                 d.get("Delta_Psi_null_sd", np.nan),
                 d.get("IIM_null_n", 0),
-                "circular_shift",
+                d.get("IIM_null_method") or "circular_shift",
                 statistic="Delta_Psi_bits",
+                null_impl="estimator",
             )
         else:
             est = (
                 float(d.get("raw", np.nan)) if bool(d.get("defined", True)) else np.nan
             )
             _record("IIM", t0, d, est, view, statistic="raw")
+        if n_groups and _defined("IIM"):
+            key = "Delta_Psi" if k_null > 0 else "raw"
+
+            def iim_stat(x):
+                r = mm.compute_IIM(
+                    x,
+                    return_details=True,
+                    null_surrogates=0,
+                    progress_log_every_cuts=10**9,
+                    **iim_kw,
+                )
+                return float(r.get(key, np.nan)) if r.get("defined", True) else np.nan
+
+            _ts_se("IIM", iim_stat, macro)
 
     if "SRPI" in metrics:
         t0 = time.perf_counter()
@@ -882,19 +1052,91 @@ def run_in_memory(
                 **kw,
             )
 
-        _event_component("SRPI", srpi_fn, view, null_seed + 1, t0)
+        if not has_events:
+            _no_events("SRPI", view)
+        else:
+            _event_component("SRPI", srpi_fn, view, null_seed + 1, t0)
+            if n_groups and _defined("SRPI"):
+                stat = out["components"]["SRPI"]["statistic"]
+                _event_se(
+                    "SRPI",
+                    lambda ev: _details_stat(srpi_fn(view["ts"], ev), stat),
+                )
 
     return out
 
 
+def _details_stat(d, statistic: str) -> float:
+    """The recorded statistic (``raw`` or ``value``) of an estimator output."""
+    if isinstance(d, dict):
+        key = "raw" if statistic == "raw" else "value"
+        return float(d.get(key, np.nan))
+    return float(d)
+
+
+def jackknife_se(replicates) -> Tuple[float, int]:
+    """
+    Delete-a-group jackknife SE ``sqrt((G - 1) / G * sum (theta_g -
+    mean)^2)`` over the finite replicates (``G`` = their number); NaN with
+    fewer than 2. Returns ``(se, n_finite)``.
+    """
+    r = np.asarray(replicates, dtype=float)
+    r = r[np.isfinite(r)]
+    g = r.size
+    if g < 2:
+        return float("nan"), int(g)
+    return float(np.sqrt((g - 1) / g * np.sum((r - r.mean()) ** 2))), int(g)
+
+
+def block_keep(n_time: int, n_groups: int, group: int) -> np.ndarray:
+    """Sample indices with contiguous block ``group`` of ``n_groups`` deleted."""
+    edges = np.linspace(0, int(n_time), int(n_groups) + 1).round().astype(int)
+    idx = np.arange(int(n_time))
+    return idx[(idx < edges[group]) | (idx >= edges[group + 1])]
+
+
+def events_without_group(
+    events: pd.DataFrame, principle: str, n_groups: int, group: int
+) -> pd.DataFrame:
+    """
+    Events table with one interleaved group deleted: RAM drops the bandit
+    trials with ``trial % n_groups == group`` (all their rows); SRPI drops the
+    self-caused events whose rank (onset order) is in the group, together
+    with their yoked replays. Other rows are kept.
+    """
+    ev = events
+    if principle == "RAM":
+        tr = pd.to_numeric(ev["trial"], errors="coerce")
+        drop = tr.notna() & (tr % int(n_groups) == int(group))
+        return ev.loc[~drop.to_numpy()].reset_index(drop=True)
+    if principle == "SRPI":
+        selfs = ev[ev["trial_type"] == "self_caused"].sort_values("onset")
+        rank = {eid: k for k, eid in enumerate(selfs["event_id"])}
+        gone = {eid for eid, k in rank.items() if k % int(n_groups) == int(group)}
+        drop = ev["event_id"].isin(gone) | ev["yoked_to"].isin(gone)
+        return ev.loc[~drop.to_numpy()].reset_index(drop=True)
+    raise ValueError("event groups are defined for RAM and SRPI")
+
+
 def evidence_verdict(
-    result: dict, meta: dict, protocol_id: Optional[str] = None
+    result: dict,
+    meta: dict,
+    protocol_id: Optional[str] = None,
+    necessity_set: Sequence[str] = PRINCIPLES,
 ) -> dict:
     """
     MPC verdict from an in-memory result through ``impact_pipeline.evidence``
-    when that module is available (stream I1); otherwise
-    ``{'verdict': None, 'reason': 'evidence_layer_unavailable'}``.
+    when that module is available; otherwise
+    ``{'verdict': None, 'reasons': ['evidence_layer_unavailable']}``.
+
+    Verdict names are the v2 names (``MPC_CONSISTENT`` / ``EXCLUDED`` /
+    ``UNDETERMINED``) whichever naming the installed layer uses
+    (:mod:`impact_pipeline.bench.compat`). A component's ``se``, ``reference``
+    and ``exact`` entries are passed when present and accepted by the
+    installed ``ComponentEvidence`` (a v1 layer ignores them).
     """
+    from impact_pipeline.bench import compat
+
     try:
         from impact_pipeline import evidence as ev
     except Exception:
@@ -902,34 +1144,30 @@ def evidence_verdict(
     try:
         items = {}
         for principle, c in result["components"].items():
-            items[principle] = [
-                ev.ComponentEvidence(
-                    principle=principle,
-                    estimate=float(c["estimate"]),
-                    null_mean=float(c["null_mean"]),
-                    null_sd=float(c["null_sd"]),
-                    se=0.0,
-                    channel="default",
-                    defined=bool(c["defined"]),
-                    reason=c.get("reason"),
-                    bearer_id=str(c.get("bearer_id", "system")),
-                    protocol_id=protocol_id,
-                    estimator=str(c.get("statistic")),
-                    null_family=c.get("null_family"),
-                    n_null=int(c.get("n_null", 0)),
-                )
-            ]
-        v = ev.mpc_verdict(items)
-        verdict = getattr(v, "verdict", None)
-        return {
-            "verdict": getattr(verdict, "value", verdict),
-            "reasons": list(getattr(v, "reasons", []) or []),
-            "component_status": {
-                k: getattr(s, "value", s)
-                for k, s in (getattr(v, "component_status", {}) or {}).items()
-            },
-            "margins": dict(getattr(v, "margins", {}) or {}),
-        }
+            fields = dict(
+                principle=principle,
+                estimate=float(c["estimate"]),
+                null_mean=float(c["null_mean"]),
+                null_sd=float(c["null_sd"]),
+                se=float(c.get("se", 0.0) or 0.0),
+                channel=str(c.get("channel") or "default"),
+                defined=bool(c["defined"]),
+                reason=c.get("reason"),
+                bearer_id=str(c.get("bearer_id", "system")),
+                protocol_id=protocol_id,
+                substrate=meta.get("substrate"),
+                grain=meta.get("iim_grain") if principle == "IIM" else None,
+                estimator=str(c.get("statistic")),
+                null_family=c.get("null_family"),
+                n_null=int(c.get("n_null", 0)),
+            )
+            if c.get("reference") is not None:
+                fields["reference"] = float(c["reference"])
+            if c.get("exact") is not None:
+                fields["exact"] = bool(c["exact"])
+            items[principle] = [compat.make_component_evidence(ev, **fields)]
+        v = compat.call_mpc_verdict(ev, items, necessity_set=necessity_set)
+        return compat.verdict_record(v)
     except Exception as exc:  # pragma: no cover - depends on the other stream's API
         return {
             "verdict": None,

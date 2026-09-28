@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "principles": [
     "RAM",
     "PDI",
@@ -8,8 +8,8 @@
     "SRPI"
   ],
   "verdicts": [
-    "ATTRIBUTED",
-    "NOT_ATTRIBUTED",
+    "MPC_CONSISTENT",
+    "EXCLUDED",
     "UNDETERMINED"
   ],
   "witnesses": [
@@ -39,7 +39,7 @@
           "albantakis2025utility"
         ]
       },
-      "expected_verdict": "ATTRIBUTED",
+      "expected_verdict": "MPC_CONSISTENT",
       "notes": "Not claimed to be conscious; used to measure sensitivity."
     },
     {
@@ -70,7 +70,7 @@
           "butlin2023consciousness"
         ]
       },
-      "expected_verdict": "NOT_ATTRIBUTED"
+      "expected_verdict": "EXCLUDED"
     },
     {
       "id": "W_PDI_single_attractor",
@@ -101,7 +101,7 @@
           "marshall2016integrated"
         ]
       },
-      "expected_verdict": "NOT_ATTRIBUTED"
+      "expected_verdict": "EXCLUDED"
     },
     {
       "id": "W_NAS_no_workspace",
@@ -132,7 +132,7 @@
           "mashour2020conscious"
         ]
       },
-      "expected_verdict": "NOT_ATTRIBUTED"
+      "expected_verdict": "EXCLUDED"
     },
     {
       "id": "W_NAS_broadcast_only",
@@ -162,7 +162,7 @@
           "mashour2020conscious"
         ]
       },
-      "expected_verdict": "NOT_ATTRIBUTED",
+      "expected_verdict": "EXCLUDED",
       "notes": "Variant witness for NAS (receive-transform-return removed, broadcast kept)."
     },
     {
@@ -194,7 +194,7 @@
           "tononi2016integrated"
         ]
       },
-      "expected_verdict": "NOT_ATTRIBUTED",
+      "expected_verdict": "EXCLUDED",
       "notes": "IIT-conformant ground truth needs directional (unidirectional) cuts; bidirectional cuts can score a feedforward chain above zero. Report the witness as unrealised when the estimator's cut family cannot separate it. Removing every backward edge makes the hub a relay: it still receives (from upstream modules) and broadcasts (to downstream modules), but no periphery module both sends to and receives from it, so the NAS receive-and-return is only partly realised (a receive-and-return loop is itself a recurrent loop, so NAS = 1 with IIM = 0 cannot hold exactly on one grain). A NAS deficit measured on this witness is confounded, not an estimator error."
     },
     {
@@ -225,7 +225,7 @@
           "blakemore2000cant"
         ]
       },
-      "expected_verdict": "NOT_ATTRIBUTED"
+      "expected_verdict": "EXCLUDED"
     },
     {
       "id": "N_independent_noise",
@@ -253,7 +253,7 @@
           "mediano2018measuring"
         ]
       },
-      "expected_verdict": "NOT_ATTRIBUTED"
+      "expected_verdict": "EXCLUDED"
     },
     {
       "id": "N_ar1",
@@ -281,7 +281,7 @@
           "schartner2015complexity"
         ]
       },
-      "expected_verdict": "NOT_ATTRIBUTED"
+      "expected_verdict": "EXCLUDED"
     },
     {
       "id": "O_hypersynchronous",
@@ -309,7 +309,7 @@
           "casali2013theoretically"
         ]
       },
-      "expected_verdict": "NOT_ATTRIBUTED"
+      "expected_verdict": "EXCLUDED"
     },
     {
       "id": "O_inert",
@@ -342,7 +342,7 @@
           "oizumi2014phenomenology"
         ]
       },
-      "expected_verdict": "NOT_ATTRIBUTED"
+      "expected_verdict": "EXCLUDED"
     },
     {
       "id": "PW_patchwork",
@@ -378,8 +378,8 @@
         ]
       },
       "expected_verdict": "UNDETERMINED",
-      "expected_verdict_system_bearer": "NOT_ATTRIBUTED",
-      "notes": "Measured per principle on its own module the bearers differ (BEARER_MISMATCH, UNDETERMINED); measured on the whole system the disconnected macro-node grain has no integration (NOT_ATTRIBUTED)."
+      "expected_verdict_system_bearer": "EXCLUDED",
+      "notes": "Measured per principle on its own module the bearers differ (BEARER_MISMATCH, UNDETERMINED); measured on the whole system the disconnected macro-node grain has no integration (EXCLUDED)."
     }
   ]
 }

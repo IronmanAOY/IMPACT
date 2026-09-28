@@ -312,11 +312,11 @@ def _backward_granger_gain(system, lag=2):
     return float(np.mean(gains))
 
 
-def _assert_coupling_switches_act(simulate):
+def _assert_coupling_switches_act(simulate, cfg=SMALL):
     for seed in (0, 1, 2):
-        nom = simulate(None, SMALL, seed)
-        gb0 = simulate(g.NOMINAL_KNOBS.replace(g_b=0.0), SMALL, seed)
-        c0 = simulate(g.NOMINAL_KNOBS.replace(c_int=0.0), SMALL, seed)
+        nom = simulate(None, cfg, seed)
+        gb0 = simulate(g.NOMINAL_KNOBS.replace(g_b=0.0), cfg, seed)
+        c0 = simulate(g.NOMINAL_KNOBS.replace(c_int=0.0), cfg, seed)
         # Workspace off: hub and periphery decouple.
         assert _hub_periphery_corr(gb0) < 0.6 * _hub_periphery_corr(nom), seed
         # Loops off: downstream modules no longer predict upstream ones.
@@ -329,14 +329,39 @@ def test_family_a_coupling_switches_change_the_dynamics():
     _assert_coupling_switches_act(g.simulate_family_a)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="family C at the default sl_* constants: coupling (0.3 W z) is small "
-    "against the detuned oscillators and the 4x input drive, so g_b and c_int "
-    "barely change the dynamics; retune before the code freeze",
-)
 def test_family_c_coupling_switches_change_the_dynamics():
-    _assert_coupling_switches_act(g.simulate_family_c)
+    """Family C design 2 (formerly a strict xfail): the same check on the
+    recorded oscillations. A lag-2 Granger gain of oscillatory signals needs
+    a longer run than the 16-trial SMALL config, hence 40 trials."""
+    _assert_coupling_switches_act(
+        g.simulate_family_c, g.AgentConfig(n_trials=40, n_reafference_pairs=15)
+    )
+
+
+def test_family_c_ignition_and_plasticity_are_effective():
+    """Design 2: ignition is an all-or-none episode on a sizeable fraction of
+    the run (design 1: < 1 % of samples) and feedback plasticity improves
+    choices, as in family A."""
+    cfg = g.AgentConfig(n_trials=80, n_reafference_pairs=2)
+    acc_on, acc_off = [], []
+    for seed in range(3):
+        nom = g.simulate_family_c(None, cfg, seed)
+        gate = nom.oracle["ignition_gate"]
+        assert 0.15 < float(np.mean(gate > 0.5)) < 0.7
+        assert len(nom.oracle["ignition_onsets_sec"]) >= 20
+        acc_on.append(nom.oracle["accuracy"])
+        off = g.simulate_family_c(g.NOMINAL_KNOBS.replace(eta=0.0), cfg, seed)
+        acc_off.append(off.oracle["accuracy"])
+        env = nom.oracle["hidden_envelope"]
+        assert env.shape == nom.ts.shape and np.iscomplexobj(env)
+        f = nom.oracle["oscillator_frequency_hz"]
+        assert np.all((f >= cfg.sl_freq_hz[0]) & (f <= cfg.sl_freq_hz[1]))
+        # The recorded signal is the real part of the rotating hidden state.
+        t = (np.arange(nom.n_time) + 1) * nom.dt
+        lab = env * np.exp(2j * np.pi * f[:, None] * t[None, :])
+        assert np.allclose(lab.real, nom.ts, atol=1e-5)
+    assert np.mean(acc_on) > np.mean(acc_off) + 0.1
+    assert nom.meta["family_c_design"] == 2 and nom.meta["substrate"] == "stuart_landau"
 
 
 def test_rest_run():

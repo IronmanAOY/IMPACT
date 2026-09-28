@@ -8,7 +8,7 @@ import pytest
 from impact_pipeline.bench import lz
 from impact_pipeline.bench import rules as R
 
-A, N, U = R.ATTRIBUTED, R.NOT_ATTRIBUTED, R.UNDETERMINED
+A, N, U = R.MPC_CONSISTENT, R.EXCLUDED, R.UNDETERMINED
 nan = np.nan
 
 # Rows: one deficit / one missing / all missing / all high / measured zero /
@@ -158,7 +158,7 @@ def test_impact_rule_never_attributes_from_missing_components():
     Zm = Z.copy()
     Zm[rng.random(Z.shape) < 0.3] = nan
     miss = R.rule_impact(Zm).decision
-    # Missingness never creates ATTRIBUTED, never flips a determinate verdict.
+    # Missingness never creates MPC_CONSISTENT, never flips a determinate verdict.
     assert not np.any((miss == A) & (base != A))
     det = miss != U
     assert np.all(miss[det] == base[det])

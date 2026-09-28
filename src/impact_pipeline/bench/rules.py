@@ -6,8 +6,10 @@ Every rule takes an ``(n_systems, 5)`` matrix of component values in
 component. Unless stated otherwise, inputs are reference-normalised
 components (0 = null anchor, 1 = reference anchor) and presence means
 ``value >= threshold`` (default 0.5). Rules return a :class:`RuleOutput` with a
-rule-specific ``score`` and a ``decision`` in {ATTRIBUTED, NOT_ATTRIBUTED,
-UNDETERMINED}. Each rule's handling of missing components is fixed and listed
+rule-specific ``score`` and a ``decision`` in {MPC_CONSISTENT, EXCLUDED,
+UNDETERMINED} (the v2 verdict names of the necessity-only stance: a rival
+rule's positive decision is read as "not excluded", its negative decision as
+"excluded"). Each rule's handling of missing components is fixed and listed
 in ``RULE_PROPERTIES``:
 
 ``skip``       missing components are ignored (count / mean of the rest)
@@ -17,11 +19,16 @@ in ``RULE_PROPERTIES``:
 ``impute``     missing components are mean-imputed (learned classifier)
 ``kleene``     three-valued: missing is UNDEFINED under strong Kleene AND
 
-The IMPaCT rule (:func:`rule_impact`) works on null-standardised margins
-``z = (estimate - null_mean) / null_sd`` with the status rule of the evidence
-layer: PRESENT if ``z - z_{1-alpha} se > z_present``, ABSENT if
-``|z| + z_{1-alpha} se <= delta_equiv`` (TOST), else UNDEFINED; the verdict
-is the strong-Kleene AND over the necessity set.
+The IMPaCT rule has two forms. :func:`rule_impact` (v1 status rule) works
+on null-standardised margins ``z = (estimate - null_mean) / null_sd``:
+PRESENT if ``z - z_{1-alpha} se > z_present``, ABSENT if
+``|z| + z_{1-alpha} se <= delta_equiv`` (TOST), else UNDEFINED.
+:func:`rule_impact_c` (v2, spec V2-2) works on the two-anchor construct scale
+``c = (m - nu) / (rho - nu)`` with a genuine sampling SE of ``c``: PRESENT if
+the one-sided ``1 - alpha`` lower bound of ``c`` exceeds ``z_j`` (default
+0.25), ABSENT if the upper bound is below ``delta_j`` (default 0.10), else
+UNDEFINED; a missing or zero SE, or invalid anchors, is UNDEFINED. Both
+verdicts are the strong-Kleene AND over the necessity set.
 """
 
 from __future__ import annotations
@@ -33,10 +40,14 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-ATTRIBUTED = "ATTRIBUTED"
-NOT_ATTRIBUTED = "NOT_ATTRIBUTED"
+MPC_CONSISTENT = "MPC_CONSISTENT"
+EXCLUDED = "EXCLUDED"
 UNDETERMINED = "UNDETERMINED"
-VERDICTS = (ATTRIBUTED, NOT_ATTRIBUTED, UNDETERMINED)
+VERDICTS = (MPC_CONSISTENT, EXCLUDED, UNDETERMINED)
+# Construct-scale smallest effects of interest (spec v2, V2-2; initial
+# defaults to be justified by MPC-Bench dose-response).
+C_PRESENT_DEFAULT = 0.25
+C_ABSENT_DEFAULT = 0.10
 PRESENT, ABSENT, UNDEFINED = "PRESENT", "ABSENT", "UNDEFINED"
 N_COMPONENTS = 5
 PRINCIPLE_INDEX = {"RAM": 0, "PDI": 1, "NAS": 2, "IIM": 3, "SRPI": 4}
@@ -126,6 +137,13 @@ RULE_PROPERTIES = {
         abstains=True,
         prior_dependent=False,
     ),
+    "impact_c": dict(
+        compensatory=False,
+        missingness="kleene",
+        veto=True,
+        abstains=True,
+        prior_dependent=False,
+    ),
 }
 
 
@@ -175,20 +193,20 @@ def _decide(score: np.ndarray, threshold: float, rule: str) -> RuleOutput:
     score = np.asarray(score, dtype=float)
     dec = np.where(
         np.isfinite(score),
-        np.where(score >= threshold, ATTRIBUTED, NOT_ATTRIBUTED),
+        np.where(score >= threshold, MPC_CONSISTENT, EXCLUDED),
         UNDETERMINED,
     ).astype(object)
     return RuleOutput(rule, score, dec)
 
 
 def rule_union(C, threshold=0.5) -> RuleOutput:
-    """ATTRIBUTED if any observed component is present (missing skipped)."""
+    """MPC_CONSISTENT if any observed component is present (missing skipped)."""
     n_present = np.nansum(presence(C, threshold), axis=1)
     return _decide(n_present, 1.0, "union")
 
 
 def rule_count_k(C, k: int, threshold=0.5) -> RuleOutput:
-    """ATTRIBUTED if at least ``k`` observed components are present
+    """MPC_CONSISTENT if at least ``k`` observed components are present
     (Alkire-Foster style dual cut-off; missing skipped)."""
     k = int(k)
     if not 1 <= k <= N_COMPONENTS:
@@ -390,7 +408,8 @@ def rule_logistic(
 def rule_single_marker(
     values, threshold: float, name: str = "single_marker"
 ) -> RuleOutput:
-    """One marker (IIM-only, NAS-only, LZc, Gaussian Phi_R): present -> ATTRIBUTED."""
+    """One marker (IIM-only, NAS-only, LZc, Gaussian Phi_R): present ->
+    MPC_CONSISTENT."""
     v = np.asarray(values, dtype=float).reshape(-1)
     return _decide(v, float(threshold), name)
 
@@ -432,7 +451,7 @@ def kleene_and_rows(status: np.ndarray) -> np.ndarray:
     any_f = np.any(s == ABSENT, axis=1)
     all_t = np.all(s == PRESENT, axis=1)
     return np.where(
-        any_f, NOT_ATTRIBUTED, np.where(all_t, ATTRIBUTED, UNDETERMINED)
+        any_f, EXCLUDED, np.where(all_t, MPC_CONSISTENT, UNDETERMINED)
     ).astype(object)
 
 
@@ -458,6 +477,116 @@ def rule_impact(
     return RuleOutput("impact", score, dec)
 
 
+def construct_scale(
+    estimate,
+    null_mean,
+    reference,
+    se_estimate=None,
+    null_sd=None,
+    n_null=None,
+    se_reference=None,
+):
+    """
+    Two-anchor construct scale ``c = (m - nu) / (rho - nu)`` and its SE
+    (spec v2, V2-2): the sampling SE of ``m``, the Monte-Carlo error of the
+    null mean ``sigma_null / sqrt(K)`` and (optionally) the SE of the
+    reference are propagated through the ratio by the delta method,
+    ``se_c^2 = [se_m^2 + (1 - c)^2 se_nu^2 + c^2 se_rho^2] / (rho - nu)^2``.
+    Element-wise; ``c`` is NaN (invalid anchors) unless every anchor is
+    finite and ``rho > nu``; ``se_c`` is NaN when ``se_estimate`` is missing.
+    Returns ``(c, se_c)``.
+    """
+    m, nu, rho = np.broadcast_arrays(
+        *(np.asarray(v, dtype=float) for v in (estimate, null_mean, reference))
+    )
+    ok = np.isfinite(m) & np.isfinite(nu) & np.isfinite(rho) & (rho > nu)
+    span = np.where(ok, rho - nu, 1.0)
+    c = np.where(ok, (m - nu) / span, np.nan)
+    shape = c.shape
+
+    def _arr(v, fill):
+        if v is None:
+            return np.full(shape, fill)
+        return np.broadcast_to(np.asarray(v, dtype=float), shape)
+
+    se_m = _arr(se_estimate, np.nan)
+    sd0 = _arr(null_sd, 0.0)
+    k = _arr(n_null, np.inf)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        se_nu = np.where(np.isfinite(k) & (k > 0), sd0 / np.sqrt(k), 0.0)
+        se_rho = _arr(se_reference, 0.0)
+        var = (se_m**2 + (1.0 - c) ** 2 * se_nu**2 + c**2 * se_rho**2) / span**2
+        se_c = np.where(ok, np.sqrt(var), np.nan)
+    return c, se_c
+
+
+def component_status_c(
+    c,
+    se,
+    z_present=C_PRESENT_DEFAULT,
+    delta_absent=C_ABSENT_DEFAULT,
+    alpha: float = 0.05,
+    exact=False,
+) -> np.ndarray:
+    """
+    v2 component status on the construct scale (spec V2-2): PRESENT if
+    ``c - z_{1-alpha} se > z_present``, ABSENT if ``c + z_{1-alpha} se <
+    delta_absent`` (this includes estimates credibly *below* the null), else
+    UNDEFINED. A missing, non-finite or zero SE is UNDEFINED (no sampling SE)
+    unless ``exact`` (known-TPM computations: the value is exact, SE 0).
+    ``z_present`` / ``delta_absent`` may be per-column arrays (principles);
+    ``delta_absent <= z_present`` is required (exclusivity).
+    """
+    c = np.asarray(c, dtype=float)
+    zp = np.broadcast_to(np.asarray(z_present, dtype=float), c.shape[-1:] or (1,))
+    da = np.broadcast_to(np.asarray(delta_absent, dtype=float), c.shape[-1:] or (1,))
+    if np.any(~np.isfinite(zp)) or np.any(~np.isfinite(da)) or np.any(da > zp):
+        raise ValueError("need finite cut-offs with delta_absent <= z_present")
+    if not 0.0 < float(alpha) <= 0.5:
+        raise ValueError("alpha must be in (0, 0.5]")
+    se = np.broadcast_to(np.asarray(se, dtype=float), c.shape).copy()
+    ex = np.broadcast_to(np.asarray(exact, dtype=bool), c.shape)
+    se = np.where(ex & np.isfinite(c), 0.0, se)
+    valid = np.isfinite(c) & np.isfinite(se) & ((se > 0) | ex)
+    zc = norm.ppf(1.0 - float(alpha))
+    with np.errstate(invalid="ignore"):
+        present = valid & ((c - zc * se) > zp)
+        absent = valid & ~present & ((c + zc * se) < da)
+    out = np.full(c.shape, UNDEFINED, dtype=object)
+    out[absent] = ABSENT
+    out[present] = PRESENT
+    return out
+
+
+def rule_impact_c(
+    C,
+    se,
+    necessity_set: Sequence[str] = tuple(PRINCIPLE_INDEX),
+    z_present=C_PRESENT_DEFAULT,
+    delta_absent=C_ABSENT_DEFAULT,
+    alpha: float = 0.05,
+    exact=False,
+) -> RuleOutput:
+    """
+    IMPaCT rule, v2 (construct scale): statuses by
+    :func:`component_status_c`, strong-Kleene AND over ``necessity_set``.
+    Score = the smallest one-sided lower bound ``c - z_{1-alpha} se`` over
+    the necessity set (NaN when any is undefined), a confidence for
+    risk-coverage curves.
+    """
+    c = as_component_matrix(C)
+    se_arr = np.broadcast_to(np.asarray(se, dtype=float), c.shape)
+    idx = [PRINCIPLE_INDEX[p] for p in necessity_set]
+    status = component_status_c(c, se_arr, z_present, delta_absent, alpha, exact)
+    status = status[:, idx]
+    dec = kleene_and_rows(status)
+    zc = norm.ppf(1.0 - float(alpha))
+    with np.errstate(invalid="ignore"):
+        lower = (c - zc * se_arr)[:, idx]
+    score = np.where(np.all(np.isfinite(lower), axis=1), lower.min(axis=1), np.nan)
+    return RuleOutput("impact_c", score, dec)
+
+
 def apply_rules(
     C,
     Z=None,
@@ -469,13 +598,17 @@ def apply_rules(
     cv: int = 5,
     seed: int = 0,
     dcm_kwargs: Optional[dict] = None,
+    C_se=None,
+    impact_c_kwargs: Optional[dict] = None,
 ) -> pd.DataFrame:
     """
     Decisions of every rival rule for each row of ``C`` (normalised
-    components). ``Z`` (null-standardised margins) adds the IMPaCT rule,
-    ``labels`` the cross-validated logistic classifier, ``markers`` external
-    single markers (e.g. ``{'LZc': ..., 'PhiR': ...}`` with thresholds in
-    ``marker_thresholds``). IIM-only and NAS-only use columns 3 and 2 of ``C``.
+    components). ``Z`` (null-standardised margins) adds the v1 IMPaCT rule,
+    ``C_se`` (SEs of ``C`` on the construct scale) the v2 IMPaCT rule
+    (:func:`rule_impact_c`), ``labels`` the cross-validated logistic
+    classifier, ``markers`` external single markers (e.g. ``{'LZc': ...,
+    'PhiR': ...}`` with thresholds in ``marker_thresholds``). IIM-only and
+    NAS-only use columns 3 and 2 of ``C``.
     """
     x = as_component_matrix(C)
     outs = [
@@ -503,6 +636,8 @@ def apply_rules(
         outs.append(rule_logistic(x, labels, cv=cv, seed=seed))
     if Z is not None:
         outs.append(rule_impact(Z))
+    if C_se is not None:
+        outs.append(rule_impact_c(x, C_se, **(impact_c_kwargs or {})))
     data = {}
     for o in outs:
         data[o.rule] = o.decision

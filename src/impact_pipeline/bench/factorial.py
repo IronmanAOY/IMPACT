@@ -37,6 +37,9 @@ class BenchTask:
     sweep_knob: Optional[str] = None
     sweep_level: Optional[float] = None
     bearer_mode: str = "system"
+    # Extra keyword arguments of the generator (graded patchwork coupling,
+    # whole-brain config and forward model, adversarial options).
+    generator_kwargs: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
