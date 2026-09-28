@@ -3374,7 +3374,6 @@ PDI_REPERTOIRE_MIN_STATE_WINDOWS = 3
 PDI_REPERTOIRE_MIN_STATE_SEGMENTS = 2
 PDI_REPERTOIRE_PS_THRESHOLD = 0.8
 _PDI_REPERTOIRE_VALLEY_BANDWIDTH = 0.1
-_PDI_REPERTOIRE_VALLEY_GRID = np.linspace(-0.25, 1.25, 31)
 _PDI_REPERTOIRE_KMEANS_INIT = 8
 _PDI_REPERTOIRE_KMEANS_ITER = 100
 
@@ -3552,10 +3551,21 @@ def _pdi_label_key(v):
     return str(v).strip()
 
 
+def _pdi_is_missing_label(v):
+    """
+    Unlabelled sample or event: None, NaN, an empty or 'n/a' string
+    (:func:`_is_missing_label`), or a pandas missing scalar (``pd.NA`` of
+    nullable string/integer columns, ``pd.NaT``).
+    """
+    if type(v).__name__ in ("NAType", "NaTType"):
+        return True
+    return _is_missing_label(v)
+
+
 def _pdi_label_codes(state_labels, n_time):
     """
-    Per-sample state codes of a label vector (-1 = unlabelled: None, NaN or
-    empty) and the state names in order of first appearance.
+    Per-sample state codes of a label vector (-1 = unlabelled: None, NaN,
+    ``pd.NA`` or empty) and the state names in order of first appearance.
     """
     arr = np.asarray(state_labels, dtype=object).reshape(-1)
     if arr.size != int(n_time):
@@ -3566,7 +3576,7 @@ def _pdi_label_codes(state_labels, n_time):
     index = {}
     names = []
     for i, v in enumerate(arr):
-        if _is_missing_label(v):
+        if _pdi_is_missing_label(v):
             continue
         key = _pdi_label_key(v)
         if key not in index:
@@ -3616,13 +3626,17 @@ def _pdi_labels_from_events(events, n_time, tr, label_column, delay):
     """
     Per-sample state codes from an events table: sample ``i`` (time
     ``i * tr``) carries the label of every event with
-    ``onset + delay <= i * tr < onset + delay + duration``. Events without a
-    finite onset, a positive duration or a label are skipped (counted);
-    samples claimed by events with different labels are left unlabelled
-    (counted), never assigned to either.
+    ``onset + delay <= i * tr < onset + delay + duration``, compared with a
+    tolerance of ``1e-6 * tr`` (decimal onsets such as 7.2 s at TR 0.72 s
+    fall on the sample grid; without it ``10 * 0.72 < 7.2`` in floating
+    point shifts the event by one sample and creates spurious conflicts).
+    Events without a finite onset, a positive duration or a label are
+    skipped (counted); samples claimed by events with different labels are
+    left unlabelled (counted), never assigned to either.
     """
     rows = _pdi_event_rows(events, ("onset", "duration", label_column))
     t = np.arange(int(n_time), dtype=float) * float(tr)
+    tol = 1e-6 * float(tr)
     codes = np.full(int(n_time), -1, dtype=np.int64)
     conflict = np.zeros(int(n_time), dtype=bool)
     index = {}
@@ -3639,7 +3653,7 @@ def _pdi_labels_from_events(events, n_time, tr, label_column, delay):
         if not (np.isfinite(onset) and np.isfinite(dur)) or dur <= 0:
             n_skipped += 1
             continue
-        if _is_missing_label(lab):
+        if _pdi_is_missing_label(lab):
             n_skipped += 1
             continue
         key = _pdi_label_key(lab)
@@ -3648,7 +3662,7 @@ def _pdi_labels_from_events(events, n_time, tr, label_column, delay):
             names.append(key)
         code = index[key]
         start = onset + float(delay)
-        m = (t >= start) & (t < start + dur)
+        m = (t >= start - tol) & (t < start + dur - tol)
         conflict |= m & (codes >= 0) & (codes != code)
         codes[m & (codes < 0)] = code
         n_used += 1
@@ -3661,27 +3675,37 @@ def _pdi_labels_from_events(events, n_time, tr, label_column, delay):
     return codes, names, info
 
 
-def _pdi_label_segments(y):
-    """Maximal runs of equal labels in a sequence: ``(labels, lengths)``."""
+def _pdi_label_segments(y, win_idx=None, gap=0):
+    """
+    Runs (visits) of a label sequence: ``(labels, lengths)``. A new run
+    starts where the label changes and, when the window positions
+    ``win_idx`` are given, where more than ``gap`` unused windows separate two
+    consecutive labelled windows (two blocks of the same condition with an
+    unlabelled rest between them are two visits, not one).
+    """
     y = np.asarray(y).reshape(-1)
     if y.size == 0:
         return y[:0], np.zeros(0, dtype=np.int64)
-    change = np.flatnonzero(y[1:] != y[:-1]) + 1
-    starts = np.concatenate([[0], change])
+    new = y[1:] != y[:-1]
+    if win_idx is not None:
+        new = new | (np.diff(np.asarray(win_idx).reshape(-1)) > int(gap) + 1)
+    starts = np.concatenate([[0], np.flatnonzero(new) + 1])
     lengths = np.diff(np.concatenate([starts, [y.size]]))
     return y[starts], lengths
 
 
-def _pdi_segment_permutation(y, rng):
+def _pdi_segment_permutation(y, rng, lengths=None):
     """
-    Block permutation of a label sequence: the maximal runs of equal labels
-    are re-ordered at random (each run keeps its label and length), so label
-    counts and the dwell-time distribution are kept and only the alignment of
-    labels with the data is destroyed.
+    Block permutation of a label sequence: the runs (``lengths``, default
+    the maximal runs of equal labels) are re-ordered at random (each run
+    keeps its label and length), so label counts and the dwell-time
+    distribution are kept and only the alignment of labels with the data is
+    destroyed.
     """
     y = np.asarray(y).reshape(-1)
-    change = np.flatnonzero(y[1:] != y[:-1]) + 1
-    segs = np.split(y, change)
+    if lengths is None:
+        lengths = _pdi_label_segments(y)[1]
+    segs = np.split(y, np.cumsum(np.asarray(lengths, dtype=np.int64))[:-1])
     order = rng.permutation(len(segs))
     return np.concatenate([segs[i] for i in order])
 
@@ -3792,9 +3816,12 @@ def _pdi_repertoire_labelled(
     fewer than ``PDI_REPERTOIRE_MIN_STATE_WINDOWS`` windows or fewer than
     ``PDI_REPERTOIRE_MIN_STATE_SEGMENTS`` separate visits (a state visited
     once cannot be cross-validated apart from slow drift) are dropped and
-    reported. ``I`` is the Miller-Madow-corrected mutual information of the
-    time-blocked CV confusion matrix; the null re-orders the label runs
-    (block permutation) and re-runs the whole CV.
+    reported. A visit is a run of the label; runs separated by more than
+    ``gap`` unused (unlabelled or mixed) windows, e.g. an unlabelled rest
+    between two blocks of the same condition, are separate visits. ``I`` is
+    the Miller-Madow-corrected mutual information of the time-blocked CV
+    confusion matrix; the null re-orders the visits (block permutation) and
+    re-runs the whole CV.
     """
     n_win = pat.shape[0]
     if n_win == 0:
@@ -3817,7 +3844,7 @@ def _pdi_repertoire_labelled(
     dropped = {}
     keep = np.ones(win_idx.size, dtype=bool)
     while True:
-        seg_lab, _ = _pdi_label_segments(y_all[keep])
+        seg_lab, _ = _pdi_label_segments(y_all[keep], win_idx[keep], gap)
         changed = False
         for c in range(len(names)):
             if names[c] in dropped:
@@ -3853,10 +3880,11 @@ def _pdi_repertoire_labelled(
     counts = np.bincount(y, minlength=n_states).astype(float)
     p_lab = counts / counts.sum()
     h_lab = float(-np.sum(p_lab[p_lab > 0] * np.log2(p_lab[p_lab > 0])))
+    seg_lab, seg_len = _pdi_label_segments(y, win_idx, gap)
     rng = np.random.RandomState(seed)
     null = []
     for _ in range(int(n_null)):
-        yp = _pdi_segment_permutation(y, rng)
+        yp = _pdi_segment_permutation(y, rng, seg_len)
         null.append(
             _pdi_mutual_information_bits(
                 _pdi_cv_decode(x, yp, win_idx, n_states, folds, gap)
@@ -3865,7 +3893,6 @@ def _pdi_repertoire_labelled(
     stats = _null_calibration_stats(i_mm, null)
     if stats["null_n"] < 2:
         return undefined("insufficient_surrogates", extra)
-    seg_lab, _ = _pdi_label_segments(y)
     diag = np.diag(conf[:, :n_states])
     recall = np.where(counts > 0, diag / np.maximum(counts, 1.0), np.nan)
     kept_names = [names[c] for c in kept_codes]
@@ -4376,10 +4403,10 @@ def compute_PDI(
     repertoire_null: str = "circular_shift",
     repertoire_criterion: str = "separation",
     repertoire_valley: float = 0.4,
-    repertoire_min_dwell: float = 2.0,
+    repertoire_min_dwell: float = 2.5,
 ) -> float:
     """
-    Composite measurable Phenomenal Differentiation Index (PDI).
+    Composite measurable Pattern Differentiation Index (PDI).
 
     PDI is operationalized from EEG/fMRI timeseries as a baseline-referenced
     composition of four observable dimensions:
@@ -4482,7 +4509,10 @@ def compute_PDI(
           excess. Windows whose samples carry different labels, and states
           with fewer than ``PDI_REPERTOIRE_MIN_STATE_WINDOWS`` = 3 windows or
           fewer than ``PDI_REPERTOIRE_MIN_STATE_SEGMENTS`` = 2 separate visits,
-          are not used (reported in ``dropped_states``).
+          are not used (reported in ``dropped_states``). A visit (label run,
+          the permutation unit) ends where the label changes or where more
+          than ``repertoire_gap`` unused windows follow, e.g. at an
+          unlabelled rest between two blocks of the same condition.
         - unlabelled (no labels): the number of recurring, distinguishable
           multi-node states ``K_hat``, estimated by k-means on the windows'
           leading ``repertoire_components`` principal components and a
@@ -4518,14 +4548,16 @@ def compute_PDI(
         ``'iaaft'``: additionally amplitude-adjusted to each node's marginal.
     state_labels : sequence or None, optional
         ``mode='repertoire'``, labelled variant: one state/context label per
-        sample of ``ts`` (numbers or strings; None, NaN or '' = unlabelled).
-        Mutually exclusive with ``events``.
+        sample of ``ts`` (numbers or strings; None, NaN, ``pd.NA``, '' or
+        'n/a' = unlabelled). Mutually exclusive with ``events``.
     events : DataFrame, mapping of columns, list of row mappings or None
         ``mode='repertoire'``, labelled variant: events table with ``onset``
         and ``duration`` (seconds) and the label column
         ``repertoire_label_column``; sample ``i`` (time ``i * tr``) is
         labelled by events with ``onset + repertoire_label_delay <= i * tr <
-        onset + repertoire_label_delay + duration``. Samples claimed by events
+        onset + repertoire_label_delay + duration`` (to within ``1e-6 * tr``,
+        so decimal onsets on the sample grid are not shifted by floating-point
+        rounding). Samples claimed by events
         with different labels stay unlabelled; events without a positive
         duration or a label are skipped (both counted in the details).
     tr : float or None, optional
@@ -4580,9 +4612,15 @@ def compute_PDI(
         margin.
     repertoire_min_dwell : float, optional
         Separation criterion: smallest allowed mean dwell of a state in
-        consecutive windows (default 2). Excludes the phases of a fast
+        consecutive windows (default 2.5). Excludes the phases of a fast
         deterministic cycle, which a sampled noise-free oscillation visits as
-        a discrete lattice of patterns without ever dwelling in one.
+        a discrete lattice of patterns without ever dwelling in one. An arc
+        of consecutive lattice points dwells exactly as many windows as it
+        has points, so splitting a lattice of ``P`` windows per cycle in two
+        gives a shorter arc of ``floor(P / 2)`` windows; the default rejects
+        ``P <= 5`` with a margin (``P = 4``, e.g. a 3 Hz oscillation sampled
+        at 20 Hz with 5-sample windows, dwells exactly 2 windows, so a
+        threshold of 2 was decided by block-edge effects).
 
     Returns
     -------
@@ -4600,17 +4638,28 @@ def compute_PDI(
     dimensionality excesses take either sign, and the aggregate is about 0
     for linear Gaussian data but of either sign for multistable switching
     (tests/test_pdi_surrogate_excess.py). It is not a positive "more
-    differentiated than chance" score. Negative result: any entropy or
-    entropy-rate repertoire statistic measured as excess over
-    spectrum-matched (linear Gaussian) surrogates is <= 0 in expectation for
-    structured multistable dynamics, because the Gaussian null is the
-    maximum-entropy process for the given spectra; excess over such a null
-    cannot index differentiation. ``mode='repertoire'`` replaces it with a
-    count of distinguishable states, which a Gaussian null does not maximise.
+    differentiated than chance" score. Negative result: the Gaussian null is
+    the maximum-(differential-)entropy process for the given spectra, so
+    structure beyond the spectra (multistability, pattern switching) lowers
+    rather than raises entropy-type statistics relative to it; the binarised
+    repertoire-entropy excess of pattern switching was negative in every
+    test case and the aggregate z ranged from -6.8 to +9.2 across seeds. An
+    excess over such a null therefore cannot index differentiation.
+    ``mode='repertoire'`` replaces it with a count of distinguishable states,
+    which a Gaussian null does not maximise.
 
     ``mode='repertoire'`` limitations. Window length: states shorter than
-    about two windows are not counted (dwell criterion, mixed-label windows
+    about 2.5 windows are not counted (dwell criterion, mixed-label windows
     are dropped), and windows that are too short do not average the noise.
+    Exactly periodic, noise-free oscillations whose period is commensurate
+    with the window grid visit a finite lattice of window patterns: the
+    default dwell rule rejects every split of a lattice of up to 5 windows
+    per cycle (e.g. the MPC-Bench hypersynchronous generator, 3 Hz at 20 Hz
+    sampling), but a slower lattice (>= 6 windows per cycle) can be split
+    into two separated, persisting "states" (up to +1 bit), and
+    circular-shift surrogates of such signals count lattice states as well
+    (excess down to about -1.6 bits); phase diffusion (0.05 rad per sample in
+    the tests) removes the lattice.
     Number of states vs recording length: a state must recur in both halves
     (unlabelled; >= 3 windows in each) or be visited at least twice
     (labelled), so at most about ``n_windows / 6`` states are estimable
@@ -4619,7 +4668,9 @@ def compute_PDI(
     the labelled permutation null grows with ``(K - 1)**2`` over the number
     of label runs (the effective sample size of autocorrelated labels, not
     the number of windows), so ``I`` is only interpretable with many visits
-    per state, and ``I <= log2(K)`` (the label entropy is reported). SNR:
+    per state, and the plug-in ``I`` is at most the label entropy (reported;
+    ``<= log2(K)``; the Miller-Madow term can add ``(K - 1) / (2 N ln 2)``
+    bits for a perfect decoder). SNR:
     states closer than the separation criterion's resolution (d' of about
     3.85 after window averaging) merge, so the unlabelled count is
     conservative and falls with noise; the labelled ``I`` degrades
@@ -4629,15 +4680,16 @@ def compute_PDI(
     multistability, and a split along one bistable node is itself a
     recurring pair of separated states: the unlabelled excess counts
     coordinated states beyond node-level multistability (a coordinated
-    two-state system scores between 0 and 1 bit, less when only a few nodes
-    switch; independent multistable nodes score about 0). ``n_states`` is an
-    integer, so the null SD can be 0 (then ``PDI_z`` is NaN; the excess is
-    still defined). The excess in bits, not ``PDI_z``, is the construct-scale
-    quantity: the labelled null SD is small (about 0.01 bits), so negligible
-    excesses can have large z. The clustering geometry is Euclidean on
-    z-scored nodes (not affine-invariant): volume conduction, a common
-    reference or a dominant global signal change it, so scalp-EEG use needs
-    validation on forward-modelled data first.
+    two-state system scores between 0 and 1 bit when many nodes switch, and
+    down to about -1 bit when only a few, e.g. 3 of 16, switch; independent
+    multistable nodes score about 0 on average, with either sign).
+    ``n_states`` is an integer, so the null SD can be 0 (then ``PDI_z`` is
+    NaN; the excess is still defined). The excess in bits, not ``PDI_z``, is
+    the construct-scale quantity: the labelled null SD is small (about 0.01
+    bits), so negligible excesses can have large z. The clustering geometry
+    is Euclidean on z-scored nodes (not affine-invariant): volume
+    conduction, a common reference or a dominant global signal change it, so
+    scalp-EEG use needs validation on forward-modelled data first.
 
     With ``clip_negative=True`` (default), the output is non-negative and
     increases when observed differentiation exceeds baseline with good temporal

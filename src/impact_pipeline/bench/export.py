@@ -760,7 +760,10 @@ def run_in_memory(
         t0 = time.perf_counter()
         view = bearer_view(system, "PDI", bearer_mode)
         kw, used = _modes("PDI", mm.compute_PDI)
+        # compute_PDI accepts ``events`` (labelled mode='repertoire' only); the
+        # bench does not pass them, so the provenance must not claim it did.
         kw.pop("events", None)
+        used.pop("events", None)
         out["estimator_modes"]["PDI"] = used
         baseline = None
         if system.rest_ts is not None:

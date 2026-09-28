@@ -261,6 +261,28 @@ def test_event_conflicts_and_skipped_rows_are_counted_not_guessed():
     assert d["n_labelled_samples"] == 200 - 10
 
 
+def test_decimal_event_onsets_land_on_the_sample_grid():
+    # BIDS onsets are decimal seconds: 10 * 0.72 < 7.2 in floating point, so
+    # an exact comparison moved block starts by one sample and flagged the
+    # boundary samples as conflicts.
+    expected = np.repeat(np.arange(20) % 2, 10)
+    for tr in (0.72, 0.7, 0.1, 2.2):
+        ev = pd.DataFrame(
+            {
+                "onset": [round(b * 10 * tr, 6) for b in range(20)],
+                "duration": [round(10 * tr, 6)] * 20,
+                "trial_type": ["ab"[b % 2] for b in range(20)],
+            }
+        )
+        codes, names, info = mm._pdi_labels_from_events(ev, 200, tr, "trial_type", 0.0)
+        assert names == ["a", "b"] and info["n_conflict_samples"] == 0, tr
+        assert np.array_equal(codes, expected), tr
+    # a delay is placed on the same grid: 7.2 s from 0.72 s covers samples 1..10
+    one = [{"onset": 0.0, "duration": 7.2, "trial_type": "a"}]
+    codes, _, _ = mm._pdi_labels_from_events(one, 200, 0.72, "trial_type", 0.72)
+    assert np.flatnonzero(codes >= 0).tolist() == list(range(1, 11))
+
+
 def test_sparse_states_are_dropped_and_reported():
     x, labels = _planted_states(0, 3, n_time=3000)
     lab = labels.astype(object)
@@ -301,17 +323,79 @@ def test_mutual_information_and_miller_madow_known_answers():
 def test_segment_permutation_keeps_runs_and_counts():
     rng = np.random.default_rng(0)
     y = _visits(rng, 4, 500, 12.0, min_dwell=1)
-    runs = sorted(zip(*[a.tolist() for a in mm._pdi_label_segments(y)]))
-    perm_rng = np.random.RandomState(0)
+    _, lengths = mm._pdi_label_segments(y)
+    runs = np.split(y, np.cumsum(lengths)[:-1])
+    perm_rng, ref_rng = np.random.RandomState(0), np.random.RandomState(0)
+    agree = []
     for _ in range(20):
         yp = mm._pdi_segment_permutation(y, perm_rng)
+        # the original runs, each intact (label and length), in a new order
+        order = ref_rng.permutation(len(runs))
+        assert np.array_equal(yp, np.concatenate([runs[i] for i in order]))
         assert np.array_equal(np.bincount(yp, minlength=4), np.bincount(y, minlength=4))
-        # every original run is a contiguous piece of the permuted sequence;
-        # adjacent equal runs may merge, so compare run-length totals per label
-        lab_p, len_p = mm._pdi_label_segments(yp)
-        for c in range(4):
-            assert len_p[lab_p == c].sum() == sum(n for lab, n in runs if lab == c)
-        assert len(lab_p) <= len(runs)
+        agree.append(float(np.mean(yp == y)))
+    # the alignment of labels with time is destroyed (4 labels: ~1/4 agree)
+    assert max(agree) < 0.6 and np.mean(agree) < 0.4
+
+
+def test_blocks_separated_by_unlabelled_rest_are_separate_visits():
+    # Randomised block order with an unlabelled rest after every block (the
+    # usual events table lists only the task blocks). Merging "a, rest, a"
+    # into one run halved the visits (2 instead of 4 per condition) and left
+    # the block-permutation null so few distinct orders that it reproduced
+    # the design (excess 0.30 bits for a perfectly decodable 1-bit design).
+    y = np.array([0, 0, 0, 0, 1, 1, 1])
+    w = np.array([0, 1, 3, 9, 10, 11, 20])
+    lab, length = mm._pdi_label_segments(y, w, gap=1)
+    # one unused window (1 -> 3) is within the purge gap: the same visit;
+    # five (3 -> 9) or eight (11 -> 20) start a new one
+    assert lab.tolist() == [0, 0, 1, 1] and length.tolist() == [3, 1, 2, 1]
+    assert mm._pdi_label_segments(y, w, gap=0)[1].tolist() == [2, 1, 1, 2, 1]
+    assert mm._pdi_label_segments(y)[1].tolist() == [4, 3]
+    # these visits are the permutation units
+    runs = np.split(y, np.cumsum(length)[:-1])
+    ref = np.random.RandomState(1).permutation(len(runs))
+    perm = mm._pdi_segment_permutation(y, np.random.RandomState(1), length)
+    assert np.array_equal(perm, np.concatenate([runs[i] for i in ref]))
+    rng = np.random.default_rng(0)
+    n_nodes, blk = 16, 100
+    order = ["a", "a", "b", "b", "a", "a", "b", "b"]
+    pats = {c: rng.choice([-1.0, 1.0], n_nodes) for c in "ab"}
+    pats["rest"] = np.zeros(n_nodes)
+    seq = [c for cond in order for c in [cond] * blk + ["rest"] * blk]
+    x = np.stack([pats[c] for c in seq], axis=1)
+    x = x + 0.8 * rng.standard_normal(x.shape)
+    ev = pd.DataFrame(
+        {
+            "onset": [2.0 * blk * i for i in range(len(order))],
+            "duration": [float(blk)] * len(order),
+            "trial_type": order,
+        }
+    )
+    d = mm.compute_PDI(x, events=ev, tr=1.0, null_seed=0, **REP)
+    assert d["n_visits_per_state"] == {"a": 4, "b": 4}
+    assert d["I_bits"] > 0.98 and d["value"] > 0.6
+
+
+def test_pandas_missing_labels_are_unlabelled_not_a_state():
+    # Nullable pandas columns (read_csv(..., dtype="string"), convert_dtypes())
+    # hold pd.NA, which must not become a state called "<NA>".
+    x, labels = _planted_states(0, 2, n_time=1500)
+    lab = pd.Series(np.where(labels == 1, "b", "a"), dtype="string")
+    lab[lab.index % 50 < 5] = pd.NA
+    d = mm.compute_PDI(x, state_labels=lab, null_seed=0, **FAST)
+    assert d["defined"] and sorted(d["states"]) == ["a", "b"]
+    assert d["n_labelled_samples"] == int(lab.notna().sum())
+    ints = pd.Series(np.where(labels == 1, 2, 1), dtype="Int64")
+    ints[:40] = pd.NA
+    d = mm.compute_PDI(x, state_labels=ints, null_seed=0, **FAST)
+    assert sorted(d["states"]) == ["1", "2"] and d["n_labelled_samples"] == 1460
+    ev = _label_events(labels, 1.0)
+    ev["trial_type"] = ev["trial_type"].astype("string")
+    ev.loc[0, "trial_type"] = pd.NA
+    d = mm.compute_PDI(x, events=ev, tr=1.0, null_seed=0, **FAST)
+    assert d["n_events_skipped"] == 1 and d["n_events_used"] == len(ev) - 1
+    assert sorted(d["states"]) == ["ctx0", "ctx1"]
 
 
 # --------------------------------------------------------------------------
@@ -398,6 +482,44 @@ def test_unlabelled_hypersynchrony_and_noise_are_about_zero(make):
         d = mm.compute_PDI(make(seed), null_seed=seed, **FAST)
         assert d["n_states"] == 1, d["per_k"][:3]
         assert abs(d["value"]) < 0.35
+
+
+def test_bench_hypersynchronous_generator_is_one_state():
+    # The MPC-Bench adversarial hypersynchrony generator: a 3 Hz sinusoid
+    # sampled at 20 Hz (dt = 0.05). With 5-sample windows the window means
+    # form a lattice of 4 patterns (3 cycles per 4 windows); split in two
+    # halves they dwell exactly 2 windows, so a dwell threshold of 2 was
+    # decided by block-edge effects (seed 1: 2 states, +0.89 bits; a
+    # 3005-sample run: 2 states, +1 bit). The default 2.5 rejects it.
+    from impact_pipeline.bench.generators import make_system
+
+    for seed in range(3):
+        x = make_system("hypersynchronous", seed=seed).ts
+        d = mm.compute_PDI(x, null_seed=seed, **FAST)
+        assert d["min_dwell_windows"] == 2.5
+        assert d["n_states"] == 1 and d["value"] == 0.0, (seed, d["per_k"][0])
+        assert not d["per_k"][0]["min_dwell_windows"] >= 2.5
+    for n_time in (1500, 3000, 3005):
+        for freq in (1.0, 3.0):
+            x = _hypersynchronous(0, n_time=n_time, dt=0.05, freq=freq)
+            d = mm.compute_PDI(x, null_seed=0, **FAST)
+            assert d["n_states"] == 1 and abs(d["value"]) < 0.35, (n_time, freq)
+
+
+def test_phase_diffusion_removes_the_lattice_of_a_slow_oscillation():
+    # A noise-free oscillation of exactly 8 windows per cycle is a lattice
+    # of 8 window patterns whose halves dwell 4 windows (documented
+    # limitation); with phase diffusion it is a continuum again: one state
+    # and no excess over the circular-shift surrogates.
+    for seed in range(3):
+        rng = np.random.default_rng(seed)
+        n_time = 3000
+        step = 2 * np.pi / 40.0 + 0.05 * rng.standard_normal(n_time)
+        ph = np.cumsum(step) + rng.uniform(0, 2 * np.pi)
+        gains = rng.uniform(0.8, 1.2, size=(16, 1))
+        x = gains * np.sin(ph)[None, :] + 0.05 * rng.standard_normal((16, n_time))
+        d = mm.compute_PDI(x, null_seed=seed, **FAST)
+        assert d["n_states"] == 1 and abs(d["value"]) < 0.35
 
 
 @pytest.mark.parametrize(
