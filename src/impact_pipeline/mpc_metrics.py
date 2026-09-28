@@ -6105,6 +6105,9 @@ def compute_IIM(
     return value
 
 
+_COMPUTE_CI_DEPRECATION_WARNED = False
+
+
 def compute_CI(
     ram: float,
     pdi: float,
@@ -6118,7 +6121,53 @@ def compute_CI(
     return_details: bool = False,
 ):
     """
-    Reference-normalised weighted geometric Consciousness Index (CI).
+    Deprecated alias of the legacy geometric-mean CI (not a gate).
+
+    Emits a ``DeprecationWarning`` once per process and otherwise behaves
+    exactly as before (see ``_compute_ci_legacy``). Attribution uses
+    ``impact_pipeline.evidence.mpc_verdict`` (three-valued MPC verdict) and
+    the secondary summary ``impact_pipeline.evidence.degree`` (MPC degree,
+    only for ATTRIBUTED verdicts).
+    """
+    global _COMPUTE_CI_DEPRECATION_WARNED
+    if not _COMPUTE_CI_DEPRECATION_WARNED:
+        _COMPUTE_CI_DEPRECATION_WARNED = True
+        warnings.warn(
+            "compute_CI is deprecated: the legacy geometric-mean CI is not an "
+            "attribution gate. Use impact_pipeline.evidence.mpc_verdict for the "
+            "MPC verdict and impact_pipeline.evidence.degree for the MPC degree.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    return _compute_ci_legacy(
+        ram,
+        pdi,
+        nas,
+        iim,
+        srpi,
+        references=references,
+        weights=weights,
+        defined=defined,
+        eps=eps,
+        return_details=return_details,
+    )
+
+
+def _compute_ci_legacy(
+    ram: float,
+    pdi: float,
+    nas: float,
+    iim: float,
+    srpi: float,
+    references: dict = None,
+    weights: dict = None,
+    defined: dict = None,
+    eps: float = 1e-12,
+    return_details: bool = False,
+):
+    """
+    Reference-normalised weighted geometric Consciousness Index (CI); legacy
+    geometric-mean CI (not a gate), kept for backward compatibility.
 
     CI = (RAM*^alpha) (PDI+*^beta) (NAS*^gamma) (IIM_can*^delta) (SRPI*^rho)
 

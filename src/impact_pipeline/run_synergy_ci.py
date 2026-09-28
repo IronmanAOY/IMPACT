@@ -236,6 +236,10 @@ def run_s_ci(
     hardware_target="cpu",
     ram_params=None,
     event_options=None,
+    null_surrogates=0,
+    necessity_set=None,
+    applicability_registry=None,
+    null_seed=0,
 ):
     """
     Step 2: synergy S, MPC metrics and CI over subjects/sessions/runs.
@@ -245,6 +249,9 @@ def run_s_ci(
     are keyword arguments forwarded to ``load_onsets_fn`` (e.g.
     ``allow_implicit_stimuli``/``allow_response_time_feedback``, both off by
     default so RAM stays undefined without measured goal/feedback structure).
+    ``null_surrogates``, ``necessity_set``, ``applicability_registry`` and
+    ``null_seed`` configure the MPC evidence layer (MPC verdict columns; see
+    :func:`impact_pipeline.synergy_ci.compute_synergy_ci`).
     """
     if mpc_metrics is None and compute_ci:
         log.info("2/9 Computing Synergy & Consciousness Index (CI)")
@@ -339,6 +346,10 @@ def run_s_ci(
         provenance_label=provenance_label,
         modality=modality,
         hardware_target=hardware_target,
+        null_surrogates=null_surrogates,
+        necessity_set=necessity_set,
+        applicability_registry=applicability_registry,
+        null_seed=null_seed,
     )
     df['session']=df['session'].replace({'audioawake':'awake','audiodeep':'deep'})
     meta_cols = [

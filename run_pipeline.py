@@ -412,6 +412,9 @@ def _apply_metric_subset(df, df_mean, mpc_metrics=None, compute_ci=True):
                       "RAM_norm", "PDI_norm", "NAS_norm", "IIM_norm", "SRPI_norm"):
             if extra in df.columns:
                 keep_df.append(extra)
+    from impact_pipeline.synergy_ci import MPC_EVIDENCE_COLUMNS
+
+    keep_df.extend(c for c in MPC_EVIDENCE_COLUMNS if c in df.columns)
 
     df_filtered = df.loc[:, [c for c in keep_df if c in df.columns]].copy()
 
@@ -1384,6 +1387,7 @@ def _run_hunter_stage(
     run_parameters=None,
     atlas_robustness=True,
     ci_reference=None,
+    mpc_evidence_options=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
@@ -1452,6 +1456,8 @@ def _run_hunter_stage(
             "iim_settings": _json_safe(dict(iim_settings or {})),
             "atlas_robustness": bool(atlas_robustness),
             "run_parameters": _json_safe(dict(run_parameters or {})),
+            # Finalize computes the MPC verdict with the options of this build.
+            "mpc_evidence": _json_safe(dict(mpc_evidence_options or {})),
         }
         manifest = prepare_hunter_campaign(
             data_dir=prep_out,
@@ -1566,6 +1572,7 @@ def _run_hunter_stage(
         mpc_metrics=ctx["mpc_metrics"],
         compute_ci=bool(ctx["compute_ci"]),
         ci_reference=ctx.get("ci_reference", ci_reference),
+        **dict(ctx.get("mpc_evidence") or mpc_evidence_options or {}),
         condition=ctx["condition"],
         tr=ctx["tr"],
         onsets=None,
@@ -1707,6 +1714,27 @@ def _run_hunter_stage(
     return None
 
 
+def _mpc_evidence_options(
+    null_surrogates=0, necessity_set=None, applicability_registry=None
+):
+    """MPC evidence-layer options for step 2 (validated, JSON-safe, portable)."""
+    from impact_pipeline.evidence import normalize_necessity_set
+
+    k = int(null_surrogates or 0)
+    if k < 0:
+        raise ValueError("--null-surrogates must be >= 0")
+    registry = None
+    if applicability_registry is not None:
+        registry = Path(applicability_registry).expanduser().resolve()
+        if not registry.is_file():
+            raise FileNotFoundError(f"Applicability registry not found: {registry}")
+    return {
+        "null_surrogates": k,
+        "necessity_set": list(normalize_necessity_set(necessity_set)),
+        "applicability_registry": None if registry is None else str(registry),
+    }
+
+
 def _normalize_subjects(subjects):
     """Accept subject IDs with or without the 'sub-' prefix everywhere."""
     if subjects is None:
@@ -1774,11 +1802,17 @@ def main(
     hunter_workers_per_task=None,
     atlas_robustness=True,
     cli_argv=None,
+    null_surrogates=0,
+    necessity_set=None,
+    applicability_registry=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
     _assert_expected_runtime_env()
     subjects = _normalize_subjects(subjects)
+    mpc_evidence_options = _mpc_evidence_options(
+        null_surrogates, necessity_set, applicability_registry
+    )
 
     catalog_entry = get_report_dataset(dataset_id)
     cfg = DATASET_CONFIGS.get(dataset_id)
@@ -1914,6 +1948,7 @@ def main(
             hunter_array_index=hunter_array_index,
             hunter_shards_per_node=hunter_shards_per_node,
             ci_reference=ci_reference,
+            mpc_evidence_options=mpc_evidence_options,
         )
         return
     if not bids_root.exists():
@@ -2108,6 +2143,7 @@ def main(
             "rest_rules": cfg.get("eeg_rest_rules"),
         },
         "iim": iim_settings,
+        "mpc_evidence": mpc_evidence_options,
         "pdi_params": pdi_params,
         "pdi_require_explicit_params": pdi_require_explicit_params,
         "pdi_require_strict_baseline": pdi_require_strict_baseline,
@@ -2281,6 +2317,7 @@ def main(
             run_parameters=run_parameters,
             atlas_robustness=atlas_robustness,
             ci_reference=ci_reference,
+            mpc_evidence_options=mpc_evidence_options,
         )
         _write_run_provenance_manifest(
             status="hunter_campaign_built",
@@ -2342,6 +2379,7 @@ def main(
             mpc_metrics=mpc_metrics,
             compute_ci=compute_ci,
             ci_reference=ci_reference,
+            **mpc_evidence_options,
             condition=condition,
             tr=metric_tr,
             onsets=None,
@@ -2642,6 +2680,33 @@ if __name__ == '__main__':
         ),
     )
     parser.add_argument(
+        '--null-surrogates',
+        type=int,
+        default=0,
+        help=(
+            "Surrogates per run and component for the null-anchored MPC verdict "
+            "(0 = no null calibration: every verdict is UNDETERMINED with "
+            "NO_NULL_CALIBRATION; K > 0 also puts the metric columns and CI on "
+            "the null-calibrated scale)."
+        ),
+    )
+    parser.add_argument(
+        '--necessity-set',
+        default=None,
+        help=(
+            "Comma-separated principles the MPC verdict requires "
+            "(e.g. RAM,PDI,NAS,IIM,SRPI; default all five)."
+        ),
+    )
+    parser.add_argument(
+        '--applicability-registry',
+        default=None,
+        help=(
+            "JSON registry of validated estimator configurations; evidence from "
+            "unvalidated estimators is UNDEFINED (ESTIMATOR_NOT_VALIDATED)."
+        ),
+    )
+    parser.add_argument(
         '--atlas',
         default=None,
         help="Override atlas/time-series key used in preprocessed filenames.",
@@ -2829,4 +2894,7 @@ if __name__ == '__main__':
         hunter_workers_per_task=args.hunter_workers_per_task,
         atlas_robustness=not args.no_atlas_robustness,
         cli_argv=sys.argv,
+        null_surrogates=args.null_surrogates,
+        necessity_set=args.necessity_set,
+        applicability_registry=args.applicability_registry,
     )
