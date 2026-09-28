@@ -3,7 +3,7 @@
 ## What These Objects Are
 
 These are **software smoke-test objects** for the RAM, PDI, NAS, IIM, SRPI and
-CI code paths. Each run starts from a real OpenNeuro recording (fMRI voxel time
+legacy CI code paths (`docs/metrics.md`). Each run starts from a real OpenNeuro recording (fMRI voxel time
 series or scalp-EEG channels). `scripts/generate_real_derived_synth_completed.py`
 then plants known structure on top of it and records every planted quantity,
 with its ground-truth direction, in the manifests.
@@ -219,24 +219,29 @@ computation:
 | `iim_max_state_space` | 1500 |
 
 This is not the `run_pipeline.py` default. As of this writing, that default uses
-all mechanism and purview sizes over up to 10 nodes at 2 bins. Use `--iim-bins`, `--iim-max-nodes`,
-`--iim-max-timepoints`, `--iim-max-mechanism-size` and `--iim-max-purview-size`
-to validate with another configuration; the configuration used is recorded. The
+all mechanism and purview sizes over up to 10 nodes at 2 bins (3 bins requested,
+reduced by the state budget). Use the generator options `--iim-bins`,
+`--iim-max-nodes`, `--iim-max-timepoints`, `--iim-max-mechanism-size` and
+`--iim-max-purview-size` to validate with another configuration; the
+configuration used is recorded. The
 RAM parameters are the pipeline's own modality presets
 (`run_synergy_ci.RAM_PARAM_PRESETS`, the values `run_pipeline.py` uses); up to
 generator 2.0.0 a private copy kept the obsolete `quality_ridge=1e-4`. The PDI,
 NAS and SRPI parameters for fMRI and EEG are the `*_PARAMS` dictionaries in the
 generator.
 
-## Using The Published Archive
+## Using The Archive
 
-The open archive is at:
+The archive has the reserved DOI:
 
 ```text
 https://doi.org/10.5281/zenodo.20786673
 ```
 
-It contains `impact-synergy-real-derived-synthetic-test-objects.tar.gz`,
+It is **not yet published**. Until it is, regenerate the objects from the
+OpenNeuro sources (see "Regenerating From OpenNeuro Sources" below). The
+instructions in this section apply once the record is public. It contains
+`impact-synergy-real-derived-synthetic-test-objects.tar.gz`,
 `release_manifest.json` and `SHA256SUMS.txt`.
 
 > The archive was built on 2026-06-21 by generator 1.x. Its shipped reports use
