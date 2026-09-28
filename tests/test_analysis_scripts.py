@@ -1,8 +1,7 @@
 """Tests of scripts/necessity_power.py, scripts/simulate_rule_recovery.py and
-scripts/null_calibration.py (known answers, determinism, evidence-API adapters)."""
-import dataclasses
+scripts/null_calibration.py (known answers, determinism, the v2 evidence rule
+under a declared protocol)."""
 import math
-import types
 
 import numpy as np
 import pandas as pd
@@ -182,17 +181,80 @@ def test_expected_exchangeable_rate_and_local_rule_agree():
     assert hits / reps == pytest.approx(exp, abs=0.006)
 
 
-def test_local_fallback_rule_equals_the_v1_evidence_rule():
-    from impact_pipeline import evidence as ev1
+NCAL_FAMILIES = {"RAM": "onset_jitter", "PDI": "circular_shift",
+                 "NAS": "block_circular_shift", "IIM": "circular_shift",
+                 "SRPI": "yoked_label_permutation"}
 
+
+def _ncal_protocol(scale="excess", value=1.0):
+    from impact_pipeline import evidence as ev
+
+    return ev.Protocol(
+        null_families=NCAL_FAMILIES,
+        reference={"kind": "external", "scale": scale,
+                   "values": {p: value for p in ev.PRINCIPLES},
+                   "se": {p: 0.05 for p in ev.PRINCIPLES}},
+        name="ncal-test")
+
+
+def test_classify_is_the_v2_evidence_rule_under_the_protocol():
+    from impact_pipeline import evidence as ev
+
+    proto = _ncal_protocol()
     rng = np.random.default_rng(11)
-    for _ in range(5000):
-        est, nm = rng.normal(0, 3), rng.normal(0, 1)
-        nsd = float(rng.choice([0.0, rng.exponential(1.0)]))
-        se = float(rng.choice([0.0, rng.exponential(0.5)]))
-        ref = ev1.component_status(ev1.ComponentEvidence(
-            principle="PDI", estimate=est, null_mean=nm, null_sd=nsd, se=se))[0]
-        assert ncal.local_status(est, nm, nsd, se) == ref.value
+    n_t = 0
+    for _ in range(3000):
+        comp = {"estimate": rng.normal(0.5, 0.6), "null_mean": rng.normal(0, 0.2),
+                "null_sd": float(rng.exponential(0.2)),
+                "n_null": int(rng.integers(0, 30)),
+                "se": float(rng.choice([0.0, rng.exponential(0.2)])),
+                "se_n": int(rng.choice([0, 3, 5])), "defined": True,
+                "null_family": "block_circular_shift"}
+        st, reason, impl, a = ncal.classify("NAS", comp, proto)
+        se_df = comp["se_n"] - 1 if comp["se_n"] >= 2 else None
+        ref = ev.component_assessment(ev.ComponentEvidence(
+            "NAS", comp["estimate"], comp["null_mean"], comp["null_sd"],
+            se=comp["se"], n_null=comp["n_null"], se_df=se_df, reference=1.0,
+            reference_se=0.05, reference_scale="excess"))
+        assert (st, reason, impl) == (ref.status.value, ref.reason, "evidence")
+        assert a.to_dict() == ref.to_dict()
+        n_t += se_df is not None and comp["se"] > 0
+    assert n_t > 500
+
+
+def test_classify_needs_a_sampling_se_an_anchor_and_the_declared_family():
+    proto = _ncal_protocol()
+    comp = {"estimate": 3.0, "null_mean": 0.0, "null_sd": 1.0, "n_null": 19,
+            "defined": True, "statistic": "raw", "null_family": "circular_shift",
+            "se": 0.1, "se_n": 5}
+    st, reason, impl, a = ncal.classify("PDI", comp, proto)
+    assert (st, impl) == ("PRESENT", "evidence") and a.df > 4.0
+    assert ncal.classify("PDI", {**comp, "estimate": -0.5}, proto)[0] == "ABSENT"
+    # no sampling SE: UNDEFINED whatever the estimate (no null-MC stand-in)
+    for se in (None, 0.0):
+        st, reason, _, _ = ncal.classify("PDI", {**comp, "se": se}, proto)
+        assert (st, reason) == ("UNDEFINED", "NO_SAMPLING_SE")
+    # a family other than the declared one is not judged
+    st, reason, _, a = ncal.classify("PDI", {**comp, "null_family": "fourier"}, proto)
+    assert st == "UNDEFINED" and reason.startswith("NULL_FAMILY_MISMATCH") and a is None
+    # an anchor at or below the null is INVALID_ANCHORS
+    st, reason, _, _ = ncal.classify("PDI", comp, _ncal_protocol(value=0.0))
+    assert (st, reason) == ("UNDEFINED", "INVALID_ANCHORS")
+    # the legacy v1 rule is an explicit, labelled diagnostic
+    st, _, impl, a = ncal.classify("PDI", comp, proto, status_rule="legacy_v1")
+    assert (st, impl, a) == ("PRESENT", "legacy_v1", None)
+    assert ncal.classify("PDI", {**comp, "defined": False, "reason": "x"}, proto,
+                         status_rule="legacy_v1")[:2] == ("UNDEFINED", "x")
+    with pytest.raises(ValueError, match="status_rule"):
+        ncal.classify("PDI", comp, proto, status_rule="v1")
+    # null systems have no cohort: the protocol needs an external reference
+    from impact_pipeline import evidence as ev
+
+    with pytest.raises(ValueError, match="external reference"):
+        ncal.resolve_calibration_protocol(ev.Protocol())
+    assert ncal.kleene_verdict(["PRESENT", "PRESENT"]) == "MPC_CONSISTENT"
+    assert ncal.kleene_verdict(["PRESENT", "ABSENT", "UNDEFINED"]) == "EXCLUDED"
+    assert ncal.kleene_verdict(["PRESENT", "UNDEFINED"]) == "UNDETERMINED"
 
 
 def test_expected_rate_uses_the_null_size_of_calibrated_replicates():
@@ -213,57 +275,13 @@ def test_expected_rate_uses_the_null_size_of_calibrated_replicates():
         ncal.expected_exchangeable_rate(19))
 
 
-def test_classify_uses_v1_and_v2_style_evidence_apis():
-    comp = {"estimate": 3.0, "null_mean": 0.0, "null_sd": 1.0, "n_null": 19,
-            "defined": True, "statistic": "raw"}
-    from impact_pipeline import evidence as ev1
-
-    st, _, impl = ncal.classify("PDI", comp, ev1)
-    assert (st, impl) == ("PRESENT", "evidence")
-    assert ncal.classify("PDI", {**comp, "estimate": 0.2}, ev1)[0] == "ABSENT"
-
-    @dataclasses.dataclass(frozen=True)
-    class EvidenceV2:
-        principle: str
-        estimate: float
-        null_mean: float = float("nan")
-        null_sd: float = float("nan")
-        se: float = 0.0
-        reference: float = float("nan")
-        exact: bool = False
-
-    class Result:
-        def __init__(self, status, reason):
-            self.status, self.reason = status, reason
-
-    def status_v2(ev):
-        if not ev.se > 0 and not ev.exact:
-            return Result(types.SimpleNamespace(value="UNDEFINED"), "NO_SAMPLING_SE")
-        return Result(types.SimpleNamespace(value="PRESENT"), None)
-
-    v2 = types.SimpleNamespace(ComponentEvidence=EvidenceV2, component_status=status_v2)
-    assert ncal.classify("PDI", comp, v2) == ("UNDEFINED", "NO_SAMPLING_SE", "evidence")
-    assert ncal.classify("PDI", comp, v2, se_mode="null_mc")[0] == "PRESENT"
-
-    def broken(ev, *, protocol):  # a v2 signature this adapter cannot satisfy
-        raise AssertionError("not called")
-
-    v2b = types.SimpleNamespace(ComponentEvidence=EvidenceV2, component_status=broken)
-    st, _, impl = ncal.classify("PDI", comp, v2b)
-    assert st == "PRESENT" and impl.startswith("local_v1")
-    assert ncal.classify("PDI", comp, None)[2] == "local_v1(no_evidence_module)"
-    assert ncal.kleene_verdict(["PRESENT", "PRESENT"]) == "MPC_CONSISTENT"
-    assert ncal.kleene_verdict(["PRESENT", "ABSENT", "UNDEFINED"]) == "EXCLUDED"
-    assert ncal.kleene_verdict(["PRESENT", "UNDEFINED"]) == "UNDETERMINED"
-
-
 def test_small_end_to_end_run_is_deterministic(tmp_path):
     import logging
     import warnings
 
     kw = dict(kinds=("ar1", "surrogate_linear"), n_times=(1200,), n_nodes=(8,),
               replicates=2, null_surrogates=5, metrics=("PDI", "NAS", "SRPI"),
-              iim_macro_nodes=3, seed=7)
+              iim_macro_nodes=3, seed=7, se_groups=2, protocol=_ncal_protocol())
     disable_before = logging.root.manager.disable
     filters_before = list(warnings.filters)
     a = ncal.run(tmp_path / "a", **kw)
@@ -284,4 +302,10 @@ def test_small_end_to_end_run_is_deterministic(tmp_path):
     for name in ("null_calibration_replicates.csv", "null_calibration_rates.csv",
                  "null_calibration_verdicts.csv", "null_calibration.json"):
         assert (tmp_path / "a" / name).is_file()
-    assert a["summary"]["evidence_api"] in ("v1", "v2")
+    assert a["summary"]["evidence_api"] == "v2"
+    assert a["summary"]["protocol_hash"] == _ncal_protocol().hash
+    rep = a["replicates"]
+    assert set(rep["status_impl"]) == {"evidence"}
+    # every defined component has a jackknife SE over 2 groups (1 df)
+    ok = rep["defined"] & (rep["se_n"] == 2)
+    assert ok.any() and np.isfinite(rep.loc[ok, "c"]).all()

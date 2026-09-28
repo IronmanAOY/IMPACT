@@ -7,10 +7,21 @@ For every null family, run length ``T`` (samples) and node count, ``R``
 replicate null systems are generated and every applicable estimator is run
 through the MPC-Bench in-memory runner (``bench.export.run_in_memory``: the
 same estimator settings, bearer views and component nulls as the bench),
-with ``K`` null surrogates. Each component's evidence is classified by the
-installed evidence layer (``impact_pipeline.evidence``, imported lazily; v1
-and v2 APIs are both accepted: ComponentEvidence fields are introspected and
-verdict names are normalised to EXCLUDED / MPC_CONSISTENT / UNDETERMINED).
+with ``K`` null surrogates and a delete-a-group jackknife SE over ``G``
+groups (``--se-groups``). Each component is classified by the evidence layer
+v2 (``impact_pipeline.evidence.component_assessment``) under a declared
+protocol (``--protocol``, default ``protocols/mpc_bench_v1.json``): the
+construct scale ``c = (m - nu) / (rho - nu)`` with the protocol's external
+reference anchor (the bench positive control), its cutoffs ``(z, delta)`` and
+``alpha``, the jackknife SE with ``G - 1`` degrees of freedom (Student-t
+bounds) and the protocol's declared null families (a different family is
+UNDEFINED, ``NULL_FAMILY_MISMATCH``). A component without a sampling SE is
+UNDEFINED (``NO_SAMPLING_SE``) and one without an anchor UNDEFINED
+(``INVALID_ANCHORS``), so a false PRESENT can only come from the calibrated
+rule. ``--status-rule legacy_v1`` instead applies the superseded v1 null-SD
+rule (margin ``(m - nu) / sigma_null`` against ``z_present``, TOST for
+ABSENT) as a documented diagnostic comparator; its statuses carry
+``status_impl = legacy_v1`` and never count for the registry's H0.
 
 Null families (data generated here, seeded per replicate):
 
@@ -32,28 +43,32 @@ data, so RAM and SRPI are also null. Declared meta: workspace = the first
 of equal node groups outside the workspace).
 
 Rates per (family, T, nodes, principle): false-PRESENT, ABSENT and UNDEFINED
-rates with Wilson intervals, the rate of margins above ``z_{1-alpha}``, the
-false-PRESENT rate expected for an exchangeable Gaussian null under the v1
-rule with ``K`` surrogates (``P(sqrt(1 + 1/K) t_{K-1} > z_present)``), and the
-entry check of spec V2-5 (a): rate within ``alpha +- 0.02``. Verdict-level:
-the rate of MPC_CONSISTENT (and EXCLUDED) verdicts on the null systems over
-the principles computed (Kleene AND of the statuses).
+rates with Wilson intervals, the mean and SD of ``c``, the rate of null-SD
+margins above ``z_{1-alpha}`` and the false-PRESENT rate expected for an
+exchangeable Gaussian null under the v1 rule with ``K`` surrogates
+(``P(sqrt(1 + 1/K) t_{K-1} > z_present)``; v1 diagnostics), and the entry
+check of spec V2-5 (a): rate at most ``alpha + 0.02`` (one-sided, the
+registry default; a calibrated v2 rule has a false-PRESENT rate far below
+``alpha``) and within ``alpha +- 0.02``. Verdict-level: the rate of
+MPC_CONSISTENT (and EXCLUDED) verdicts on the null systems over the
+principles computed (Kleene AND of the statuses).
 
 Outputs (``--out``): ``null_calibration_replicates.csv``,
 ``null_calibration_rates.csv``, ``null_calibration_verdicts.csv`` and
-``null_calibration.json`` (provenance, evidence API version, parameters).
+``null_calibration.json`` (provenance, protocol and its hash, parameters).
 
 Example::
 
     python scripts/null_calibration.py --out outputs/null_calibration \
+        --protocol protocols/mpc_bench_v1.json \
         --kinds ar1,pink,surrogate_iid,surrogate_linear --T 1200,2400 \
-        --nodes 8,16 --replicates 100 --null-surrogates 19 --workers 8
+        --nodes 8,16 --replicates 100 --null-surrogates 19 --se-groups 5 \
+        --workers 8
 """
 from __future__ import annotations
 
 import argparse
 import contextlib
-import dataclasses
 import hashlib
 import itertools
 import json
@@ -76,7 +91,9 @@ if str(SRC_ROOT) not in sys.path:
 
 from impact_pipeline.necessity import normalize_status  # noqa: E402
 
-CALIBRATION_VERSION = "null-calibration/1.0.0"
+CALIBRATION_VERSION = "null-calibration/2.0.0"
+DEFAULT_PROTOCOL = REPO_ROOT / "protocols" / "mpc_bench_v1.json"
+STATUS_RULES = ("v2", "legacy_v1")
 PRINCIPLES = ("RAM", "PDI", "NAS", "IIM", "SRPI")
 NULL_KINDS = {
     "ar1": PRINCIPLES,
@@ -224,21 +241,40 @@ def null_system(kind, n_nodes, n_time, seed, *, dt=0.05, iim_macro_nodes=4,
 
 
 # --------------------------------------------------------------------------
-# evidence layer (lazy; v1 or v2)
+# evidence layer v2 (protocol) and the legacy v1 comparator
 # --------------------------------------------------------------------------
-def evidence_api():
-    """``(module, version)`` of the installed evidence layer, or ``(None, None)``."""
-    try:
-        from impact_pipeline import evidence as ev
-    except Exception:  # noqa: BLE001 - the calibration still reports margins
-        return None, None
-    names = {m.name for m in getattr(ev, "Verdict", [])}
-    return ev, ("v2" if "MPC_CONSISTENT" in names else "v1")
+def resolve_calibration_protocol(protocol):
+    """
+    The protocol of the classification (``evidence.Protocol``, dict or JSON
+    path; None: ``protocols/mpc_bench_v1.json`` of the checkout). It must
+    declare an ``external`` reference: null systems have no cohort.
+    """
+    from impact_pipeline import evidence as ev
+
+    if protocol is None and DEFAULT_PROTOCOL.is_file():
+        protocol = str(DEFAULT_PROTOCOL)
+    proto = ev.resolve_protocol(protocol)
+    if proto is None:
+        raise ValueError(
+            "null calibration needs a protocol with an external reference "
+            f"anchor (--protocol; {DEFAULT_PROTOCOL} not found)"
+        )
+    if proto.reference.get("kind") != "external":
+        raise ValueError(
+            "null calibration needs an external reference anchor; the "
+            f"protocol's reference is {proto.reference.get('kind')!r}"
+        )
+    return proto
 
 
 def local_status(estimate, null_mean, null_sd, se=0.0, z_present=1.645,
                  delta_equiv=1.0, alpha=0.05):
-    """The v1 status rule (fallback when the evidence layer cannot be used)."""
+    """
+    The superseded v1 status rule (null-SD units, no reference anchor), kept
+    as a documented diagnostic comparator (``--status-rule legacy_v1``):
+    PRESENT if ``(m - nu) - z_{1-alpha} se > z_present sigma_null``, ABSENT
+    if ``|m - nu| + z_{1-alpha} se <= delta_equiv sigma_null`` (TOST).
+    """
     vals = [estimate, null_mean, null_sd, se]
     if not all(np.isfinite(v) for v in vals) or null_sd <= 0 or se < 0:
         return "UNDEFINED"
@@ -251,45 +287,63 @@ def local_status(estimate, null_mean, null_sd, se=0.0, z_present=1.645,
     return "UNDEFINED"
 
 
-def classify(principle, comp, ev_mod, *, reference=None, se_mode="zero"):
-    """``(status, reason, impl)`` of one component record."""
+def _se_df(comp):
+    if comp.get("se_df") is not None:
+        return float(comp["se_df"])
+    n = comp.get("se_n")
+    if n is not None and np.isfinite(float(n)) and int(n) >= 2:
+        return float(int(n) - 1)
+    return None
+
+
+def classify(principle, comp, protocol, *, status_rule="v2"):
+    """
+    ``(status, reason, impl, assessment)`` of one component record.
+
+    ``v2``: ``evidence.component_assessment`` on the construct scale with the
+    protocol's reference, cutoffs and alpha, the component's sampling SE
+    (``se``, ``se_df`` or ``se_n - 1`` degrees of freedom) and null family
+    check (``impl = 'evidence'``). ``legacy_v1``: :func:`local_status`
+    (``impl = 'legacy_v1'``, no assessment).
+    """
+    from impact_pipeline import evidence as ev
+
     est, nm, nsd = (float(comp.get(k, np.nan)) for k in ("estimate", "null_mean",
                                                          "null_sd"))
-    n_null = int(comp.get("n_null", 0) or 0)
-    if "se" in comp and comp["se"] is not None:
-        se = float(comp["se"])
-    elif se_mode == "null_mc" and n_null > 0 and np.isfinite(nsd):
-        se = nsd / math.sqrt(n_null)
-    else:
-        se = 0.0
-    if ev_mod is not None:
-        try:
-            fields = {f.name for f in dataclasses.fields(ev_mod.ComponentEvidence)}
-            kw = {
-                "principle": principle, "estimate": est, "null_mean": nm,
-                "null_sd": nsd, "se": se, "defined": bool(comp.get("defined", True)),
-                "reason": comp.get("reason"), "estimator": comp.get("statistic"),
-                "null_family": comp.get("null_family"), "n_null": n_null,
-                "bearer_id": comp.get("bearer_id"),
-            }
-            if reference is not None:
-                kw["reference"] = float(reference)
-            kw = {k: v for k, v in kw.items() if k in fields}
-            ev = ev_mod.ComponentEvidence(**kw)
-            res = ev_mod.component_status(ev)
-            st = res[0] if isinstance(res, tuple) else getattr(res, "status", res)
-            reason = (res[2] if isinstance(res, tuple) and len(res) > 2
-                      else getattr(res, "reason", None))
-            return normalize_status(st), reason, "evidence"
-        except (TypeError, ValueError, AttributeError) as exc:
-            fallback = f"local_v1({type(exc).__name__})"
-        else:  # pragma: no cover - the try returns
-            fallback = "local_v1"
-    else:
-        fallback = "local_v1(no_evidence_module)"
-    if not bool(comp.get("defined", True)):
-        return "UNDEFINED", comp.get("reason") or "NOT_DEFINED", fallback
-    return local_status(est, nm, nsd, se), None, fallback
+    if status_rule == "legacy_v1":
+        if not bool(comp.get("defined", True)):
+            return "UNDEFINED", comp.get("reason") or "NOT_DEFINED", "legacy_v1", None
+        se = comp.get("se")
+        se = 0.0 if se is None or not np.isfinite(float(se)) else float(se)
+        return local_status(est, nm, nsd, se), None, "legacy_v1", None
+    if status_rule != "v2":
+        raise ValueError(f"status_rule must be one of {STATUS_RULES}")
+    channel = str(comp.get("channel") or "default")
+    ref = protocol.reference
+    key = next((k for k in (f"{principle}:{channel}", principle)
+                if k in ref.get("values", {})), None)
+    anchor = {}
+    if key is not None:
+        anchor = {"reference": ref["values"][key],
+                  "reference_se": ref.get("se", {}).get(key),
+                  "reference_scale": ref.get("scale", "excess")}
+    se = comp.get("se")
+    item = ev.ComponentEvidence(
+        principle=principle, estimate=est, null_mean=nm, null_sd=nsd,
+        se=0.0 if se is None else float(se), se_df=_se_df(comp),
+        channel=channel, defined=bool(comp.get("defined", True)),
+        reason=comp.get("reason"), null_family=comp.get("null_family"),
+        n_null=int(comp.get("n_null", 0) or 0), **anchor,
+    )
+    declared = protocol.null_families.get(principle)
+    if declared is not None and item.null_family is not None and (
+            str(item.null_family) != declared):
+        return ("UNDEFINED",
+                f"{ev.REASON_NULL_FAMILY_MISMATCH}:{declared}/{item.null_family}",
+                "evidence", None)
+    a = ev.component_assessment(item, cutoff=protocol.cutoff_for(principle),
+                                alpha=protocol.alpha)
+    return a.status.value, a.reason, "evidence", a
 
 
 def kleene_verdict(statuses):
@@ -377,7 +431,8 @@ def run_replicate(task: dict) -> list:
     with _quiet():
         res = run_in_memory(system, metrics=metrics, params=task.get("params"),
                             null_surrogates=task["null_surrogates"],
-                            null_seed=_seed(seed, "null"))
+                            null_seed=_seed(seed, "null"),
+                            se_groups=task["se_groups"])
         srpi = res["components"].get("SRPI")
         if (srpi is not None and task.get("srpi_agency_fix", True)
                 and AGENCY_FIX_REASON in str(srpi.get("reason") or "")):
@@ -386,13 +441,15 @@ def run_replicate(task: dict) -> list:
                 task.get("params"))
             runner["SRPI"] = "null_calibration.srpi_agency_component"
     seconds = time.perf_counter() - t0
-    ev_mod, _ = evidence_api()
+    from impact_pipeline import evidence as ev
+
+    proto = ev.Protocol.from_dict(task["protocol"])
     rows = []
+    nan = float("nan")
     for p in metrics:
         comp = res["components"].get(p, {})
-        st, reason, impl = classify(p, comp, ev_mod,
-                                    reference=(task.get("reference") or {}).get(p),
-                                    se_mode=task["se_mode"])
+        st, reason, impl, a = classify(p, comp, proto,
+                                       status_rule=task["status_rule"])
         est, nm, nsd = (float(comp.get(k, np.nan)) for k in ("estimate", "null_mean",
                                                              "null_sd"))
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -405,6 +462,13 @@ def run_replicate(task: dict) -> list:
             "null_family": comp.get("null_family"), "statistic": comp.get("statistic"),
             "defined": bool(comp.get("defined", False)),
             "estimator_reason": comp.get("reason"), "margin": margin,
+            "se": float(comp.get("se") if comp.get("se") is not None else nan),
+            "se_n": int(comp.get("se_n", 0) or 0),
+            "c": nan if a is None else a.c,
+            "c_se": nan if a is None else a.se,
+            "c_df": nan if a is None else a.df,
+            "c_lower": nan if a is None else a.lower,
+            "c_upper": nan if a is None else a.upper,
             "status": st, "status_reason": reason, "status_impl": impl,
             "runner": runner[p], "seconds_system": round(seconds, 3),
         })
@@ -442,6 +506,8 @@ def summarise(rep: pd.DataFrame, alpha=0.05, z_present=1.645) -> tuple:
         rate = k_p / n if n else np.nan
         margins = sub["margin"].to_numpy(dtype=float)
         fin = np.isfinite(margins)
+        cs = sub["c"].to_numpy(dtype=float) if "c" in sub else np.full(n, np.nan)
+        cfin = np.isfinite(cs)
         # null size of the replicates that have a null (undefined components
         # record n_null = 0 and must not shrink the expected-rate K)
         with_null = sub["n_null"][sub["n_null"] > 0]
@@ -457,6 +523,8 @@ def summarise(rep: pd.DataFrame, alpha=0.05, z_present=1.645) -> tuple:
             "margin_mean": float(np.mean(margins[fin])) if fin.any() else np.nan,
             "margin_sd": (float(np.std(margins[fin], ddof=1))
                           if fin.sum() > 1 else np.nan),
+            "c_mean": float(np.mean(cs[cfin])) if cfin.any() else np.nan,
+            "c_sd": float(np.std(cs[cfin], ddof=1)) if cfin.sum() > 1 else np.nan,
             "median_n_null": k_null,
             "expected_rate_exchangeable_v1": expected_exchangeable_rate(k_null,
                                                                         z_present),
@@ -493,8 +561,15 @@ def summarise(rep: pd.DataFrame, alpha=0.05, z_present=1.645) -> tuple:
 def run(out_dir, *, kinds=("ar1", "pink", "surrogate_iid", "surrogate_linear"),
         n_times=(1200,), n_nodes=(8,), replicates=20, null_surrogates=19,
         metrics=PRINCIPLES, seed=0, dt=0.05, iim_macro_nodes=4, ar_coef=0.5,
-        pink_beta=1.0, params=None, reference=None, se_mode="zero", alpha=0.05,
-        workers=1, srpi_agency_fix=True) -> dict:
+        pink_beta=1.0, params=None, protocol=None, se_groups=5,
+        status_rule="v2", workers=1, srpi_agency_fix=True) -> dict:
+    """Run the calibration; the protocol's alpha sets the rate criteria."""
+    if status_rule not in STATUS_RULES:
+        raise ValueError(f"status_rule must be one of {STATUS_RULES}")
+    if int(se_groups) == 1 or int(se_groups) < 0:
+        raise ValueError("se_groups must be 0 (off) or >= 2")
+    proto = resolve_calibration_protocol(protocol)
+    alpha = float(proto.alpha)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     bad = sorted(set(kinds) - set(NULL_KINDS))
@@ -508,7 +583,8 @@ def run(out_dir, *, kinds=("ar1", "pink", "surrogate_iid", "surrogate_linear"),
          "seed": int(seed), "dt": float(dt), "iim_macro_nodes": int(iim_macro_nodes),
          "ar_coef": float(ar_coef), "pink_beta": float(pink_beta),
          "null_surrogates": int(null_surrogates), "metrics": tuple(metrics),
-         "params": params, "reference": reference, "se_mode": se_mode,
+         "params": params, "protocol": proto.to_dict(),
+         "se_groups": int(se_groups), "status_rule": status_rule,
          "srpi_agency_fix": bool(srpi_agency_fix)}
         for k, t, n, r in itertools.product(kinds, n_times, n_nodes,
                                             range(int(replicates)))
@@ -524,7 +600,6 @@ def run(out_dir, *, kinds=("ar1", "pink", "surrogate_iid", "surrogate_linear"),
     rates, verdicts = summarise(rep, alpha=alpha)
     rates.to_csv(out / "null_calibration_rates.csv", index=False)
     verdicts.to_csv(out / "null_calibration_verdicts.csv", index=False)
-    _, ev_version = evidence_api()
     try:
         from impact_pipeline.bench import export as bench_export
         from impact_pipeline.provenance import collect_code_version
@@ -538,12 +613,15 @@ def run(out_dir, *, kinds=("ar1", "pink", "surrogate_iid", "surrogate_linear"),
     prov["script_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     summary = {
         "version": CALIBRATION_VERSION,
-        "evidence_api": ev_version,
+        "evidence_api": "v2",
+        "status_rule": status_rule,
+        "protocol": proto.to_dict(),
+        "protocol_hash": proto.hash,
         "design": {"kinds": list(kinds), "n_times": list(n_times),
                    "n_nodes": list(n_nodes), "replicates": int(replicates),
                    "null_surrogates": int(null_surrogates), "metrics": list(metrics),
                    "dt": dt, "iim_macro_nodes": iim_macro_nodes, "ar_coef": ar_coef,
-                   "pink_beta": pink_beta, "se_mode": se_mode, "reference": reference,
+                   "pink_beta": pink_beta, "se_groups": int(se_groups),
                    "alpha": alpha, "band": BAND,
                    "srpi_agency_fix": bool(srpi_agency_fix),
                    "applicability": {k: list(v) for k, v in NULL_KINDS.items()}},
@@ -582,10 +660,14 @@ def main(argv=None) -> int:
     ap.add_argument("--ar-coef", type=float, default=0.5)
     ap.add_argument("--pink-beta", type=float, default=1.0)
     ap.add_argument("--params", default=None, help="estimator overrides (JSON/path)")
-    ap.add_argument("--reference", default=None,
-                    help="per-principle reference anchors (JSON/path; v2 c-scale)")
-    ap.add_argument("--se-mode", choices=("zero", "null_mc"), default="zero")
-    ap.add_argument("--alpha", type=float, default=0.05)
+    ap.add_argument("--protocol", default=None,
+                    help="evidence.Protocol JSON with an external reference anchor "
+                         f"(default {DEFAULT_PROTOCOL.relative_to(REPO_ROOT)})")
+    ap.add_argument("--se-groups", type=int, default=5,
+                    help="jackknife groups of the sampling SE (0 = none: every "
+                         "component UNDEFINED with NO_SAMPLING_SE)")
+    ap.add_argument("--status-rule", choices=STATUS_RULES, default="v2",
+                    help="legacy_v1: the superseded null-SD rule (diagnostic only)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--no-srpi-agency-fix", action="store_true",
@@ -602,9 +684,9 @@ def main(argv=None) -> int:
         null_surrogates=args.null_surrogates, metrics=_list(args.metrics),
         seed=args.seed, dt=args.dt, iim_macro_nodes=args.iim_macro_nodes,
         ar_coef=args.ar_coef, pink_beta=args.pink_beta,
-        params=_load_json_arg(args.params),
-        reference=_load_json_arg(args.reference), se_mode=args.se_mode,
-        alpha=args.alpha, workers=args.workers,
+        params=_load_json_arg(args.params), protocol=args.protocol,
+        se_groups=args.se_groups, status_rule=args.status_rule,
+        workers=args.workers,
         srpi_agency_fix=not args.no_srpi_agency_fix,
     )
     cols = ["null_kind", "n_time", "n_nodes", "principle", "n", "false_present_rate",
