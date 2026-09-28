@@ -412,7 +412,9 @@ def resolve_hunter_settings(
             if value is not None:
                 slurm[key] = value
         for key in ("phase1_time", "cut_time", "reduce_time"):
-            slurm[key] = format_walltime(parse_walltime(slurm[key]))
+            # Passed to --time verbatim: Slurm reads a bare number as minutes and
+            # accepts D-HH[:MM[:SS]], which the PBS walltime parser does not.
+            slurm[key] = str(slurm[key]).strip()
         slurm["cpus_per_task"] = int(slurm["cpus_per_task"])
         slurm["gpus_per_task"] = int(slurm.get("gpus_per_task") or 0)
         slurm["max_array_size"] = int(

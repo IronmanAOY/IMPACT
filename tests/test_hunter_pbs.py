@@ -355,6 +355,23 @@ def test_conda_is_optional_launcher(tmp_path, monkeypatch):
     assert "IMPACT_SKIP_ENV_CHECK" not in text
 
 
+def test_slurm_times_keep_slurm_semantics():
+    """A bare Slurm --time is minutes and D-HH is days-hours (not PBS seconds)."""
+    profile = get_execution_profile("hunter")
+    _, settings = resolve_hunter_settings(
+        profile,
+        scheduler="slurm",
+        env={
+            "IMPACT_HUNTER_CUT_TIME": "60",
+            "IMPACT_HUNTER_PHASE1_TIME": "1-12",
+            "IMPACT_HUNTER_REDUCE_TIME": "02:00:00",
+        },
+    )
+    assert settings["cut_time"] == "60"
+    assert settings["phase1_time"] == "1-12"
+    assert settings["reduce_time"] == "02:00:00"
+
+
 def test_slurm_backend_is_optional_and_keeps_gpu_off_reducers(tmp_path, monkeypatch):
     monkeypatch.setenv("IMPACT_HUNTER_GPUS_PER_TASK", "1")
     monkeypatch.setenv("IMPACT_HUNTER_SLURM_ARRAY_THROTTLE", "50")
