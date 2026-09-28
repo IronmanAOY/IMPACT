@@ -50,8 +50,14 @@ RAM_PARAM_DEFAULTS = {
     "response_window_sec": 3.0,
     "goal_objective_window_sec": 2.0,
     "feedback_window_sec": 2.0,
-    "quality_ridge": 1e-4,
+    "quality_ridge": 1.0,
     "require_explicit_feedback": True,
+    "require_explicit_goals": True,
+    "quality_response_estimate": "auto",
+    "quality_lag_sec": None,
+    "quality_cv_folds": 5,
+    "quality_null_samples": 200,
+    "quality_random_state": 0,
 }
 RAM_PARAM_KEYS = tuple(RAM_PARAM_DEFAULTS.keys())
 

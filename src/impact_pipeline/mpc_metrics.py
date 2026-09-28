@@ -1,6 +1,5 @@
 import numpy as np
 from nilearn.glm.first_level import make_first_level_design_matrix, run_glm
-from nilearn.glm.first_level import glover_hrf
 import pandas as pd
 import warnings
 import itertools
@@ -27,7 +26,6 @@ from impact_pipeline.hardware_backend import (
     accelerated_corrcoef,
     accelerated_dot,
     accelerated_pinv_dot,
-    accelerated_psd_invsqrt,
     accelerated_row_norm,
     accelerated_solve,
     accelerated_svd_values,
@@ -1249,9 +1247,69 @@ def _sanitize_onset_seconds(onsets, tr, n_tp):
     return arr[keep], idx[keep]
 
 
-def _window_mean_vectors(ts, event_idx, pre_samples, post_samples):
+def _in_range_onset_seconds(onsets, tr, n_tp):
+    """
+    Finite onsets inside the run, sorted, without per-sample deduplication.
+
+    Used for the magnitude regressor, where two events falling in the same
+    sample are still two responses.
+    """
+    arr = np.asarray(onsets if onsets is not None else [], dtype=float).reshape(-1)
+    arr = arr[np.isfinite(arr)]
+    max_t = max(0.0, (int(n_tp) - 1) * float(tr))
+    arr = arr[(arr >= 0.0) & (arr <= (max_t + 0.5 * float(tr)))]
+    return np.sort(arr)
+
+
+def _sanitize_onsets_with_values(onsets, values, tr, n_tp):
+    """
+    Sanitize event onsets while keeping per-event values aligned.
+
+    Same rules as :func:`_sanitize_onset_seconds` (finite, in range, sorted,
+    one event per sample), but each dropped onset drops its own value, events
+    with a non-finite value are dropped, and events mapping to the same sample
+    are merged (onsets and values averaged). Returns ``(seconds, idx, values)``.
+    """
+    on = np.asarray(onsets if onsets is not None else [], dtype=float).reshape(-1)
+    val = np.asarray(values, dtype=float).reshape(-1)
+    if on.size != val.size:
+        raise ValueError("onsets and values must have the same length")
+    empty = (
+        np.empty(0, dtype=float),
+        np.empty(0, dtype=np.int64),
+        np.empty(0, dtype=float),
+    )
+    keep = np.isfinite(on) & np.isfinite(val)
+    on = on[keep]
+    val = val[keep]
+    if on.size == 0:
+        return empty
+    tr = float(tr)
+    max_t = max(0.0, (int(n_tp) - 1) * tr)
+    keep = (on >= 0.0) & (on <= (max_t + 0.5 * tr))
+    on = on[keep]
+    val = val[keep]
+    idx = np.rint(on / tr).astype(np.int64)
+    keep = (idx >= 0) & (idx < int(n_tp))
+    idx = idx[keep]
+    on = on[keep]
+    val = val[keep]
+    if idx.size == 0:
+        return empty
+    uniq, inv = np.unique(idx, return_inverse=True)
+    cnts = np.bincount(inv, minlength=uniq.size).astype(float)
+    sec = np.bincount(inv, weights=on, minlength=uniq.size) / cnts
+    vals = np.bincount(inv, weights=val, minlength=uniq.size) / cnts
+    return sec, uniq.astype(np.int64), vals
+
+
+def _window_mean_vectors(ts, event_idx, pre_samples, post_samples, post_lag_samples=0):
     """
     Compute event-locked mean vectors over pre/post windows.
+
+    The pre window is ``[e - pre_samples, e)`` (strictly before onset) and the
+    post window is ``[e + post_lag_samples, e + post_lag_samples +
+    post_samples)``; the lag accounts for response delays (e.g. hemodynamic).
 
     Returns
     -------
@@ -1262,18 +1320,20 @@ def _window_mean_vectors(ts, event_idx, pre_samples, post_samples):
     n_regions, n_tp = ts.shape
     pre_samples = max(0, int(pre_samples))
     post_samples = max(1, int(post_samples))
+    lag = max(0, int(post_lag_samples))
+    event_idx = np.asarray(event_idx, dtype=np.int64).reshape(-1)
 
     if event_idx.size == 0:
         empty = np.empty((0, n_regions), dtype=float)
         return empty, empty, np.empty(0, dtype=np.int64)
 
-    valid = (event_idx - pre_samples >= 0) & (event_idx + post_samples <= n_tp)
+    valid = (event_idx - pre_samples >= 0) & (event_idx + lag + post_samples <= n_tp)
     idx = event_idx[valid]
     if idx.size == 0:
         empty = np.empty((0, n_regions), dtype=float)
         return empty, empty, np.empty(0, dtype=np.int64)
 
-    post_offsets = np.arange(0, post_samples, dtype=np.int64)
+    post_offsets = np.arange(lag, lag + post_samples, dtype=np.int64)
     post_ix = idx[:, None] + post_offsets[None, :]
     post_vecs = ts[:, post_ix].mean(axis=2).T
 
@@ -1285,61 +1345,6 @@ def _window_mean_vectors(ts, event_idx, pre_samples, post_samples):
         pre_vecs = np.zeros((idx.size, n_regions), dtype=float)
 
     return pre_vecs, post_vecs, idx
-
-
-def _matrix_invsqrt_psd(mat, eps=1e-10, hardware_backend=None):
-    return accelerated_psd_invsqrt(mat, eps=eps, backend=hardware_backend)
-
-
-def _regularized_first_canonical_corr(x, y, ridge=1e-4, hardware_backend=None):
-    """
-    First canonical correlation with ridge-regularized covariance matrices.
-    """
-    if x.ndim != 2 or y.ndim != 2:
-        return np.nan
-
-    n = int(min(x.shape[0], y.shape[0]))
-    if n < 3:
-        return np.nan
-    x = np.asarray(x[:n], dtype=float)
-    y = np.asarray(y[:n], dtype=float)
-
-    x = x - x.mean(axis=0, keepdims=True)
-    y = y - y.mean(axis=0, keepdims=True)
-
-    keep_x = np.var(x, axis=0) > 1e-12
-    keep_y = np.var(y, axis=0) > 1e-12
-    if not np.any(keep_x) or not np.any(keep_y):
-        return np.nan
-    x = x[:, keep_x]
-    y = y[:, keep_y]
-
-    denom = float(n - 1)
-    sxx = (x.T @ x) / denom
-    syy = (y.T @ y) / denom
-    sxy = (x.T @ y) / denom
-
-    ridge = float(max(ridge, 1e-12))
-    lam_x = ridge * max(np.trace(sxx) / max(1, sxx.shape[0]), 1.0)
-    lam_y = ridge * max(np.trace(syy) / max(1, syy.shape[0]), 1.0)
-
-    try:
-        wx = _matrix_invsqrt_psd(
-            sxx + lam_x * np.eye(sxx.shape[0], dtype=float),
-            hardware_backend=hardware_backend,
-        )
-        wy = _matrix_invsqrt_psd(
-            syy + lam_y * np.eye(syy.shape[0], dtype=float),
-            hardware_backend=hardware_backend,
-        )
-        k = wx @ sxy @ wy
-        svals = accelerated_svd_values(k, backend=hardware_backend)
-    except np.linalg.LinAlgError:
-        return np.nan
-
-    if svals.size == 0:
-        return np.nan
-    return float(np.clip(svals[0], 0.0, 1.0))
 
 
 def _safe_abs_corr(a, b):
@@ -1386,149 +1391,510 @@ def _prediction_error_signal(values):
     return x - pred
 
 
+# RAM event-count contract (mirrored by event_parsing.RAM_MIN_* for readiness).
+_RAM_MIN_GOAL_PAIRS = 6
+_RAM_MIN_FEEDBACK_EVENTS = 3
+_RAM_MIN_ADAPTIVE_UPDATES = 3
+
+# Canonical (Glover 1999) HRF with the parameters of nilearn's ``glover_hrf``:
+# difference of gamma densities (delay 6 s, undershoot 12 s, dispersion 0.9 s,
+# undershoot ratio 0.48), truncated at 32 s. Evaluated analytically on the
+# true time axis (seconds) instead of on an oversampled grid.
+_HRF_TIME_LENGTH_SEC = 32.0
+_HRF_DELAY = 6.0
+_HRF_UNDERSHOOT = 12.0
+_HRF_DISPERSION = 0.9
+_HRF_U_DISPERSION = 0.9
+_HRF_RATIO = 0.48
+
+
+def _gamma_pdf(t, shape, scale):
+    log_norm = math.lgamma(shape) + shape * math.log(scale)
+    return np.exp((shape - 1.0) * np.log(t) - t / scale - log_norm)
+
+
+def _glover_hrf_unnormalized(t):
+    t = np.asarray(t, dtype=float)
+    out = np.zeros(t.shape, dtype=float)
+    m = (t > 0.0) & (t <= _HRF_TIME_LENGTH_SEC)
+    if not np.any(m):
+        return out
+    tm = t[m]
+    peak = _gamma_pdf(tm, _HRF_DELAY / _HRF_DISPERSION, _HRF_DISPERSION)
+    under = _gamma_pdf(tm, _HRF_UNDERSHOOT / _HRF_U_DISPERSION, _HRF_U_DISPERSION)
+    out[m] = peak - _HRF_RATIO * under
+    return out
+
+
+_HRF_PEAK_CACHE = {}
+
+
+def canonical_hrf_peak():
+    """Return ``(peak_time_seconds, peak_value)`` of the canonical HRF (1 ms grid)."""
+    if "peak" not in _HRF_PEAK_CACHE:
+        grid = np.arange(0.0, _HRF_TIME_LENGTH_SEC, 1e-3)
+        h = _glover_hrf_unnormalized(grid)
+        k = int(np.argmax(h))
+        _HRF_PEAK_CACHE["peak"] = (float(grid[k]), float(h[k]))
+    return _HRF_PEAK_CACHE["peak"]
+
+
+def canonical_hrf(t):
+    """Canonical HRF evaluated at times ``t`` (seconds), peak-normalised to 1."""
+    _, peak_val = canonical_hrf_peak()
+    return _glover_hrf_unnormalized(t) / peak_val
+
+
+def _hrf_regressor(onsets_sec, tr, n_tp):
+    """
+    Stimulus regressor: sum of peak-normalised canonical HRFs at the exact
+    onset times, sampled at the frame times ``k * tr``. A unit-amplitude
+    response therefore has regression weight 1.
+    """
+    frame_times = np.arange(int(n_tp), dtype=float) * float(tr)
+    reg = np.zeros(int(n_tp), dtype=float)
+    for onset in np.asarray(onsets_sec, dtype=float).reshape(-1):
+        reg += canonical_hrf(frame_times - float(onset))
+    return reg
+
+
+def _peak_is_interior(k, n):
+    """
+    True when the discrete maximum ``k`` of an ``n``-sample search curve is
+    away from both ends (guard band of 5% of the range, at least one
+    sample); otherwise the curve may be a truncated rising/decaying edge
+    (e.g. the response to the next event) rather than a resolved peak.
+    """
+    edge = max(1, int(round(0.05 * (int(n) - 1))))
+    return edge <= int(k) <= int(n) - 1 - edge
+
+
+def _parabolic_peak_offset(y, k):
+    """Sub-sample offset in [-0.5, 0.5] of the discrete maximum ``y[k]``."""
+    if k <= 0 or k >= y.size - 1:
+        return 0.0
+    a, b, c = float(y[k - 1]), float(y[k]), float(y[k + 1])
+    den = a - 2.0 * b + c
+    if (not np.isfinite(den)) or den >= 0.0:
+        return 0.0
+    return float(np.clip(0.5 * (a - c) / den, -0.5, 0.5))
+
+
+def _fir_latency_seconds(ts, stim_idx, tr, fir_window):
+    """
+    Time-to-peak (seconds) of the baseline-corrected event-related response.
+
+    Epochs span ``[-fir_window, +fir_window]`` around each onset. The
+    pre-onset half is the baseline; the latency is the post-onset lag that
+    maximises the global field power (RMS across regions) of the event
+    average, refined by parabolic interpolation. A maximum within 5% of
+    either end of the post-onset search range means no peak was resolved
+    (``NaN``).
+    """
+    half = int(round(float(fir_window) / float(tr)))
+    if half < 2:
+        return float("nan"), "fir_window_too_short"
+    n_tp = int(ts.shape[1])
+    idx = np.asarray(stim_idx, dtype=np.int64)
+    idx = idx[(idx - half >= 0) & (idx + half < n_tp)]
+    if idx.size == 0:
+        return float("nan"), "no_events_with_full_fir_window"
+    offsets = np.arange(-half, half + 1, dtype=np.int64)
+    avg = ts[:, idx[:, None] + offsets[None, :]].mean(axis=1)
+    baseline = avg[:, :half].mean(axis=1, keepdims=True)
+    post = avg[:, half:] - baseline
+    gfp = np.sqrt(np.mean(post * post, axis=0))
+    k = int(np.argmax(gfp))
+    if not _peak_is_interior(k, gfp.size):
+        return float("nan"), "latency_peak_at_search_boundary"
+    return float((k + _parabolic_peak_offset(gfp, k)) * float(tr)), None
+
+
+def _xcorr_latency_seconds(ts, stick, tr, maxlag):
+    """
+    Lag (seconds, >= 0) maximising the mean squared correlation between the
+    stimulus stick function and the regional signals, refined by parabolic
+    interpolation. Only non-negative lags are searched (a response follows
+    its stimulus); a maximum at the ends of the search range is unresolved.
+    """
+    maxlag = int(maxlag)
+    n_regions, n_tp = ts.shape
+    stick = np.asarray(stick, dtype=float)
+    if maxlag < 2:
+        return float("nan"), "xcorr_maxlag_too_short"
+    if np.std(stick) <= 1e-12:
+        return float("nan"), "stimulus_regressor_constant"
+    energy = []
+    for lag in range(0, maxlag + 1):
+        m = n_tp - lag
+        if m < 3:
+            break
+        a = ts[:, lag:]
+        b = stick[:m]
+        a = a - a.mean(axis=1, keepdims=True)
+        b = b - b.mean()
+        sa = np.sqrt(np.sum(a * a, axis=1))
+        sb = float(np.sqrt(np.sum(b * b)))
+        if sb <= 1e-12:
+            energy.append(0.0)
+            continue
+        r = (a @ b) / (np.maximum(sa, 1e-12) * sb)
+        r[sa <= 1e-12] = 0.0
+        energy.append(float(np.mean(r * r)))
+    energy = np.asarray(energy, dtype=float)
+    if energy.size < 3:
+        return float("nan"), "xcorr_too_few_lags"
+    k = int(np.argmax(energy))
+    if not _peak_is_interior(k, energy.size):
+        return float("nan"), "latency_peak_at_search_boundary"
+    return float((k + _parabolic_peak_offset(energy, k)) * float(tr)), None
+
+
+def _blocked_fold_ids(groups, n_folds):
+    """
+    Time-blocked cross-validation folds with about equal numbers of rows.
+
+    ``groups`` are sorted, contiguous labels (rows that share a label, e.g.
+    responses paired with the same goal event, stay in one fold). Returns
+    ``(fold_ids, n_folds_used)``.
+    """
+    groups = np.asarray(groups).reshape(-1)
+    n = groups.size
+    uniq, start, counts = np.unique(groups, return_index=True, return_counts=True)
+    order = np.argsort(start, kind="mergesort")
+    uniq, start, counts = uniq[order], start[order], counts[order]
+    k = int(max(2, min(int(n_folds), n // 3)))
+    before = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    fold_of_group = np.minimum(k - 1, (before * k) // max(1, n))
+    fold_ids = np.empty(n, dtype=np.int64)
+    for g_start, g_count, f in zip(start, counts, fold_of_group):
+        fold_ids[g_start:g_start + g_count] = f
+    used = np.unique(fold_ids)
+    remap = {int(f): i for i, f in enumerate(used)}
+    return np.asarray([remap[int(f)] for f in fold_ids], dtype=np.int64), int(used.size)
+
+
+def _ridge_whitened_basis(xc, ridge):
+    """
+    Ridge-whitening in the row space of centred training data ``xc``.
+
+    Returns ``(v, d, z)``: an orthonormal row-space basis ``v`` (p x r), the
+    whitening factors ``d = (ev + lam)^(-1/2)`` for the covariance eigenvalues
+    ``ev``, and the whitened training scores ``z = xc @ v * d``. The ridge
+    ``lam = ridge * mean(ev)`` is relative to the mean non-zero eigenvalue, so
+    its effect does not depend on whether ``p`` exceeds the number of events.
+    """
+    n = int(xc.shape[0])
+    if n < 2:
+        return None
+    _, s, vt = np.linalg.svd(xc, full_matrices=False)
+    if s.size == 0 or not np.isfinite(s).all():
+        return None
+    tol = max(xc.shape) * np.finfo(float).eps * float(s[0])
+    keep = s > max(tol, 1e-12)
+    if not np.any(keep):
+        return None
+    s = s[keep]
+    v = vt[keep].T
+    ev = (s * s) / float(n - 1)
+    lam = float(ridge) * float(np.mean(ev))
+    d = 1.0 / np.sqrt(ev + lam)
+    return v, d, (xc @ v) * d
+
+
+def _cv_canonical_corr(x, y, fold_ids, n_folds, ridge, x_side=None):
+    """
+    Held-out correlation of the first ridge-CCA pair.
+
+    For each fold, canonical weights are fitted on the other folds and applied
+    to the held-out events; held-out projections are centred within fold (so
+    slow drifts between folds cannot create correlation) and pooled.
+    """
+    if x_side is None:
+        x_side = []
+        for f in range(int(n_folds)):
+            te = fold_ids == f
+            trn = ~te
+            mx = x[trn].mean(axis=0)
+            basis = _ridge_whitened_basis(x[trn] - mx, ridge)
+            if basis is None:
+                return float("nan"), None
+            vx, dx, zx = basis
+            x_side.append((te, trn, zx, ((x[te] - mx) @ vx) * dx))
+    u_parts = []
+    v_parts = []
+    for te, trn, zx, xt_w in x_side:
+        my = y[trn].mean(axis=0)
+        basis = _ridge_whitened_basis(y[trn] - my, ridge)
+        if basis is None:
+            return float("nan"), x_side
+        vy, dy, zy = basis
+        a, _, bt = np.linalg.svd(zx.T @ zy, full_matrices=False)
+        u = xt_w @ a[:, 0]
+        v = (((y[te] - my) @ vy) * dy) @ bt[0]
+        u_parts.append(u - u.mean())
+        v_parts.append(v - v.mean())
+    u = np.concatenate(u_parts)
+    v = np.concatenate(v_parts)
+    su = float(np.sqrt(np.sum(u * u)))
+    sv = float(np.sqrt(np.sum(v * v)))
+    if su <= 1e-12 or sv <= 1e-12:
+        return float("nan"), x_side
+    return float(np.clip(np.dot(u, v) / (su * sv), -1.0, 1.0)), x_side
+
+
+def _phase_randomized_surrogate(ts, rng):
+    """
+    Multivariate phase-randomised surrogate (Prichard & Theiler, 1994).
+
+    The same random phases are applied to every region, which preserves each
+    region's power spectrum and the cross-spectra (autocorrelation and
+    inter-regional correlation) while destroying time-locking to events.
+    """
+    n_tp = int(ts.shape[1])
+    spec = np.fft.rfft(ts, axis=1)
+    phases = rng.uniform(0.0, 2.0 * np.pi, spec.shape[1])
+    phases[0] = 0.0
+    if n_tp % 2 == 0:
+        phases[-1] = 0.0
+    return np.fft.irfft(spec * np.exp(1j * phases)[None, :], n=n_tp, axis=1)
+
+
+def _abs_corr_chance_corrected(a, b, n_null, rng):
+    """
+    |corr(a, b)| corrected for its positive chance level.
+
+    The null permutes ``b`` (an exogenous signal such as feedback values).
+    Returns ``(score, abs_r, null_mean)`` with
+    ``score = [(|r| - m0) / (1 - m0)]_+``.
+    """
+    a = np.asarray(a, dtype=float).reshape(-1)
+    b = np.asarray(b, dtype=float).reshape(-1)
+    abs_r = _safe_abs_corr(a, b)
+    if (not np.isfinite(abs_r)) or a.size != b.size or not (
+        np.isfinite(a).all() and np.isfinite(b).all()
+    ):
+        return float("nan"), float(abs_r), float("nan")
+    if int(n_null) <= 0:
+        return float(abs_r), float(abs_r), 0.0
+    n = a.size
+    az = (a - a.mean()) / a.std()
+    bz = (b - b.mean()) / b.std()
+    perms = np.argsort(rng.random_sample((int(n_null), n)), axis=1)
+    r_null = np.abs(bz[perms] @ az) / float(n)
+    m0 = float(np.mean(r_null))
+    if m0 >= 1.0 - 1e-12:
+        return float("nan"), float(abs_r), m0
+    score = float(np.clip((abs_r - m0) / (1.0 - m0), 0.0, 1.0))
+    return score, float(abs_r), m0
+
+
+def _lsa_hrf_design(onsets_by_type, tr, n_tp):
+    """
+    Least-squares-all (beta-series) design for trial-wise HRF amplitudes.
+
+    One peak-normalised canonical-HRF regressor per event (all event types
+    jointly) plus an intercept, so overlapping hemodynamic responses of
+    nearby events are separated by the model instead of leaking into each
+    other's windows. Events whose modelled response peak lies outside the run
+    (regressor maximum < 0.5) are dropped. Returns ``(pinv, keep_masks,
+    slices, full_rank)`` with one boolean mask and one column slice per event
+    type; ``full_rank`` is ``False`` when the trial-wise amplitudes are not
+    identifiable (more events than samples, or coinciding events).
+    """
+    frame_times = np.arange(int(n_tp), dtype=float) * float(tr)
+    cols = []
+    keep_masks = []
+    slices = []
+    start = 0
+    for onsets in onsets_by_type:
+        onsets = np.asarray(onsets, dtype=float).reshape(-1)
+        keep = np.zeros(onsets.size, dtype=bool)
+        for i, onset in enumerate(onsets):
+            reg = canonical_hrf(frame_times - onset)
+            if float(np.max(reg)) >= 0.5:
+                cols.append(reg)
+                keep[i] = True
+        n_keep = int(keep.sum())
+        keep_masks.append(keep)
+        slices.append(slice(start, start + n_keep))
+        start += n_keep
+    cols.append(np.ones(int(n_tp), dtype=float))
+    design = np.column_stack(cols)
+    full_rank = int(np.linalg.matrix_rank(design)) == int(design.shape[1])
+    return np.linalg.pinv(design), keep_masks, slices, full_rank
+
+
+def _quality_patterns(z, spec):
+    """
+    Trial-wise response patterns used by G, F and U for data ``z``.
+
+    ``spec['mode'] == 'glm'``: rows of the least-squares-all betas.
+    ``spec['mode'] == 'window'``: event-locked window means (post windows
+    delayed by ``spec['lag']``). Event sets are fixed by ``spec`` so the same
+    extraction can be re-run on surrogate data.
+    """
+    out = {}
+    if spec["mode"] == "glm":
+        beta = spec["pinv"] @ z.T
+        s_stim, s_goal, s_fb = spec["slices"]
+        out["stim"] = beta[s_stim]
+        out["goal"] = beta[s_goal]
+        # With the opt-in feedback proxy the feedback events are the stimulus
+        # events; they are not modelled twice.
+        fb_beta = beta[s_stim] if spec.get("fb_from_stim") else beta[s_fb]
+        out["fb_strength"] = np.sqrt(np.sum(fb_beta ** 2, axis=1))
+    else:
+        lag = spec["lag"]
+        _, out["stim"], _ = _window_mean_vectors(
+            z, spec["stim_used"], 0, spec["resp"], lag
+        )
+        _, out["goal"], _ = _window_mean_vectors(
+            z, spec["goal_used"], 0, spec["gobj"], lag
+        )
+        fb_pre, fb_post, _ = _window_mean_vectors(
+            z, spec["fb_used"], spec["fb"], spec["fb"], lag
+        )
+        out["fb_strength"] = np.sqrt(np.sum((fb_post - fb_pre) ** 2, axis=1))
+    if spec.get("proxy_idx") is not None:
+        out["proxy_pre"], _, _ = _window_mean_vectors(
+            z, spec["proxy_idx"], spec["gpre"], 1
+        )
+    return out
+
+
 def _goal_alignment_component(
     ts_z,
-    stim_idx,
-    goal_idx,
-    goal_pre_samples,
-    response_samples,
-    goal_objective_samples,
+    spec,
+    patterns,
     ridge,
-    hardware_backend=None,
+    cv_folds,
+    n_null,
+    rng,
 ):
     """
     Goal-alignment component G in [0,1].
 
-    If explicit goal events exist, pairs each response event with its nearest
-    preceding goal event. Otherwise uses pre-stimulus activity as an implicit
-    objective-state proxy.
+    Each stimulus response is paired with the objective representation of its
+    nearest preceding goal event (or, as an opt-in proxy, with the
+    pre-stimulus state). Their canonical association is measured out of
+    sample -- ridge-CCA fitted on time-blocked training folds, correlation of
+    the held-out projections -- and chance-corrected against surrogates:
+    phase-randomised copies of the data re-analysed through the identical
+    event design, which keeps the dependence that the design and the noise
+    autocorrelation alone induce between paired windows/betas. The result is
+    attenuated by event-count reliability. (The in-sample canonical
+    correlation is not used: with more regions than events it is ~1 for pure
+    noise.)
     """
-    goal_pre_vecs, resp_vecs, stim_used = _window_mean_vectors(
-        ts_z,
-        stim_idx,
-        pre_samples=goal_pre_samples,
-        post_samples=response_samples,
-    )
-    if stim_used.size < 3:
-        return 0.0, resp_vecs
+    info = {
+        "goal_source": spec["goal_source"],
+        "n_goal_response_pairs": 0,
+        "goal_alignment_cv_corr": float("nan"),
+        "goal_alignment_null_mean": float("nan"),
+        "goal_alignment_p_null": float("nan"),
+    }
+    if spec["goal_source"] is None:
+        return float("nan"), "missing_goal_events", info
+    xi = spec["goal_pairs_x"]
+    yi = spec["goal_pairs_y"]
+    n_pairs = int(yi.size)
+    info["n_goal_response_pairs"] = n_pairs
+    if n_pairs < _RAM_MIN_GOAL_PAIRS:
+        return float("nan"), "insufficient_goal_response_pairs", info
+    fold_ids, k = _blocked_fold_ids(spec["goal_groups"], cv_folds)
+    if k < 2:
+        return float("nan"), "goal_alignment_undefined", info
+    x_key = "proxy_pre" if spec["goal_source"] == "pre_stimulus_state_proxy" else "goal"
 
-    x_goal = goal_pre_vecs
-    y_resp = resp_vecs
-
-    if goal_idx.size > 0:
-        _, goal_post_vecs, goal_used = _window_mean_vectors(
-            ts_z,
-            goal_idx,
-            pre_samples=0,
-            post_samples=goal_objective_samples,
+    def _score(pat):
+        r, _ = _cv_canonical_corr(
+            np.asarray(pat[x_key], dtype=float)[xi],
+            np.asarray(pat["stim"], dtype=float)[yi],
+            fold_ids,
+            k,
+            ridge,
         )
-        if goal_used.size > 0:
-            pos = np.searchsorted(goal_used, stim_used, side="right") - 1
-            valid = pos >= 0
-            if int(valid.sum()) >= 3:
-                x_goal = goal_post_vecs[pos[valid]]
-                y_resp = resp_vecs[valid]
+        return r
 
-    rho = _regularized_first_canonical_corr(
-        x_goal,
-        y_resp,
-        ridge=ridge,
-        hardware_backend=hardware_backend,
-    )
-    if not np.isfinite(rho):
-        return 0.0, resp_vecs
-    rel = _sample_reliability(x_goal.shape[0], tau=4.0)
-    score = float(np.clip(rho * rel, 0.0, 1.0))
-    return score, resp_vecs
+    r_obs = _score(patterns)
+    info["goal_alignment_cv_corr"] = float(r_obs)
+    if not np.isfinite(r_obs):
+        return float("nan"), "goal_alignment_undefined", info
+    null = []
+    for _ in range(int(n_null)):
+        r_s = _score(_quality_patterns(_phase_randomized_surrogate(ts_z, rng), spec))
+        if np.isfinite(r_s):
+            null.append(r_s)
+    null = np.asarray(null, dtype=float)
+    m0 = float(null.mean()) if null.size else 0.0
+    info["goal_alignment_null_mean"] = m0
+    if null.size:
+        n_ge = float(np.sum(null >= r_obs))
+        info["goal_alignment_p_null"] = (1.0 + n_ge) / (1.0 + null.size)
+    if m0 >= 1.0 - 1e-12:
+        return float("nan"), "goal_alignment_not_identifiable", info
+    score = float(np.clip((r_obs - m0) / (1.0 - m0), 0.0, 1.0))
+    rel = _sample_reliability(n_pairs, tau=4.0)
+    return float(np.clip(score * rel, 0.0, 1.0)), None, info
 
 
-def _feedback_integration_component(
-    ts_z,
-    feedback_idx,
-    feedback_values,
-    stim_response_vecs,
-    feedback_samples,
-    hardware_backend=None,
-):
+def _feedback_integration_component(fb_strength, fb_signal, n_null, rng):
     """
     Feedback-integration component F in [0,1].
 
-    Correlates feedback-locked neural response strength with an explicit
-    feedback signal when available, otherwise with a prediction-error proxy.
+    Chance-corrected |corr| between the feedback-locked neural response
+    strength and the feedback signal of the same events (aligned 1:1),
+    attenuated by event-count reliability.
     """
-    fb_pre_vecs, fb_post_vecs, fb_used = _window_mean_vectors(
-        ts_z,
-        feedback_idx,
-        pre_samples=feedback_samples,
-        post_samples=feedback_samples,
-    )
-    if fb_used.size < 2:
-        return 0.0, np.empty(0, dtype=float)
-
-    fb_neural = accelerated_row_norm(
-        fb_post_vecs - fb_pre_vecs,
-        axis=1,
-        backend=hardware_backend,
-    )
-    fb_signal = _coerce_numeric_feedback(feedback_values)
-
-    if fb_signal.size == 0:
-        if stim_response_vecs.size == 0:
-            return 0.0, np.empty(0, dtype=float)
-        resp_energy = np.linalg.norm(stim_response_vecs, axis=1)
-        fb_signal = _prediction_error_signal(resp_energy)
-
-    n = int(min(fb_neural.size, fb_signal.size))
-    if n < 2:
-        return 0.0, np.empty(0, dtype=float)
-    fb_neural = fb_neural[:n]
-    fb_signal = np.asarray(fb_signal[:n], dtype=float)
-
-    corr = _safe_abs_corr(fb_neural, fb_signal)
-    if not np.isfinite(corr):
-        return 0.0, fb_signal
+    n = int(np.asarray(fb_strength).size)
+    if n < _RAM_MIN_FEEDBACK_EVENTS:
+        return float("nan"), n, "insufficient_feedback_events"
+    score, _, _ = _abs_corr_chance_corrected(fb_strength, fb_signal, n_null, rng)
+    if not np.isfinite(score):
+        return float("nan"), n, "feedback_integration_undefined"
     rel = _sample_reliability(n, tau=4.0)
-    score = float(np.clip(corr * rel, 0.0, 1.0))
-    return score, fb_signal
+    return float(np.clip(score * rel, 0.0, 1.0)), n, None
 
 
-def _adaptive_update_component(stim_response_vecs, feedback_signal, hardware_backend=None):
+def _adaptive_update_component(
+    stim_response_vecs,
+    stim_used_idx,
+    feedback_idx,
+    feedback_signal,
+    n_null,
+    rng,
+):
     """
     Adaptive-update component U in [0,1].
 
-    Quantifies whether stronger feedback drives larger trial-to-trial policy
-    updates in neural response patterns.
+    For consecutive stimulus responses k -> k+1, the update magnitude
+    ``||r_{k+1} - r_k||`` is paired with the mean |feedback| of the feedback
+    events in ``[s_k, s_{k+1})`` (the feedback that can inform the next
+    response); updates without intervening feedback are skipped. U is the
+    chance-corrected |corr| of the pairs times event-count reliability.
     """
-    if stim_response_vecs.ndim != 2 or stim_response_vecs.shape[0] < 3:
-        return 0.0
-
-    update_mag = accelerated_row_norm(
-        stim_response_vecs[1:, :] - stim_response_vecs[:-1, :],
-        axis=1,
-        backend=hardware_backend,
-    )
-    if update_mag.size < 2:
-        return 0.0
-
-    feedback_signal = np.asarray(feedback_signal, dtype=float).reshape(-1)
-    if feedback_signal.size < 2:
-        resp_energy = accelerated_row_norm(
-            stim_response_vecs,
-            axis=1,
-            backend=hardware_backend,
-        )
-        feedback_signal = _prediction_error_signal(resp_energy)
-
-    drive = np.abs(feedback_signal)
-    n = int(min(update_mag.size, drive.size))
-    if n < 2:
-        return 0.0
-
-    corr = _safe_abs_corr(update_mag[:n], drive[:n])
-    if not np.isfinite(corr):
-        return 0.0
+    stim_response_vecs = np.asarray(stim_response_vecs, dtype=float)
+    if stim_response_vecs.ndim != 2 or stim_response_vecs.shape[0] < 2:
+        return float("nan"), 0, "insufficient_adaptive_updates"
+    update_mag = np.sqrt(np.sum(np.diff(stim_response_vecs, axis=0) ** 2, axis=1))
+    stim_used_idx = np.asarray(stim_used_idx, dtype=np.int64).reshape(-1)
+    fb_idx = np.asarray(feedback_idx, dtype=np.int64).reshape(-1)
+    drive_abs = np.abs(np.asarray(feedback_signal, dtype=float).reshape(-1))
+    left = np.searchsorted(fb_idx, stim_used_idx[:-1], side="left")
+    right = np.searchsorted(fb_idx, stim_used_idx[1:], side="left")
+    counts = right - left
+    csum = np.concatenate([[0.0], np.cumsum(drive_abs)])
+    has = counts > 0
+    n = int(has.sum())
+    if n < _RAM_MIN_ADAPTIVE_UPDATES:
+        return float("nan"), n, "insufficient_adaptive_updates"
+    drive = (csum[right[has]] - csum[left[has]]) / counts[has]
+    score, _, _ = _abs_corr_chance_corrected(update_mag[has], drive, n_null, rng)
+    if not np.isfinite(score):
+        return float("nan"), n, "adaptive_update_undefined"
     rel = _sample_reliability(n, tau=4.0)
-    return float(np.clip(corr * rel, 0.0, 1.0))
+    return float(np.clip(score * rel, 0.0, 1.0)), n, None
 
 
 def compute_RAM(
@@ -1547,10 +1913,16 @@ def compute_RAM(
     response_window_sec: float = 3.0,
     goal_objective_window_sec: float = 2.0,
     feedback_window_sec: float = 2.0,
-    quality_ridge: float = 1e-4,
+    quality_ridge: float = 1.0,
     require_explicit_feedback: bool = True,
     return_details: bool = False,
     hardware_backend=None,
+    require_explicit_goals: bool = True,
+    quality_response_estimate: str = "auto",
+    quality_lag_sec: float = None,
+    quality_cv_folds: int = 5,
+    quality_null_samples: int = 200,
+    quality_random_state: int = 0,
 ):
     """
     Responsiveness–Adaptation Metric (RAM).
@@ -1567,7 +1939,7 @@ def compute_RAM(
           - ``onsets`` (or ``stimulus_onsets``): stimulus onsets in seconds
           - ``goal_onsets``: objective/cue onsets in seconds
           - ``feedback_onsets``: feedback/outcome onsets in seconds
-          - ``feedback_values``: scalar feedback labels/values aligned to
+          - ``feedback_values``: scalar feedback labels/values aligned 1:1 to
             ``feedback_onsets`` (numeric or categorical)
     epsilon : float, optional
         Small constant added to denominator. When ``None`` (default), uses
@@ -1576,57 +1948,94 @@ def compute_RAM(
         Multiplicative scale applied to the response magnitude term M
         (default 0.5).
     response_model : {'hrf', 'boxcar', 'stick'}, optional
-        Event-response regressor used for the magnitude term. ``'hrf'`` keeps
-        the original fMRI-oriented canonical HRF convolution. ``'boxcar'`` and
-        ``'stick'`` are intended for high-sampling-rate modalities such as EEG,
-        where convolving a sub-second sampling grid with an fMRI HRF is both
-        computationally expensive and physiologically mismatched.
+        Event-response regressor used for the magnitude term. ``'hrf'`` sums
+        peak-normalised canonical (Glover) HRFs placed at the exact onset
+        times and sampled at the frame times ``k * tr`` (so a response of
+        unit peak amplitude has weight 1). ``'boxcar'`` and ``'stick'`` are
+        intended for high-sampling-rate modalities such as EEG. Goal and
+        feedback events are modelled with the same response model as
+        nuisance regressors, so M is the stimulus amplitude only; RAM is
+        undefined when this design is rank-deficient.
     response_boxcar_width_sec : float, optional
         Width of the post-stimulus boxcar regressor when
         ``response_model='boxcar'``. Defaults to ``response_window_sec``.
     latency_method : {'hrf_peak', 'xcorr', 'fir'}, optional
         Method used to estimate the latency term T in the denominator.
-        * 'hrf_peak' (default): uses the canonical HRF peak latency.
-        * 'xcorr': cross-correlates each ROI with the stick function and
-          averages the lag (in seconds) yielding maximum correlation magnitude.
-        * 'fir': fits a finite impulse response (FIR) around each onset and
-          takes the average time-to-peak of the event-related response.
+        * 'hrf_peak' (default): the model latency -- the canonical HRF peak
+          (about 5 s) for ``'hrf'``, half the boxcar width for ``'boxcar'``.
+          This is a model constant, not a measurement; it is not available
+          for ``'stick'``.
+        * 'xcorr': the non-negative lag (samples up to ``xcorr_maxlag``) that
+          maximises the mean squared correlation between the stimulus stick
+          function and the regional signals.
+        * 'fir': time-to-peak of the baseline-corrected event average
+          (global field power across regions) within ``fir_window`` after
+          onset; the ``fir_window`` before onset is the baseline.
+        Measured latencies are refined by parabolic interpolation; a maximum
+        at the edge of the search range leaves T (and RAM) undefined.
     fir_window : float, optional
-        Time window in seconds on either side of each onset for the FIR
-        latency estimate (only used when ``latency_method='fir'``).
+        Baseline and search window (seconds) on either side of each onset for
+        the FIR latency estimate.
     xcorr_maxlag : int, optional
-        Maximum lag (in TRs) explored on either side for the cross-correlation
-        latency estimate (only used when ``latency_method='xcorr'``).
+        Maximum lag (in samples) explored for the cross-correlation latency.
     quality_weights : tuple(float, float, float), optional
         Non-negative weights ``(w_G, w_F, w_U)`` for quality components
         Goal-alignment (G), Feedback-integration (F), and Adaptive-update (U).
     goal_pre_window_sec : float, optional
-        Pre-stimulus window (seconds) used for implicit objective-state
-        extraction.
+        Pre-stimulus window (seconds) used for the implicit objective-state
+        proxy (only with ``require_explicit_goals=False``).
     response_window_sec : float, optional
-        Post-stimulus response window (seconds) for response-state extraction.
+        Stimulus response window (seconds, ``'window'`` estimate), starting
+        ``quality_lag_sec`` after onset.
     goal_objective_window_sec : float, optional
-        Post-goal-event window (seconds) used when explicit ``goal_onsets`` are
-        available.
+        Post-goal-event window (seconds, ``'window'`` estimate), starting
+        ``quality_lag_sec`` after the goal onset.
     feedback_window_sec : float, optional
-        Symmetric feedback-locked window length (seconds) used for
-        pre/post-feedback contrast.
+        Feedback-locked window length (seconds, ``'window'`` estimate): the
+        pre-feedback baseline ``[f - W, f)`` and the response
+        ``[f + lag, f + lag + W)``.
     quality_ridge : float, optional
-        Ridge regularization strength for canonical-correlation estimation in G.
+        Ridge for the cross-validated canonical correlation in G, relative to
+        the mean non-zero eigenvalue of the training covariance (default 1.0).
     require_explicit_feedback : bool, optional
         When ``True`` (default), RAM is marked undefined unless explicit
-        feedback events and feedback values are provided. This prevents
-        synthesizing feedback-driven quality terms from proxy assumptions when
-        environmental feedback is not directly annotated.
+        feedback events and feedback values are provided. With ``False``,
+        stimulus events and a prediction-error proxy stand in for missing
+        feedback (opt-in proxy).
     return_details : bool, optional
         If ``True``, returns a dict with speed/quality sub-terms and component
         diagnostics instead of only the scalar RAM value.
+    require_explicit_goals : bool, optional
+        When ``True`` (default), RAM is undefined without goal events. With
+        ``False``, pre-stimulus activity stands in for the objective state
+        (opt-in proxy).
+    quality_response_estimate : {'auto', 'glm', 'window'}, optional
+        How trial-wise response patterns for G, F and U are estimated.
+        ``'glm'``: least-squares-all canonical-HRF betas, one regressor per
+        goal, stimulus and feedback event, so overlapping hemodynamic
+        responses are separated. ``'window'``: event-locked window means.
+        ``'auto'`` (default) uses ``'glm'`` for ``response_model='hrf'`` and
+        ``'window'`` otherwise.
+    quality_lag_sec : float, optional
+        Delay (seconds) applied to all post-event windows in the ``'window'``
+        estimate. ``None`` derives it from the response model: for ``'hrf'``
+        the canonical HRF peak minus half the response window (window centred
+        on the hemodynamic peak), otherwise 0.
+    quality_cv_folds : int, optional
+        Number of time-blocked cross-validation folds for G.
+    quality_null_samples : int, optional
+        Null draws for chance correction: phase-randomised surrogates for G,
+        permutations of the feedback signal for F and U (0 disables the
+        correction; the chance level is then taken as 0).
+    quality_random_state : int, optional
+        Seed for the null draws.
 
     Returns
     -------
     float or dict
         Scalar RAM value (default) or a diagnostics dict when
-        ``return_details=True``.
+        ``return_details=True``. Undefined RAM is ``NaN``; the details carry
+        ``undefined_reason``.
 
     Notes
     -----
@@ -1634,7 +2043,10 @@ def compute_RAM(
       RAM = (M / (T + epsilon)) * Q
     with quality term:
       Q = (G^w_G * F^w_F * U^w_U)^(1 / (w_G + w_F + w_U))
-    where G, F, U are data-derived in [0,1] from event-locked neural activity.
+    where G, F, U are data-derived, chance-corrected values in [0,1] from
+    event-locked neural activity. A weighted component that cannot be
+    measured makes RAM undefined (NaN); a measured component of 0 gives
+    RAM = 0.
     """
     # ensure ts has shape (n_regions, n_tp)
     if ts.ndim != 2:
@@ -1646,6 +2058,22 @@ def compute_RAM(
     response_model_norm = str(response_model).strip().lower()
     if response_model_norm not in {"hrf", "boxcar", "stick"}:
         raise ValueError("response_model must be one of {'hrf', 'boxcar', 'stick'}")
+    if latency_method not in {"hrf_peak", "xcorr", "fir"}:
+        raise ValueError(
+            "latency_method must be one of 'hrf_peak', 'xcorr', or 'fir'"
+        )
+    if latency_method == "hrf_peak" and response_model_norm == "stick":
+        raise ValueError(
+            "latency_method='hrf_peak' needs a response model with an intrinsic "
+            "latency ('hrf' or 'boxcar'); use 'fir' or 'xcorr' with 'stick'."
+        )
+    estimate = str(quality_response_estimate).strip().lower()
+    if estimate not in {"auto", "glm", "window"}:
+        raise ValueError(
+            "quality_response_estimate must be one of {'auto', 'glm', 'window'}"
+        )
+    if estimate == "auto":
+        estimate = "glm" if response_model_norm == "hrf" else "window"
     if response_boxcar_width_sec is not None and float(response_boxcar_width_sec) <= 0:
         raise ValueError("response_boxcar_width_sec must be > 0 when provided")
     if epsilon is None:
@@ -1665,38 +2093,82 @@ def compute_RAM(
         raise ValueError("goal_objective_window_sec and feedback_window_sec must be > 0")
     if quality_ridge <= 0:
         raise ValueError("quality_ridge must be > 0")
+    if quality_lag_sec is not None and float(quality_lag_sec) < 0:
+        raise ValueError("quality_lag_sec must be >= 0 when provided")
+    if int(quality_cv_folds) < 2:
+        raise ValueError("quality_cv_folds must be >= 2")
+    if int(quality_null_samples) < 0:
+        raise ValueError("quality_null_samples must be >= 0")
 
     backend = resolve_hardware_backend(hardware_backend)
     n_regions, n_tp = ts.shape
     event_bundle = _coerce_ram_event_bundle(stimulus_onsets)
     stim_onsets_s, stim_idx = _sanitize_onset_seconds(event_bundle["onsets"], tr=tr, n_tp=n_tp)
-    stim_onsets = stim_onsets_s.tolist()
+    goal_onsets_s, goal_idx = _sanitize_onset_seconds(
+        event_bundle["goal_onsets"], tr=tr, n_tp=n_tp
+    )
+
+    hrf_peak_sec, _ = canonical_hrf_peak()
+    if quality_lag_sec is None:
+        if response_model_norm == "hrf":
+            quality_lag_sec = max(0.0, hrf_peak_sec - 0.5 * float(response_window_sec))
+        else:
+            quality_lag_sec = 0.0
+    quality_lag_sec = float(quality_lag_sec)
+
+    nan = float("nan")
+    details = {
+        "value": nan,
+        "undefined_reason": None,
+        "speed_term": nan,
+        "quality_term": nan,
+        "magnitude_term": nan,
+        "latency_term": nan,
+        "latency_seconds": nan,
+        "latency_method": str(latency_method),
+        "latency_undefined_reason": None,
+        "epsilon": float(epsilon),
+        "response_model": response_model_norm,
+        "quality_response_estimate": estimate,
+        "quality_lag_sec": quality_lag_sec if estimate == "window" else nan,
+        "components": {
+            "goal_alignment": nan,
+            "feedback_integration": nan,
+            "adaptive_update": nan,
+        },
+        "component_undefined_reasons": {
+            "goal_alignment": None,
+            "feedback_integration": None,
+            "adaptive_update": None,
+        },
+        "weights": {
+            "goal_alignment": float(w[0]),
+            "feedback_integration": float(w[1]),
+            "adaptive_update": float(w[2]),
+        },
+        "goal_source": None,
+        "feedback_signal_source": None,
+        "goal_alignment_cv_corr": nan,
+        "goal_alignment_null_mean": nan,
+        "goal_alignment_p_null": nan,
+        "n_stimulus_events": int(stim_idx.size),
+        "n_goal_events": int(goal_idx.size),
+        "n_feedback_events": 0,
+        "n_goal_response_pairs": 0,
+        "n_feedback_events_used": 0,
+        "n_adaptive_updates": 0,
+    }
+
+    def _undefined(reason):
+        details["value"] = nan
+        details["undefined_reason"] = str(reason)
+        return details if return_details else nan
+
     if stim_idx.size == 0:
-        if not return_details:
-            return float("nan")
-        return {
-            "value": float("nan"),
-            "undefined_reason": "missing_stimulus_events",
-            "speed_term": float("nan"),
-            "quality_term": float("nan"),
-            "magnitude_term": float("nan"),
-            "latency_term": float("nan"),
-            "latency_seconds": float("nan"),
-            "epsilon": float(epsilon),
-            "components": {
-                "goal_alignment": float("nan"),
-                "feedback_integration": float("nan"),
-                "adaptive_update": float("nan"),
-            },
-            "weights": {
-                "goal_alignment": float(w[0]),
-                "feedback_integration": float(w[1]),
-                "adaptive_update": float(w[2]),
-            },
-            "n_stimulus_events": 0,
-            "n_goal_events": 0,
-            "n_feedback_events": 0,
-        }
+        return _undefined("missing_stimulus_events")
+    if not np.all(np.isfinite(ts)):
+        # M, T and the quality terms would be NaN or silently zero-filled.
+        return _undefined("non_finite_timeseries")
     log.debug(
         (
             "[compute_RAM] ts shape: %d regions x %d timepoints, tr=%.6f, "
@@ -1705,7 +2177,7 @@ def compute_RAM(
         n_regions,
         n_tp,
         float(tr),
-        len(stim_onsets) if stim_onsets is not None else 0,
+        int(stim_idx.size),
         latency_method,
     )
 
@@ -1713,244 +2185,275 @@ def compute_RAM(
     stick = np.zeros(n_tp)
     stick[stim_idx] = 1
 
-    # 2) create stimulus-response regressor.
-    hrf = None
-    default_latency = 0.0
-    if response_model_norm == "hrf":
-        hrf = glover_hrf(tr)
-        reg = np.convolve(stick, hrf)[:n_tp]
-        default_latency = float(np.argmax(hrf) * tr)
-    elif response_model_norm == "boxcar":
+    # 2) create stimulus-response regressor on the true time axis (every
+    # in-range event, including events that share a sample).
+    width_samples = 1
+    if response_model_norm == "boxcar":
         width_sec = (
             float(response_window_sec)
             if response_boxcar_width_sec is None
             else float(response_boxcar_width_sec)
         )
         width_samples = max(1, int(round(width_sec / float(tr))))
-        reg = np.zeros(n_tp, dtype=float)
-        for idx in stim_idx.tolist():
+
+    def _model_regressor(onsets_sec):
+        if response_model_norm == "hrf":
+            return _hrf_regressor(onsets_sec, tr=tr, n_tp=n_tp)
+        out = np.zeros(n_tp, dtype=float)
+        starts = np.rint(np.asarray(onsets_sec) / float(tr)).astype(np.int64)
+        for idx in starts.tolist():
             end = min(n_tp, int(idx) + width_samples)
             if end > int(idx):
-                reg[int(idx):end] += 1.0
-        reg /= float(width_samples)
+                out[int(idx):end] += 1.0
+        return out / float(width_samples)
+
+    stim_all_s = _in_range_onset_seconds(event_bundle["onsets"], tr=tr, n_tp=n_tp)
+    if response_model_norm == "hrf":
+        reg = _model_regressor(stim_all_s)
+        default_latency = hrf_peak_sec
+    elif response_model_norm == "boxcar":
+        reg = _model_regressor(stim_all_s)
         default_latency = 0.5 * float(width_samples) * float(tr)
     else:
         reg = stick.astype(float, copy=True)
-        default_latency = 0.0
-    # design matrix: stimulus regressor + intercept
-    X = np.vstack([reg, np.ones(n_tp)]).T  # shape (n_tp × 2)
-
-    # 3) solve for betas via pseudo-inverse: betas shape (2 × n_regions)
-    # transpose ts so rows correspond to time samples
-    betas = accelerated_pinv_dot(X, ts.T, backend=backend)
-    stim_betas = betas[0, :]  # first row corresponds to stimulus regressor
-
-    # use mean absolute β as amplitude (M), with optional scale factor
-    abs_mean_beta = float(np.mean(np.abs(stim_betas))) * float(magnitude_scale)
-
-    # 4) estimate latency T depending on chosen method
-    T = 0.0
-    if latency_method == "hrf_peak":
-        # Peak of the selected response model. For fMRI this is the canonical
-        # HRF peak; for non-HRF models it is the model's intrinsic latency.
-        T = default_latency
-    elif latency_method == "xcorr":
-        # estimate per-ROI latency by cross-correlating z-scored ROI with stick
-        roi_lags = []
-        # pre-normalize the stick for correlation
-        stick_mean = stick.mean()
-        stick_std = stick.std(ddof=0)
-        # if stick_std is zero (no onsets), fall back to HRF peak
-        if stick_std == 0 or np.all(stick == 0):
-            T = np.argmax(hrf) * tr
-        else:
-            stick_norm = (stick - stick_mean) / (stick_std + 1e-12)
-            for r in range(n_regions):
-                # z-score ROI
-                roi = ts[r]
-                roi_norm = (roi - roi.mean()) / (roi.std(ddof=0) + 1e-12)
-                best_abs_corr = -np.inf
-                best_lag = 0
-                # explore lags in TR units
-                for lag in range(-xcorr_maxlag, xcorr_maxlag + 1):
-                    # shift ROI relative to stick
-                    if lag > 0:
-                        # roi shifted right; shorten both sequences
-                        roi_shift = roi_norm[lag:]
-                        stick_shift = stick_norm[: len(roi_shift)]
-                    elif lag < 0:
-                        roi_shift = roi_norm[: lag]
-                        stick_shift = stick_norm[-lag:]
-                    else:
-                        roi_shift = roi_norm
-                        stick_shift = stick_norm
-                    # require at least two points to compute correlation
-                    if roi_shift.size < 2:
-                        continue
-                    corr = np.corrcoef(roi_shift, stick_shift)[0, 1]
-                    # use absolute correlation to find strongest alignment
-                    abs_corr = abs(corr)
-                    if abs_corr > best_abs_corr:
-                        best_abs_corr = abs_corr
-                        best_lag = lag
-                roi_lags.append(best_lag * tr)
-            # average positive latencies; if none, set to HRF peak
-            if roi_lags:
-                T = float(np.mean(roi_lags))
-            else:
-                T = default_latency
-    elif latency_method == "fir":
-        # estimate latency by fitting an FIR around each onset for each ROI
-        if stim_onsets is None or len(stim_onsets) == 0:
-            # no events -> revert to selected response-model latency
-            T = default_latency
-        else:
-            # number of samples on either side of onset
-            half_window = int(round(fir_window / tr))
-            roi_latencies = []
-            for r in range(n_regions):
-                # collect per-event segments
-                segments = []
-                for onset in stim_onsets:
-                    idx = int(round(onset / tr))
-                    start = idx - half_window
-                    end = idx + half_window + 1
-                    # ensure indices within bounds
-                    if start < 0 or end > n_tp:
-                        continue
-                    seg = ts[r, start:end]
-                    segments.append(seg)
-                if not segments:
-                    continue
-                # average across segments
-                avg_resp = np.mean(segments, axis=0)
-                # find index of peak relative to onset
-                # consider absolute peak to account for undershoots
-                peak_idx = int(np.argmax(np.abs(avg_resp)))
-                # convert index to time lag relative to onset
-                lag_tr = peak_idx - half_window
-                roi_latencies.append(lag_tr * tr)
-            if roi_latencies:
-                T = float(np.mean(roi_latencies))
-            else:
-                T = default_latency
+        default_latency = float("nan")
+    # Annotated goal and feedback events are modelled as nuisance regressors
+    # (same response model) so that their responses -- which overlap the
+    # stimulus response for fMRI -- do not leak into the stimulus amplitude.
+    nuisance = []
+    for key in ("goal_onsets", "feedback_onsets"):
+        on = _in_range_onset_seconds(event_bundle[key], tr=tr, n_tp=n_tp)
+        col = _model_regressor(on) if on.size else None
+        if col is not None and np.any(col != 0.0):
+            nuisance.append(col)
+    # design matrix: stimulus regressor + nuisance event regressors + intercept
+    X = np.column_stack([reg] + nuisance + [np.ones(n_tp)])
+    magnitude_reason = None
+    if int(np.linalg.matrix_rank(X)) < int(X.shape[1]):
+        # e.g. stimulus events coinciding with goal/feedback events: the
+        # stimulus amplitude is not identifiable (RAM undefined, see below).
+        magnitude_reason = "magnitude_design_rank_deficient"
+        abs_mean_beta = nan
     else:
-        raise ValueError(
-            "latency_method must be one of 'hrf_peak', 'xcorr', or 'fir'"
+        # 3) solve for betas via pseudo-inverse: betas shape
+        # (n_cols × n_regions); transpose ts so rows are time samples
+        betas = accelerated_pinv_dot(X, ts.T, backend=backend)
+        stim_betas = betas[0, :]  # first row corresponds to stimulus regressor
+
+        # use mean absolute β as amplitude (M), with optional scale factor
+        abs_mean_beta = float(np.mean(np.abs(stim_betas))) * float(magnitude_scale)
+    details["magnitude_term"] = abs_mean_beta
+
+    # 4) estimate latency T (seconds, >= 0 by construction; never clipped)
+    if latency_method == "hrf_peak":
+        T, latency_reason = float(default_latency), None
+    elif latency_method == "xcorr":
+        T, latency_reason = _xcorr_latency_seconds(
+            ts, stick, tr=tr, maxlag=xcorr_maxlag
         )
+    else:
+        T, latency_reason = _fir_latency_seconds(
+            ts, stim_idx, tr=tr, fir_window=fir_window
+        )
+    details["latency_seconds"] = float(T)
+    details["latency_undefined_reason"] = latency_reason
+    latency_term = float(T) + float(epsilon)
+    speed_term = abs_mean_beta / latency_term if np.isfinite(T) else nan
+    details["latency_term"] = float(latency_term)
+    details["speed_term"] = float(speed_term)
 
-    # latency represents a response delay and should be non-negative
-    T = max(float(T), 0.0)
-    # avoid division by zero
-    latency_term = T + float(epsilon)
-    speed_term = abs_mean_beta / latency_term
-
-    # 5) quality term Q = weighted geometric mean of G, F, U
-    _, goal_idx = _sanitize_onset_seconds(event_bundle["goal_onsets"], tr=tr, n_tp=n_tp)
-    _, feedback_idx = _sanitize_onset_seconds(event_bundle["feedback_onsets"], tr=tr, n_tp=n_tp)
-    feedback_values_num = _coerce_numeric_feedback(event_bundle.get("feedback_values"))
+    # 5) goal/feedback structure (strict by default: measured inputs only)
+    fb_onsets_in = event_bundle["feedback_onsets"]
+    fb_onsets_raw = np.asarray(
+        [] if fb_onsets_in is None else fb_onsets_in, dtype=float
+    ).reshape(-1)
+    fb_values_raw = _coerce_numeric_feedback(event_bundle.get("feedback_values"))
+    if fb_values_raw.size > 0 and fb_values_raw.size != fb_onsets_raw.size:
+        if require_explicit_feedback or fb_onsets_raw.size > 0:
+            return _undefined("feedback_values_misaligned")
+        fb_values_raw = np.empty(0, dtype=float)
+    if fb_values_raw.size > 0:
+        fb_onsets_s, feedback_idx, feedback_values = _sanitize_onsets_with_values(
+            fb_onsets_raw, fb_values_raw, tr=tr, n_tp=n_tp
+        )
+    else:
+        fb_onsets_s, feedback_idx = _sanitize_onset_seconds(
+            fb_onsets_raw, tr=tr, n_tp=n_tp
+        )
+        feedback_values = None
+    details["n_feedback_events"] = int(feedback_idx.size)
 
     if require_explicit_feedback:
-        if (feedback_idx.size == 0) or (feedback_values_num.size < 2):
-            if not return_details:
-                return float("nan")
-            return {
-                "value": float("nan"),
-                "undefined_reason": "missing_explicit_feedback",
-                "speed_term": float(speed_term),
-                "quality_term": float("nan"),
-                "magnitude_term": float(abs_mean_beta),
-                "latency_term": float(latency_term),
-                "latency_seconds": float(T),
-                "epsilon": float(epsilon),
-                "components": {
-                    "goal_alignment": float("nan"),
-                    "feedback_integration": float("nan"),
-                    "adaptive_update": float("nan"),
-                },
-                "weights": {
-                    "goal_alignment": float(w[0]),
-                    "feedback_integration": float(w[1]),
-                    "adaptive_update": float(w[2]),
-                },
-                "n_stimulus_events": int(stim_idx.size),
-                "n_goal_events": int(goal_idx.size),
-                "n_feedback_events": int(feedback_idx.size),
-            }
-
-    if feedback_idx.size == 0:
-        feedback_idx = stim_idx
+        if (
+            feedback_idx.size == 0
+            or feedback_values is None
+            or np.unique(feedback_values).size < 2
+        ):
+            return _undefined("missing_explicit_feedback")
+    if require_explicit_goals and goal_idx.size == 0:
+        return _undefined("missing_goal_events")
 
     ts_z = accelerated_zscore(ts, axis=1, backend=backend, eps=1e-12)
+    rng = np.random.RandomState(quality_random_state)
 
-    goal_pre_samples = max(0, int(round(goal_pre_window_sec / float(tr))))
-    response_samples = max(1, int(round(response_window_sec / float(tr))))
-    goal_objective_samples = max(1, int(round(goal_objective_window_sec / float(tr))))
-    feedback_samples = max(1, int(round(feedback_window_sec / float(tr))))
+    # Opt-in feedback proxy: stimulus events stand in for feedback events.
+    fb_from_stim = feedback_values is None and feedback_idx.size == 0
+    if fb_from_stim:
+        fb_onsets_s, feedback_idx = stim_onsets_s.copy(), stim_idx.copy()
 
-    g_score, stim_response_vecs = _goal_alignment_component(
+    # 6) trial-wise response patterns (fixed event sets, re-usable on surrogates)
+    if estimate == "glm":
+        pinv, keep_masks, slices, full_rank = _lsa_hrf_design(
+            [stim_onsets_s, goal_onsets_s, [] if fb_from_stim else fb_onsets_s],
+            tr=tr,
+            n_tp=n_tp,
+        )
+        if not full_rank:
+            # Minimum-norm betas of a rank-deficient beta-series design are not
+            # trial-wise measurements; G/F/U would be computed on artefacts.
+            return _undefined("trialwise_design_rank_deficient")
+        stim_used = stim_idx[keep_masks[0]]
+        goal_used = goal_idx[keep_masks[1]]
+        fb_keep = keep_masks[0] if fb_from_stim else keep_masks[2]
+        spec = {
+            "mode": "glm",
+            "pinv": pinv,
+            "slices": slices,
+            "fb_from_stim": fb_from_stim,
+        }
+    else:
+        lag_samples = max(0, int(round(quality_lag_sec / float(tr))))
+        resp_samples = max(1, int(round(response_window_sec / float(tr))))
+        gobj_samples = max(1, int(round(goal_objective_window_sec / float(tr))))
+        fb_samples = max(1, int(round(feedback_window_sec / float(tr))))
+        stim_used = stim_idx[stim_idx + lag_samples + resp_samples <= n_tp]
+        goal_used = goal_idx[goal_idx + lag_samples + gobj_samples <= n_tp]
+        fb_keep = (feedback_idx - fb_samples >= 0) & (
+            feedback_idx + lag_samples + fb_samples <= n_tp
+        )
+        spec = {
+            "mode": "window",
+            "lag": lag_samples,
+            "resp": resp_samples,
+            "gobj": gobj_samples,
+            "fb": fb_samples,
+            "stim_used": stim_used,
+            "goal_used": goal_used,
+            "fb_used": feedback_idx[fb_keep],
+        }
+
+    # Goal pairing: each stimulus with its nearest preceding goal event.
+    spec["goal_source"] = None
+    if goal_used.size > 0:
+        pos = np.searchsorted(goal_used, stim_used, side="right") - 1
+        valid = pos >= 0
+        spec.update(
+            goal_source="explicit_goal_events",
+            goal_pairs_x=pos[valid],
+            goal_pairs_y=np.flatnonzero(valid),
+            goal_groups=pos[valid],
+        )
+    elif goal_idx.size == 0 and not require_explicit_goals:
+        gpre = max(1, int(round(goal_pre_window_sec / float(tr))))
+        has_pre = stim_used - gpre >= 0
+        spec.update(
+            goal_source="pre_stimulus_state_proxy",
+            proxy_idx=stim_used[has_pre],
+            gpre=gpre,
+            goal_pairs_x=np.arange(int(has_pre.sum())),
+            goal_pairs_y=np.flatnonzero(has_pre),
+            goal_groups=np.arange(int(has_pre.sum())),
+        )
+    else:
+        spec.update(
+            goal_source="explicit_goal_events",
+            goal_pairs_x=np.empty(0, dtype=np.int64),
+            goal_pairs_y=np.empty(0, dtype=np.int64),
+            goal_groups=np.empty(0, dtype=np.int64),
+        )
+    patterns = _quality_patterns(ts_z, spec)
+    stim_response_vecs = patterns["stim"]
+
+    # Feedback signal aligned 1:1 with feedback events.
+    if feedback_values is not None:
+        feedback_signal = np.asarray(feedback_values, dtype=float)
+        details["feedback_signal_source"] = "explicit_values"
+    else:
+        # Opt-in proxy: prediction error of the most recent stimulus response.
+        resp_energy = np.sqrt(np.sum(stim_response_vecs ** 2, axis=1))
+        pe = _prediction_error_signal(resp_energy)
+        j = np.searchsorted(stim_used, feedback_idx, side="right") - 1
+        feedback_signal = np.full(feedback_idx.size, np.nan)
+        feedback_signal[j >= 0] = pe[j[j >= 0]] if pe.size else np.nan
+        details["feedback_signal_source"] = "prediction_error_proxy"
+    fb_ok = np.isfinite(feedback_signal)
+
+    g_score, g_reason, g_info = _goal_alignment_component(
         ts_z=ts_z,
-        stim_idx=stim_idx,
-        goal_idx=goal_idx,
-        goal_pre_samples=goal_pre_samples,
-        response_samples=response_samples,
-        goal_objective_samples=goal_objective_samples,
-        ridge=quality_ridge,
-        hardware_backend=backend,
+        spec=spec,
+        patterns=patterns,
+        ridge=float(quality_ridge),
+        cv_folds=int(quality_cv_folds),
+        n_null=int(quality_null_samples),
+        rng=rng,
     )
-    f_score, feedback_signal = _feedback_integration_component(
-        ts_z=ts_z,
-        feedback_idx=feedback_idx,
-        feedback_values=feedback_values_num,
+    details.update(g_info)
+    f_sel = fb_ok[fb_keep]
+    f_score, n_fb_used, f_reason = _feedback_integration_component(
+        fb_strength=np.asarray(patterns["fb_strength"])[f_sel],
+        fb_signal=feedback_signal[fb_keep][f_sel],
+        n_null=int(quality_null_samples),
+        rng=rng,
+    )
+    u_score, n_updates, u_reason = _adaptive_update_component(
         stim_response_vecs=stim_response_vecs,
-        feedback_samples=feedback_samples,
-        hardware_backend=backend,
+        stim_used_idx=stim_used,
+        feedback_idx=feedback_idx[fb_ok],
+        feedback_signal=feedback_signal[fb_ok],
+        n_null=int(quality_null_samples),
+        rng=rng,
     )
-    u_score = _adaptive_update_component(
-        stim_response_vecs=stim_response_vecs,
-        feedback_signal=feedback_signal,
-        hardware_backend=backend,
-    )
+    details["n_feedback_events_used"] = int(n_fb_used)
+    details["n_adaptive_updates"] = int(n_updates)
 
+    names = ("goal_alignment", "feedback_integration", "adaptive_update")
     components = np.asarray([g_score, f_score, u_score], dtype=float)
-    components = np.nan_to_num(components, nan=0.0, posinf=0.0, neginf=0.0)
-    components = np.clip(components, 0.0, 1.0)
+    reasons = (g_reason, f_reason, u_reason)
+    for name, val, reason in zip(names, components, reasons):
+        details["components"][name] = float(val)
+        details["component_undefined_reasons"][name] = reason
 
-    # Exact weighted geometric mean: any zero-valued weighted component yields Q=0.
-    if np.any((components <= 0.0) & (w > 0.0)):
+    if magnitude_reason is not None:
+        return _undefined(magnitude_reason)
+    undefined_weighted = [
+        reasons[i] or f"{names[i]}_undefined"
+        for i in range(3)
+        if w[i] > 0.0 and not np.isfinite(components[i])
+    ]
+    if undefined_weighted:
+        return _undefined(undefined_weighted[0])
+
+    # Exact weighted geometric mean over weighted components: a measured zero
+    # yields Q=0 (defined), an unmeasurable component makes RAM undefined.
+    wpos = w > 0.0
+    comp_w = np.clip(components[wpos], 0.0, 1.0)
+    if np.any(comp_w <= 0.0):
         quality_term = 0.0
     else:
-        quality_term = float(np.exp(np.sum(w * np.log(components)) / np.sum(w)))
+        quality_term = float(np.exp(np.sum(w[wpos] * np.log(comp_w)) / np.sum(w[wpos])))
         quality_term = float(np.clip(quality_term, 0.0, 1.0))
+    details["quality_term"] = quality_term
+
+    if not np.isfinite(T):
+        return _undefined(latency_reason or "latency_undefined")
 
     ram_value = float(speed_term * quality_term)
-
+    if not np.isfinite(ram_value):
+        return _undefined("non_finite_result")
+    details["value"] = ram_value
     if not return_details:
         return ram_value
-
-    return {
-        "value": ram_value,
-        "speed_term": float(speed_term),
-        "quality_term": float(quality_term),
-        "magnitude_term": float(abs_mean_beta),
-        "latency_term": float(latency_term),
-        "latency_seconds": float(T),
-        "epsilon": float(epsilon),
-        "response_model": response_model_norm,
-        "components": {
-            "goal_alignment": float(components[0]),
-            "feedback_integration": float(components[1]),
-            "adaptive_update": float(components[2]),
-        },
-        "weights": {
-            "goal_alignment": float(w[0]),
-            "feedback_integration": float(w[1]),
-            "adaptive_update": float(w[2]),
-        },
-        "n_stimulus_events": int(stim_idx.size),
-        "n_goal_events": int(goal_idx.size),
-        "n_feedback_events": int(feedback_idx.size),
-    }
+    return details
 
 def compute_PDI(
     ts: np.ndarray,
@@ -4841,6 +5344,7 @@ def _srpi_undefined_result(
             "internal_state_coupling": float("nan"),
         },
         "signed_reactivity_bias": float("nan"),
+        "separability_cv_auc": float("nan"),
         "reliability": float("nan"),
         "weights": {
             "reactivity_bias": float("nan"),
@@ -4856,59 +5360,139 @@ def _srpi_undefined_result(
 
 
 def _event_locked_state_deltas(ts_z, event_idx, lag_samples, pre_samples, post_samples):
-    shifted_idx = np.asarray(event_idx, dtype=np.int64).reshape(-1) + int(lag_samples)
-    pre_vecs, post_vecs, used_shifted = _window_mean_vectors(
+    """
+    Event-locked pre-event state and response change.
+
+    For an event at sample ``e`` the pre-event state is the mean over
+    ``[e - pre_samples, e)`` (strictly before onset) and the response is the
+    mean over ``[e + lag, e + lag + post_samples)``; ``d_e = r_e - p_e``.
+    """
+    pre_vecs, post_vecs, used = _window_mean_vectors(
         ts_z,
-        shifted_idx,
+        np.asarray(event_idx, dtype=np.int64).reshape(-1),
         pre_samples=pre_samples,
         post_samples=post_samples,
+        post_lag_samples=int(lag_samples),
     )
-    if used_shifted.size == 0:
+    if used.size == 0:
         n_regions = int(ts_z.shape[0])
         empty = np.empty((0, n_regions), dtype=float)
         return empty, empty, np.empty(0, dtype=np.int64)
     delta_vecs = post_vecs - pre_vecs
-    used_original = used_shifted - int(lag_samples)
-    return pre_vecs, delta_vecs, used_original
+    return pre_vecs, delta_vecs, used
 
 
-def _regularized_mahalanobis_distance_sq(x, y, ridge, hardware_backend=None):
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    if x.ndim != 2 or y.ndim != 2:
-        return np.nan
-    if x.shape[1] != y.shape[1]:
-        return np.nan
-    if x.shape[0] < 2 or y.shape[0] < 2:
-        return np.nan
+def _ledoit_wolf_shrinkage(xc):
+    """
+    Ledoit-Wolf (2004) optimal shrinkage intensity for centred data ``xc``
+    (n x p) toward the scaled identity, computed from the n x n Gram matrix.
+    """
+    xc = np.asarray(xc, dtype=float)
+    n, p = xc.shape
+    if n < 2 or p < 1:
+        return 1.0
+    g = xc @ xc.T
+    s_fro2 = float(np.sum(g * g)) / float(n * n)
+    mu = float(np.trace(g)) / float(n * p)
+    delta2 = (s_fro2 - mu * mu * p) / float(p)
+    if (not np.isfinite(delta2)) or delta2 <= 0.0:
+        return 1.0
+    diag = np.diag(g)
+    g2_diag = np.einsum("ij,ji->i", g, g)
+    beta_bar2 = float(np.sum(diag * diag - 2.0 * g2_diag / n + s_fro2))
+    beta_bar2 /= float(n * n * p)
+    beta2 = min(max(beta_bar2, 0.0), delta2)
+    return float(np.clip(beta2 / delta2, 0.0, 1.0))
 
-    mu_x = x.mean(axis=0)
-    mu_y = y.mean(axis=0)
-    dx = x - mu_x
-    dy = y - mu_y
 
-    cov_x = (dx.T @ dx) / float(max(1, x.shape[0] - 1))
-    cov_y = (dy.T @ dy) / float(max(1, y.shape[0] - 1))
-    cov_pool = 0.5 * (cov_x + cov_y)
-    cov_pool = 0.5 * (cov_pool + cov_pool.T)
+def _shrinkage_lda_direction(a, b, shrinkage_floor, hardware_backend=None):
+    """
+    Unit discriminant direction ``w ∝ (Σ_s)^-1 (μ_a - μ_b)`` and midpoint.
 
-    d = int(cov_pool.shape[0])
-    if d == 0:
-        return np.nan
-    tr_cov = float(np.trace(cov_pool))
-    scale = max(tr_cov / float(max(1, d)), 1e-12)
-    lam = float(max(ridge, 1e-12)) * scale
-    reg_cov = cov_pool + lam * np.eye(d, dtype=float)
+    ``Σ_s = (1 - s) S + s (tr S / p) I`` with Ledoit-Wolf shrinkage ``s``
+    (at least ``shrinkage_floor``); solved in the n x n dual (Woodbury), so
+    the cost does not grow with p^2.
+    """
+    ma = a.mean(axis=0)
+    mb = b.mean(axis=0)
+    resid = np.vstack([a - ma, b - mb])
+    n_r, p = resid.shape
+    dof = float(max(1, n_r - 2))
+    shrink = max(_ledoit_wolf_shrinkage(resid), float(shrinkage_floor))
+    shrink = float(min(shrink, 1.0))
+    mu = float(np.sum(resid * resid)) / (dof * float(p))
+    alpha = shrink * mu
+    if (not np.isfinite(alpha)) or alpha <= 1e-300:
+        return None, None
+    beta = (1.0 - shrink) / dof
+    delta = ma - mb
+    if beta > 0.0:
+        k = alpha * np.eye(n_r) + beta * (resid @ resid.T)
+        try:
+            sol = accelerated_solve(k, resid @ delta, backend=hardware_backend)
+        except np.linalg.LinAlgError:
+            sol = np.linalg.pinv(k).dot(resid @ delta)
+        w = (delta - beta * (resid.T @ sol)) / alpha
+    else:
+        w = delta / alpha
+    nrm = float(np.linalg.norm(w))
+    if (not np.isfinite(nrm)) or nrm <= 1e-300:
+        return None, None
+    return w / nrm, 0.5 * (ma + mb)
 
-    delta = (mu_x - mu_y).astype(float)
-    try:
-        sol = accelerated_solve(reg_cov, delta, backend=hardware_backend)
-    except np.linalg.LinAlgError:
-        sol = np.linalg.pinv(reg_cov).dot(delta)
-    d2 = float(delta.dot(sol))
-    if not np.isfinite(d2):
-        return np.nan
-    return float(max(d2, 0.0))
+
+def _auc_from_scores(pos, neg):
+    pos = np.asarray(pos, dtype=float).reshape(-1)
+    neg = np.asarray(neg, dtype=float).reshape(-1)
+    if pos.size == 0 or neg.size == 0:
+        return float("nan")
+    gt = np.sum(pos[:, None] > neg[None, :])
+    eq = np.sum(pos[:, None] == neg[None, :])
+    return float((gt + 0.5 * eq) / float(pos.size * neg.size))
+
+
+def _cv_separability(x_self, x_non, shrinkage_floor, n_folds=5, hardware_backend=None):
+    """
+    Cross-validated, chance-corrected self/non-self separability.
+
+    Shrinkage-LDA fitted on time-blocked, class-stratified training folds;
+    held-out events are scored along the unit discriminant relative to the
+    training midpoint and the pooled scores give an AUC. Returns
+    ``(S, auc)`` with ``S = clip(2 * (AUC - 0.5), 0, 1)`` (0 at chance).
+    """
+    x_self = np.asarray(x_self, dtype=float)
+    x_non = np.asarray(x_non, dtype=float)
+    n_s, n_n = int(x_self.shape[0]), int(x_non.shape[0])
+    k = int(min(int(n_folds), n_s, n_n))
+    if k < 2:
+        return float("nan"), float("nan")
+    fold_s = np.empty(n_s, dtype=np.int64)
+    fold_n = np.empty(n_n, dtype=np.int64)
+    for f, chunk in enumerate(np.array_split(np.arange(n_s), k)):
+        fold_s[chunk] = f
+    for f, chunk in enumerate(np.array_split(np.arange(n_n), k)):
+        fold_n[chunk] = f
+    score_s = np.full(n_s, np.nan)
+    score_n = np.full(n_n, np.nan)
+    for f in range(k):
+        tr_s = x_self[fold_s != f]
+        tr_n = x_non[fold_n != f]
+        if tr_s.shape[0] < 2 or tr_n.shape[0] < 2:
+            return float("nan"), float("nan")
+        w, mid = _shrinkage_lda_direction(
+            tr_s,
+            tr_n,
+            shrinkage_floor=shrinkage_floor,
+            hardware_backend=hardware_backend,
+        )
+        if w is None:
+            return float("nan"), float("nan")
+        score_s[fold_s == f] = (x_self[fold_s == f] - mid) @ w
+        score_n[fold_n == f] = (x_non[fold_n == f] - mid) @ w
+    auc = _auc_from_scores(score_s, score_n)
+    if not np.isfinite(auc):
+        return float("nan"), float("nan")
+    return float(np.clip(2.0 * (auc - 0.5), 0.0, 1.0)), auc
 
 
 def _mean_pairwise_pattern_similarity(mat, hardware_backend=None):
@@ -4973,6 +5557,7 @@ def compute_SRPI(
     sample_reliability_tau: float = 4.0,
     return_details: bool = False,
     hardware_backend=None,
+    separability_cv_folds: int = 5,
 ) -> float:
     """
     Self-Referential Processing Index (SRPI).
@@ -5006,13 +5591,16 @@ def compute_SRPI(
     modality : {'fmri', 'eeg'}, optional
         Modality label used for traceability in diagnostics.
     pre_window_sec : float, optional
-        Pre-event window (seconds) for internal-state estimation.
+        Pre-event window (seconds) for internal-state estimation; it covers
+        ``[onset - pre_window_sec, onset)``, strictly before the event.
     response_lag_sec : float, optional
         Post-onset lag (seconds) before response window begins.
     response_window_sec : float, optional
-        Response window length (seconds).
+        Response window length (seconds): ``[onset + lag, onset + lag + W)``.
     covariance_ridge : float, optional
-        Ridge regularization strength for separability estimation.
+        Ridge regularization for separability, used as the minimum covariance
+        shrinkage ``ridge / (1 + ridge)`` of the shrinkage-LDA (the
+        Ledoit-Wolf intensity is used when larger).
     component_weights : tuple(float, float, float, float), optional
         Weights for (reactivity, separability, stability, internal coupling).
     min_events_per_class : int, optional
@@ -5021,11 +5609,28 @@ def compute_SRPI(
         Saturation constant for event-count reliability attenuation.
     return_details : bool, optional
         If ``True``, returns diagnostics dict.
+    separability_cv_folds : int, optional
+        Number of time-blocked, class-stratified folds for the
+        cross-validated separability.
+
+    Notes
+    -----
+    Separability is out-of-sample: a shrinkage-LDA is fitted on training
+    folds of the response changes ``d_e`` and scored on held-out events;
+    ``S = [2 (AUC_cv - 0.5)]_+`` is 0 at chance. (The in-sample Mahalanobis
+    distance saturates at 1 whenever regions outnumber events.)
+
+    The internal-state coupling uses absolute correlations,
+    ``I = [|corr(u_s, m_s)| - |corr(u_n, m_n)|]_+``, because the sign of the
+    leading latent axis of the pre-event states is arbitrary (SVD sign), so
+    only the strength of state-response coupling is identifiable.
     """
     if ts.ndim != 2:
         raise ValueError(f"ts should be 2D (n_regions × n_time), got shape {ts.shape}")
     if tr is None or (not np.isfinite(tr)) or float(tr) <= 0:
         raise ValueError("tr must be provided and > 0 for SRPI")
+    if int(separability_cv_folds) < 2:
+        raise ValueError("separability_cv_folds must be >= 2")
     if eps <= 0:
         raise ValueError("eps must be > 0")
     if pre_window_sec <= 0 or response_window_sec <= 0:
@@ -5147,13 +5752,15 @@ def compute_SRPI(
         c_reactivity = max(signed_bias, 0.0)
     c_reactivity = float(np.clip(c_reactivity, 0.0, 1.0))
 
-    d2 = _regularized_mahalanobis_distance_sq(
-        x=delta_self,
-        y=delta_non,
-        ridge=float(covariance_ridge),
+    ridge = float(covariance_ridge)
+    c_sep, sep_auc = _cv_separability(
+        delta_self,
+        delta_non,
+        shrinkage_floor=ridge / (1.0 + ridge),
+        n_folds=int(separability_cv_folds),
         hardware_backend=backend,
     )
-    if not np.isfinite(d2):
+    if not np.isfinite(c_sep):
         return _srpi_undefined_result(
             reason="separability_undefined",
             return_details=return_details,
@@ -5162,8 +5769,6 @@ def compute_SRPI(
             windows_sec=windows_sec,
             eps=eps,
         )
-    c_sep = float(np.clip(1.0 - np.exp(-0.5 * float(d2)), 0.0, 1.0))
-
     rho_self = _mean_pairwise_pattern_similarity(delta_self, hardware_backend=backend)
     rho_non = _mean_pairwise_pattern_similarity(delta_non, hardware_backend=backend)
     if (not np.isfinite(rho_self)) or (not np.isfinite(rho_non)):
@@ -5239,6 +5844,7 @@ def compute_SRPI(
             "internal_state_coupling": float(comp_raw[3]),
         },
         "signed_reactivity_bias": float(signed_bias),
+        "separability_cv_auc": float(sep_auc),
         "reliability": float(reliability),
         "weights": {
             "reactivity_bias": float(weights[0]),

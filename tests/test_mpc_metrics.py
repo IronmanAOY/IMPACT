@@ -29,11 +29,14 @@ def _build_ram_fixture():
 
 def test_ram():
     ts, onsets, tr = _build_ram_fixture()
+    # Legacy onset-list input has no goal/feedback structure, so the proxies
+    # must be enabled explicitly (strict contract: undefined otherwise).
     ram = mm.compute_RAM(
         ts,
         tr=tr,
         stimulus_onsets=onsets,
         require_explicit_feedback=False,
+        require_explicit_goals=False,
     )
     assert np.isfinite(ram)
     assert ram >= 0.0
