@@ -62,6 +62,7 @@ def atlas_check(
     srpi_params=None,
     srpi_require_explicit_params=True,
     subjects=None,
+    **synergy_kwargs,
 ):
     out = {}
     thresholds = thetas if thetas is not None else [i * 0.1 for i in range(1, 10)]
@@ -96,6 +97,7 @@ def atlas_check(
             srpi_params=srpi_params,
             srpi_require_explicit_params=srpi_require_explicit_params,
             subjects=subjects,
+            **synergy_kwargs,  # e.g. condition, hardware_target, step-2 iim_* settings
         )
         if not isinstance(df, pd.DataFrame):
             raise TypeError("compute_synergy_ci must return DataFrame")

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -133,7 +136,16 @@ def resolve_dataset_provenance(
     synthetic_base = Path(
         synthetic_root or os.environ.get("IMPACT_SYNTH_ROOT") or root
     ).expanduser().resolve()
-    scaffold = ensure_test_objects_scaffold(synthetic_base)
+    if origin == DUMMY_DATA_ORIGIN:
+        scaffold = ensure_test_objects_scaffold(synthetic_base)
+    else:
+        # Real-data runs must not create synthetic scaffolding as a side effect.
+        test_root = synthetic_base / TEST_OBJECTS_ROOTNAME
+        scaffold = {
+            "root": test_root,
+            "runs": test_root / "runs",
+            "metric_bank": test_root / "metric_bank",
+        }
 
     if origin == DUMMY_DATA_ORIGIN:
         base = requested
@@ -166,3 +178,132 @@ def write_json(path: Path | str, payload) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+CODE_VERSION_ENV = "IMPACT_CODE_VERSION"
+RUNTIME_PACKAGES = (
+    "numpy",
+    "scipy",
+    "pandas",
+    "scikit-learn",
+    "nilearn",
+    "nibabel",
+    "mne",
+    "pybids",
+    "statsmodels",
+    "numba",
+    "networkx",
+    "cupy",
+    "cupy-rocm-7-0",
+    "amd-cupy",
+)
+
+
+def _git_output(repo_root: Path, *args: str) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            # Many batch tasks may query the same checkout concurrently: never
+            # take index.lock for opportunistic index refreshes.
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip()
+
+
+def collect_code_version(repo_root: Path | str) -> dict[str, object]:
+    """
+    Identify the code that produced a result: git commit (if the checkout is a
+    git work tree), dirty flag and branch. Deployments without git metadata
+    (e.g. a tarball copied to an HPC workspace) can set IMPACT_CODE_VERSION.
+    """
+    root = Path(repo_root).resolve()
+    out: dict[str, object] = {
+        "git_sha": None,
+        "git_dirty": None,
+        "git_branch": None,
+        "declared_version": (os.environ.get(CODE_VERSION_ENV) or None),
+        "source": "unavailable",
+    }
+    toplevel = _git_output(root, "rev-parse", "--show-toplevel")
+    # Only the checkout itself counts, not an enclosing repository.
+    in_repo = toplevel is not None and Path(toplevel).resolve() == root
+    sha = _git_output(root, "rev-parse", "HEAD") if in_repo else None
+    if sha:
+        out["git_sha"] = sha
+        out["source"] = "git"
+        status = _git_output(root, "status", "--porcelain", "--untracked-files=no")
+        out["git_dirty"] = None if status is None else bool(status)
+        out["git_branch"] = _git_output(root, "rev-parse", "--abbrev-ref", "HEAD")
+    elif out["declared_version"]:
+        out["source"] = CODE_VERSION_ENV
+    return out
+
+
+def collect_runtime_versions(packages=RUNTIME_PACKAGES) -> dict[str, object]:
+    """Python/platform and installed package versions, without importing them."""
+    try:
+        from importlib import metadata as importlib_metadata
+    except ImportError:  # pragma: no cover
+        importlib_metadata = None
+    versions: dict[str, str | None] = {}
+    for name in packages:
+        ver = None
+        if importlib_metadata is not None:
+            try:
+                ver = importlib_metadata.version(name)
+            except Exception:
+                ver = None
+        if ver is not None:
+            versions[name] = ver
+    return {
+        "python": sys.version.split()[0],
+        "python_executable": sys.executable,
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "hostname": platform.node(),
+        "packages": versions,
+    }
+
+
+def read_dataset_description(bids_root: Path | str | None) -> dict:
+    if bids_root is None:
+        return {}
+    path = Path(bids_root) / "dataset_description.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def dataset_declares_synthetic(bids_root: Path | str | None) -> bool:
+    """True when dataset_description.json marks the dataset as synthetic."""
+    desc = read_dataset_description(bids_root)
+    synthetic_flag = desc.get("SyntheticData")
+    if isinstance(synthetic_flag, str):
+        synthetic_flag = synthetic_flag.strip().lower() in {"true", "1", "yes"}
+    dataset_type = str(desc.get("DatasetType") or "").strip().lower()
+    return bool(synthetic_flag) or dataset_type == "synthetic"
+
+
+def assert_origin_matches_dataset(bids_root: Path | str | None, data_origin) -> None:
+    """
+    Refuse to label a dataset that declares itself synthetic as real study data.
+    """
+    origin = normalize_data_origin(data_origin)
+    if origin == REAL_DATA_ORIGIN and dataset_declares_synthetic(bids_root):
+        raise ValueError(
+            f"Dataset at '{bids_root}' declares SyntheticData/DatasetType=synthetic in "
+            "dataset_description.json, but data_origin='real'. Re-run with "
+            "--data-origin dummy so synthetic results stay separated from study data."
+        )
