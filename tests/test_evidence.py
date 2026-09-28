@@ -158,6 +158,72 @@ def test_missing_sampling_se_keeps_c_but_not_a_status():
     assert E.component_assessment(_ev("RAM", 0.8, null_sd=0.0, n_null=10)).status == P
 
 
+def test_se_from_few_replicates_uses_the_student_t_quantile():
+    from scipy.stats import t as t_dist
+
+    # only a sampling part (analytic null, no reference SE): nu_eff = se_df
+    a = E.component_assessment(_ev("PDI", 0.55, se=0.15, se_df=4))
+    t4 = t_dist.ppf(0.95, 4)
+    assert a.df == pytest.approx(4.0) and a.quantile == pytest.approx(t4)
+    assert a.lower == pytest.approx(0.55 - t4 * 0.15)
+    assert a.upper == pytest.approx(0.55 + t4 * 0.15)
+    # the normal quantile would call this PRESENT; t_4 does not
+    assert E.component_assessment(_ev("PDI", 0.55, se=0.15)).status == P
+    assert a.status == U and a.reason == E.REASON_INCONCLUSIVE
+    # without se_df the SE counts as known (normal quantile, as before)
+    b = E.component_assessment(_ev("PDI", 0.55, se=0.15))
+    assert math.isinf(b.df) and b.quantile == pytest.approx(Z95)
+    # Welch-Satterthwaite: a known null Monte-Carlo part raises the df
+    c = E.component_assessment(
+        _ev("PDI", 0.6, null_sd=0.3, n_null=9, se=0.1, se_df=4))
+    s_samp, s_null = 0.1, abs(0.6 - 1.0) * 0.3 / 3.0
+    var = s_samp ** 2 + s_null ** 2
+    assert c.df == pytest.approx(4.0 * (var / s_samp ** 2) ** 2)
+    assert c.quantile == pytest.approx(t_dist.ppf(0.95, c.df))
+    # exact computations have no sampling part: normal quantile
+    d = E.component_assessment(_ev("IIM", 0.6, se=0.0, exact=True, se_df=4))
+    assert math.isinf(d.df)
+    # invalid degrees of freedom
+    for bad in (0, -1.0):
+        e = E.component_assessment(_ev("PDI", 0.6, se=0.1, se_df=bad))
+        assert e.status == U and e.reason == E.REASON_INVALID_SE
+    assert E.component_assessment(_ev("PDI", 0.6, se=0.1, se_df=None)).status == P
+    assert E.component_assessment(
+        _ev("PDI", 0.6, se=0.1, se_df=float("nan"))).status == P
+    # the assessment dict carries the degrees of freedom and the quantile
+    rec = a.to_dict()
+    assert rec["df"] == pytest.approx(4.0) and rec["quantile"] == pytest.approx(t4)
+    assert b.to_dict()["df"] is None
+
+
+def test_status_array_matches_scalar_with_degrees_of_freedom():
+    rng = np.random.default_rng(12)
+    n = 4000
+    est = rng.normal(0.4, 0.5, n)
+    nm = rng.normal(0, 0.1, n)
+    nsd = rng.gamma(2.0, 0.1, n)
+    k = rng.integers(0, 40, n)
+    ref = nm + rng.gamma(2.0, 0.5, n)
+    se = np.abs(rng.normal(0, 0.2, n))
+    sdf = rng.choice(np.array([np.nan, 1.0, 2.0, 4.0, 19.0, -1.0, 0.0]), size=n)
+    codes, margins = E.component_status_array(
+        est, nm, nsd, se, n_null=k, reference=ref, se_df=sdf)
+    n_t = 0
+    for i in range(n):
+        ev = CE("NAS", est[i], nm[i], nsd[i], se=se[i], n_null=int(k[i]),
+                reference=ref[i], se_df=sdf[i])
+        st, m, _ = E.component_status(ev)
+        assert E._STATUS_TO_CODE[st] == codes[i]
+        if np.isfinite(m) or np.isfinite(margins[i]):
+            assert m == margins[i]
+        n_t += bool(np.isfinite(sdf[i]) and sdf[i] > 0)
+    assert n_t > 1000
+    # the t quantile is never more liberal than the normal one
+    codes_z, _ = E.component_status_array(est, nm, nsd, se, n_null=k, reference=ref)
+    ok = np.isfinite(sdf) & (sdf > 0)
+    assert np.all(np.abs(codes[ok]) <= np.abs(codes_z[ok]))
+
+
 def test_cutoff_and_alpha_validation():
     with pytest.raises(ValueError, match="delta"):
         E.normalize_cutoff((0.1, 0.25))

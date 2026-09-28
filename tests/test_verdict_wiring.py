@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.stats import t as t_dist
 
 import run_pipeline
 from impact_pipeline import evidence as E
@@ -225,7 +226,14 @@ def test_construct_scale_columns_follow_the_propagation_formula(planted_runs):
             # excess-scale reference: dc/dm = 1/ref, dc/dnu = -1/ref
             se_c = math.hypot(row[f"{p}_se"] / ref, se_nu / ref)
             assert row[f"{p}_c_se"] == pytest.approx(se_c, rel=1e-12)
-            z = 1.6448536269514722
+            # bootstrap SE from B valid replicates: B - 1 degrees of freedom,
+            # Welch-Satterthwaite df of se_c, Student-t quantile
+            assert row[f"{p}_se_df"] == row[f"{p}_boot_n"] - 1
+            s_samp = row[f"{p}_se"] / ref
+            df_eff = row[f"{p}_se_df"] * (se_c ** 2 / s_samp ** 2) ** 2
+            assert row[f"{p}_c_df"] == pytest.approx(df_eff, rel=1e-9)
+            z = t_dist.ppf(0.95, df_eff)
+            assert z > 1.6448536269514722
             assert row[f"{p}_c_lower"] == pytest.approx(c - z * se_c, rel=1e-12)
             assert row[f"{p}_margin"] == pytest.approx(c - z * se_c - 0.25, abs=1e-12)
             assert row[f"{p}_margin_absent"] == pytest.approx(

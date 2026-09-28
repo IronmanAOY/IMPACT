@@ -41,7 +41,10 @@ uncertainty, propagated through the ratio (delta method). With
 null); otherwise UNDEFINED/INCONCLUSIVE. The cutoffs ``delta_j <= z_j`` are
 construct-scale constants declared in the :class:`Protocol` (defaults 0.25 and
 0.10). An empirical estimate without a sampling SE is UNDEFINED
-(``NO_SAMPLING_SE``) unless it is an exact computation (``exact=True``).
+(``NO_SAMPLING_SE``) unless it is an exact computation (``exact=True``). An SE
+from few replicates declares its degrees of freedom (``se_df``: jackknife
+groups - 1, bootstrap replicates - 1); ``z_a`` is then the Student ``t``
+quantile with the Welch-Satterthwaite degrees of freedom of ``se_c``.
 
 Reason codes (stable strings, ``;``-joined in tables):
 
@@ -191,6 +194,31 @@ def _z_quantile(alpha):
     return float(NormalDist().inv_cdf(1.0 - float(alpha)))
 
 
+def _one_sided_quantile(alpha, df=math.inf):
+    """
+    One-sided ``1 - alpha`` quantile: Student ``t`` with ``df`` degrees of
+    freedom, or the normal quantile for an infinite (or non-finite) ``df``.
+    """
+    if not math.isfinite(df):
+        return _z_quantile(alpha)
+    from scipy.special import stdtrit
+
+    return float(stdtrit(float(df), 1.0 - float(alpha)))
+
+
+def _effective_df(se_df, s_samp, var_c):
+    """
+    Welch-Satterthwaite degrees of freedom of ``se_c`` when only its sampling
+    part ``s_samp`` (with ``se_df`` degrees of freedom) is estimated from few
+    replicates; the null and reference parts count as known. Infinite without
+    a finite ``se_df`` or without a sampling part.
+    """
+    if not (math.isfinite(se_df) and s_samp > 0):
+        return math.inf
+    ratio = var_c / (s_samp * s_samp)
+    return se_df * ratio * ratio
+
+
 def _check_alpha(alpha):
     a = _as_float(alpha)
     if not (0.0 < a <= 0.5):
@@ -284,6 +312,12 @@ class ComponentEvidence:
     on ``n_null`` surrogates; ``n_null=0`` declares an analytic null mean
     without Monte-Carlo error). ``se`` is the sampling SE of ``estimate`` (e.g.
     a block bootstrap within the recording); 0 or NaN means unknown.
+    ``se_df`` is the number of degrees of freedom of ``se`` when it comes from
+    few replicates (delete-a-group jackknife with ``G`` groups: ``G - 1``;
+    bootstrap with ``B`` valid replicates: ``B - 1``); the one-sided bounds
+    then use the Student ``t`` quantile (Welch-Satterthwaite degrees of
+    freedom of ``se_c``) instead of the normal quantile. None/NaN treats
+    ``se`` as known (normal quantile).
     ``reference`` is the reference anchor ``rho`` on the estimate scale
     (``reference_scale="estimate"``) or the reference excess ``rho - nu``
     (``reference_scale="excess"``), with SE ``reference_se`` (None/NaN:
@@ -316,6 +350,7 @@ class ComponentEvidence:
     exact: bool = False
     nodes: tuple | None = None
     regime: Mapping | None = field(default=None, hash=False)
+    se_df: float | None = None
 
     def __post_init__(self):
         if self.reference_scale not in REFERENCE_SCALES:
@@ -335,7 +370,9 @@ class ComponentAssessment:
     = Monte-Carlo error of the null mean, ``se_reference``), the one-sided
     ``1 - alpha`` bounds ``lower``/``upper`` and the cutoffs. ``c`` is reported
     whenever the anchors are valid, also when the status is UNDEFINED for lack
-    of a sampling SE.
+    of a sampling SE. ``df`` is the (effective) degrees of freedom of ``se``
+    (infinite: normal quantile) and ``quantile`` the one-sided ``1 - alpha``
+    quantile of the bounds.
     """
 
     status: ComponentStatus
@@ -350,6 +387,8 @@ class ComponentAssessment:
     cutoff_present: float
     cutoff_absent: float
     alpha: float
+    df: float = math.inf
+    quantile: float = float("nan")
 
     @property
     def margin_present(self) -> float:
@@ -380,6 +419,8 @@ class ComponentAssessment:
             "margin_present": _f(self.margin_present),
             "margin_absent": _f(self.margin_absent),
             "alpha": self.alpha,
+            "df": _f(self.df),
+            "quantile": _f(self.quantile),
         }
 
 
@@ -400,13 +441,20 @@ def component_assessment(ev, *, cutoff=DEFAULT_CUTOFF, alpha=DEFAULT_ALPHA):
       the null);
     - UNDEFINED otherwise (``INCONCLUSIVE``).
 
+    When ``ev.se_df`` is given (an SE from few replicates), ``z_a`` is the
+    Student ``t`` quantile ``t_{1-alpha, nu}`` with the Welch-Satterthwaite
+    degrees of freedom ``nu = se_df (se_c^2 / s_samp^2)^2`` (``s_samp`` = the
+    sampling part ``se / (rho - nu)``; the null and reference parts count as
+    known), so ``nu = se_df`` when the sampling SE dominates and ``nu`` grows
+    without bound when it is negligible.
+
     UNDEFINED reasons, in order: not defined (``ev.reason`` or
     ``NOT_DEFINED``), ``NON_FINITE_ESTIMATE``, ``NO_NULL_CALIBRATION``,
     ``DEGENERATE_NULL`` (``n_null > 0`` without a finite ``null_sd >= 0``),
     ``INVALID_ANCHORS`` (reference not finite or not above the null),
-    ``INVALID_SE`` (negative ``se`` or ``reference_se``) and
-    ``NO_SAMPLING_SE`` (``se`` 0/NaN for an estimate that is not ``exact``).
-    Returns a :class:`ComponentAssessment`.
+    ``INVALID_SE`` (negative ``se`` or ``reference_se``, or ``se_df <= 0``)
+    and ``NO_SAMPLING_SE`` (``se`` 0/NaN for an estimate that is not
+    ``exact``). Returns a :class:`ComponentAssessment`.
     """
     z_cut, d_cut = normalize_cutoff(cutoff)
     alpha = _check_alpha(alpha)
@@ -449,6 +497,9 @@ def component_assessment(ev, *, cutoff=DEFAULT_CUTOFF, alpha=DEFAULT_ALPHA):
     se = _as_float(ev.se)
     if math.isfinite(se) and se < 0:
         return _undefined(REASON_INVALID_SE, c)
+    se_df = _as_float(ev.se_df)
+    if math.isfinite(se_df) and se_df <= 0:
+        return _undefined(REASON_INVALID_SE, c)
     has_se = math.isfinite(se) and se > 0
     if not has_se:
         if not bool(ev.exact):
@@ -459,8 +510,10 @@ def component_assessment(ev, *, cutoff=DEFAULT_CUTOFF, alpha=DEFAULT_ALPHA):
     s_samp = se / denom
     s_null = abs(d_nu) * se_nu
     s_ref = abs(d_ref) * ref_se
-    se_c = math.sqrt(s_samp * s_samp + s_null * s_null + s_ref * s_ref)
-    z_a = _z_quantile(alpha)
+    var_c = s_samp * s_samp + s_null * s_null + s_ref * s_ref
+    se_c = math.sqrt(var_c)
+    df = _effective_df(se_df, s_samp, var_c)
+    z_a = _one_sided_quantile(alpha, df)
     lower = c - z_a * se_c
     upper = c + z_a * se_c
     if lower > z_cut:
@@ -471,7 +524,7 @@ def component_assessment(ev, *, cutoff=DEFAULT_CUTOFF, alpha=DEFAULT_ALPHA):
         status, reason = ComponentStatus.UNDEFINED, REASON_INCONCLUSIVE
     return ComponentAssessment(
         status, reason, c, se_c, s_samp, s_null, s_ref, lower, upper, z_cut, d_cut,
-        alpha,
+        alpha, df, z_a,
     )
 
 
@@ -498,22 +551,24 @@ def component_status_array(
     reference_scale="estimate",
     cutoff=DEFAULT_CUTOFF,
     alpha=DEFAULT_ALPHA,
+    se_df=np.nan,
 ):
     """
     Vectorised numeric core of :func:`component_assessment` (same
-    inequalities, same operation order). Returns ``(codes, margins)`` with
-    codes in {1 (PRESENT), 0 (UNDEFINED), -1 (ABSENT)} and the presence
-    margins ``lower - z``; invalid inputs give code 0 and a NaN margin.
+    inequalities, same operation order, same Student-``t`` quantile for a
+    finite ``se_df``). Returns ``(codes, margins)`` with codes in
+    {1 (PRESENT), 0 (UNDEFINED), -1 (ABSENT)} and the presence margins
+    ``lower - z``; invalid inputs give code 0 and a NaN margin.
     """
     z_cut, d_cut = normalize_cutoff(cutoff)
     alpha = _check_alpha(alpha)
     if reference_scale not in REFERENCE_SCALES:
         raise ValueError(f"reference_scale must be one of {REFERENCE_SCALES}")
-    est, nm, nsd, s, nn, ref, rse = np.broadcast_arrays(
+    est, nm, nsd, s, nn, ref, rse, sdf = np.broadcast_arrays(
         *(
-            np.asarray(v, dtype=float)
+            np.asarray(np.nan if v is None else v, dtype=float)
             for v in (estimate, null_mean, null_sd, se, n_null, reference,
-                      reference_se)
+                      reference_se, se_df)
         )
     )
     ex = np.broadcast_to(np.asarray(exact, dtype=bool), est.shape)
@@ -528,7 +583,7 @@ def component_status_array(
         anchors_ok = np.isfinite(ref) & np.isfinite(denom) & (denom > 0)
         rse_ok = ~(np.isfinite(rse) & (rse < 0))
         rse_eff = np.where(np.isfinite(rse), rse, 0.0)
-        se_sign_ok = ~(np.isfinite(s) & (s < 0))
+        se_sign_ok = ~(np.isfinite(s) & (s < 0)) & ~(np.isfinite(sdf) & (sdf <= 0))
         has_se = np.isfinite(s) & (s > 0)
         s_eff = np.where(has_se, s, 0.0)
         valid = (
@@ -544,9 +599,22 @@ def component_status_array(
         s_samp = s_eff / denom
         s_null = np.abs(d_nu) * se_nu
         s_ref = np.abs(d_ref) * rse_eff
-        se_c = np.sqrt(s_samp * s_samp + s_null * s_null + s_ref * s_ref)
-        lower = c - z_a * se_c
-        upper = c + z_a * se_c
+        var_c = s_samp * s_samp + s_null * s_null + s_ref * s_ref
+        se_c = np.sqrt(var_c)
+        # Student-t quantile where the SE has finite degrees of freedom
+        t_rows = valid & np.isfinite(sdf) & (s_samp > 0)
+        q = np.full(est.shape, z_a)
+        if np.any(t_rows):
+            from scipy.special import stdtrit
+
+            ratio = var_c[t_rows] / (s_samp[t_rows] * s_samp[t_rows])
+            df_eff = sdf[t_rows] * ratio * ratio
+            fin = np.isfinite(df_eff)
+            q_t = np.full(df_eff.shape, z_a)
+            q_t[fin] = stdtrit(df_eff[fin], 1.0 - float(alpha))
+            q[t_rows] = q_t
+        lower = c - q * se_c
+        upper = c + q * se_c
         present = valid & (lower > z_cut)
         absent = valid & ~present & (upper < d_cut)
         margin = np.where(valid, lower - z_cut, np.nan)

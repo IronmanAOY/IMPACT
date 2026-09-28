@@ -192,10 +192,12 @@ MPC_EVIDENCE_FIELDS = (
     "null_sd",
     "null_n",
     "se",
+    "se_df",
     "boot_n",
     "boot_failed",
     "c",
     "c_se",
+    "c_df",
     "c_lower",
     "c_upper",
     "margin_absent",
@@ -597,6 +599,17 @@ def _component_null_record(
     return rec
 
 
+def _se_df(rec):
+    """
+    Degrees of freedom of a record's bootstrap SE (valid replicates - 1), so
+    that the evidence layer uses the Student-t quantile for SEs from few
+    replicates; None without a usable SE.
+    """
+    if not np.isfinite(_as_float(rec.get("se"))) or int(rec.get("boot_n", 0)) < 2:
+        return None
+    return float(int(rec["boot_n"]) - 1)
+
+
 def _bootstrap_se_usable(n_valid, n_failed):
     """At least two valid replicates and MPC_BOOTSTRAP_MIN_VALID_FRACTION."""
     n_valid, n_failed = int(n_valid), int(n_failed)
@@ -953,6 +966,7 @@ def _mpc_run_columns(run, proto, registry, refs, null_k, null_seed, boot_k,
                     null_mean=rec["null_mean"],
                     null_sd=rec["null_sd"],
                     se=rec["se"],
+                    se_df=_se_df(rec),
                     channel=rec["channel"],
                     defined=defined,
                     reason=reason,
@@ -1019,10 +1033,13 @@ def _mpc_run_columns(run, proto, registry, refs, null_k, null_seed, boot_k,
         cols[f"{k}_null_sd"] = nan if rec is None else rec["null_sd"]
         cols[f"{k}_null_n"] = 0 if rec is None else int(rec["null_n"])
         cols[f"{k}_se"] = nan if rec is None else rec["se"]
+        se_df = None if rec is None else _se_df(rec)
+        cols[f"{k}_se_df"] = nan if se_df is None else se_df
         cols[f"{k}_boot_n"] = 0 if rec is None else int(rec["boot_n"])
         cols[f"{k}_boot_failed"] = 0 if rec is None else int(rec["boot_failed"])
         cols[f"{k}_c"] = nan if a is None else float(a.c)
         cols[f"{k}_c_se"] = nan if a is None else float(a.se)
+        cols[f"{k}_c_df"] = nan if a is None else float(a.df)
         cols[f"{k}_c_lower"] = nan if a is None else float(a.lower)
         cols[f"{k}_c_upper"] = nan if a is None else float(a.upper)
         cols[f"{k}_margin_absent"] = nan if a is None else float(a.margin_absent)
