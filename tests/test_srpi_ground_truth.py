@@ -124,11 +124,28 @@ def test_internal_state_coupling_uses_absolute_correlation():
     assert i_neg == pytest.approx(i_pos, abs=0.1)
 
 
-def test_separability_needs_two_training_events_per_class():
+def test_min_events_per_class_below_three_is_rejected():
+    # Cross-validated separability needs 2 training events per class, so with
+    # min_events_per_class=2 SRPI could never be defined; the parameter is now
+    # validated (>= 3) instead of silently returning separability_undefined.
     ts = np.random.RandomState(1).randn(10, 300)
     kw = dict(FMRI_KW, min_events_per_class=2)
+    with pytest.raises(ValueError, match="min_events_per_class must be >= 3"):
+        mm.compute_SRPI(
+            ts, tr=1.0, self_onsets=[20.0, 60.0], nonself_onsets=[100.0, 140.0], **kw
+        )
+    with pytest.raises(ValueError, match="min_events_per_class must be >= 3"):
+        mm.compute_SRPI(ts, tr=1.0, mode="agency", **kw)
+
+
+def test_three_events_per_class_are_enough_for_cv_separability():
+    ts = np.random.RandomState(1).randn(10, 300)
     d = mm.compute_SRPI(
-        ts, tr=1.0, self_onsets=[20.0, 60.0], nonself_onsets=[100.0, 140.0], **kw
+        ts,
+        tr=1.0,
+        self_onsets=[20.0, 60.0, 180.0],
+        nonself_onsets=[100.0, 140.0, 220.0],
+        **FMRI_KW,
     )
-    assert np.isnan(d["value"])
-    assert d["undefined_reason"] == "separability_undefined"
+    assert d["undefined_reason"] is None
+    assert np.isfinite(d["separability_cv_auc"])
