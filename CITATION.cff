@@ -1,10 +1,32 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
+type: software
+title: "IMPaCT Synergy Pipeline"
+abstract: >-
+  Python pipeline that computes the IMPaCT minimal-principle metrics (RAM, PDI,
+  NAS, IIM, SRPI) and the composite Consciousness Index (CI) from EEG and fMRI
+  data, with local and HPC (HLRS Hunter) execution modes.
 authors:
   - family-names: Obiri-Yeboah
     given-names: Anthony
-    affiliation: "PhD Candidate, Dresden University of Technology (TU Dresden)"
-title: "IMPaCT Synergy Pipeline"
-version: "1.0.0"
-date-released: 2025-04-29
-doi: "10.5281/zenodo.15306741"
+    affiliation: "Dresden University of Technology (TU Dresden)"
+    orcid: "https://orcid.org/0009-0005-7698-8304"
+version: "1.1.0"
+date-released: "2026-09-28"
+# Concept DOI: resolves to the latest archived version (all versions).
+doi: "10.5281/zenodo.15306740"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.15306740"
+    description: "Concept DOI for all archived versions of the software"
+  - type: doi
+    value: "10.5281/zenodo.15306741"
+    description: "Version 1.0.0 (2025-04-29)"
+repository-code: "https://github.com/IronmanAOY/impact-synergy-pipeline"
+license: MIT
+keywords:
+  - neuroimaging
+  - EEG
+  - fMRI
+  - consciousness
+  - integrated information

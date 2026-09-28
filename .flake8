@@ -1,3 +1,20 @@
 [flake8]
+# Full style configuration (editors, `flake8 <file>`). The legacy code base does
+# not pass it yet, so CI and pre-commit enforce only the error classes below:
+#   flake8 --select=E9,F63,F7,F821,F822,F823
 max-line-length = 88
 extend-ignore = E203,W503
+# Never crawl data, generated outputs, release artefacts or manuscripts.
+extend-exclude =
+    .git,
+    .tmp.*,
+    __pycache__,
+    build,
+    dist,
+    data,
+    outputs,
+    test_objects,
+    atlases,
+    docs/manuscript,
+    .venv,
+    venv
