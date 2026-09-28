@@ -3,29 +3,33 @@ import glob
 import json
 import logging
 import os
-import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 
 from bids import BIDSLayout
+from impact_pipeline.event_parsing import (
+    NONSELF_RE,
+    SELF_RE,
+    empty_event_bundle,
+    events_table_to_bundle,
+    extract_run_id_from_name,
+    read_events_table,
+    resolve_events_file,
+)
 from impact_pipeline.provenance import (
     PROVENANCE_COLUMNS,
     REAL_DATA_ORIGIN,
 )
-from impact_pipeline.synergy_ci import compute_synergy_ci
+from impact_pipeline.synergy_ci import RAM_PARAM_DEFAULTS, compute_synergy_ci
 from pathlib import Path
 
 log = logging.getLogger("pipeline")
-_SELF_RE = re.compile(
-    r"\bself\b|own|myname|subject.?name|participant.?name|\bme\b|\bmy\b",
-    re.I,
-)
-_NONSELF_RE = re.compile(
-    r"non[-_ ]?self|other|stranger|another|control|third.?person",
-    re.I,
-)
+# Label patterns live in impact_pipeline.event_parsing (single source shared
+# with mpc_readiness); the private aliases are kept for backward compatibility.
+_SELF_RE = SELF_RE
+_NONSELF_RE = NONSELF_RE
 
 
 def _infer_sample_interval_seconds(bids_root):
@@ -66,198 +70,94 @@ def _infer_sample_interval_seconds(bids_root):
 
     return None
 
+
+# Modality presets for RAM hyperparameters, used by run_s_ci when no explicit
+# ``ram_params`` are supplied. The fMRI preset is the canonical-HRF
+# configuration of ``synergy_ci.RAM_PARAM_DEFAULTS``; the EEG preset replaces
+# the HRF model (physiologically meaningless at sub-second sampling) by an
+# event-locked boxcar response and a measured FIR latency.
+RAM_PARAM_PRESETS = {
+    "fmri": dict(RAM_PARAM_DEFAULTS),
+    "eeg": {
+        **RAM_PARAM_DEFAULTS,
+        "response_model": "boxcar",
+        "response_boxcar_width_sec": 0.30,
+        "latency_method": "fir",
+        "fir_window": 0.80,
+        "goal_pre_window_sec": 0.20,
+        "response_window_sec": 0.40,
+        "goal_objective_window_sec": 0.20,
+        "feedback_window_sec": 0.20,
+        "quality_lag_sec": 0.0,
+    },
+}
+
+
+def resolve_ram_params(ram_params=None, modality=None):
+    """
+    Return explicit RAM hyperparameters.
+
+    ``ram_params`` wins when given. Otherwise the preset of the declared
+    ``modality`` is used; RAM hyperparameters are modality-specific, so an
+    unknown or missing modality raises instead of silently using fMRI
+    defaults.
+    """
+    if ram_params is not None:
+        return dict(ram_params)
+    mode = str(modality or "").strip().lower()
+    if mode not in RAM_PARAM_PRESETS:
+        raise ValueError(
+            "RAM hyperparameters are modality-specific: pass ram_params explicitly "
+            f"or a modality in {sorted(RAM_PARAM_PRESETS)} (got {modality!r})."
+        )
+    log.info("RAM: using the '%s' hyperparameter preset (no explicit ram_params).",
+             mode)
+    return dict(RAM_PARAM_PRESETS[mode])
+
+
 def _extract_run_id_from_name(fname: str):
-    m = re.search(r"_run-0*([0-9]+)", str(fname))
-    if not m:
-        return None
-    return str(int(m.group(1)))
+    return extract_run_id_from_name(fname)
 
 
 def _resolve_events_file(bids_root, subject, session, condition="audio"):
     """
     Resolve an events.tsv for either fMRI or EEG sessions.
 
-    Search order is fMRI patterns first, then EEG patterns.
+    Delegates to :func:`impact_pipeline.event_parsing.resolve_events_file`
+    (shared with the readiness check; session-exact, no cross-session
+    fallback).
     """
-    subj_root = Path(bids_root) / f"sub-{subject}"
-    session_key = str(session).strip().lower()
-    condition_key = str(condition or "").strip().lower()
-
-    fmri_dir = subj_root / "func"
-    fmri_patterns = []
-    if condition_key and condition_key != "audio":
-        fmri_patterns.extend(
-            [
-                f"sub-{subject}_task-{condition_key}{session_key}*_events.tsv",
-                f"sub-{subject}_task-{condition_key}_ses-{session_key}*_events.tsv",
-                f"sub-{subject}_task-{condition_key}*_events.tsv",
-            ]
-        )
-    if session_key == "deep":
-        fmri_patterns.extend(
-            [
-                f"sub-{subject}_task-audiodeep*_events.tsv",
-                f"sub-{subject}_task-audio*_events.tsv",
-            ]
-        )
-    elif session_key == "awake":
-        fmri_patterns.extend(
-            [
-                f"sub-{subject}_task-audioawake*_events.tsv",
-                f"sub-{subject}_task-audio*_events.tsv",
-            ]
-        )
-    else:
-        fmri_patterns.extend(
-            [
-                f"sub-{subject}_task-audio{session_key}*_events.tsv",
-                f"sub-{subject}_task-{session_key}*_events.tsv",
-                f"sub-{subject}_task-audio*_events.tsv",
-            ]
-        )
-
-    eeg_dir = subj_root / "eeg"
-    eeg_patterns = []
-    if session_key == "deep":
-        eeg_patterns = [
-            f"sub-{subject}_task-sed2_acq-rest*_events.tsv",
-            f"sub-{subject}_task-sed_acq-rest*_events.tsv",
-        ]
-    elif session_key == "awake":
-        eeg_patterns = [
-            f"sub-{subject}_task-awake_acq-EC*_events.tsv",
-            f"sub-{subject}_task-awake_acq-EO*_events.tsv",
-            f"sub-{subject}_task-awake*_events.tsv",
-        ]
-    else:
-        eeg_patterns = [
-            f"sub-{subject}_task-{session_key}*_events.tsv",
-        ]
-
-    for base_dir, patterns in ((fmri_dir, fmri_patterns), (eeg_dir, eeg_patterns)):
-        if not base_dir.exists():
-            continue
-        for pat in patterns:
-            matches = sorted(base_dir.glob(pat))
-            if matches:
-                return matches[0]
-    return None
+    return resolve_events_file(bids_root, subject, session, condition=condition)
 
 
-def _events_to_ram_bundle(fn: Path):
+def _events_to_ram_bundle(
+    fn: Path,
+    allow_implicit_stimuli: bool = False,
+    allow_response_time_feedback: bool = False,
+):
     """
-    Convert BIDS events.tsv into a structured RAM event bundle.
+    Convert BIDS events.tsv into a structured RAM/SRPI event bundle.
+
+    See :func:`impact_pipeline.event_parsing.events_table_to_bundle`; the
+    implicit-stimulus and response-time-as-feedback proxies are disabled
+    unless explicitly enabled.
     """
-    df = pd.read_csv(fn, sep="\t")
-    if df.empty:
-        return {
-            "onsets": [],
-            "goal_onsets": [],
-            "feedback_onsets": [],
-            "feedback_values": None,
-            "self_onsets": [],
-            "nonself_onsets": [],
-        }
-
-    # Normalize column labels (handles UTF-8 BOM in some EEG exports).
-    df = df.rename(columns={c: str(c).strip().lstrip("\ufeff") for c in df.columns})
-    cols_l = {str(c).lower(): c for c in df.columns}
-
-    onset_col = cols_l.get("onset")
-    if onset_col is None:
-        return {
-            "onsets": [],
-            "goal_onsets": [],
-            "feedback_onsets": [],
-            "feedback_values": None,
-            "self_onsets": [],
-            "nonself_onsets": [],
-        }
-
-    onset = pd.to_numeric(df[onset_col], errors="coerce")
-    valid_onset = onset.notna()
-
-    trial_col = cols_l.get("trial_type")
-    if trial_col is not None:
-        trial = df[trial_col].astype(str)
-    else:
-        trial = pd.Series([""] * len(df), index=df.index, dtype=object)
-    trial_l = trial.str.lower()
-
-    stim_mask = trial_l.str.contains(r"audio|stim|tone|target|event", regex=True, na=False)
-    goal_mask = trial_l.str.contains(
-        r"goal|objective|intent|instruction|cue|self|name",
-        regex=True,
-        na=False,
+    return events_table_to_bundle(
+        read_events_table(fn),
+        allow_implicit_stimuli=allow_implicit_stimuli,
+        allow_response_time_feedback=allow_response_time_feedback,
     )
-    feedback_mask = trial_l.str.contains(
-        r"feedback|reward|error|outcome|correct|incorrect|response|choice|result",
-        regex=True,
-        na=False,
-    )
-
-    text_cols = [
-        cols_l[k]
-        for k in ("trial_type", "condition", "stimulus", "stim_file", "value")
-        if k in cols_l
-    ]
-    if text_cols:
-        txt = pd.Series([""] * len(df), index=df.index, dtype=object)
-        for c in text_cols:
-            txt = txt.str.cat(df[c].astype(str), sep=" ", na_rep="")
-        txt = txt.str.lower()
-    else:
-        txt = pd.Series([""] * len(df), index=df.index, dtype=object)
-    self_mask = txt.str.contains(_SELF_RE, regex=True, na=False)
-    nonself_mask = txt.str.contains(_NONSELF_RE, regex=True, na=False)
-    # prevent "non-self" labels from being counted as both classes
-    self_mask = self_mask & (~nonself_mask)
-
-    stim_onsets = onset[valid_onset & stim_mask].astype(float).tolist()
-    if not stim_onsets:
-        stim_onsets = onset[valid_onset].astype(float).tolist()
-
-    goal_onsets = onset[valid_onset & goal_mask].astype(float).tolist()
-    feedback_onsets = onset[valid_onset & feedback_mask].astype(float).tolist()
-    self_onsets = onset[valid_onset & self_mask].astype(float).tolist()
-    nonself_onsets = onset[valid_onset & nonself_mask].astype(float).tolist()
-
-    # Prefer explicit prediction-error/reward style columns when available.
-    feedback_values = None
-    feedback_value_candidates = (
-        "prediction_error",
-        "pe",
-        "reward",
-        "outcome",
-        "accuracy",
-        "correct",
-        "value",
-        "response_time",
-    )
-    for cand in feedback_value_candidates:
-        col = cols_l.get(cand)
-        if col is None:
-            continue
-        vals = pd.to_numeric(df[col], errors="coerce")
-        if feedback_mask.any():
-            vals = vals[feedback_mask]
-        vals = vals[np.isfinite(vals)]
-        if len(vals) >= 2 and float(vals.std(ddof=0)) > 0:
-            feedback_values = vals.astype(float).tolist()
-            break
-
-    return {
-        "onsets": stim_onsets,
-        "goal_onsets": goal_onsets,
-        "feedback_onsets": feedback_onsets,
-        "feedback_values": feedback_values,
-        "self_onsets": self_onsets,
-        "nonself_onsets": nonself_onsets,
-    }
 
 
 # For each session, read event timings and RAM/SRPI sub-components from BIDS events.tsv.
-def load_onsets(bids_root, subject, session, condition="audio"):
+def load_onsets(
+    bids_root,
+    subject,
+    session,
+    condition="audio",
+    allow_implicit_stimuli=False,
+    allow_response_time_feedback=False,
+):
     fn = _resolve_events_file(bids_root, subject, session, condition=condition)
     if fn is None:
         log.warning(
@@ -268,21 +168,16 @@ def load_onsets(bids_root, subject, session, condition="audio"):
             subject,
             session,
         )
-        return (
-            {
-                "onsets": [],
-                "goal_onsets": [],
-                "feedback_onsets": [],
-                "feedback_values": None,
-                "self_onsets": [],
-                "nonself_onsets": [],
-            },
-            None,
-        )
+        return empty_event_bundle(), None
 
-    bundle = _events_to_ram_bundle(fn)
+    bundle = _events_to_ram_bundle(
+        fn,
+        allow_implicit_stimuli=allow_implicit_stimuli,
+        allow_response_time_feedback=allow_response_time_feedback,
+    )
     run_id = _extract_run_id_from_name(fn.name)
     return bundle, run_id
+
 
 def run_s_ci(
     prep_out,
@@ -331,7 +226,18 @@ def run_s_ci(
     provenance_label=None,
     modality=None,
     hardware_target="cpu",
+    ram_params=None,
+    event_options=None,
 ):
+    """
+    Step 2: synergy S, MPC metrics and CI over subjects/sessions/runs.
+
+    ``ram_params`` are passed to ``compute_RAM``; when omitted, the preset of
+    ``modality`` is used (see :func:`resolve_ram_params`). ``event_options``
+    are keyword arguments forwarded to ``load_onsets_fn`` (e.g.
+    ``allow_implicit_stimuli``/``allow_response_time_feedback``, both off by
+    default so RAM stays undefined without measured goal/feedback structure).
+    """
     if mpc_metrics is None and compute_ci:
         log.info("2/9 Computing Synergy & Consciousness Index (CI)")
     else:
@@ -352,11 +258,19 @@ def run_s_ci(
         discovered_subjects = [s for s in discovered_subjects if s in sel]
 
     needs_onsets = (mpc_metrics is None) or bool({"RAM", "SRPI"} & set(mpc_metrics))
+    needs_ram = (mpc_metrics is None) or ("RAM" in set(mpc_metrics))
+    if needs_ram:
+        ram_params = resolve_ram_params(ram_params, modality=modality)
+    event_kwargs = dict(event_options or {})
     if onsets is None and needs_onsets and load_onsets_fn is not None and bids_root is not None:
         def _load_one(subj, ses):
             try:
-                return load_onsets_fn(bids_root, subj, ses, condition=condition)
+                return load_onsets_fn(
+                    bids_root, subj, ses, condition=condition, **event_kwargs
+                )
             except TypeError:
+                if event_kwargs:
+                    raise
                 return load_onsets_fn(bids_root, subj, ses)
 
         onsets = {
@@ -382,6 +296,7 @@ def run_s_ci(
         stimulus_onsets=onsets,
         mpc_metrics=mpc_metrics,
         compute_ci=compute_ci,
+        ram_params=ram_params,
         iim_n_parts=iim_n_parts,
         iim_max_timepoints=iim_max_timepoints,
         iim_max_nodes=iim_max_nodes,

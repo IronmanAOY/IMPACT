@@ -29,22 +29,23 @@ def test_readiness_all_mpcs_ready(tmp_path):
     _write_ts(prep / subj / "deep" / "rest" / f"{subj}_run-1_schaefer400_ts.npy")
 
     ev_path = bids / f"sub-{subj}" / "func" / f"sub-{subj}_task-audioawake_run-01_events.tsv"
-    _write_events(
-        ev_path,
-        [
-            {"onset": 0.20, "duration": 0.1, "trial_type": "goal_cue", "reward": np.nan},
-            {"onset": 0.80, "duration": 0.1, "trial_type": "audio_stim", "reward": np.nan},
-            {"onset": 1.40, "duration": 0.1, "trial_type": "feedback", "reward": 1.0},
-            {"onset": 2.00, "duration": 0.1, "trial_type": "audio_stim", "reward": np.nan},
-            {"onset": 2.60, "duration": 0.1, "trial_type": "feedback", "reward": 0.0},
-            {"onset": 3.20, "duration": 0.1, "trial_type": "self_name"},
-            {"onset": 3.80, "duration": 0.1, "trial_type": "other_name"},
-            {"onset": 4.40, "duration": 0.1, "trial_type": "self_name"},
-            {"onset": 5.00, "duration": 0.1, "trial_type": "other_name"},
-            {"onset": 5.60, "duration": 0.1, "trial_type": "self_name"},
-            {"onset": 6.20, "duration": 0.1, "trial_type": "other_name"},
-        ],
-    )
+    # RAM needs goal, stimulus and valued feedback events (>= 6 stimulus
+    # events for the cross-validated goal alignment, >= 3 feedback values).
+    rows = []
+    for i in range(6):
+        t0 = 0.2 + 1.8 * i
+        for dt, label, reward in (
+            (0.0, "goal_cue", np.nan),
+            (0.6, "audio_stim", np.nan),
+            (1.2, "feedback", float(i % 3)),
+        ):
+            row = {"onset": t0 + dt, "duration": 0.1, "trial_type": label}
+            rows.append(dict(row, reward=reward))
+    for i in range(3):
+        t0 = 11.0 + 1.2 * i
+        rows.append({"onset": t0, "duration": 0.1, "trial_type": "self_name"})
+        rows.append({"onset": t0 + 0.6, "duration": 0.1, "trial_type": "other_name"})
+    _write_events(ev_path, rows)
 
     df, summary = check_mpc_readiness(
         prep_root=str(prep),

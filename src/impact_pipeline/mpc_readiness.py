@@ -1,29 +1,38 @@
 import argparse
 import json
 import math
-import re
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 
-
-_STIM_RE = re.compile(r"audio|stim|tone|target|event", re.I)
-_GOAL_RE = re.compile(r"goal|objective|intent|instruction|cue|self|name", re.I)
-_FEEDBACK_RE = re.compile(
-    r"feedback|reward|error|outcome|correct|incorrect|response|choice|result",
-    re.I,
+from impact_pipeline.event_parsing import (
+    FEEDBACK_RE,
+    GOAL_RE,
+    NONSELF_RE,
+    RAM_MIN_FEEDBACK_EVENTS,
+    RAM_MIN_GOAL_RESPONSE_PAIRS,
+    SELF_RE,
+    STIM_RE,
+    events_table_to_bundle,
+    extract_run_id_from_name,
+    read_events_table,
+    resolve_events_file,
 )
-_SELF_RE = re.compile(r"\bself\b|own|myname|subject.?name|participant.?name|me\b|my\b", re.I)
-_NONSELF_RE = re.compile(r"non[-_ ]?self|other|stranger|another|control|third.?person", re.I)
+
+
+# Event parsing is shared with the compute path (run_synergy_ci.load_onsets)
+# so that readiness and metric computation classify events identically.
+_STIM_RE = STIM_RE
+_GOAL_RE = GOAL_RE
+_FEEDBACK_RE = FEEDBACK_RE
+_SELF_RE = SELF_RE
+_NONSELF_RE = NONSELF_RE
 
 
 def _extract_run_id_from_name(fname: str) -> Optional[str]:
-    m = re.search(r"_run-0*([0-9]+)", str(fname))
-    if not m:
-        return None
-    return str(int(m.group(1)))
+    return extract_run_id_from_name(fname)
 
 
 def _resolve_events_file(
@@ -32,175 +41,28 @@ def _resolve_events_file(
     session: str,
     condition: str = "audio",
 ) -> Optional[Path]:
-    subj_root = bids_root / f"sub-{subject}"
-    session_key = str(session).strip().lower()
-    condition_key = str(condition or "").strip().lower()
-
-    fmri_dir = subj_root / "func"
-    fmri_patterns = []
-    if condition_key and condition_key != "audio":
-        fmri_patterns.extend(
-            [
-                f"sub-{subject}_task-{condition_key}{session_key}*_events.tsv",
-                f"sub-{subject}_task-{condition_key}_ses-{session_key}*_events.tsv",
-                f"sub-{subject}_task-{condition_key}*_events.tsv",
-            ]
-        )
-    if session_key == "deep":
-        fmri_patterns.extend(
-            [
-                f"sub-{subject}_task-audiodeep*_events.tsv",
-                f"sub-{subject}_task-audio*_events.tsv",
-            ]
-        )
-    elif session_key == "awake":
-        fmri_patterns.extend(
-            [
-                f"sub-{subject}_task-audioawake*_events.tsv",
-                f"sub-{subject}_task-audio*_events.tsv",
-            ]
-        )
-    else:
-        fmri_patterns.extend(
-            [
-                f"sub-{subject}_task-audio{session_key}*_events.tsv",
-                f"sub-{subject}_task-{session_key}*_events.tsv",
-                f"sub-{subject}_task-audio*_events.tsv",
-            ]
-        )
-
-    eeg_dir = subj_root / "eeg"
-    if session_key == "deep":
-        eeg_patterns = [
-            f"sub-{subject}_task-sed2_acq-rest*_events.tsv",
-            f"sub-{subject}_task-sed_acq-rest*_events.tsv",
-        ]
-    elif session_key == "awake":
-        eeg_patterns = [
-            f"sub-{subject}_task-awake_acq-EC*_events.tsv",
-            f"sub-{subject}_task-awake_acq-EO*_events.tsv",
-            f"sub-{subject}_task-awake*_events.tsv",
-        ]
-    else:
-        eeg_patterns = [f"sub-{subject}_task-{session_key}*_events.tsv"]
-
-    for base_dir, patterns in ((fmri_dir, fmri_patterns), (eeg_dir, eeg_patterns)):
-        if not base_dir.exists():
-            continue
-        for pat in patterns:
-            hits = sorted(base_dir.glob(pat))
-            if hits:
-                return hits[0]
-    return None
+    return resolve_events_file(bids_root, subject, session, condition=condition)
 
 
 def _read_events_table(events_file: Path) -> Optional[pd.DataFrame]:
-    if events_file is None or (not events_file.exists()):
-        return None
-    df = pd.read_csv(events_file, sep="\t")
-    if df is None:
-        return None
-    if len(df.columns) > 0:
-        df = df.rename(columns={c: str(c).strip().lstrip("\ufeff") for c in df.columns})
-    return df
+    return read_events_table(events_file)
 
 
 def _events_to_ram_bundle(df: Optional[pd.DataFrame]) -> Dict[str, object]:
-    if df is None or df.empty:
-        return {
-            "onsets": [],
-            "goal_onsets": [],
-            "feedback_onsets": [],
-            "feedback_values": [],
-        }
-    cols_l = {str(c).lower(): c for c in df.columns}
-    onset_col = cols_l.get("onset")
-    if onset_col is None:
-        return {
-            "onsets": [],
-            "goal_onsets": [],
-            "feedback_onsets": [],
-            "feedback_values": [],
-        }
-
-    onset = pd.to_numeric(df[onset_col], errors="coerce")
-    valid = onset.notna()
-    if "trial_type" in cols_l:
-        trial = df[cols_l["trial_type"]].astype(str)
-    else:
-        trial = pd.Series([""] * len(df), index=df.index, dtype=object)
-
-    stim_mask = trial.str.contains(_STIM_RE, regex=True, na=False)
-    goal_mask = trial.str.contains(_GOAL_RE, regex=True, na=False)
-    fb_mask = trial.str.contains(_FEEDBACK_RE, regex=True, na=False)
-
-    stim_onsets = onset[valid & stim_mask].astype(float).tolist()
-    if not stim_onsets:
-        stim_onsets = onset[valid].astype(float).tolist()
-
-    goal_onsets = onset[valid & goal_mask].astype(float).tolist()
-    feedback_onsets = onset[valid & fb_mask].astype(float).tolist()
-
-    feedback_values = []
-    for cand in (
-        "prediction_error",
-        "pe",
-        "reward",
-        "outcome",
-        "accuracy",
-        "correct",
-        "value",
-        "response_time",
-    ):
-        c = cols_l.get(cand)
-        if c is None:
-            continue
-        vals = pd.to_numeric(df[c], errors="coerce")
-        if fb_mask.any():
-            vals = vals[fb_mask]
-        vals = vals[np.isfinite(vals)]
-        if vals.shape[0] >= 2 and float(vals.std(ddof=0)) > 0:
-            feedback_values = vals.astype(float).tolist()
-            break
-
+    bundle = events_table_to_bundle(df)
     return {
-        "onsets": stim_onsets,
-        "goal_onsets": goal_onsets,
-        "feedback_onsets": feedback_onsets,
-        "feedback_values": feedback_values,
+        "onsets": bundle["onsets"],
+        "goal_onsets": bundle["goal_onsets"],
+        "feedback_onsets": bundle["feedback_onsets"],
+        "feedback_values": (
+            [] if bundle["feedback_values"] is None else list(bundle["feedback_values"])
+        ),
     }
 
 
 def _events_to_srpi_onsets(df: Optional[pd.DataFrame]) -> Tuple[List[float], List[float]]:
-    if df is None or df.empty:
-        return [], []
-    cols_l = {str(c).lower(): c for c in df.columns}
-    onset_col = cols_l.get("onset")
-    if onset_col is None:
-        return [], []
-
-    onset = pd.to_numeric(df[onset_col], errors="coerce")
-    valid = onset.notna()
-    text_cols = [
-        cols_l[k]
-        for k in ("trial_type", "condition", "stimulus", "stim_file", "value")
-        if k in cols_l
-    ]
-    if text_cols:
-        txt = pd.Series([""] * len(df), index=df.index, dtype=object)
-        for c in text_cols:
-            txt = txt.str.cat(df[c].astype(str), sep=" ", na_rep="")
-        txt = txt.str.lower()
-    else:
-        txt = pd.Series([""] * len(df), index=df.index, dtype=object)
-
-    self_mask = txt.str.contains(_SELF_RE, regex=True, na=False)
-    non_mask = txt.str.contains(_NONSELF_RE, regex=True, na=False)
-    self_mask = self_mask & (~non_mask)
-
-    self_onsets = onset[valid & self_mask].astype(float).tolist()
-    non_onsets = onset[valid & non_mask].astype(float).tolist()
-    return self_onsets, non_onsets
+    bundle = events_table_to_bundle(df)
+    return list(bundle["self_onsets"]), list(bundle["nonself_onsets"])
 
 
 def _pick_session_ts_paths(
@@ -250,25 +112,42 @@ def _pdi_deep_rest_runs(prep_root: Path, subject: str, atlas: str) -> List[Path]
     )
 
 
-def _assess_ram(bundle: Dict[str, object], require_explicit_feedback: bool) -> Tuple[bool, str, int, int, int]:
+def _assess_ram(
+    bundle: Dict[str, object],
+    require_explicit_feedback: bool,
+    require_explicit_goals: bool = True,
+) -> Tuple[bool, str, int, int, int]:
+    """
+    Event-level RAM readiness, mirroring compute_RAM's definedness contract.
+
+    Counts are raw (before windowing), so a ready run can still be undefined
+    in compute when events fall too close to the run edges.
+    """
     stim = np.asarray(bundle.get("onsets", []), dtype=float)
     stim = stim[np.isfinite(stim)]
     n_stim = int(stim.shape[0])
     if n_stim == 0:
         return False, "missing_stimulus_events", 0, 0, 0
 
+    goal = np.asarray(bundle.get("goal_onsets", []), dtype=float)
+    goal = goal[np.isfinite(goal)]
     fb = np.asarray(bundle.get("feedback_onsets", []), dtype=float)
     fb = fb[np.isfinite(fb)]
     n_fb = int(fb.shape[0])
-    fvals = np.asarray(bundle.get("feedback_values", []), dtype=float)
+    fv_raw = bundle.get("feedback_values")
+    fvals = np.asarray([] if fv_raw is None else fv_raw, dtype=float).reshape(-1)
     fvals = fvals[np.isfinite(fvals)]
     n_fvals = int(fvals.shape[0])
 
     if require_explicit_feedback:
         if n_fb == 0:
             return False, "missing_feedback_events", n_stim, n_fb, n_fvals
-        if n_fvals < 2:
+        if n_fvals < int(RAM_MIN_FEEDBACK_EVENTS):
             return False, "missing_or_nonvarying_feedback_values", n_stim, n_fb, n_fvals
+    if require_explicit_goals and int(goal.shape[0]) == 0:
+        return False, "missing_goal_events", n_stim, n_fb, n_fvals
+    if n_stim < int(RAM_MIN_GOAL_RESPONSE_PAIRS):
+        return False, "insufficient_stimulus_events", n_stim, n_fb, n_fvals
 
     return True, "ok", n_stim, n_fb, n_fvals
 
@@ -350,6 +229,7 @@ def check_mpc_readiness(
     sessions: Sequence[str],
     subjects: Optional[Sequence[str]] = None,
     require_explicit_feedback: bool = True,
+    require_explicit_goals: bool = True,
     require_explicit_srpi: bool = True,
     srpi_min_events_per_class: int = 3,
     iim_bins: int = 3,
@@ -483,6 +363,7 @@ def check_mpc_readiness(
                 ram_ok, ram_reason, n_stim, n_fb, n_fvals = _assess_ram(
                     ram_bundle,
                     require_explicit_feedback=require_explicit_feedback,
+                    require_explicit_goals=require_explicit_goals,
                 )
                 pdi_anchor_runs = _pdi_deep_rest_runs(prep, subj, atlas)
                 pdi_task_runs = _pdi_state_rest_runs(prep, subj, ses, atlas)
@@ -562,6 +443,7 @@ def check_mpc_readiness(
             "metrics": {},
             "settings": {
                 "require_explicit_feedback": bool(require_explicit_feedback),
+                "require_explicit_goals": bool(require_explicit_goals),
                 "require_explicit_srpi": True,
                 "srpi_min_events_per_class": int(srpi_min_events_per_class),
                 "pdi_baseline_policy": "strict_deep_rest_plus_state_rest",
@@ -585,6 +467,7 @@ def check_mpc_readiness(
         "metrics": metric_summary,
         "settings": {
             "require_explicit_feedback": bool(require_explicit_feedback),
+            "require_explicit_goals": bool(require_explicit_goals),
             "require_explicit_srpi": True,
             "srpi_min_events_per_class": int(srpi_min_events_per_class),
             "pdi_baseline_policy": "strict_deep_rest_plus_state_rest",
@@ -608,6 +491,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-csv", default=None, help="Optional output CSV path.")
     p.add_argument("--out-json", default=None, help="Optional summary JSON path.")
     p.add_argument("--allow-implicit-ram-feedback", action="store_true")
+    p.add_argument("--allow-implicit-ram-goals", action="store_true")
     p.add_argument("--srpi-min-events-per-class", type=int, default=3)
     p.add_argument("--iim-bins", type=int, default=3)
     p.add_argument("--iim-lag-trs", type=int, default=1)
@@ -626,6 +510,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sessions=args.sessions,
         subjects=args.subjects,
         require_explicit_feedback=not bool(args.allow_implicit_ram_feedback),
+        require_explicit_goals=not bool(args.allow_implicit_ram_goals),
         require_explicit_srpi=True,
         srpi_min_events_per_class=int(args.srpi_min_events_per_class),
         iim_bins=args.iim_bins,
