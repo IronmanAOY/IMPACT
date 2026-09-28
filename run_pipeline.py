@@ -5,7 +5,8 @@ import logging
 import random
 import tempfile
 import numpy as np
-import subprocess, os
+import subprocess
+import os
 import pandas as pd
 import json
 
@@ -23,9 +24,12 @@ mpl_cache_dir = Path(tempfile.gettempdir()) / "impact_mpl_cache"
 mpl_cache_dir.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(mpl_cache_dir))
 
-from impact_pipeline.preprocessing_eeg import run_preprocessing_eeg
-from impact_pipeline.baseline_metrics import BASELINE_METRICS, compute_baseline_metrics
-from impact_pipeline.analysis_bootstrap import (
+from impact_pipeline.preprocessing_eeg import run_preprocessing_eeg  # noqa: E402
+from impact_pipeline.baseline_metrics import (  # noqa: E402
+    BASELINE_METRICS,
+    compute_baseline_metrics,
+)
+from impact_pipeline.analysis_bootstrap import (  # noqa: E402
     bootstrap_ci,
     definedness_summary,
     holm_adjust,
@@ -33,23 +37,23 @@ from impact_pipeline.analysis_bootstrap import (
     paired_tests_table,
     permutation_test_auc,
 )
-from impact_pipeline.motion_model import motion_covariate_analysis
-from impact_pipeline.atlas_robustness import atlas_check
-from impact_pipeline.replication import (
+from impact_pipeline.motion_model import motion_covariate_analysis  # noqa: E402
+from impact_pipeline.atlas_robustness import atlas_check  # noqa: E402
+from impact_pipeline.replication import (  # noqa: E402
     check_replication_inputs,
     default_replication_root,
     run_replication,
 )
-from impact_pipeline.model_comparison import compare_models
-from impact_pipeline.generate_word_doc import create_doc
-from impact_pipeline.execution_profiles import get_execution_profile
-from impact_pipeline.hardware_backend import (
+from impact_pipeline.model_comparison import compare_models  # noqa: E402
+from impact_pipeline.generate_word_doc import create_doc  # noqa: E402
+from impact_pipeline.execution_profiles import get_execution_profile  # noqa: E402
+from impact_pipeline.hardware_backend import (  # noqa: E402
     HardwareBackendError,
     backend_summary,
     configure_process_for_hardware,
     normalize_hardware_target,
 )
-from impact_pipeline.hunter_iim import (
+from impact_pipeline.hunter_iim import (  # noqa: E402
     campaign_status,
     collect_iim_results_by_path,
     prepare_hunter_campaign,
@@ -64,7 +68,7 @@ from impact_pipeline.hunter_iim import (
     summarize_campaign_timing,
     write_iim_results_table,
 )
-from impact_pipeline.provenance import (
+from impact_pipeline.provenance import (  # noqa: E402
     PROVENANCE_COLUMNS,
     REAL_DATA_ORIGIN,
     assert_origin_matches_dataset,
@@ -75,13 +79,13 @@ from impact_pipeline.provenance import (
     resolve_repo_root,
     write_json,
 )
-from impact_pipeline.dataset_catalog import get_report_dataset
+from impact_pipeline.dataset_catalog import get_report_dataset  # noqa: E402
 
 # ---------------------------------------------------------------------
-### ── TOGGLE FULL-RUN STEPS ──────────────────────────────────────────────
-RUN_FMRIPREP      = False   # set True to run step 0 (fMRIPrep)
+# ── TOGGLE FULL-RUN STEPS ──────────────────────────────────────────────
+RUN_FMRIPREP = False   # set True to run step 0 (fMRIPrep)
 RUN_PREPROCESSING = False   # set True to run step 1 (preprocessing)
-RUN_REPLICATION   = False   # set True to run step 7 (replication)
+RUN_REPLICATION = False   # set True to run step 7 (replication)
 
 random.seed(42)
 np.random.seed(42)
@@ -2027,8 +2031,8 @@ def main(
     cache_dir = out / 'cache'
     cache_dir.mkdir(exist_ok=True)
 
-    prep_out     = out / 'preprocessed'
-    workdir      = out / 'work'
+    prep_out = out / 'preprocessed'
+    workdir = out / 'work'
     bids_root = (
         Path(bids_root_override)
         if bids_root_override is not None
@@ -2116,6 +2120,7 @@ def main(
         if eeg_target_sfreq is None or float(eeg_target_sfreq) <= 0:
             raise ValueError("eeg_target_sfreq must be > 0 for EEG metric computation.")
         metric_tr = 1.0 / float(eeg_target_sfreq)
+
     def _opt_int(v):
         return None if v is None else int(v)
 
@@ -2486,7 +2491,7 @@ def main(
         return
 
     # 2. SYNERGY & CI
-    thetas      = np.arange(0.1, 1.0, 0.1)
+    thetas = np.arange(0.1, 1.0, 0.1)
     thetas_fine = np.arange(0.4, 0.81, 0.02)
     step2_df_path = cache_dir / "step2_df.csv"
     step2_df_mean_path = cache_dir / "step2_df_mean.csv"
@@ -2582,8 +2587,9 @@ def main(
             df['subject'] = df['subject'].astype(str)
         if 'subject' in df_mean.columns:
             df_mean['subject'] = df_mean['subject'].astype(str)
-        df_S = df_mean.pivot(index='subject', columns='session', values='S')
-        df_CI = df_mean.pivot(index='subject', columns='session', values='CI') if 'CI' in df_mean.columns else None
+        # One row per subject and session: pivot raises on duplicates (the
+        # pivoted tables themselves are not used).
+        df_mean.pivot(index='subject', columns='session', values='S')
         df.to_csv(step2_df_path, index=False)
         df_mean.to_csv(step2_df_mean_path, index=False)
         df_stats_by_theta.reset_index().to_csv(step2_theta_stats_path, index=False)

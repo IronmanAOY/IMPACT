@@ -16,6 +16,7 @@ from impact_pipeline.analysis_bootstrap import (
 _SUPERSCRIPTS = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
 # ---------- formatting ----------
 
+
 def fmt(x, decimals=3, sci_below=1e-4, sci_above=1e5):
     """Human-friendly float formatting. Uses scientific notation if |x| is
     very small/large to avoid '0.000' artifacts."""
@@ -26,8 +27,10 @@ def fmt(x, decimals=3, sci_below=1e-4, sci_above=1e5):
         return f"{x:.3e}"
     return f"{x:.{decimals}f}"
 
+
 def fmt_pm(mean, err, decimals=3):
     return f"{fmt(mean, decimals)} ± {fmt(err, decimals)}"
+
 
 def safe_pct(num, den, decimals=1):
     if den is None or not np.isfinite(den) or den == 0:
@@ -36,9 +39,11 @@ def safe_pct(num, den, decimals=1):
 
 # ---------- stats ----------
 
+
 def _paired_stats(pivot_a, pivot_b):
     df_pair = pd.DataFrame({'a': pivot_a, 'b': pivot_b}).dropna()
-    x = df_pair['a'].values; y = df_pair['b'].values
+    x = df_pair['a'].values
+    y = df_pair['b'].values
     n = len(df_pair)
     if n < 2:
         return np.nan, np.nan, np.nan, 0
@@ -54,12 +59,14 @@ def _paired_stats(pivot_a, pivot_b):
     d = mean_diff / sd_diff if sd_diff > 0 else np.nan
     return float(t), float(p), float(d), n - 1
 
+
 def _group_descriptives(series):
     n = series.notna().sum()
     mean = series.mean()
     sd = series.std(ddof=1) if n > 1 else np.nan
     sem = sd / np.sqrt(n) if n > 0 and np.isfinite(sd) else np.nan
     return n, mean, sd, sem
+
 
 def _safe_row_by_theta(df_stats_by_theta, target_theta, tol=1e-6):
     if df_stats_by_theta is None or df_stats_by_theta.empty:
@@ -473,7 +480,7 @@ def create_doc(
     S_SCALE: float = 1e3,
     RAM_SCALE: float = 1e3,
     CI_SCALE: float = 1.0,      # scale applied to CI for display
-    LABEL_S: Optional[str] = None, # if None, auto from S_SCALE
+    LABEL_S: Optional[str] = None,  # if None, auto from S_SCALE
     LABEL_RAM: Optional[str] = None,
     LABEL_CI: Optional[str] = None,
     repl: Optional[Union[dict, pd.DataFrame]] = None,

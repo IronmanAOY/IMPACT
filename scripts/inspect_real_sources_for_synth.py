@@ -2,11 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import gzip
 import hashlib
 import json
-import math
 import os
 import re
 import sys
@@ -30,7 +27,10 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from impact_pipeline.dataset_catalog import dataset_root_candidates, get_report_dataset
+from impact_pipeline.dataset_catalog import (  # noqa: E402
+    dataset_root_candidates,
+    get_report_dataset,
+)
 
 
 # The three synthetic targets plus the one donor the generator actually reads

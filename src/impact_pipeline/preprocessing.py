@@ -311,7 +311,7 @@ def preprocess_subject(bids_root, fmriprep_deriv, subj, bf, out_dir, assume_tr=N
     """
     # 1) Resolve preprocessed BOLD from fMRIPrep derivatives for this run.
     # 2) load confounds
-    task   = bf.entities['task']
+    task = bf.entities['task']
     run_no = int(bf.entities['run'])
     compcor, fd = collect_confounds(
         bids_root=bids_root,

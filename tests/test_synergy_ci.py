@@ -58,12 +58,12 @@ _SRPI_PARAMS = {
 
 
 def test_synergy_ci_shape(tmp_path):
-    base=tmp_path/"data"
+    base = tmp_path / "data"
     for subj in ("s1",):
-        d=base/subj/"awake"/"audio"
+        d = base / subj / "awake" / "audio"
         d.mkdir(parents=True)
-        np.save(d/"s1_run-1_schaefer400_ts.npy",np.random.rand(64,3))
-    df=compute_synergy_ci(
+        np.save(d / "s1_run-1_schaefer400_ts.npy", np.random.rand(64, 3))
+    df = compute_synergy_ci(
         str(base),
         "schaefer400",
         [0.5],
@@ -73,11 +73,12 @@ def test_synergy_ci_shape(tmp_path):
         srpi_params=_SRPI_PARAMS,
         srpi_require_explicit_params=True,
     )
-    assert isinstance(df,pd.DataFrame)
+    assert isinstance(df, pd.DataFrame)
     assert {'subject', 'session', 'theta', 'S', 'CI'}.issubset(df.columns)
 
+
 def test_empty_data_dir(tmp_path):
-    df=compute_synergy_ci(
+    df = compute_synergy_ci(
         str(tmp_path),
         "schaefer400",
         [0.5],

@@ -74,6 +74,7 @@ def test_ram_missing_events_is_undefined():
     ram = mm.compute_RAM(ts, tr=tr, stimulus_onsets={"onsets": []})
     assert np.isnan(ram)
 
+
 def test_nas():
     ts = np.random.RandomState(0).rand(5, 128)
     val = mm.compute_NAS(
@@ -129,6 +130,7 @@ def test_nas_workspace_and_baseline_boost():
     assert 0.0 <= nas_plain <= 1.0
     assert 0.0 <= nas_boost <= 1.0
     assert nas_boost <= nas_plain + 1e-12
+
 
 def test_pdi_noise_robust_behavior():
     rng = np.random.RandomState(0)

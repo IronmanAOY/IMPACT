@@ -360,7 +360,7 @@ def run_s_ci(
         bootstrap_se=bootstrap_se,
         bootstrap_block_len=bootstrap_block_len,
     )
-    df['session']=df['session'].replace({'audioawake':'awake','audiodeep':'deep'})
+    df['session'] = df['session'].replace({'audioawake': 'awake', 'audiodeep': 'deep'})
     meta_cols = [
         c
         for c in (*PROVENANCE_COLUMNS, "hardware_target", "hardware_backend", "hardware_runtime")
@@ -375,9 +375,12 @@ def run_s_ci(
     ):
         if metric in df.columns:
             agg_map[metric] = (metric, 'mean')
-    df_mean = df.groupby(['subject','session']).agg(**agg_map).reset_index()
-    df_S    = df_mean.pivot(index='subject', columns='session', values='S')
-    df_CI   = df_mean.pivot(index='subject', columns='session', values='CI') if 'CI' in df_mean.columns else None
+    df_mean = df.groupby(['subject', 'session']).agg(**agg_map).reset_index()
+    df_S = df_mean.pivot(index='subject', columns='session', values='S')
+    df_CI = (
+        df_mean.pivot(index='subject', columns='session', values='CI')
+        if 'CI' in df_mean.columns else None
+    )
     # --- fine grid & supplemental figure ---
     df_fine = compute_synergy_ci(
         str(prep_out),
@@ -403,7 +406,8 @@ def run_s_ci(
         modality=modality,
         hardware_target=hardware_target,
     )
-    df_fine['session']=df_fine['session'].replace({'audioawake':'awake','audiodeep':'deep'})
+    df_fine['session'] = df_fine['session'].replace(
+        {'audioawake': 'awake', 'audiodeep': 'deep'})
     means, sems = [], []
     theta_vals = []
     for theta, subdf in df_fine.groupby('theta'):
@@ -436,8 +440,9 @@ def run_s_ci(
     ax.errorbar(theta_arr, mean_arr, yerr=sem_arr, marker='o')
     if np.isfinite(theta_star):
         ax.axvline(theta_star, linestyle='--')
-    ax.set(xlabel='θ', ylabel='Mean S_awake–S_deep'); fig.tight_layout()
-    fig.savefig(figdir/'supp_theta_curve.png')
+    ax.set(xlabel='θ', ylabel='Mean S_awake–S_deep')
+    fig.tight_layout()
+    fig.savefig(figdir / 'supp_theta_curve.png')
     # --- stats by theta ---
     rows = []
     for theta, subdf in df.groupby('theta'):

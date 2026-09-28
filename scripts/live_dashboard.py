@@ -58,20 +58,20 @@ try:
     from impact_pipeline.mpc_readiness import check_mpc_readiness
 except Exception:
     check_mpc_readiness = None  # type: ignore[assignment]
-from impact_pipeline.provenance import (
+from impact_pipeline.provenance import (  # noqa: E402
     DUMMY_DATA_ORIGIN,
     REAL_DATA_ORIGIN,
     VALID_DATA_ORIGINS,
     normalize_data_origin,
     resolve_dataset_provenance,
 )
-from impact_pipeline.dataset_catalog import (
+from impact_pipeline.dataset_catalog import (  # noqa: E402
     PIPELINE_ENABLED_DATASET_IDS,
     get_report_dataset,
     resolve_local_dataset_root,
 )
-from impact_pipeline.mpc_metrics import IIM_ALGORITHM_VERSION
-from impact_pipeline.synergy_ci import assemble_ci
+from impact_pipeline.mpc_metrics import IIM_ALGORITHM_VERSION  # noqa: E402
+from impact_pipeline.synergy_ci import assemble_ci  # noqa: E402
 
 DATASET_DEFAULTS: dict[str, dict[str, Any]] = {
     "ds003171": {

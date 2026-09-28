@@ -1709,7 +1709,9 @@ def compute_synergy_ci(
       (unlabelled repertoire of distinguishable states, options
       ``repertoire_*``; its evidence is ``raw`` in bits against the
       estimator's own state-count null, default ``circular_shift``), RAM
-      ``update='prediction_error'``) and per-component ``bearer_nodes``. Without it a default protocol is built
+      ``update='prediction_error'``, with the declared fallbacks
+      ``update_fallback`` / ``mode_fallback``) and per-component
+      ``bearer_nodes``. Without it a default protocol is built
       from ``necessity_set`` (default all five), ``null_kinds``, the mode keys
       of the params dicts (:data:`MPC_MODE_KEYS`, plus ``bearer_nodes``) and
       the cohort reference of ``ci_reference_session``; conflicting keywords

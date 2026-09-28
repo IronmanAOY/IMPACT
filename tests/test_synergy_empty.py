@@ -41,8 +41,9 @@ _SRPI_PARAMS = {
     "eps": 1e-8,
 }
 
+
 def test_empty(tmp_path):
-    df=compute_synergy_ci(
+    df = compute_synergy_ci(
         str(tmp_path),
         "schaefer400",
         [0.5],
@@ -52,4 +53,4 @@ def test_empty(tmp_path):
         srpi_params=_SRPI_PARAMS,
         srpi_require_explicit_params=True,
     )
-    assert isinstance(df,pd.DataFrame) and df.empty
+    assert isinstance(df, pd.DataFrame) and df.empty
