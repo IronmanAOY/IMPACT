@@ -13,58 +13,92 @@ def _read_fd_file(path: str) -> float:
         return float(f.read().strip())
 
 
+def _n_timepoints(ts_paths) -> int:
+    n_tp = 0
+    for ts_path in ts_paths:
+        try:
+            ts = np.load(ts_path, mmap_mode='r')
+            # TS shape is (n_time, n_regions); weight by timepoints.
+            n_tp += int(ts.shape[0])
+        except Exception:
+            continue
+    return n_tp
+
+
+def _fd_entries_for_folder(cond_dir: str, subject: str, atlas: str):
+    """
+    (fd, n_timepoints, source) per run of one condition folder.
+
+    Preprocessing writes one ``{subject}_run-{k}_mean_fd.txt`` per run (paired
+    with ``{subject}_run-{k}_{atlas}_ts.npy``); these are used when present.
+    Legacy folders only have ``mean_fd.txt`` (one value for the folder),
+    weighted by all runs in it.
+    """
+    entries = []
+    run_files = sorted(
+        glob.glob(os.path.join(cond_dir, f"{subject}_run-*_mean_fd.txt"))
+    )
+    for fd_path in run_files:
+        prefix = os.path.basename(fd_path)[: -len("_mean_fd.txt")]
+        n_tp = _n_timepoints([os.path.join(cond_dir, f"{prefix}_{atlas}_ts.npy")])
+        if n_tp <= 0:
+            log.warning("No readable time series for %s; FD weight set to 1.", fd_path)
+            n_tp = 1
+        entries.append((_read_fd_file(fd_path), n_tp, fd_path))
+    if entries:
+        return entries
+    legacy = os.path.join(cond_dir, "mean_fd.txt")
+    if not os.path.exists(legacy):
+        return entries
+    # Match the TS file(s) for this condition folder
+    ts_candidates = sorted(glob.glob(os.path.join(
+        cond_dir, f"{subject}_run-*_{atlas}_ts.npy"
+    )))
+    if not ts_candidates:
+        # fallback (handles slightly different naming styles)
+        ts_candidates = sorted(glob.glob(os.path.join(
+            cond_dir, f"{subject}_*_{atlas}_ts.npy"
+        )))
+    n_tp = _n_timepoints(ts_candidates)
+    if n_tp <= 0:
+        log.warning("No readable time series next to %s; FD weight set to 1.", legacy)
+        n_tp = 1
+    return [(_read_fd_file(legacy), n_tp, legacy)]
+
+
 def _weighted_session_fd(
     data_dir: str, subject: str, session: str, atlas: str, condition=None
 ) -> float:
     """
     Timepoint-weighted mean FD for one subject/session.
 
-    With ``condition`` only
-    ``{data_dir}/{subject}/{session}/{condition}/**/mean_fd.txt`` is used (the
-    condition analysed for CI); otherwise all conditions of the
-    session are pooled (legacy). Weights are the number of timepoints of the
-    time series stored next to each mean_fd.txt; saved *_ts.npy arrays are
-    (n_time, n_regions), so timepoints are ``shape[0]``.
+    With ``condition`` only ``{data_dir}/{subject}/{session}/{condition}`` (and
+    sub-folders) is used (the condition analysed for CI); otherwise all
+    conditions of the session are pooled (legacy). Each run's own FD
+    (``{subject}_run-{k}_mean_fd.txt``) is weighted by that run's number of
+    timepoints; folders from older preprocessing that only have the folder-level
+    ``mean_fd.txt`` are weighted by all their runs. Runs with undefined (NaN) FD
+    are excluded, never imputed; the result is NaN when no run has a finite FD.
+    Saved *_ts.npy arrays are (n_time, n_regions), so timepoints are
+    ``shape[0]``.
     """
     root = os.path.join(data_dir, subject, session)
     if condition is not None:
         root = os.path.join(root, condition)
-    fd_paths = sorted(glob.glob(os.path.join(root, "**", "mean_fd.txt"), recursive=True))
+    fd_paths = sorted(
+        glob.glob(os.path.join(root, "**", "*mean_fd.txt"), recursive=True)
+    )
     if not fd_paths:
         raise FileNotFoundError(f"No mean_fd.txt under {root}")
 
     fds, weights = [], []
-    for fd_path in fd_paths:
-        fd = _read_fd_file(fd_path)
-        cond_dir = os.path.dirname(fd_path)
-
-        # Match the TS file(s) for this condition/run
-        ts_candidates = sorted(glob.glob(os.path.join(
-            cond_dir, f"{subject}_run-*_{atlas}_ts.npy"
-        )))
-        if not ts_candidates:
-            # fallback (handles slightly different naming styles)
-            ts_candidates = sorted(glob.glob(os.path.join(
-                cond_dir, f"{subject}_*_{atlas}_ts.npy"
-            )))
-
-        n_tp = 0
-        for ts_path in ts_candidates:
-            try:
-                ts = np.load(ts_path, mmap_mode='r')
-                # TS shape is (n_time, n_regions); weight by timepoints.
-                n_tp += int(ts.shape[0])
-            except Exception:
-                continue
-        if n_tp <= 0:
-            log.warning(
-                "No readable time series next to %s; FD weight set to 1.", fd_path
-            )
-            n_tp = 1
-
-        fds.append(fd)
-        weights.append(n_tp)
-
+    for cond_dir in sorted({os.path.dirname(p) for p in fd_paths}):
+        for fd, n_tp, _source in _fd_entries_for_folder(cond_dir, subject, atlas):
+            if np.isfinite(fd):
+                fds.append(fd)
+                weights.append(n_tp)
+    if not fds:
+        return float("nan")
     return float(np.average(fds, weights=weights))
 
 
@@ -98,13 +132,14 @@ def motion_covariate_analysis(df_agg, data_dir: str, atlas: str = "schaefer400",
     for _, row in keys.iterrows():
         sub, ses = row['subject'], row['session']
         try:
-            fd_map[(sub, ses)] = _weighted_session_fd(
-                data_dir, sub, ses, atlas, condition=condition
-            )
+            fd = _weighted_session_fd(data_dir, sub, ses, atlas, condition=condition)
         except FileNotFoundError as exc:
             log.warning("motion: %s; %s/%s excluded from the FD models.", exc, sub, ses)
-            fd_map[(sub, ses)] = np.nan
+            fd = np.nan
+        if not np.isfinite(fd):
+            # No file, or only undefined (NaN) FD: excluded and counted.
             n_missing_fd += 1
+        fd_map[(sub, ses)] = fd
 
     dfc['FD'] = [fd_map[(r.subject, r.session)] for r in dfc.itertuples()]
     if score_col in dfc.columns:

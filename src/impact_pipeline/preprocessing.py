@@ -19,10 +19,22 @@ from impact_pipeline.dataset_catalog import parse_state_task
 log = logging.getLogger(__name__)
 
 ATLAS_GLOBS = None
+# Atlas root the cached ATLAS_GLOBS were resolved from (the cache is reused
+# only for the same root, so a changed IMPACT_ATLAS_DIR takes effect).
+_ATLAS_GLOBS_ROOT = None
 ATLAS_DIR_ENV = "IMPACT_ATLAS_DIR"
 # The SPM12 AAL image shipped in atlases/aal_SPM12 has 116 labels (AAL-116).
 # 'aal90' was the historical (incorrect) key and is accepted as an alias.
 ATLAS_KEY_ALIASES = {"aal90": "aal116"}
+# Expected files, relative to the atlas root (see scripts/download_atlases.sh).
+ATLAS_FILES = {
+    "schaefer400": (
+        "schaefer_2018",
+        "Schaefer2018_400Parcels_7Networks_order_FSLMNI152_1mm.nii.gz",
+    ),
+    "aal116": ("aal_SPM12", "aal", "atlas", "AAL.nii"),
+    "shen268": ("shen_1mm_268_parcellation.nii.gz",),
+}
 # Plausible fMRI repetition times (seconds). Values outside this range are
 # treated as unreadable metadata, never silently replaced.
 MAX_PLAUSIBLE_TR_SEC = 10.0
@@ -33,46 +45,70 @@ def normalize_atlas_key(key: str) -> str:
     return ATLAS_KEY_ALIASES.get(raw, raw)
 
 
-def _default_atlas_root() -> Path:
+def _repository_root() -> Path:
+    """
+    Repository root of this checkout: the nearest parent of this file that holds
+    pyproject.toml and atlases/ (source tree or editable install). Falls back to
+    <src>/.. for layouts without both markers.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "pyproject.toml").is_file() and (parent / "atlases").is_dir():
+            return parent
+    return here.parents[2]
+
+
+def _atlas_root_and_source(atlas_root=None) -> tuple[Path, str]:
+    """(atlas root, how it was chosen): argument, IMPACT_ATLAS_DIR or repository."""
+    if atlas_root is not None:
+        return Path(atlas_root).expanduser(), "atlas_root argument"
     env_root = os.environ.get(ATLAS_DIR_ENV, "").strip()
     if env_root:
-        return Path(env_root).expanduser()
-    return Path(__file__).resolve().parents[2] / "atlases"
+        return Path(env_root).expanduser(), f"${ATLAS_DIR_ENV}"
+    return _repository_root() / "atlases", "repository root (never the CWD)"
+
+
+def _default_atlas_root() -> Path:
+    return _atlas_root_and_source(None)[0]
 
 
 def get_atlas_globs(atlas_root=None):
     """
     Resolve atlas resources from local files only.
     This keeps preprocessing fully offline and deterministic.
-    The atlas root defaults to <repo>/atlases (override with IMPACT_ATLAS_DIR),
-    independent of the current working directory.
+    The atlas root is ``atlas_root`` if given, else $IMPACT_ATLAS_DIR, else
+    <repository>/atlases, independent of the current working directory. A
+    missing file raises FileNotFoundError listing every expected file.
     """
-    global ATLAS_GLOBS
+    global ATLAS_GLOBS, _ATLAS_GLOBS_ROOT
     use_default_root = atlas_root is None
-    if ATLAS_GLOBS is not None and use_default_root:
+    root, source = _atlas_root_and_source(atlas_root)
+    if (
+        use_default_root
+        and ATLAS_GLOBS is not None
+        and _ATLAS_GLOBS_ROOT in (None, str(root))
+    ):
         return ATLAS_GLOBS
 
-    atlas_root = _default_atlas_root() if use_default_root else Path(atlas_root)
-    atlas_sch = atlas_root / "schaefer_2018" / "Schaefer2018_400Parcels_7Networks_order_FSLMNI152_1mm.nii.gz"
-    atlas_aal = atlas_root / "aal_SPM12" / "aal" / "atlas" / "AAL.nii"
-    atlas_shen = atlas_root / "shen_1mm_268_parcellation.nii.gz"
-
-    missing = [str(p) for p in (atlas_sch, atlas_aal, atlas_shen) if not p.exists()]
+    paths = {key: root.joinpath(*parts) for key, parts in ATLAS_FILES.items()}
+    missing = [key for key, path in paths.items() if not path.exists()]
     if missing:
+        lines = [
+            f"  [{'missing' if key in missing else 'found'}] {key}: {path}"
+            for key, path in paths.items()
+        ]
         raise FileNotFoundError(
-            "Missing required local atlas files. Expected:\n"
-            + "\n".join(missing)
-            + f"\nPopulate atlases/ (or set {ATLAS_DIR_ENV}) before running "
-            "fMRI preprocessing."
+            f"Missing required local atlas files ({', '.join(missing)}) under atlas "
+            f"root '{root}' (resolved from the {source}). Expected files:\n"
+            + "\n".join(lines)
+            + f"\nRun scripts/download_atlases.sh, or set {ATLAS_DIR_ENV} to a "
+            "folder with this layout, before running fMRI preprocessing."
         )
 
-    globs = {
-        "schaefer400": str(atlas_sch.resolve()),
-        "aal116": str(atlas_aal.resolve()),
-        "shen268": str(atlas_shen.resolve()),
-    }
+    globs = {key: str(path.resolve()) for key, path in paths.items()}
     if use_default_root:
         ATLAS_GLOBS = globs
+        _ATLAS_GLOBS_ROOT = str(root)
     return globs
 
 

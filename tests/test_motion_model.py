@@ -73,3 +73,47 @@ def test_fd_adjusted_state_contrast_recovers_true_difference(tmp_path):
     assert res["delta_intercept"] == pytest.approx(0.5, abs=0.05)
     assert res["delta_fd_coef"] == pytest.approx(2.0, abs=0.15)
     assert res["p_delta_intercept"] < 1e-6
+
+
+def _run(root, subj, ses, cond, run, fd, n_time, n_regions=7):
+    d = root / subj / ses / cond
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{subj}_run-{run}_mean_fd.txt").write_text(str(fd))
+    np.save(d / f"{subj}_run-{run}_schaefer400_ts.npy", np.zeros((n_time, n_regions)))
+    return d
+
+
+def test_per_run_fd_is_weighted_by_that_runs_timepoints(tmp_path):
+    d = _run(tmp_path, "s1", "awake", "audio", 1, 1.0, n_time=300)
+    _run(tmp_path, "s1", "awake", "audio", 2, 0.0, n_time=100)
+    # The folder-level file (from a stale or overwritten write) is not used
+    # when per-run files exist.
+    (d / "mean_fd.txt").write_text("0.5")
+    fd = _weighted_session_fd(str(tmp_path), "s1", "awake", "schaefer400", "audio")
+    assert fd == pytest.approx((1.0 * 300 + 0.0 * 100) / 400)
+    # Pooling conditions mixes per-run and legacy (folder-level) folders.
+    legacy = tmp_path / "s1" / "awake" / "rest"
+    legacy.mkdir()
+    (legacy / "mean_fd.txt").write_text("0.2")
+    np.save(legacy / "s1_run-1_schaefer400_ts.npy", np.zeros((200, 7)))
+    fd_all = _weighted_session_fd(str(tmp_path), "s1", "awake", "schaefer400")
+    assert fd_all == pytest.approx((300.0 + 0.0 + 0.2 * 200) / 600)
+
+
+def test_undefined_run_fd_is_excluded_not_imputed(tmp_path):
+    _run(tmp_path, "s1", "awake", "audio", 1, "nan", n_time=300)
+    _run(tmp_path, "s1", "awake", "audio", 2, 0.4, n_time=100)
+    fd = _weighted_session_fd(str(tmp_path), "s1", "awake", "schaefer400", "audio")
+    assert fd == pytest.approx(0.4)
+    _run(tmp_path, "s2", "awake", "audio", 1, "nan", n_time=50)
+    assert np.isnan(
+        _weighted_session_fd(str(tmp_path), "s2", "awake", "schaefer400", "audio")
+    )
+    df = pd.DataFrame(
+        [
+            {"subject": "s1", "session": "awake", "CI": 0.5},
+            {"subject": "s2", "session": "awake", "CI": 0.4},
+        ]
+    )
+    res = motion_covariate_analysis(df, str(tmp_path), condition="audio").iloc[0]
+    assert res["n_subject_sessions_missing_fd"] == 1

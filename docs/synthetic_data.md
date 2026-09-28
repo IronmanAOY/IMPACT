@@ -47,7 +47,7 @@ Notes:
   defined only by the planted level. Its rest baselines are ds003171 rest runs
   from other subjects, because ds002547 has no rest runs.
 
-## What Is Planted (Generator 2.1.0)
+## What Is Planted (Generator 2.2.0; unchanged since 2.1.0)
 
 For node payload `x` (the real recording, z-scored per node):
 
@@ -125,14 +125,58 @@ kept for pipeline compatibility.
 `actual_metric_report.json` (one per dataset) and the summary JSON keep three
 things separate.
 
-1. **Smoke test (`smoke_test_passed`).** This is the only pass gate. It checks:
-   the arrays exist, are finite and have no zero-variance nodes; array shapes
-   match the manifest; the BIDS data (NIfTI node container or BrainVision)
-   equal the analysed arrays; sidecar sample intervals and task labels match;
-   readiness is 1.0 for CI; and RAM, PDI, NAS, IIM, SRPI and CI are present,
-   defined and within their documented bounds. `constant_metrics` lists
-   metrics that are defined but identical in every row (for example 0
-   everywhere); it is reported, not gated.
+1. **Smoke test (`smoke_test_passed`).** This is the only pass gate. It
+   follows the three-valued definedness contract (remediation spec D1): a
+   metric that cannot be measured is undefined (NaN) with a recorded reason,
+   never 0, and that is a valid outcome. The gate checks, per run:
+   - the task and rest arrays exist, load, are finite and have no
+     zero-variance nodes, and task and rest have the same nodes;
+   - array shapes match the manifest; the BIDS data (NIfTI node container or
+     BrainVision) equal the analysed arrays; sidecar sample intervals and task
+     labels match;
+   - the metric table has a row for the run, and every RAM, PDI, NAS, IIM,
+     SRPI and CI value is **either finite and within its documented bounds,
+     or NaN with a recorded reason** (`<metric>_finite_or_reasoned`). For CI
+     the reason is `CI_missing` (with `CI_defined=False`). For a component
+     it is, in this order, the metric table's own reason column
+     (`<metric>_undefined_reason`, `<metric>_reason`, or for PDI the reason
+     of its declared primary endpoint, `PDI_anchor_reason` or
+     `PDI_task_reason`), the `undefined_reason` of the direct
+     `compute_RAM` / `compute_SRPI` call on the same run, or the readiness
+     reason. `ok`, empty strings and NaN are not reasons, and neither is
+     `not_computed` (the validator requests every metric, so a skipped metric
+     is not explained);
+   - `CI`, `CI_defined` and `CI_missing` agree (`CI_status_consistent`): a
+     finite CI has nothing missing and every component defined (an undefined
+     component never enters CI, for example as 0); an undefined CI lists
+     every undefined component (IIM also when `IIM_defined` is false) and
+     only known tokens (`<component>` or `<component>_reference`);
+   - every readiness row that is not ready names its reason.
+
+   And per dataset (`dataset_checks`): the metric table has the required
+   columns (`subject`, `session`, the six metrics, `CI_defined`,
+   `CI_missing`); readiness and the metric computation completed (an
+   exception is recorded under `stage_errors` and fails the gate instead of
+   aborting the run); the validation outputs are readable; and validation
+   left the objects (BIDS tree, preprocessed arrays, planted truth) and the
+   shipped reports unchanged (`objects_and_reports_unmodified`, a size and
+   modification-time fingerprint taken before and after; changed paths are
+   listed under `modified_paths`).
+
+   Reported but not gated: the readiness fraction (`all_ready`,
+   `ready_fraction_CI`), per-metric definedness counts
+   (`metric_definedness`, and `undefined_metrics` with the counts of
+   undefined values with and without a reason), each row's
+   `undefined_reasons`, the MPC verdict when the metric code reports one
+   (`mpc_verdict` per row, `mpc_verdict_counts`), and `constant_metrics`,
+   which lists metrics that are
+   defined but identical in every row (for example 0 everywhere). A metric
+   that is undefined everywhere with a reason (for example RAM on EEG runs too
+   short for six trials, `insufficient_goal_response_pairs`, and hence CI)
+   passes the gate; read `undefined_metrics` to see how much of the metric
+   code these objects actually exercised. Up to generator 2.1.0 the gate
+   required every metric and CI to be defined and readiness to be 1.0,
+   which contradicted D1 and failed on correctly undefined values.
 2. **Generator self-check (`planted_structure_verified`).** It uses simple
    statistics computed without the metric code: participation ratio, directed
    module coupling, directed workspace broadcast, evoked projection and

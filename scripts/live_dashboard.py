@@ -70,7 +70,8 @@ from impact_pipeline.dataset_catalog import (
     get_report_dataset,
     resolve_local_dataset_root,
 )
-from impact_pipeline.mpc_metrics import compute_CI
+from impact_pipeline.mpc_metrics import IIM_ALGORITHM_VERSION
+from impact_pipeline.synergy_ci import assemble_ci
 
 DATASET_DEFAULTS: dict[str, dict[str, Any]] = {
     "ds003171": {
@@ -134,6 +135,40 @@ _IS_WINDOWS = os.name == "nt"
 MIXED_CI_COMPONENTS = ("RAM", "PDI", "NAS", "IIM", "SRPI")
 # Cohort high-state condition used as the default CI reference (D3).
 MIXED_CI_HIGH_STATE_SESSION = "awake"
+# MPC verdict columns written by synergy_ci (carried through when present).
+MPC_VERDICT_COLUMNS = ("MPC_verdict", "MPC_reason")
+# Stable verdict/reason codes of impact_pipeline.evidence (paper-1 spec).
+MPC_UNDETERMINED = "UNDETERMINED"
+MPC_REASON_BEARER_MISMATCH = "BEARER_MISMATCH"
+MPC_REASON_RUN_DISAGREEMENT = "RUN_VERDICTS_DISAGREE"
+MPC_REASON_RUN_VERDICT_MISSING = "RUN_VERDICT_MISSING"
+MIXED_CI_EXPLORATORY_NOTE = (
+    "EXPLORATORY: the components come from different datasets, i.e. from "
+    "different bearers (participants and recordings). The combined index is a "
+    "cross-dataset composition for exploration only; it is not an MPC profile "
+    "or attribution for any bearer, and its MPC verdict is UNDETERMINED "
+    "(BEARER_MISMATCH)."
+)
+# Fields of compute_IIM's checkpoint signature (spec D6, mpc_metrics) shown per
+# checkpoint. compute_IIM resumes a checkpoint only when the whole signature
+# matches; one written by another IIM algorithm version restarts from scratch,
+# so its progress does not count for the running code.
+IIM_CHECKPOINT_SIGNATURE_FIELDS = (
+    "iim_algorithm_version",
+    "tpm_estimator",
+    "tpm_alpha",
+    "max_state_space",
+    "state_budget_policy",
+    "bins_requested",
+    "bins_used",
+    "lag_trs",
+    "n_nodes_used",
+    "selected_nodes",
+    "node_selection_rule",
+    "max_mechanism_size_used",
+    "max_purview_size_used",
+    "n_cuts_total",
+)
 HUNTER_BUILD_NOTE = (
     "Hunter mode only BUILDS an IIM campaign for HLRS Hunter (PBS) under "
     "<output>/cache/hunter_iim_campaign. Nothing is submitted and no metrics are "
@@ -2935,7 +2970,7 @@ HTML_PAGE = """<!doctype html>
                   <div class="summary-table-wrap">
                     <table class="summary-table">
                       <thead>
-                        <tr>
+                        <tr id="mixedSourceSummaryHead">
                           <th>Reference Subject</th>
                           <th>RAM Feed</th>
                           <th>PDI Feed</th>
@@ -3917,6 +3952,15 @@ HTML_PAGE = """<!doctype html>
           return row;
         });
       }
+      // MPC verdict columns are shown when the metric tables carry them.
+      const hasVerdict = rows.some((row) => txt(row.MPC_verdict, "") !== "");
+      const head = document.getElementById("mixedSourceSummaryHead");
+      if (head) {
+        head.innerHTML = ["Reference Subject", ...ALL_MPCS.map((m) => `${m} Feed`)]
+          .concat(hasVerdict ? ["MPC Verdict", "MPC Reason"] : [])
+          .map((label) => `<th>${esc(label)}</th>`)
+          .join("");
+      }
       if (!rows.length) {
         body.innerHTML = '<tr><td colspan="6">No combined results summary available yet.</td></tr>';
         setText("mixedSourceSummaryStatus", "No combined results bundle has been created yet.");
@@ -3939,10 +3983,15 @@ HTML_PAGE = """<!doctype html>
             </td>
           `;
         }).join("");
+        const verdictCells = hasVerdict
+          ? `<td>${esc(txt(row.MPC_verdict, "-"))}</td>`
+            + `<td>${esc(txt(row.MPC_reason, "-"))}</td>`
+          : "";
         return `
           <tr>
             <td><strong>${esc(displaySubjectId(row.anchor_subject))}</strong></td>
             ${cells}
+            ${verdictCells}
           </tr>
         `;
       }).join("");
@@ -3961,9 +4010,17 @@ HTML_PAGE = """<!doctype html>
           + `${txt(manifest.ci_rows_total, "0")} (undefined rows are excluded, `
           + "never counted as zero)."
         : "";
+      const exploratoryTxt = manifest.exploratory
+        ? " " + txt(
+          manifest.interpretation_note,
+          "EXPLORATORY: components come from different datasets (different bearers)."
+        )
+        : "";
       setText(
         "mixedSourceSummaryStatus",
-        `Final combined results bundle created at ${createdAt}. Reference dataset: ${txt(manifest.anchor_dataset_id, "-")}.${definedTxt}${suffix}`
+        `Final combined results bundle created at ${createdAt}. `
+          + `Reference dataset: ${txt(manifest.anchor_dataset_id, "-")}.`
+          + `${definedTxt}${exploratoryTxt}${suffix}`
       );
     }
 
@@ -5040,6 +5097,12 @@ HTML_PAGE = """<!doctype html>
         const atlasSize = (c.atlas_size === null || c.atlas_size === undefined) ? "?" : String(c.atlas_size);
         const binsUsed = (c.bins_used === null || c.bins_used === undefined) ? "?" : String(c.bins_used);
         const nodesUsed = (c.n_nodes_used === null || c.n_nodes_used === undefined) ? "?" : String(c.n_nodes_used);
+        const sigStatus = txt(c.signature_status, "unknown");
+        const sigNote = sigStatus === "current"
+          ? ""
+          : ` | NOT RESUMABLE (${sigStatus}: written by IIM `
+            + `${txt(c.sig_iim_algorithm_version, "unversioned")}; `
+            + "recomputed from scratch)";
         const d = document.createElement("div");
         d.className = "checkpoint";
         // Checkpoint JSON is read from disk: escape every interpolated field.
@@ -5049,7 +5112,7 @@ HTML_PAGE = """<!doctype html>
             <span class="state-badge ${stateClass}">${esc(state)}</span>
             <div class="name" title="${esc(c.file)}">${esc(c.file)}</div>
           </div>
-          <div class="meta">subject=${esc(c.subject || "?")} | session=${esc(c.session || "?")} | condition=${esc(c.condition || "?")} | run=${esc(c.run || "?")} | atlas=${esc(c.atlas || "?")}(${esc(atlasSize)}) | bins=${esc(binsUsed)} | nodes=${esc(nodesUsed)} | status=${esc(c.status)} | phase=${esc(c.iim_phase || "?")} | mode=${esc(c.phase2_mode || "?")} | phase1 eta=${esc(c.phase1_eta_human || "n/a")}</div>
+          <div class="meta">subject=${esc(c.subject || "?")} | session=${esc(c.session || "?")} | condition=${esc(c.condition || "?")} | run=${esc(c.run || "?")} | atlas=${esc(c.atlas || "?")}(${esc(atlasSize)}) | bins=${esc(binsUsed)} | nodes=${esc(nodesUsed)} | tpm=${esc(txt(c.sig_tpm_estimator, "?"))} | status=${esc(c.status)} | phase=${esc(c.iim_phase || "?")} | mode=${esc(c.phase2_mode || "?")} | phase1 eta=${esc(c.phase1_eta_human || "n/a")}${esc(sigNote)}</div>
           <div class="bars-2">
             <div>
               <div class="small">Phase 1 (Psi): ${esc(c.phase1_done)}/${esc(c.phase1_total ?? "?")} (${fmtNumber(c.phase1_pct,1)}%)</div>
@@ -5554,16 +5617,28 @@ def _parse_checkpoint_filename(name: str) -> dict[str, str] | None:
     }
 
 
+# The SPM12 AAL image in atlases/aal_SPM12 has 116 labels (AAL-116); 'aal90'
+# was the historical, incorrect key (same file, same 116 regions), as in
+# impact_pipeline.preprocessing.ATLAS_KEY_ALIASES.
+ATLAS_NAME_ALIASES = {"aal90": "aal116"}
+
+
+def _canonical_atlas_name(atlas_name: Any) -> str:
+    """Atlas key as the pipeline writes it ('aal90' -> 'aal116')."""
+    name = str(atlas_name).strip()
+    return ATLAS_NAME_ALIASES.get(name.lower(), name)
+
+
 def _atlas_size_from_name(atlas_name: str | None) -> int | None:
     if atlas_name is None:
         return None
-    a = str(atlas_name).strip().lower()
+    a = _canonical_atlas_name(atlas_name).lower()
     if not a:
         return None
     known = {
         "schaefer400": 400,
         "shen268": 268,
-        "aal90": 90,
+        "aal116": 116,
         "eeg64": 64,
     }
     if a in known:
@@ -5595,6 +5670,11 @@ def _checkpoint_filename_for_ts(
     """
     Reproduce the checkpoint naming logic from synergy_ci._iim_worker_from_path
     (which uses os.path.abspath, so symlinks are not resolved here either).
+
+    The file name only locates a run's checkpoint. Whether compute_IIM resumes
+    it is decided by the signature stored inside (spec D6: algorithm version,
+    TPM estimator/alpha, state budget, bins, lag, nodes, cut family, data
+    hash); see _checkpoint_signature_status.
     """
     path_abs = os.path.abspath(str(ts_path))
     sig = (
@@ -5611,6 +5691,76 @@ def _checkpoint_filename_for_ts(
     stem = os.path.basename(path_abs).replace("_ts.npy", "")
     stem = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in stem)[:80]
     return f"{stem}_{digest}.iim_checkpoint.json"
+
+
+def _checkpoint_signature_status(signature: Any) -> str:
+    """
+    'current' when the checkpoint was written by the running IIM algorithm
+    version (compute_IIM can resume it), 'stale_algorithm_version' when it was
+    written by another version, 'legacy_unversioned' for pre-D6 checkpoints
+    without a version. Only 'current' checkpoints are resumed.
+    """
+    sig = signature if isinstance(signature, dict) else {}
+    version = sig.get("iim_algorithm_version")
+    if not version:
+        return "legacy_unversioned"
+    if str(version) != str(IIM_ALGORITHM_VERSION):
+        return "stale_algorithm_version"
+    return "current"
+
+
+def _float_or_nan(value: Any) -> float:
+    try:
+        return float("nan") if value is None else float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _present_value(value: Any) -> bool:
+    """True for a recorded table value (not None, NaN/NA or an empty string)."""
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    return bool(str(value).strip()) and str(value).strip().lower() != "nan"
+
+
+def _merge_run_verdicts(
+    verdicts: list[Any], reasons: list[Any] | None = None
+) -> tuple[str | None, str | None]:
+    """
+    Subject-session MPC verdict from the verdicts of its runs (rows repeat
+    per theta). If every run has the same verdict it is kept, with the
+    distinct run reasons joined by ';'. If runs disagree the subject-session
+    is UNDETERMINED (no determinate verdict holds for all runs) with reason
+    'RUN_VERDICTS_DISAGREE:<verdicts>'. A run without a recorded verdict next
+    to runs with one is unknown, so the subject-session is UNDETERMINED with
+    'RUN_VERDICT_MISSING' (a missing verdict never lets the others decide).
+    (None, None) if nothing is recorded.
+    """
+    present = [str(v).strip() for v in verdicts if _present_value(v)]
+    n_missing = len(list(verdicts)) - len(present)
+    uniq = list(dict.fromkeys(present))
+    why = list(
+        dict.fromkeys(str(r).strip() for r in (reasons or []) if _present_value(r))
+    )
+    if not uniq:
+        return None, None
+    if len(uniq) == 1 and not n_missing:
+        return uniq[0], (";".join(why) or None)
+    codes = []
+    if len(uniq) > 1:
+        codes.append(f"{MPC_REASON_RUN_DISAGREEMENT}:{'/'.join(sorted(uniq))}")
+    elif uniq[0] == MPC_UNDETERMINED:
+        codes.extend(why)
+    if n_missing:
+        codes.append(MPC_REASON_RUN_VERDICT_MISSING)
+    return MPC_UNDETERMINED, ";".join(codes)
 
 
 @dataclass
@@ -7702,8 +7852,14 @@ class DashboardState:
             "condition",
             str(defaults.get("condition") or "audio"),
         )
-        atlas = self._safe_cli_value(
-            payload.get("atlas"), "atlas", str(defaults.get("atlas") or "schaefer400")
+        # 'aal90' names the 116-label SPM12 AAL image; preprocessing writes it
+        # as 'aal116', so requests use the pipeline's key.
+        atlas = _canonical_atlas_name(
+            self._safe_cli_value(
+                payload.get("atlas"),
+                "atlas",
+                str(defaults.get("atlas") or "schaefer400"),
+            )
         )
         subjects = self._normalize_subject_cli(
             payload.get("subjects")
@@ -8806,7 +8962,8 @@ class DashboardState:
         MPC components are computed per run and repeated across the theta grid,
         so the subject-session value is the mean over that session's measured
         runs. Undefined values stay NaN (an IIM value only counts when
-        IIM_defined is true); nothing is imputed.
+        IIM_defined is true); nothing is imputed. MPC_verdict / MPC_reason are
+        carried through when the table has them (see _merge_run_verdicts).
         """
         step2_path = Path(out_dir).resolve() / "cache" / "step2_df.csv"
         if not step2_path.exists():
@@ -8830,9 +8987,28 @@ class DashboardState:
                 .isin({"true", "1", "1.0", "yes"})
             )
             df.loc[~iim_ok, "IIM"] = np.nan
-        return df.groupby(["subject", "session"], as_index=False)[
+        out = df.groupby(["subject", "session"], as_index=False)[
             list(MIXED_CI_COMPONENTS)
         ].mean()
+        if "MPC_verdict" in df.columns:
+            verdict_rows = []
+            for (sub, ses), grp in df.groupby(["subject", "session"], sort=False):
+                verdict, reason = _merge_run_verdicts(
+                    grp["MPC_verdict"].tolist(),
+                    grp["MPC_reason"].tolist() if "MPC_reason" in grp else None,
+                )
+                verdict_rows.append(
+                    {
+                        "subject": sub,
+                        "session": ses,
+                        "MPC_verdict": verdict,
+                        "MPC_reason": reason,
+                    }
+                )
+            out = out.merge(
+                pd.DataFrame(verdict_rows), on=["subject", "session"], how="left"
+            )
+        return out
 
     def _compose_mixed_source_ci(self, context: dict[str, Any]) -> dict[str, Any]:
         """
@@ -8841,13 +9017,20 @@ class DashboardState:
         - Participants are paired only through the explicit subject mapping
           (identity by default; manual entries are user assertions); rows are
           joined on (subject, session), never by list position.
-        - CI follows the three-valued contract: any missing component or an
-          invalid reference mean makes CI undefined (NaN, CI_defined=False,
-          CI_missing lists the reasons); undefined rows are never zero and are
-          excluded from summaries (counts are reported in the manifest).
-        - CI uses NAS directly (no HypergraphSynergy multiplier) and is
-          reference-normalised by the cohort high-state (awake) means unless an
-          external ``ci_reference_means`` mapping is supplied.
+        - CI is assembled by ``impact_pipeline.synergy_ci.assemble_ci``, the
+          pipeline's own rules (spec D1-D3): NAS enters directly (no
+          HypergraphSynergy multiplier); references are the cohort high-state
+          (awake) means unless an external ``ci_reference_means`` mapping is
+          supplied; a non-finite or <= 0 reference makes CI undefined (no
+          floor); an undefined component or reference gives CI = NaN with
+          CI_defined=False and CI_missing listing why. Undefined rows are never
+          zero and are excluded from summaries (counts in the manifest).
+        - Different datasets are different bearers (participants and
+          recordings). A composition drawing on more than one dataset is
+          EXPLORATORY only: it is labelled so (``CI_composition``, manifest
+          ``exploratory``) and its MPC verdict is UNDETERMINED with reason
+          BEARER_MISMATCH. A single-source composition carries the source's
+          MPC_verdict / MPC_reason when its table has them.
         """
         plan = [dict(x) for x in (context.get("plan") or [])]
         if not plan:
@@ -8908,61 +9091,56 @@ class DashboardState:
             mixed[f"{metric}_source_subject"] = src_subjects
 
         ext_refs = context.get("ci_reference_means")
+        reference = None
         if isinstance(ext_refs, dict) and ext_refs:
-            ci_reference = "external"
-            refs = {}
-            for k in MIXED_CI_COMPONENTS:
-                try:
-                    refs[k] = float(ext_refs.get(k))
-                except (TypeError, ValueError):
-                    refs[k] = float("nan")
-        else:
-            ci_reference = "cohort_high_state"
-            high_state = mixed[mixed["session"] == MIXED_CI_HIGH_STATE_SESSION]
-            refs = {}
-            for k in MIXED_CI_COMPONENTS:
-                vals = pd.to_numeric(high_state[k], errors="coerce")
-                vals = vals[np.isfinite(vals)]
-                refs[k] = float(vals.mean()) if len(vals) else float("nan")
+            # A missing or non-numeric entry is an unusable reference (NaN),
+            # which makes CI undefined; it is never replaced by a default.
+            reference = {k: _float_or_nan(ext_refs.get(k)) for k in MIXED_CI_COMPONENTS}
+        mixed, refs = assemble_ci(
+            mixed, reference=reference, high_state_session=MIXED_CI_HIGH_STATE_SESSION
+        )
+        refs = {k: _float_or_nan(refs.get(k)) for k in MIXED_CI_COMPONENTS}
+        ci_reference = str(mixed.attrs.get("ci_reference_label") or "cohort_high_state")
         bad_refs = [
             k for k in MIXED_CI_COMPONENTS if not np.isfinite(refs[k]) or refs[k] <= 0
         ]
-
-        ci_vals: list[float] = []
-        ci_defined: list[bool] = []
-        ci_missing: list[str] = []
-        norms: dict[str, list[float]] = {k: [] for k in MIXED_CI_COMPONENTS}
-        for _, row in mixed.iterrows():
-            missing = [k for k in MIXED_CI_COMPONENTS if not np.isfinite(row[k])]
-            missing += [f"{k}_reference" for k in bad_refs]
-            if missing:
-                ci_vals.append(np.nan)
-                ci_defined.append(False)
-                ci_missing.append(",".join(missing))
-                for k in MIXED_CI_COMPONENTS:
-                    norms[k].append(np.nan)
-                continue
-            details = compute_CI(
-                row["RAM"],
-                row["PDI"],
-                row["NAS"],
-                row["IIM"],
-                row["SRPI"],
-                references=refs,
-                defined={k: True for k in MIXED_CI_COMPONENTS},
-                return_details=True,
-            )
-            ci_vals.append(float(details["value"]))
-            ci_defined.append(True)
-            ci_missing.append("")
-            for k in MIXED_CI_COMPONENTS:
-                norms[k].append(float(details["normalized_components"][k]))
-        mixed["CI"] = ci_vals
-        mixed["CI_defined"] = ci_defined
-        mixed["CI_missing"] = ci_missing
-        for k, vals in norms.items():
-            mixed[f"{k}_norm"] = vals
+        ci_defined = [bool(v) for v in mixed["CI_defined"]]
+        ci_missing = [str(v) for v in mixed["CI_missing"]]
         mixed["ci_reference"] = ci_reference
+
+        # Different datasets are different bearers: exploratory composition.
+        source_datasets = sorted(set(source_cols.values()))
+        exploratory = len(source_datasets) > 1
+        mixed["CI_composition"] = (
+            "cross_dataset_exploratory" if exploratory else "single_source"
+        )
+        mixed["CI_exploratory"] = exploratory
+        if exploratory:
+            mixed["MPC_verdict"] = MPC_UNDETERMINED
+            mixed["MPC_reason"] = MPC_REASON_BEARER_MISMATCH
+        elif "MPC_verdict" in run_frames[source_datasets[0]].columns:
+            # The verdict of the dataset that supplied every component (which
+            # need not be the anchor), for the same source subject as the
+            # components (explicit mapping), never the anchor's by position.
+            src = run_frames[source_datasets[0]]
+            src_reasons = (
+                src["MPC_reason"] if "MPC_reason" in src.columns else [None] * len(src)
+            )
+            verdict_lookup = {
+                (str(sub), str(ses)): (verdict, reason)
+                for sub, ses, verdict, reason in zip(
+                    src["subject"], src["session"], src["MPC_verdict"], src_reasons
+                )
+            }
+            src_subjects = mixed[f"{MIXED_CI_COMPONENTS[0]}_source_subject"]
+            picked = [
+                verdict_lookup.get((str(src_sub), str(ses)), (None, None))
+                if src_sub
+                else (None, None)
+                for src_sub, ses in zip(src_subjects, mixed["session"])
+            ]
+            mixed["MPC_verdict"] = [v if _present_value(v) else None for v, _ in picked]
+            mixed["MPC_reason"] = [r if _present_value(r) else None for _, r in picked]
 
         mixed["anchor_subject"] = mixed["subject"]
         mixed["dataset_id"] = str(context.get("primary_dataset_id") or anchor_dataset_id)
@@ -8989,8 +9167,11 @@ class DashboardState:
             "CI_missing",
             *MIXED_CI_COMPONENTS,
             "ci_reference",
+            "CI_composition",
+            *[c for c in MPC_VERDICT_COLUMNS if c in mixed.columns],
         ]
         df_mean = mixed[mean_cols].copy()
+        has_verdict = "MPC_verdict" in mixed.columns
 
         n_total = int(len(mixed))
         n_defined = int(sum(ci_defined))
@@ -9031,6 +9212,20 @@ class DashboardState:
             row["CI_undefined_sessions"] = int(
                 (~sub_rows["CI_defined"].astype(bool)).sum()
             )
+            row["CI_composition"] = (
+                mixed["CI_composition"].iloc[0] if len(mixed) else None
+            )
+            if has_verdict:
+                # Per session, e.g. 'awake: UNDETERMINED; deep: UNDETERMINED'.
+                for col in MPC_VERDICT_COLUMNS:
+                    if col not in sub_rows.columns:
+                        continue
+                    parts = [
+                        f"{ses}: {val}"
+                        for ses, val in zip(sub_rows["session"], sub_rows[col])
+                        if _present_value(val)
+                    ]
+                    row[col] = "; ".join(parts) if parts else None
             subject_metric_summary.append(row)
         run_stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time()))
         out_dir = source_dirs[anchor_dataset_id] / "mixed_source_ci" / run_stamp
@@ -9059,6 +9254,25 @@ class DashboardState:
             "ci_formula": (
                 "weighted geometric mean of reference-normalised RAM, PDI, NAS, IIM, "
                 "SRPI (NAS used directly)"
+            ),
+            "ci_assembly": "impact_pipeline.synergy_ci.assemble_ci",
+            "source_datasets": source_datasets,
+            "exploratory": exploratory,
+            "ci_composition": (
+                "cross_dataset_exploratory" if exploratory else "single_source"
+            ),
+            "interpretation_note": (
+                MIXED_CI_EXPLORATORY_NOTE
+                if exploratory
+                else "All components come from one dataset (one set of bearers)."
+            ),
+            "mpc_verdict_counts": (
+                {
+                    str(k): int(v)
+                    for k, v in mixed["MPC_verdict"].value_counts(dropna=True).items()
+                }
+                if has_verdict
+                else None
             ),
             "ci_reference": ci_reference,
             "ci_reference_session": (
@@ -10215,6 +10429,10 @@ class DashboardState:
                 else:
                     progress = 0.4 * ph1_frac + 0.2 * mat_frac + 0.4 * cuts_frac
                 progress = max(0.0, min(1.0, progress))
+            signature_status = _checkpoint_signature_status(sig)
+            if signature_status != "current":
+                # compute_IIM will not resume it: the run restarts from scratch.
+                progress = 0.0
 
             out.append(
                 {
@@ -10237,6 +10455,13 @@ class DashboardState:
                     "bins_used": sig.get("bins_used"),
                     "n_nodes_used": sig.get("n_nodes_used"),
                     "signature": sig,
+                    "signature_status": signature_status,
+                    "resumable": signature_status == "current",
+                    **{
+                        f"sig_{k}": sig.get(k)
+                        for k in IIM_CHECKPOINT_SIGNATURE_FIELDS
+                        if k not in {"bins_used", "n_nodes_used"}
+                    },
                 }
             )
 
@@ -10423,7 +10648,9 @@ class DashboardState:
 
                     parsed = _parse_ts_filename(fp.name) or {}
                     run_no = parsed.get("run")
-                    atlas_name = parsed.get("atlas") or (atlas if atlas else "unknown")
+                    atlas_name = _canonical_atlas_name(
+                        parsed.get("atlas") or (atlas if atlas else "unknown")
+                    )
                     atlas_size = _atlas_size_from_name(atlas_name)
                     state = self._classify_state(ses) or "other"
                     by_session[ses] = by_session.get(ses, 0) + 1
@@ -10687,7 +10914,7 @@ class DashboardState:
                     parsed_ck = _parse_checkpoint_filename(str(c.get("file", ""))) or {}
                     atlas_name = parsed_ck.get("atlas")
                     if atlas_name:
-                        c["atlas"] = atlas_name
+                        c["atlas"] = _canonical_atlas_name(atlas_name)
                         c["atlas_size"] = _atlas_size_from_name(atlas_name)
                     if not c.get("subject") and parsed_ck.get("subject"):
                         c["subject"] = _canonical_subject(parsed_ck.get("subject", ""))

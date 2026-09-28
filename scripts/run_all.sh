@@ -100,15 +100,32 @@ else
   bash scripts/download_data.sh -- "${DATASET_ID}" "${SNAPSHOT}" "${BIDS_ROOT}"
 fi
 
+# Same rule as run_pipeline._fmriprep_subject_complete: a subject is complete
+# only with its report (sub-<label>.html) AND at least one
+# sub-<label>/**/func/*desc-preproc_bold.nii.gz. A run that stopped after
+# writing the report is therefore re-run here as well.
+fmriprep_subject_complete() {
+  local label="$1"
+  [ -f "${FMRIPREP_DIR}/${label}.html" ] || return 1
+  [ -d "${FMRIPREP_DIR}/${label}" ] || return 1
+  local hit
+  # Search relative to the subject folder, so a 'func' component in the
+  # derivatives path itself cannot match or exclude anything.
+  hit="$(cd "${FMRIPREP_DIR}/${label}" 2>/dev/null \
+    && find . -path '*/func/*desc-preproc_bold.nii.gz' ! -path '*/func/*/*' \
+      -print -quit 2>/dev/null || true)"
+  [ -n "${hit}" ]
+}
+
 if [ "${DATASET_ID}" = "ds003171" ]; then
   run bash scripts/download_atlases.sh
 
-  # fMRIPrep only for subjects without a finished report (sub-<label>.html).
+  # fMRIPrep only for subjects without complete derivatives (see above).
   missing=()
   for sub_dir in "${BIDS_ROOT}"/sub-*; do
     [ -d "${sub_dir}" ] || continue
     label="$(basename "${sub_dir}")"
-    if [ ! -f "${FMRIPREP_DIR}/${label}.html" ]; then
+    if ! fmriprep_subject_complete "${label}"; then
       missing+=("${label#sub-}")
     fi
   done

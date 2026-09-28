@@ -759,7 +759,12 @@ def test_mixed_source_ci_explicit_mapping_session_match_and_bad_reference(
     )
     mixed = _read_mixed(manifest)
     assert mixed["CI"].isna().all()
-    assert all("SRPI_reference" in str(m) for m in mixed["CI_missing"])
+    # synergy_ci.assemble_ci semantics: an undefined component is listed as
+    # such; the reference is reported for rows whose components are defined.
+    by = {(r.subject, r.session): r for r in mixed.itertuples()}
+    assert by[("01", "deep")].CI_missing == "IIM,SRPI"
+    for key in (("01", "awake"), ("02", "awake")):
+        assert by[key].CI_missing == "SRPI_reference"
     assert manifest["ci_reference_invalid_components"] == ["SRPI"]
 
 
