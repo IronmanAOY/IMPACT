@@ -137,8 +137,17 @@ MIXED_CI_COMPONENTS = ("RAM", "PDI", "NAS", "IIM", "SRPI")
 MIXED_CI_HIGH_STATE_SESSION = "awake"
 # MPC verdict columns written by synergy_ci (carried through when present).
 MPC_VERDICT_COLUMNS = ("MPC_verdict", "MPC_reason")
-# Stable verdict/reason codes of impact_pipeline.evidence (paper-1 spec).
+# Stable verdict/reason codes of impact_pipeline.evidence (paper-1 spec v2:
+# the verdict is an exclusion rule; MPC_CONSISTENT means "not excluded", never
+# an attribution of consciousness).
+MPC_EXCLUDED = "EXCLUDED"
+MPC_CONSISTENT = "MPC_CONSISTENT"
 MPC_UNDETERMINED = "UNDETERMINED"
+MPC_VERDICT_LABELS = {
+    MPC_EXCLUDED: "Excluded (a necessary principle is credibly absent)",
+    MPC_CONSISTENT: "MPC-consistent (not excluded; not an attribution)",
+    MPC_UNDETERMINED: "Undetermined",
+}
 MPC_REASON_BEARER_MISMATCH = "BEARER_MISMATCH"
 MPC_REASON_RUN_DISAGREEMENT = "RUN_VERDICTS_DISAGREE"
 MPC_REASON_RUN_VERDICT_MISSING = "RUN_VERDICT_MISSING"
@@ -146,7 +155,7 @@ MIXED_CI_EXPLORATORY_NOTE = (
     "EXPLORATORY: the components come from different datasets, i.e. from "
     "different bearers (participants and recordings). The combined index is a "
     "cross-dataset composition for exploration only; it is not an MPC profile "
-    "or attribution for any bearer, and its MPC verdict is UNDETERMINED "
+    "or MPC verdict for any bearer, and its MPC verdict is UNDETERMINED "
     "(BEARER_MISMATCH)."
 )
 # Fields of compute_IIM's checkpoint signature (spec D6, mpc_metrics) shown per
@@ -3079,6 +3088,16 @@ HTML_PAGE = """<!doctype html>
       activityFeed: [],
     };
     const ALL_MPCS = ["RAM", "PDI", "NAS", "IIM", "SRPI"];
+    // MPC verdict labels (exclusion rule): MPC_CONSISTENT = not excluded.
+    const MPC_VERDICT_LABELS = {
+      EXCLUDED: "Excluded (a necessary principle is credibly absent)",
+      MPC_CONSISTENT: "MPC-consistent (not excluded; not an attribution)",
+      UNDETERMINED: "Undetermined",
+    };
+    function verdictLabel(v) {
+      const code = txt(v, "");
+      return code ? (MPC_VERDICT_LABELS[code] || code) : "-";
+    }
 
     function fmtNumber(x, d=1) {
       if (x === null || x === undefined || Number.isNaN(x)) return "n/a";
@@ -3984,7 +4003,8 @@ HTML_PAGE = """<!doctype html>
           `;
         }).join("");
         const verdictCells = hasVerdict
-          ? `<td>${esc(txt(row.MPC_verdict, "-"))}</td>`
+          ? `<td title="${esc(txt(row.MPC_verdict, ""))}">`
+            + `${esc(verdictLabel(row.MPC_verdict))}</td>`
             + `<td>${esc(txt(row.MPC_reason, "-"))}</td>`
           : "";
         return `

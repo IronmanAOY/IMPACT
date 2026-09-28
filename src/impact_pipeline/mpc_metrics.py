@@ -46,6 +46,19 @@ except Exception:
 
 log = logging.getLogger(__name__)
 
+# Estimator versions recorded in the evidence layer (ComponentEvidence.estimator
+# is "compute_<P>:<mode>@<version>") and pinned by applicability-registry
+# entries. Bump a version whenever a change alters that estimator's output for
+# fixed inputs and parameters (any mode). The IIM entry must equal
+# IIM_ALGORITHM_VERSION below (checked by the tests).
+ESTIMATOR_VERSIONS = {
+    "RAM": "ram-v2-2026.09",
+    "PDI": "pdi-v2-2026.09",
+    "NAS": "nas-v2-2026.09",
+    "IIM": "iim-v4-2026.09",
+    "SRPI": "srpi-v2-2026.09",
+}
+
 # numba's on-disk JIT cache defaults to a __pycache__ directory next to this
 # file, i.e. inside the source tree (read-only in containers / HPC installs, and
 # written regardless of PYTHONDONTWRITEBYTECODE). Only enable it when the user

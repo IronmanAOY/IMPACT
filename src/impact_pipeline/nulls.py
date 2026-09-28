@@ -50,6 +50,14 @@ sequence of onsets in seconds):
 
 All generators take a ``numpy.random.Generator`` (or a seed) and are
 deterministic given it.
+
+Sampling uncertainty (the ``se`` of the evidence layer) comes from a
+moving-block bootstrap over time (:func:`block_bootstrap`): blocks of
+``block_len`` samples are drawn with replacement and concatenated, and the
+events are re-indexed with their blocks (an event moves with the block that
+contains its onset; events of undrawn blocks are dropped, events of blocks
+drawn twice are duplicated). :func:`component_bootstrap_se` turns any
+estimator into a bootstrap SE ``(se, samples, n_failed, block_len)``.
 """
 from __future__ import annotations
 
@@ -98,6 +106,23 @@ class ComponentNull(NamedTuple):
     null_sd: float
     samples: np.ndarray
     n_failed: int
+
+
+class ComponentBootstrap(NamedTuple):
+    """Block-bootstrap SE of one component statistic: unpacks as a 4-tuple."""
+
+    se: float
+    samples: np.ndarray
+    n_failed: int
+    block_len: int
+
+
+# Bundle lists that are aligned 1:1 with an onset list (re-indexed with it);
+# ``<onsets key>_phase_bin`` lists are aligned too.
+BUNDLE_ALIGNED_KEYS = {
+    "feedback_onsets": ("feedback_values",),
+    "choice_onsets": ("choices", "rewards"),
+}
 
 
 def derive_seed(seed, *keys) -> int:
@@ -484,3 +509,254 @@ def component_null(
     mean = float(np.mean(samples)) if samples.size else float("nan")
     sd = float(np.std(samples, ddof=1)) if samples.size > 1 else float("nan")
     return ComponentNull(mean, sd, samples, int(n_failed))
+
+
+# --------------------------------------------------------------------------
+# moving-block bootstrap (sampling SE of a component)
+# --------------------------------------------------------------------------
+def default_block_len(n_time) -> int:
+    """Default bootstrap block length: ``ceil(sqrt(n_time))`` samples (>= 1)."""
+    return max(1, int(math.ceil(math.sqrt(int(n_time)))))
+
+
+def _block_plan(n_time, block_len, rng):
+    """``(source_start, target_start, length)`` of each drawn block."""
+    n_blocks = int(math.ceil(n_time / block_len))
+    starts = rng.integers(0, n_time - block_len + 1, size=n_blocks)
+    plan = []
+    for k, s in enumerate(starts):
+        dst = k * block_len
+        plan.append((int(s), int(dst), int(min(block_len, n_time - dst))))
+    return plan
+
+
+def _reindex_onsets(onsets, plan, tr):
+    """
+    Onsets (seconds) moved with their blocks: an onset in
+    ``[s*tr, (s+length)*tr)`` of a drawn block maps to ``onset - s*tr +
+    target*tr``. Returns ``(new_onsets, source_index, block_index)`` sorted by
+    the new onset (stable).
+    """
+    arr = np.asarray(onsets, dtype=float).reshape(-1)
+    new, src, blk = [], [], []
+    for b, (s, d, length) in enumerate(plan):
+        lo, hi = s * tr, (s + length) * tr
+        idx = np.flatnonzero(np.isfinite(arr) & (arr >= lo) & (arr < hi))
+        new.append(arr[idx] - lo + d * tr)
+        src.append(idx)
+        blk.append(np.full(idx.size, b, dtype=int))
+    new = np.concatenate(new) if new else np.empty(0)
+    src = np.concatenate(src).astype(int) if src else np.empty(0, dtype=int)
+    blk = np.concatenate(blk) if blk else np.empty(0, dtype=int)
+    order = np.argsort(new, kind="stable")
+    return new[order], src[order], blk[order]
+
+
+def _id_key(value):
+    """Comparable form of an event id / yoked_to reference (3 == 3.0 == '3')."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return str(value).strip()
+    if not math.isfinite(f):
+        return None
+    return str(int(f)) if f.is_integer() else repr(f)
+
+
+def _bootstrap_table(df, plan, tr, onset_col):
+    """
+    Events table re-indexed with the blocks, ids and yoking kept consistent:
+    a replay (``yoked_to`` set) is kept only when its self-caused event was
+    drawn in the same block copy, and then points at that copy; replays whose
+    partner was not drawn with them are dropped (a replay without its
+    self-caused event is not an event of the paired design).
+    """
+    if onset_col not in df.columns:
+        raise ValueError(f"events have no onset column {onset_col!r}")
+    onsets = pd.to_numeric(df[onset_col], errors="coerce").to_numpy(dtype=float)
+    new, src, blk = _reindex_onsets(onsets, plan, tr)
+    out = df.iloc[src].copy().reset_index(drop=True)
+    out[onset_col] = new
+    keep = np.ones(len(out), dtype=bool)
+    if "event_id" in out.columns:
+        # A block drawn twice duplicates its events: suffix the ids with the
+        # block copy, and point replays at the copy of their self-caused event
+        # in the same block copy.
+        orig = [_id_key(v) for v in out["event_id"]]
+        new_ids = [f"{o}@b{b}" if o is not None else None for o, b in zip(orig, blk)]
+        if "yoked_to" in out.columns:
+            lookup = {(o, b): n for o, b, n in zip(orig, blk, new_ids) if o is not None}
+            yoked = []
+            for i, (y, b) in enumerate(zip(out["yoked_to"], blk)):
+                key = _id_key(y)
+                if key is None:
+                    yoked.append(y)
+                elif (key, b) in lookup:
+                    yoked.append(lookup[(key, b)])
+                else:
+                    yoked.append(np.nan)
+                    keep[i] = False
+            out["yoked_to"] = yoked
+        out["event_id"] = new_ids
+    elif "yoked_to" in out.columns:
+        # yoked_to holds the onset (s) of the self-caused event: it moves with
+        # the replay's block when it lies in the same source block.
+        moved = []
+        for i, (y, b) in enumerate(zip(out["yoked_to"], blk)):
+            yv = pd.to_numeric(pd.Series([y]), errors="coerce").iloc[0]
+            if not np.isfinite(yv):
+                moved.append(y)
+                continue
+            s, d, length = plan[int(b)]
+            if s * tr <= yv < (s + length) * tr:
+                moved.append(float(yv - s * tr + d * tr))
+            else:
+                moved.append(np.nan)
+                keep[i] = False
+        out["yoked_to"] = moved
+    return out.loc[keep].reset_index(drop=True)
+
+
+def _bootstrap_events(events, plan, tr, onset_col):
+    if events is None:
+        return None
+    if isinstance(events, pd.DataFrame):
+        return _bootstrap_table(events, plan, tr, onset_col)
+    if isinstance(events, dict):
+        out = dict(events)
+        for key, val in events.items():
+            if val is None:
+                continue
+            if key == "channel_bundles" and isinstance(val, dict):
+                out[key] = {
+                    ch: _bootstrap_events(sub, plan, tr, onset_col)
+                    for ch, sub in val.items()
+                }
+            elif key == "agency_events":
+                table = val if isinstance(val, pd.DataFrame) else pd.DataFrame(val)
+                boot = _bootstrap_table(table, plan, tr, "onset")
+                out[key] = (
+                    boot if isinstance(val, pd.DataFrame)
+                    else {c: boot[c].tolist() for c in boot.columns}
+                )
+            elif str(key).endswith("onsets") and not isinstance(val, (str, dict)):
+                vals = list(np.asarray(val, dtype=float).reshape(-1))
+                new, src, _blk = _reindex_onsets(vals, plan, tr)
+                out[key] = new.tolist()
+                aligned = BUNDLE_ALIGNED_KEYS.get(key, ()) + (f"{key}_phase_bin",)
+                for pk in aligned:
+                    pv = events.get(pk)
+                    if pv is None:
+                        continue
+                    pv = list(pv)
+                    if len(pv) != len(vals):
+                        raise ValueError(f"{pk} must align with {key}")
+                    out[pk] = [pv[i] for i in src]
+        return out
+    new, _src, _blk = _reindex_onsets(events, plan, tr)
+    return new.tolist()
+
+
+def block_bootstrap(
+    ts, events=None, block_len=None, n=1, seed=0, *, tr=1.0, onset_col="onset"
+):
+    """
+    Moving-block bootstrap over time (Kuensch 1989): each replicate
+    concatenates ``ceil(n_time / block_len)`` blocks of ``block_len`` samples
+    whose starts are drawn uniformly with replacement from
+    ``numpy.random.default_rng(seed)`` (a Generator is used as is), truncated
+    to ``n_time``. ``block_len=None`` uses :func:`default_block_len`
+    (``ceil(sqrt(n_time))``); blocks should be longer than the dependence
+    range of the statistic and than its event windows.
+
+    ``events`` (onsets in seconds, sample interval ``tr``) are re-indexed
+    consistently: an event moves with the block that contains its onset, so
+    events of undrawn blocks are dropped and events of blocks drawn twice are
+    duplicated. DataFrames keep all columns (``event_id`` values get a
+    ``@b<k>`` block-copy suffix and ``yoked_to`` follows the copy of its
+    self-caused event in the same block copy; an onset-valued ``yoked_to``
+    moves with its block); a replay whose self-caused event was not drawn in
+    the same block copy is dropped, so yoked pairs stay intact (the SRPI-agency
+    contract). Event bundles re-index every
+    ``*onsets`` list with its aligned lists (``feedback_values``,
+    ``choices``/``rewards``, ``<key>_phase_bin``), the ``channel_bundles`` and
+    the ``agency_events`` table. Event windows that straddle a block junction
+    are cut, as in any block bootstrap.
+
+    Yields ``n`` replicates ``(ts_b, events_b)`` (inputs are validated before
+    the first draw).
+    """
+    x = _as_ts(ts)
+    n_time = x.shape[1]
+    length = default_block_len(n_time) if block_len is None else int(block_len)
+    if not 1 <= length <= n_time:
+        raise ValueError(f"block_len must be in [1, n_time={n_time}], got {block_len}")
+    n = int(n)
+    if n < 0:
+        raise ValueError("n must be >= 0")
+    if events is not None and not (np.isfinite(tr) and float(tr) > 0):
+        raise ValueError("tr must be a positive sample interval (seconds)")
+    rng = _as_rng(seed)
+
+    def _gen():
+        for _ in range(n):
+            plan = _block_plan(n_time, length, rng)
+            idx = np.concatenate([np.arange(s, s + ln) for s, _d, ln in plan])
+            yield x[:, idx], _bootstrap_events(events, plan, float(tr), onset_col)
+
+    return _gen()
+
+
+def component_bootstrap_se(
+    estimator_fn: Callable,
+    ts,
+    events=None,
+    n=100,
+    seed=0,
+    *,
+    block_len=None,
+    tr=1.0,
+    statistic=None,
+    onset_col="onset",
+) -> ComponentBootstrap:
+    """
+    Sampling SE of a component statistic from ``n`` moving-block bootstrap
+    replicates (:func:`block_bootstrap`) of the recording and its events.
+
+    ``estimator_fn(ts_b, events_b)`` returns the component (a float, or a
+    details dict; ``statistic(details)`` extracts the statistic, default the
+    ``"value"``). Replicates on which the estimator is undefined or raises
+    ``ValueError``/``ArithmeticError``/``LinAlgError`` count as failed.
+    Returns ``ComponentBootstrap(se, samples, n_failed, block_len)`` with
+    ``se`` the ``ddof=1`` SD of the finite replicate statistics (NaN with
+    fewer than two).
+    """
+    x = _as_ts(ts)
+    length = default_block_len(x.shape[1]) if block_len is None else int(block_len)
+    vals, n_failed = [], 0
+    for ts_b, ev_b in block_bootstrap(
+        x, events, length, n, seed, tr=tr, onset_col=onset_col
+    ):
+        val = float("nan")
+        try:
+            out = estimator_fn(ts_b, ev_b)
+        except _ESTIMATOR_ERRORS:
+            out = None
+        if out is not None:
+            try:
+                val = (
+                    _estimator_value(out) if statistic is None
+                    else float(statistic(out))
+                )
+            except (KeyError, TypeError, ValueError):
+                # an undefined replicate's details lack the statistic
+                val = float("nan")
+        if np.isfinite(val):
+            vals.append(val)
+        else:
+            n_failed += 1
+    samples = np.asarray(vals, dtype=float)
+    se = float(np.std(samples, ddof=1)) if samples.size > 1 else float("nan")
+    return ComponentBootstrap(se, samples, int(n_failed), int(length))

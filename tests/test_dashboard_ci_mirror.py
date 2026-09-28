@@ -175,10 +175,10 @@ def test_single_source_carries_mpc_verdict_columns(dash_state, tmp_path):
     comps = {k: 1.0 for k in COMPONENTS}
     rows = []
     for sub, ses, runs in (
-        ("01", "awake", [("ATTRIBUTED", "")]),
-        ("01", "deep", [("NOT_ATTRIBUTED", "ABSENT:NAS")]),
+        ("01", "awake", [("MPC_CONSISTENT", "")]),
+        ("01", "deep", [("EXCLUDED", "ABSENT:NAS")]),
         # Two runs of one session disagree: no determinate verdict holds.
-        ("02", "awake", [("ATTRIBUTED", ""), ("UNDETERMINED", "INCONCLUSIVE:IIM")]),
+        ("02", "awake", [("MPC_CONSISTENT", ""), ("UNDETERMINED", "INCONCLUSIVE:IIM")]),
         ("02", "deep", [("UNDETERMINED", "NO_NULL_CALIBRATION:RAM")]),
     ):
         for verdict, reason in runs:
@@ -196,12 +196,12 @@ def test_single_source_carries_mpc_verdict_columns(dash_state, tmp_path):
     assert manifest["exploratory"] is False
     mixed = pd.read_csv(manifest["step2_df_path"], dtype={"subject": str})
     by = {(r.subject, r.session): r for r in mixed.itertuples()}
-    assert by[("01", "awake")].MPC_verdict == "ATTRIBUTED"
-    assert by[("01", "deep")].MPC_verdict == "NOT_ATTRIBUTED"
+    assert by[("01", "awake")].MPC_verdict == "MPC_CONSISTENT"
+    assert by[("01", "deep")].MPC_verdict == "EXCLUDED"
     assert by[("01", "deep")].MPC_reason == "ABSENT:NAS"
     assert by[("02", "awake")].MPC_verdict == "UNDETERMINED"
     assert by[("02", "awake")].MPC_reason == (
-        "RUN_VERDICTS_DISAGREE:ATTRIBUTED/UNDETERMINED"
+        "RUN_VERDICTS_DISAGREE:MPC_CONSISTENT/UNDETERMINED"
     )
     assert set(mixed["CI_composition"]) == {"single_source"}
 
@@ -217,12 +217,12 @@ def test_single_source_verdict_comes_from_the_source_dataset(dash_state, tmp_pat
     _write_step2(
         anchor_out,
         [
-            {"subject": s, "session": ses, **comps, "MPC_verdict": "ATTRIBUTED"}
+            {"subject": s, "session": ses, **comps, "MPC_verdict": "MPC_CONSISTENT"}
             for s in ("01", "02")
             for ses in sessions
         ],
     )
-    verdicts_b = {"11": ("NOT_ATTRIBUTED", "ABSENT:NAS"), "12": ("ATTRIBUTED", "")}
+    verdicts_b = {"11": ("EXCLUDED", "ABSENT:NAS"), "12": ("MPC_CONSISTENT", "")}
     _write_step2(
         aux_out,
         [
@@ -244,10 +244,26 @@ def test_single_source_verdict_comes_from_the_source_dataset(dash_state, tmp_pat
     mixed = pd.read_csv(manifest["step2_df_path"], dtype={"subject": str})
     by = {(r.subject, r.session): r for r in mixed.itertuples()}
     for ses in sessions:
-        assert by[("01", ses)].MPC_verdict == "ATTRIBUTED"  # dsB subject 12
-        assert by[("02", ses)].MPC_verdict == "NOT_ATTRIBUTED"  # dsB subject 11
+        assert by[("01", ses)].MPC_verdict == "MPC_CONSISTENT"  # dsB subject 12
+        assert by[("02", ses)].MPC_verdict == "EXCLUDED"  # dsB subject 11
         assert by[("02", ses)].MPC_reason == "ABSENT:NAS"
-    assert manifest["mpc_verdict_counts"] == {"ATTRIBUTED": 2, "NOT_ATTRIBUTED": 2}
+    assert manifest["mpc_verdict_counts"] == {"MPC_CONSISTENT": 2, "EXCLUDED": 2}
+
+
+def test_verdict_labels_follow_the_exclusion_rule():
+    """v2 verdict names: MPC_CONSISTENT reads as 'not excluded', never as an
+    attribution; the v1 names are gone from the dashboard."""
+    import scripts.live_dashboard as dash
+    from impact_pipeline.evidence import Verdict
+
+    assert set(dash.MPC_VERDICT_LABELS) == {v.value for v in Verdict}
+    assert (dash.MPC_EXCLUDED, dash.MPC_CONSISTENT, dash.MPC_UNDETERMINED) == (
+        "EXCLUDED", "MPC_CONSISTENT", "UNDETERMINED")
+    assert "not an attribution" in dash.MPC_VERDICT_LABELS["MPC_CONSISTENT"]
+    assert "ATTRIBUTED" not in dash.HTML_PAGE
+    assert "verdictLabel(row.MPC_verdict)" in dash.HTML_PAGE
+    for code, label in dash.MPC_VERDICT_LABELS.items():
+        assert f'{code}: "{label}"' in dash.HTML_PAGE  # JS mirror of the labels
 
 
 def test_merge_run_verdicts_known_answers():
@@ -255,42 +271,42 @@ def test_merge_run_verdicts_known_answers():
 
     assert dash._merge_run_verdicts([]) == (None, None)
     assert dash._merge_run_verdicts([np.nan, None, ""]) == (None, None)
-    assert dash._merge_run_verdicts(["ATTRIBUTED"] * 3, ["", np.nan, ""]) == (
-        "ATTRIBUTED",
+    assert dash._merge_run_verdicts(["MPC_CONSISTENT"] * 3, ["", np.nan, ""]) == (
+        "MPC_CONSISTENT",
         None,
     )
     assert dash._merge_run_verdicts(
         ["UNDETERMINED", "UNDETERMINED"], ["MISSING:RAM", "INCONCLUSIVE:IIM"]
     ) == ("UNDETERMINED", "MISSING:RAM;INCONCLUSIVE:IIM")
-    assert dash._merge_run_verdicts(["NOT_ATTRIBUTED", "ATTRIBUTED"]) == (
+    assert dash._merge_run_verdicts(["EXCLUDED", "MPC_CONSISTENT"]) == (
         "UNDETERMINED",
-        "RUN_VERDICTS_DISAGREE:ATTRIBUTED/NOT_ATTRIBUTED",
+        "RUN_VERDICTS_DISAGREE:EXCLUDED/MPC_CONSISTENT",
     )
     # A run without a verdict is unknown: it never lets the other runs decide
     # (dropping it would turn a disagreement into a determinate verdict).
-    assert dash._merge_run_verdicts(["ATTRIBUTED", np.nan, "ATTRIBUTED"]) == (
+    assert dash._merge_run_verdicts(["MPC_CONSISTENT", np.nan, "MPC_CONSISTENT"]) == (
         "UNDETERMINED",
         "RUN_VERDICT_MISSING",
     )
-    assert dash._merge_run_verdicts(["ATTRIBUTED", pd.NA]) == (
+    assert dash._merge_run_verdicts(["MPC_CONSISTENT", pd.NA]) == (
         "UNDETERMINED",
         "RUN_VERDICT_MISSING",
     )
-    assert dash._merge_run_verdicts(["NOT_ATTRIBUTED", None], ["ABSENT:NAS", None]) == (
+    assert dash._merge_run_verdicts(["EXCLUDED", None], ["ABSENT:NAS", None]) == (
         "UNDETERMINED",
         "RUN_VERDICT_MISSING",
     )
     assert dash._merge_run_verdicts(
         ["UNDETERMINED", ""], ["INCONCLUSIVE:IIM", ""]
     ) == ("UNDETERMINED", "INCONCLUSIVE:IIM;RUN_VERDICT_MISSING")
-    assert dash._merge_run_verdicts(["ATTRIBUTED", "NOT_ATTRIBUTED", None]) == (
+    assert dash._merge_run_verdicts(["MPC_CONSISTENT", "EXCLUDED", None]) == (
         "UNDETERMINED",
-        "RUN_VERDICTS_DISAGREE:ATTRIBUTED/NOT_ATTRIBUTED;RUN_VERDICT_MISSING",
+        "RUN_VERDICTS_DISAGREE:EXCLUDED/MPC_CONSISTENT;RUN_VERDICT_MISSING",
     )
     # Missingness safety over random run sets: hiding run verdicts never
     # yields a determinate verdict that the full set does not have.
     rng = np.random.default_rng(0)
-    codes = np.array(["ATTRIBUTED", "NOT_ATTRIBUTED", "UNDETERMINED"])
+    codes = np.array(["MPC_CONSISTENT", "EXCLUDED", "UNDETERMINED"])
     for _ in range(2000):
         full = list(codes[rng.integers(0, 3, size=int(rng.integers(1, 5)))])
         hidden = [None if rng.random() < 0.4 else v for v in full]
