@@ -1,8 +1,18 @@
-Place your local FreeSurfer license file here if you want `run_pipeline.py --run-fmriprep`
-to discover it automatically.
+Place your local FreeSurfer license file here (as licenses/fs_license.txt) if you
+want `run_pipeline.py --run-fmriprep` and scripts/fetch_fmriprep*.sh to discover
+it automatically.
 
-This file must not be committed.
+fMRIPrep refuses to run without a valid license, also with --fs-no-reconall
+(scripts/fetch_fmriprep.sh --skip-reconall). Get one for free at
+https://surfer.nmr.mgh.harvard.edu/registration.html
 
-Alternative:
-- keep your license anywhere on your machine
-- set `FS_LICENSE=/absolute/path/to/license.txt` before running fMRIPrep-related commands
+This file must not be committed (licenses/fs_license.txt is git- and
+docker-ignored).
+
+Lookup order used by the helper scripts:
+1. --fs-license /absolute/path/to/license.txt
+2. FS_LICENSE=/absolute/path/to/license.txt
+3. licenses/fs_license.txt
+
+The file may have any name; the scripts mount the file itself into the
+container.

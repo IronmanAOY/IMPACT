@@ -1,0 +1,29 @@
+# Allowlist build context: the image needs only the code, the environment
+# spec, the atlases and the license texts. Everything else (hundreds of GB of
+# raw data, synthetic archives, outputs, manuscripts, Drive staging) stays out.
+*
+!environment.yml
+!pyproject.toml
+!README.md
+!LICENSE
+!CITATION.cff
+!run_pipeline.py
+!src/
+!scripts/
+!atlases/
+!licenses/
+
+# Explicit excludes, applied after the allowlist so they always win.
+data/
+test_objects/
+dist/
+outputs/
+docs/manuscript/
+.tmp.drive*
+.tmp.*/
+.git/
+licenses/fs_license*.txt
+licenses/license.txt
+**/__pycache__/
+**/*.py[cod]
+**/.DS_Store

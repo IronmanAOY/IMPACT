@@ -186,3 +186,39 @@ test_outputs/preprocessed
 /outputs/**
 !/outputs/**/
 licenses/fs_license.txt
+
+# FreeSurfer licenses under any of the usual names (never commit them)
+licenses/fs_license*.txt
+licenses/license.txt
+
+# Raw datasets in the alternative BIDS-root candidates used by run_pipeline.py
+/data/ds*/
+/data/melbourne*/
+
+# Manuscripts under review must not be published with the code by accident
+docs/manuscript/
+
+# Google Drive for Desktop staging folders (also covered by .tmp.*/ above)
+.tmp.driveupload/
+.tmp.drivedownload/
+
+# LaTeX build products
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex.gz
+*.toc
+*.xdv
+
+# Apptainer/Singularity images
+*.sif
+*.simg

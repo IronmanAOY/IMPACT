@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "impact-synergy-pipeline"
+version = "1.1.0"
+description = "IMPaCT metric pipeline (RAM, PDI, NAS, IIM, SRPI and the Consciousness Index) for EEG and fMRI data"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Anthony Obiri-Yeboah" }]
+keywords = ["neuroimaging", "EEG", "fMRI", "consciousness", "integrated information"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+# Ranges are kept consistent with environment.yml, which pins the verified
+# minor versions (conda names differ for mne -> mne-base and
+# matplotlib -> matplotlib-base).
+dependencies = [
+    "numpy>=1.24,<2.3",   # numba 0.61 supports NumPy <2.3
+    "scipy>=1.11",
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+    "statsmodels>=0.14",
+    "numba>=0.61,<0.62",
+    "nibabel>=5.0",
+    "nilearn>=0.11,<0.14",
+    "mne>=1.6,<1.7",
+    "pybids>=0.16",
+    "networkx>=3.0",
+    "python-louvain>=0.16",
+    "python-docx>=1.1",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+# Browser dashboard / desktop launcher (scripts/live_dashboard.py).
+dashboard = ["psutil>=5.9"]
+# HLRS Hunter (MI300A APU) runs. CuPy is deliberately not listed: its ROCm
+# build must match the site's ROCm stack and is installed separately (see the
+# Hunter documentation). fastrlock is CuPy's runtime dependency; installing it
+# up front allows `pip install --no-deps` of a locally built CuPy on nodes
+# without internet access.
+hunter = ["fastrlock>=0.5"]
+dev = [
+    "pytest>=7",
+    "pytest-timeout>=2.1",
+    "flake8>=7.1,<8",
+    "pre-commit>=3.5",
+    "build>=1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/IronmanAOY/impact-synergy-pipeline"
+Archive = "https://doi.org/10.5281/zenodo.15306740"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["impact_pipeline*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# run_pipeline.py and scripts/ are checkout-level entry points (not part of the
+# installed package); tests import them from the repository root.
+pythonpath = ["."]
