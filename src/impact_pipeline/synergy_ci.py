@@ -1,5 +1,6 @@
 import os
 import glob
+import json
 import logging
 import concurrent.futures
 import subprocess
@@ -109,6 +110,174 @@ SRPI_PARAM_DEFAULTS = {
     "eps": 1e-8,
 }
 SRPI_PARAM_KEYS = tuple(SRPI_PARAM_DEFAULTS.keys())
+
+CI_COMPONENTS = ("RAM", "PDI", "NAS", "IIM", "SRPI")
+# Default CI reference: per-component means of the cohort's high-state
+# (awake) session, computed from the same call's rows and recorded per row.
+CI_REFERENCE_COHORT_HIGH_STATE = "cohort_high_state"
+CI_STATUS_COLUMNS = ("CI_defined", "CI_missing", "CI_reference")
+CI_NORM_COLUMNS = tuple(f"{k}_norm" for k in CI_COMPONENTS)
+
+
+def load_ci_reference(path) -> dict:
+    """
+    Load external per-component CI reference means from a JSON file.
+
+    Accepted layouts: ``{"references": {"RAM": .., "PDI": .., ...}}`` or a flat
+    ``{"RAM": .., "PDI": .., ...}``. Every CI component must be present; values
+    may be null/non-finite/<=0, in which case CI is undefined for every row.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    refs_raw = payload.get("references", payload) if isinstance(payload, dict) else None
+    if not isinstance(refs_raw, dict):
+        raise ValueError(
+            f"CI reference file '{path}' must contain a JSON object of component means."
+        )
+    return _coerce_ci_reference_dict(refs_raw, source=str(path))
+
+
+def _coerce_ci_reference_dict(refs_raw, source="reference"):
+    missing = [k for k in CI_COMPONENTS if k not in refs_raw]
+    if missing:
+        raise ValueError(
+            f"CI {source} is missing reference means for components: {missing}"
+        )
+    refs = {}
+    for k in CI_COMPONENTS:
+        val = refs_raw[k]
+        try:
+            refs[k] = float("nan") if val is None else float(val)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"CI {source}: reference for {k} is not numeric ({val!r})."
+            ) from exc
+    return refs
+
+
+def resolve_ci_references(df, reference=None, high_state_session="awake"):
+    """
+    Resolve per-component CI reference means and a provenance label.
+
+    reference:
+      - None or ``"cohort_high_state"``: mean of each component over the rows of
+        ``high_state_session`` (subject means first, then the cohort mean, using
+        only rows where that component is defined). If the session is absent or a
+        component is never defined there, that reference is NaN (no floor), which
+        makes CI undefined.
+      - dict: external per-component means (label ``"external"``).
+      - str / os.PathLike: path to a JSON file (see ``load_ci_reference``).
+    Returns (references: dict, label: str).
+    """
+    is_cohort = (
+        isinstance(reference, str) and reference == CI_REFERENCE_COHORT_HIGH_STATE
+    )
+    if reference is None or is_cohort:
+        refs = {}
+        if "session" in df.columns:
+            high = df[df["session"].astype(str) == str(high_state_session)]
+        else:
+            high = df.iloc[0:0]
+        for k in CI_COMPONENTS:
+            if high.empty or k not in high.columns:
+                refs[k] = float("nan")
+                continue
+            vals = pd.to_numeric(high[k], errors="coerce")
+            if "subject" in high.columns:
+                vals = vals.groupby(high["subject"].astype(str)).mean()
+            m = float(vals.mean(skipna=True)) if vals.notna().any() else float("nan")
+            refs[k] = m if np.isfinite(m) else float("nan")
+        return refs, CI_REFERENCE_COHORT_HIGH_STATE
+    if isinstance(reference, dict):
+        return _coerce_ci_reference_dict(reference, source="reference dict"), "external"
+    if isinstance(reference, (str, os.PathLike)):
+        refs = load_ci_reference(reference)
+        return refs, f"external_json:{os.path.abspath(os.fspath(reference))}"
+    raise TypeError(
+        "ci reference must be None, 'cohort_high_state', a dict of component means, "
+        "or a JSON path."
+    )
+
+
+def _as_float(val):
+    try:
+        return float("nan") if val is None else float(val)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _as_bool(val, default):
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
+    if isinstance(val, str):
+        txt = val.strip().lower()
+        if txt in {"true", "1", "yes"}:
+            return True
+        if txt in {"false", "0", "no"}:
+            return False
+        return bool(default)
+    try:
+        if val is None or (not np.isfinite(float(val))):
+            return bool(default)
+        return bool(val)
+    except (TypeError, ValueError):
+        return bool(default)
+
+
+def assemble_ci(
+    df,
+    reference=None,
+    weights=None,
+    eps=1e-12,
+    high_state_session="awake",
+):
+    """
+    Add reference-normalised CI columns to a per-run metric table.
+
+    CI uses NAS directly (no HypergraphSynergy multiplier). Adds ``CI`` (NaN when
+    undefined), ``CI_defined``, ``CI_missing`` (comma-separated undefined weighted
+    components, or ``<component>_reference`` for unusable references),
+    ``CI_reference`` (reference label) and ``<component>_norm`` columns.
+    Returns (df_with_ci, references).
+    """
+    out = df.copy()
+    refs, label = resolve_ci_references(
+        out, reference=reference, high_state_session=high_state_session
+    )
+    ci_vals, ci_defined, ci_missing = [], [], []
+    norms = {k: [] for k in CI_COMPONENTS}
+    for _, row in out.iterrows():
+        vals = {k: _as_float(row.get(k, np.nan)) for k in CI_COMPONENTS}
+        defined = {k: bool(np.isfinite(vals[k])) for k in CI_COMPONENTS}
+        if "IIM_defined" in out.columns:
+            iim_flag = _as_bool(row.get("IIM_defined"), default=defined["IIM"])
+            defined["IIM"] = defined["IIM"] and iim_flag
+        det = compute_CI(
+            vals["RAM"],
+            vals["PDI"],
+            vals["NAS"],
+            vals["IIM"],
+            vals["SRPI"],
+            references=refs,
+            weights=weights,
+            defined=defined,
+            eps=eps,
+            return_details=True,
+        )
+        ci_vals.append(det["value"])
+        ci_defined.append(bool(det["defined"]))
+        ci_missing.append(",".join(det["missing"]))
+        for k in CI_COMPONENTS:
+            norms[k].append(det["normalized_components"][k])
+    out["CI"] = ci_vals
+    out["CI_defined"] = ci_defined
+    out["CI_missing"] = ci_missing
+    out["CI_reference"] = label
+    for k in CI_COMPONENTS:
+        out[f"{k}_norm"] = norms[k]
+    out.attrs["ci_references"] = dict(refs)
+    out.attrs["ci_reference_label"] = label
+    return out, refs
 
 
 def _parse_vm_stat_pages(vm_stat_text: str) -> dict:
@@ -447,6 +616,9 @@ def compute_synergy_ci(
     ci_human_refs=None,
     ci_weights=None,
     ci_eps=1e-12,
+    ci_reference=None,
+    ci_reference_session="awake",
+    pdi_anchor_session="deep",
     iim_display_scale=IIM_DISPLAY_SCALE_DEFAULT,
     iim_bins=3,
     iim_lag_trs=1,
@@ -488,6 +660,22 @@ def compute_synergy_ci(
     modality=None,
     hardware_target="cpu",
 ):
+    """
+    Per-run MPC metrics, the exploratory legacy statistic S (one row per theta)
+    and, when all five metrics are computed, the reference-normalised CI.
+
+    CI notes: NAS enters CI directly (S is reported separately and never enters
+    CI, so CI does not depend on theta). ``ci_reference`` selects the reference
+    means: None/``"cohort_high_state"`` (default; means of ``ci_reference_session``),
+    a dict of component means, or a JSON path. ``ci_human_refs`` is a deprecated
+    alias for a dict reference. Undefined CI is NaN with ``CI_defined=False``.
+
+    PDI baselines: the anchor baseline is ``<subj>/<pdi_anchor_session>/rest`` and
+    the state-matched baseline is ``<subj>/<session>/rest``; the evaluated run is
+    never used as its own baseline. Missing baselines give NaN with a reason.
+    """
+    if ci_reference is None and ci_human_refs is not None:
+        ci_reference = dict(ci_human_refs)
     hardware_backend = configure_process_for_hardware(hardware_target)
     log.info("MPC hardware backend: %s", backend_summary(hardware_backend))
 
@@ -563,23 +751,20 @@ def compute_synergy_ci(
             )
         tr = float(tr)
 
-    def _select_pdi_state_rest_runs(subj, session_name):
-        subj_root = os.path.join(data_dir, subj)
-        return sorted(
-            glob.glob(
-                os.path.join(
-                    subj_root, session_name, 'rest', f"{subj}_run-*_{atlas}_ts.npy"
-                )
-            )
-        )
+    pdi_anchor_session = str(pdi_anchor_session)
 
-    def _select_pdi_deep_rest_runs(subj):
-        subj_root = os.path.join(data_dir, subj)
-        return sorted(
-            glob.glob(
-                os.path.join(subj_root, "deep", "rest", f"{subj}_run-*_{atlas}_ts.npy")
-            )
-        )
+    def _select_pdi_rest_runs(subj, session_name):
+        # Rest baselines live under <subj>/<session>/rest (fMRI preprocessing and,
+        # when rest recordings exist, EEG preprocessing). Accept any run naming.
+        rest_dir = os.path.join(data_dir, subj, session_name, 'rest')
+        pattern = os.path.join(rest_dir, f"{subj}_*_{atlas}_ts.npy")
+        return sorted(set(glob.glob(pattern)))
+
+    def _select_pdi_state_rest_runs(subj, session_name):
+        return _select_pdi_rest_runs(subj, session_name)
+
+    def _select_pdi_anchor_rest_runs(subj):
+        return _select_pdi_rest_runs(subj, pdi_anchor_session)
 
     def _select_pdi_legacy_baseline_runs(subj, session_name):
         """
@@ -593,30 +778,54 @@ def compute_synergy_ci(
         if same_session_rest:
             return same_session_rest
         subj_root = os.path.join(data_dir, subj)
-        any_rest = sorted(
-            glob.glob(
-                os.path.join(subj_root, '*', 'rest', f"{subj}_run-*_{atlas}_ts.npy")
-            )
-        )
+        pattern = os.path.join(subj_root, '*', 'rest', f"{subj}_*_{atlas}_ts.npy")
+        any_rest = sorted(set(glob.glob(pattern)))
         if any_rest:
             return any_rest
         return None
 
-    def _load_pdi_baseline_ts(paths, n_regions_expected):
+    def _load_pdi_baseline_ts(paths, task_ts_path, task_region_time, label):
+        """
+        Load baseline runs for one evaluated run. The evaluated run itself (same
+        file or an identical copy) is never used as its own baseline, and runs with
+        a different region count are rejected. Returns (ts_list, paths, reason).
+        """
         ts_list = []
         keep_paths = []
+        n_same = n_mismatch = n_unreadable = 0
+        task_real = os.path.realpath(task_ts_path)
         for fn in paths:
+            if os.path.realpath(fn) == task_real:
+                n_same += 1
+                continue
             try:
                 arr = np.load(fn).T
             except Exception:
+                n_unreadable += 1
                 continue
             if arr.ndim != 2:
+                n_unreadable += 1
                 continue
-            if int(arr.shape[0]) != int(n_regions_expected):
+            if int(arr.shape[0]) != int(task_region_time.shape[0]):
+                n_mismatch += 1
+                continue
+            same_shape = arr.shape == task_region_time.shape
+            if same_shape and np.array_equal(arr, task_region_time):
+                n_same += 1
                 continue
             ts_list.append(arr)
             keep_paths.append(str(fn))
-        return ts_list, keep_paths
+        if ts_list:
+            reason = "ok"
+        elif n_mismatch:
+            reason = f"{label}_baseline_region_mismatch"
+        elif n_unreadable:
+            reason = f"{label}_baseline_unreadable"
+        elif n_same:
+            reason = f"{label}_baseline_identical_to_task_run"
+        else:
+            reason = None
+        return ts_list, keep_paths, reason
 
     run_specs = build_ci_run_specs(
         data_dir,
@@ -652,7 +861,7 @@ def compute_synergy_ci(
                 ])
             if compute_ci and set(valid_mpc_metrics).issubset(set(selected_metrics)):
                 cols_empty.extend([
-                    'CI',
+                    'CI', *CI_STATUS_COLUMNS,
                     'RAM_norm', 'PDI_norm', 'NAS_norm', 'IIM_norm', 'SRPI_norm',
                 ])
         return pd.DataFrame(columns=cols_empty)
@@ -918,22 +1127,31 @@ def compute_synergy_ci(
                 else np.nan
             )
             if do_pdi:
-                n_regions_obs = int(ts_region_time.shape[0])
-                deep_rest_cands = _select_pdi_deep_rest_runs(subj)
+                deep_rest_cands = _select_pdi_anchor_rest_runs(subj)
                 state_rest_cands = _select_pdi_state_rest_runs(subj, ses)
-                deep_rest_ts, deep_rest_paths = _load_pdi_baseline_ts(
+                (
+                    deep_rest_ts, deep_rest_paths, anchor_load_reason
+                ) = _load_pdi_baseline_ts(
                     deep_rest_cands,
-                    n_regions_expected=n_regions_obs,
+                    ts_path,
+                    ts_region_time,
+                    label="anchor",
                 )
-                state_rest_ts, state_rest_paths = _load_pdi_baseline_ts(
+                (
+                    state_rest_ts, state_rest_paths, state_load_reason
+                ) = _load_pdi_baseline_ts(
                     state_rest_cands,
-                    n_regions_expected=n_regions_obs,
+                    ts_path,
+                    ts_region_time,
+                    label="state",
                 )
 
                 pdi_anchor_raw = np.nan
                 pdi_task_raw = np.nan
-                pdi_anchor_reason = "missing_deep_rest_baseline"
-                pdi_task_reason = "missing_state_rest_baseline"
+                pdi_anchor_reason = (
+                    anchor_load_reason or f"missing_{pdi_anchor_session}_rest_baseline"
+                )
+                pdi_task_reason = state_load_reason or "missing_state_rest_baseline"
                 pdi_primary_source = "undefined"
                 pdi_baseline_policy = (
                     "strict_dual_baseline"
@@ -948,7 +1166,10 @@ def compute_synergy_ci(
                         hardware_backend=hardware_backend,
                         **pdi_kwargs_raw,
                     )
-                    pdi_anchor_reason = "ok"
+                    pdi_anchor_reason = (
+                        "ok" if np.isfinite(pdi_anchor_raw)
+                        else "anchor_pdi_estimator_undefined"
+                    )
                 if state_rest_ts:
                     pdi_task_raw = compute_PDI(
                         ts_region_time,
@@ -956,17 +1177,19 @@ def compute_synergy_ci(
                         hardware_backend=hardware_backend,
                         **pdi_kwargs_raw,
                     )
-                    pdi_task_reason = "ok"
+                    pdi_task_reason = (
+                        "ok" if np.isfinite(pdi_task_raw)
+                        else "state_pdi_estimator_undefined"
+                    )
 
                 if pdi_endpoint == "anchor":
                     pdi_primary_raw = pdi_anchor_raw
-                    pdi_primary_source = "anchor"
                 else:
                     pdi_primary_raw = pdi_task_raw
-                    pdi_primary_source = "task"
 
                 if np.isfinite(pdi_primary_raw):
                     pdi0 = max(float(pdi_primary_raw), 0.0)
+                    pdi_primary_source = pdi_endpoint
                 else:
                     pdi0 = np.nan
 
@@ -981,9 +1204,11 @@ def compute_synergy_ci(
                         )
                         pdi_primary_source = "legacy_surrogate"
                     else:
-                        legacy_ts, legacy_paths = _load_pdi_baseline_ts(
+                        legacy_ts, _paths, _reason = _load_pdi_baseline_ts(
                             legacy_cands,
-                            n_regions_expected=n_regions_obs,
+                            ts_path,
+                            ts_region_time,
+                            label="legacy",
                         )
                         if legacy_ts:
                             pdi0 = compute_PDI(
@@ -992,9 +1217,10 @@ def compute_synergy_ci(
                                 hardware_backend=hardware_backend,
                                 **pdi_kwargs,
                             )
+                            # Legacy pool provenance is carried by the source
+                            # label; the state-matched baseline columns keep
+                            # describing PDI_task only.
                             pdi_primary_source = "legacy_rest_pool"
-                            if not state_rest_paths:
-                                state_rest_paths = legacy_paths
                         else:
                             pdi0 = np.nan
             else:
@@ -1134,7 +1360,7 @@ def compute_synergy_ci(
             ])
         if compute_ci and set(valid_mpc_metrics).issubset(set(selected_metrics)):
             cols_empty.extend([
-                'CI',
+                'CI', *CI_STATUS_COLUMNS,
                 'RAM_norm', 'PDI_norm', 'NAS_norm', 'IIM_norm', 'SRPI_norm',
             ])
     if not records:
@@ -1172,73 +1398,29 @@ def compute_synergy_ci(
                 ordered_cols.append(extra)
         return df[ordered_cols]
 
-    # Internal CI integration term:
-    # absorb former standalone coupling-broadcast score into NAS via
-    #   NAS_tilde = NAS * C_CB(theta), with C_CB(theta)=max(S,0) here.
-    # This keeps CI as a five-factor form while embedding the same logic.
-    nas_ci_col = "__NAS_CI_INTERNAL__"
-    s_nonneg = pd.to_numeric(df['S'], errors='coerce').clip(lower=0.0)
-    nas_num = pd.to_numeric(df['NAS'], errors='coerce')
-    df[nas_ci_col] = nas_num * s_nonneg
-
-    # If no external human reference is provided, estimate from awake runs.
-    if ci_human_refs is None:
-        ref_source = df[df['session'] == 'awake']
-        if ref_source.empty:
-            ref_source = df
-        ci_human_refs = {}
-        for k in ('RAM', 'PDI', 'NAS', 'IIM', 'SRPI'):
-            src_col = nas_ci_col if k == 'NAS' else k
-            m = float(ref_source[src_col].mean(skipna=True))
-            if not np.isfinite(m) or m <= 0:
-                m = 1e-12
-            ci_human_refs[k] = m
-
-    ci_vals = []
-    ram_norm = []
-    pdi_norm = []
-    nas_norm = []
-    iim_norm = []
-    srpi_norm = []
-
-    for _, row in df.iterrows():
-        ci_details = compute_CI(
-            row['RAM'],
-            row['PDI'],
-            row[nas_ci_col],
-            row['IIM'],
-            row['SRPI'],
-            references=ci_human_refs,
-            weights=ci_weights,
-            defined={
-                'RAM': np.isfinite(row['RAM']),
-                'PDI': np.isfinite(row['PDI']),
-                'NAS': np.isfinite(row[nas_ci_col]),
-                'IIM': bool(row.get('IIM_defined', np.isfinite(row['IIM']))),
-                'SRPI': np.isfinite(row['SRPI']),
-            },
-            eps=ci_eps,
-            return_details=True,
-        )
-        ci_vals.append(ci_details['value'])
-        nrm = ci_details['normalized_components']
-        ram_norm.append(nrm['RAM'])
-        pdi_norm.append(nrm['PDI'])
-        nas_norm.append(nrm['NAS'])
-        iim_norm.append(nrm['IIM'])
-        srpi_norm.append(nrm['SRPI'])
-
-    df['CI'] = ci_vals
-    df['RAM_norm'] = ram_norm
-    df['PDI_norm'] = pdi_norm
-    df['NAS_norm'] = nas_norm
-    df['IIM_norm'] = iim_norm
-    df['SRPI_norm'] = srpi_norm
-    df = df.drop(columns=[nas_ci_col], errors='ignore')
+    # CI uses NAS directly. The legacy HypergraphSynergy statistic S is reported
+    # separately (exploratory) and does not enter CI, so CI is theta-invariant.
+    # Reference means are explicit: cohort high-state means by default, or an
+    # external reference (dict / JSON path); unusable references make CI undefined.
+    df, ci_refs = assemble_ci(
+        df,
+        reference=ci_reference,
+        weights=ci_weights,
+        eps=ci_eps,
+        high_state_session=ci_reference_session,
+    )
+    log.info(
+        "CI reference=%s means=%s; CI defined in %d/%d rows",
+        df['CI_reference'].iloc[0] if len(df) else "na",
+        {k: (round(v, 6) if np.isfinite(v) else None) for k, v in ci_refs.items()},
+        int(df['CI_defined'].sum()),
+        int(len(df)),
+    )
     ordered_cols = [
         *[c for c in PROVENANCE_COLUMNS if c in df.columns],
         *[c for c in hardware_cols if c in df.columns],
         'subject', 'session', 'theta', 'S', 'CI',
+        *CI_STATUS_COLUMNS,
         'RAM', 'PDI', 'NAS', 'IIM', 'SRPI',
         'PDI_anchor', 'PDI_task',
         'PDI_anchor_defined', 'PDI_task_defined',

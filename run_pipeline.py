@@ -25,8 +25,15 @@ mpl_cache_dir.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(mpl_cache_dir))
 
 from impact_pipeline.preprocessing_eeg import run_preprocessing_eeg
-from impact_pipeline.baseline_metrics import compute_baseline_metrics
-from impact_pipeline.analysis_bootstrap import bootstrap_ci, permutation_test_auc
+from impact_pipeline.baseline_metrics import BASELINE_METRICS, compute_baseline_metrics
+from impact_pipeline.analysis_bootstrap import (
+    bootstrap_ci,
+    definedness_summary,
+    holm_adjust,
+    paired_session_test,
+    paired_tests_table,
+    permutation_test_auc,
+)
 from impact_pipeline.motion_model import motion_covariate_analysis
 from impact_pipeline.atlas_robustness import atlas_check
 from impact_pipeline.replication import run_replication
@@ -63,6 +70,7 @@ RUN_REPLICATION   = False   # set True to run step 7 (replication)
 
 random.seed(42)
 np.random.seed(42)
+STATS_SEED = 42  # explicit seed for all resampling statistics (steps 4 and 8)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pipeline")
 EXPECTED_CONDA_ENV = os.environ.get("IMPACT_CONDA_ENV", "impact-synergy-clean")
@@ -361,7 +369,8 @@ def _apply_metric_subset(df, df_mean, mpc_metrics=None, compute_ci=True):
                 keep_df.append(extra)
     if compute_ci and "CI" in df.columns and selected.issuperset({"RAM", "PDI", "NAS", "IIM", "SRPI"}):
         keep_df.append("CI")
-        for extra in ("RAM_norm", "PDI_norm", "NAS_norm", "IIM_norm", "SRPI_norm"):
+        for extra in ("CI_defined", "CI_missing", "CI_reference",
+                      "RAM_norm", "PDI_norm", "NAS_norm", "IIM_norm", "SRPI_norm"):
             if extra in df.columns:
                 keep_df.append(extra)
 
@@ -667,6 +676,41 @@ def _persist_step2_outputs(
     (cache_dir / "step2_df_mean_active.csv").write_text(df_mean.to_csv(index=False), encoding="utf-8")
 
 
+def _jsonable(obj):
+    if isinstance(obj, pd.DataFrame):
+        return [_jsonable(r) for r in obj.to_dict("records")]
+    if isinstance(obj, dict):
+        return {str(k): _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    if isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating, float)):
+        return float(obj) if np.isfinite(obj) else None
+    return obj
+
+
+def _ci_reference_record(df):
+    """Reference label and per-component means used for CI (for the stats outputs)."""
+    from impact_pipeline.synergy_ci import resolve_ci_references
+
+    if "CI_reference" not in df.columns or not df["CI_reference"].notna().any():
+        return None
+    label = str(df["CI_reference"].dropna().iloc[0])
+    rec = {"ci_reference": label}
+    try:
+        if label == "cohort_high_state":
+            rec["references"], _ = resolve_ci_references(df)
+        elif label.startswith("external_json:"):
+            ref_path = label.split(":", 1)[1]
+            rec["references"], _ = resolve_ci_references(df, reference=ref_path)
+    except Exception as exc:  # recorded, not fatal
+        rec["references_error"] = f"{type(exc).__name__}: {exc}"
+    return rec
+
+
 def _postprocess_after_step2(
     *,
     df,
@@ -692,46 +736,79 @@ def _postprocess_after_step2(
     srpi_require_explicit_params,
     run_replication_flag,
     df_stats_by_theta,
+    condition=None,
+    stats_seed=STATS_SEED,
 ):
-    df_S = df_mean.pivot(index='subject', columns='session', values='S')
-    df_CI = df_mean.pivot(index='subject', columns='session', values='CI') if 'CI' in df_mean.columns else None
+    condition_eff = condition if condition is not None else (cfg or {}).get("condition")
+    pair = tuple(str(s) for s in tuple(sessions)[:2])
+    stats_dir = Path(out) / "stats"
+    stats_dir.mkdir(parents=True, exist_ok=True)
 
     log.info("3/9 Computing baseline graph metrics")
     df_baseline = compute_baseline_metrics(
         df_mean,
         data_dir=str(prep_out),
-        atlas=atlas
+        atlas=atlas,
+        condition=condition_eff,
     )
     log.debug("df_baseline columns: %s", df_baseline.columns.tolist())
 
-    log.info("4/9 Bootstrapping CIs and permutation tests")
-    boot_S = bootstrap_ci(df_mean, 'S', sessions=sessions)
-    boot_CI = bootstrap_ci(df_mean, 'CI', sessions=sessions) if 'CI' in df_mean.columns else (np.nan, np.nan)
+    log.info("4/9 Paired statistics (subject bootstrap, two-sided permutation, Holm)")
+    stats = {"seed": int(stats_seed), "sessions": list(pair)}
+    stats["condition"] = condition_eff
+    has_ci = 'CI' in df_mean.columns
+    if has_ci:
+        # Undefined CI rows are NaN and excluded (never zeros); report how many.
+        stats['ci_definedness'] = definedness_summary(df, sessions=pair)
+        stats['ci_reference'] = _ci_reference_record(df)
+        cd = stats['ci_definedness']
+        log.info(
+            "CI defined in %s/%s rows (%s undefined, excluded); "
+            "%s subject(s) with defined CI in both sessions",
+            cd.get('n_rows_defined'), cd.get('n_rows'), cd.get('n_rows_undefined'),
+            cd.get('n_subjects_complete_pairs', 'na'),
+        )
+    boot_S = bootstrap_ci(df_mean, 'S', sessions=pair, random_state=stats_seed)
+    auc_S, p_S = permutation_test_auc(
+        df_mean, 'S', sessions=pair, random_state=stats_seed
+    )
+    stats['auc_S'] = {'auc': auc_S, 'lo': boot_S[0], 'hi': boot_S[1], 'p': p_S}
+    stats['s_test'] = paired_session_test(df_mean, 'S', pair)
+    if has_ci:
+        boot_CI = bootstrap_ci(df_mean, 'CI', sessions=pair, random_state=stats_seed)
+        auc_CI, p_CI = permutation_test_auc(
+            df_mean, 'CI', sessions=pair, random_state=stats_seed
+        )
+        stats['auc_CI'] = {'auc': auc_CI, 'lo': boot_CI[0], 'hi': boot_CI[1], 'p': p_CI}
+        stats['ci_test'] = paired_session_test(df_mean, 'CI', pair)
+    comp_metrics = [
+        m for m in ("RAM", "PDI", "NAS", "IIM", "SRPI") if m in df_mean.columns
+    ]
+    stats['components'] = paired_tests_table(
+        df_mean, comp_metrics, pair, family="mpc_components"
+    )
 
-    auc_S, p_S = permutation_test_auc(df_mean, 'S', sessions=sessions) or (None, None)
-    auc_CI, p_CI = (
-        permutation_test_auc(df_mean, 'CI', sessions=sessions) or (None, None)
-    ) if 'CI' in df_mean.columns else (None, None)
+    # S is theta-dependent (exploratory): every theta is tested, Holm across theta.
     theta_results = {}
     for theta in sorted(df['theta'].unique()):
         subdf = df[df['theta'] == theta]
-        agg_theta = {'S': ('S', 'mean')}
-        if 'CI' in subdf.columns:
-            agg_theta['CI'] = ('CI', 'mean')
         df_theta_mean = (
             subdf.groupby(['subject', 'session'])
-                 .agg(**agg_theta)
+                 .agg(S=('S', 'mean'))
                  .reset_index()
         )
-        auc_S_theta, p_S_theta = permutation_test_auc(df_theta_mean, 'S', sessions=sessions) or (None, None)
-        if 'CI' in df_theta_mean.columns:
-            auc_CI_theta, p_CI_theta = permutation_test_auc(df_theta_mean, 'CI', sessions=sessions) or (None, None)
-        else:
-            auc_CI_theta, p_CI_theta = (None, None)
-        theta_results[theta] = {
-            'auc_S': auc_S_theta, 'p_S': p_S_theta,
-            'auc_CI': auc_CI_theta, 'p_CI': p_CI_theta
-        }
+        auc_S_theta, p_S_theta = permutation_test_auc(
+            df_theta_mean, 'S', sessions=pair, random_state=stats_seed
+        )
+        theta_results[theta] = {'auc_S': auc_S_theta, 'p_S': p_S_theta}
+    theta_keys = list(theta_results.keys())
+    theta_p_holm = holm_adjust([theta_results[k]['p_S'] for k in theta_keys])
+    for key, p_adj in zip(theta_keys, theta_p_holm):
+        theta_results[key]['p_S_holm'] = float(p_adj)
+    if df_stats_by_theta is not None and 'p_S' in df_stats_by_theta.columns:
+        df_stats_by_theta = df_stats_by_theta.copy()
+        p_theta = df_stats_by_theta['p_S'].to_numpy(dtype=float)
+        df_stats_by_theta['p_S_holm'] = holm_adjust(p_theta)
 
     log.info("5/9 Motion covariate analysis")
     if log.isEnabledFor(logging.DEBUG):
@@ -756,37 +833,78 @@ def _postprocess_after_step2(
             if cand in df.columns:
                 log.debug("%s unique values: %s", cand, df[cand].unique()[:10])
 
-    if (modality == "fmri") and ('CI' in df_mean.columns):
-        motion = motion_covariate_analysis(df_mean, str(prep_out), atlas=atlas)
+    if (modality == "fmri") and has_ci:
+        motion = motion_covariate_analysis(
+            df_mean, str(prep_out), atlas=atlas, condition=condition_eff, sessions=pair
+        )
     else:
         motion = {'skipped': f"motion~CI omitted for modality={modality} or missing CI."}
 
     if cfg.get("atlas_robustness", False) and modality == "fmri":
-        sidecar_path = glob.glob(str(bids_root / "sub-*/func/*_bold.json"))[0]
-        with open(sidecar_path, "r", encoding="utf-8") as f:
-            sidecar = json.load(f)
-        real_tr = sidecar['RepetitionTime']
         log.info("6/9 Testing robustness across atlases")
-        robust_metrics = [m for m in ("RAM", "PDI", "NAS", "IIM", "SRPI") if m in df.columns]
-        robust_ci = bool(compute_ci and ("CI" in df.columns))
-        atlas_res = atlas_check(
-            str(prep_out),
-            atlases=('aal90','shen268'),
-            sessions=sessions,
-            thetas=np.arange(0.1, 1.0, 0.1),
-            tr=real_tr,
-            stimulus_onsets=None,
-            mpc_metrics=robust_metrics,
-            compute_ci=robust_ci,
-            pdi_params=pdi_params,
-            pdi_require_explicit_params=pdi_require_explicit_params,
-            pdi_require_strict_baseline=pdi_require_strict_baseline,
-            pdi_primary_endpoint=pdi_primary_endpoint,
-            nas_params=nas_params,
-            srpi_params=srpi_params,
-            srpi_require_explicit_params=srpi_require_explicit_params,
-            subjects=subjects,
-        )
+        sidecars = []
+        if bids_root is not None:
+            broot = Path(bids_root)
+            sidecars = sorted(
+                glob.glob(str(broot / "sub-*" / "func" / "*_bold.json"))
+                + glob.glob(str(broot / "sub-*" / "ses-*" / "func" / "*_bold.json"))
+            )
+        real_tr = None
+        for sidecar_path in sidecars:
+            with open(sidecar_path, "r", encoding="utf-8") as f:
+                real_tr = json.load(f).get('RepetitionTime')
+            if real_tr is not None:
+                break
+        if real_tr is None:
+            atlas_res = {
+                "skipped": {
+                    "skipped": (
+                        "no *_bold.json sidecar with RepetitionTime under the BIDS "
+                        "root; atlas robustness needs an explicit TR"
+                    ),
+                    "dataset": dataset_id,
+                }
+            }
+        else:
+            # IIM is not recomputed here: the exhaustive default IIM configuration is
+            # infeasible in this step and the CLI IIM settings are not forwarded, so
+            # CI is not assessed across atlases (recorded in the notes).
+            robust_metrics = [
+                m for m in ("RAM", "PDI", "NAS", "SRPI") if m in df.columns
+            ]
+            robust_ci = bool(compute_ci and ("CI" in df.columns))
+            provenance_kwargs = {
+                k: str(df[k].dropna().iloc[0])
+                for k in ("data_origin", "dataset_role", "provenance_label")
+                if k in df.columns and df[k].notna().any()
+            }
+            atlas_res = atlas_check(
+                str(prep_out),
+                atlases=('aal90', 'shen268'),
+                sessions=pair,
+                thetas=np.arange(0.1, 1.0, 0.1),
+                tr=float(real_tr),
+                stimulus_onsets=None,
+                mpc_metrics=robust_metrics,
+                compute_ci=robust_ci,
+                pdi_params=pdi_params,
+                pdi_require_explicit_params=pdi_require_explicit_params,
+                pdi_require_strict_baseline=pdi_require_strict_baseline,
+                pdi_primary_endpoint=pdi_primary_endpoint,
+                nas_params=nas_params,
+                srpi_params=srpi_params,
+                srpi_require_explicit_params=srpi_require_explicit_params,
+                subjects=subjects,
+                condition=condition_eff,
+                compute_kwargs={"dataset_id": dataset_id, **provenance_kwargs},
+            )
+            for payload in atlas_res.values():
+                if isinstance(payload, dict) and isinstance(payload.get("notes"), list):
+                    payload["notes"].append(
+                        "IIM not recomputed for alternative atlases (exhaustive "
+                        "default configuration is infeasible here; primary IIM "
+                        "settings are not forwarded)."
+                    )
     else:
         atlas_res = {
             "skipped": {
@@ -809,18 +927,50 @@ def _postprocess_after_step2(
             data_root=str(melb_root),
             out_dir=str(melb_out),
             atlas=atlas,
-            sessions=('awake', 'deep')
+            sessions=pair,
+            random_state=stats_seed,
         )
     elif run_replication_flag:
         log.info("7/9 Replication skipped: not configured for dataset '%s'", dataset_id)
 
-    log.info("8/9 Comparing to baseline and PCI models")
+    log.info("8/9 Comparing to baseline models (exploratory S; CI when defined)")
     mc = compare_models(
         df_baseline,
-        metrics=('mean_conn', 'modularity', 'pci_fmri'),
-        sessions=('awake', 'deep')
+        metrics=BASELINE_METRICS,
+        sessions=pair,
     )
+    if has_ci and 'CI' in df_baseline.columns:
+        mc_ci = compare_models(
+            df_baseline, metrics=BASELINE_METRICS, sessions=pair, score_col='CI'
+        )
+        mc.update({f"{m} [CI]": res for m, res in mc_ci.items()})
     log.debug("baseline session counts:\n%s", df_baseline['session'].value_counts().to_string())
+
+    # Persist every statistic (nothing computed here is discarded).
+    stats['theta_permutation_S'] = theta_results
+    stats['model_comparison'] = mc
+    stats['motion'] = motion
+    stats['atlas_robustness'] = atlas_res
+    stats['replication'] = repl
+    if isinstance(stats['components'], pd.DataFrame):
+        stats['components'].to_csv(stats_dir / "component_tests.csv", index=False)
+    if df_stats_by_theta is not None:
+        theta_tab = df_stats_by_theta.reset_index()
+        theta_perm = pd.DataFrame(
+            [{'theta': k, **v} for k, v in theta_results.items()]
+        ).rename(columns={
+            'auc_S': 'perm_auc_S', 'p_S': 'perm_p_S', 'p_S_holm': 'perm_p_S_holm',
+        })
+        if 'theta' in theta_tab.columns and not theta_perm.empty:
+            theta_tab = theta_tab.merge(theta_perm, on='theta', how='outer')
+        theta_tab.to_csv(stats_dir / "theta_tests_S.csv", index=False)
+    if isinstance(motion, pd.DataFrame):
+        motion.to_csv(stats_dir / "motion_covariates.csv", index=False)
+    (stats_dir / "statistics_summary.json").write_text(
+        json.dumps(_jsonable(stats), indent=2, default=str),
+        encoding="utf-8",
+    )
+    log.info("Statistics written to %s", stats_dir)
 
     log.info("9/9 Generating Word report")
     report_path = out / report_doc
@@ -839,8 +989,11 @@ def _postprocess_after_step2(
         CI_SCALE=1.0,
         LABEL_S="S×10³",
         LABEL_RAM="RAM×10³",
-        LABEL_CI="CI (human-normalized)",
-        repl=repl
+        LABEL_CI="CI (reference-normalised)",
+        repl=repl,
+        stats=stats,
+        modality=modality,
+        sessions=pair,
     )
     log.info("Pipeline complete! Outputs in %s", out)
 
@@ -1107,6 +1260,7 @@ def _run_hunter_stage(
             srpi_require_explicit_params=bool(ctx["srpi_require_explicit_params"]),
             run_replication_flag=bool(ctx["run_replication_flag"]),
             df_stats_by_theta=df_stats_by_theta,
+            condition=ctx["condition"],
         )
         return
 
@@ -1119,6 +1273,7 @@ def main(
     reuse_step2=False,
     mpc_metrics=None,
     compute_ci=True,
+    ci_reference=None,
     dataset_id="ds003171",
     bids_root_override=None,
     run_fmriprep=False,
@@ -1557,6 +1712,7 @@ def main(
             thetas_fine=thetas_fine,
             mpc_metrics=mpc_metrics,
             compute_ci=compute_ci,
+            ci_reference=ci_reference,
             condition=condition,
             tr=metric_tr,
             onsets=None,
@@ -1654,6 +1810,7 @@ def main(
         srpi_require_explicit_params=srpi_require_explicit_params,
         run_replication_flag=run_replication_flag,
         df_stats_by_theta=df_stats_by_theta,
+        condition=condition,
     )
 
 if __name__ == '__main__':
@@ -1757,6 +1914,17 @@ if __name__ == '__main__':
         '--no-ci',
         action='store_true',
         help="Disable CI computation even if all MPC components are available.",
+    )
+    parser.add_argument(
+        '--ci-reference',
+        default=None,
+        help=(
+            "CI reference means: 'cohort_high_state' (default; awake-session "
+            "cohort means, recorded as CI_reference) or a JSON file with "
+            'per-component means, e.g. {"references": {"RAM": 1.0, "PDI": 1.0, '
+            '"NAS": 1.0, "IIM": 1.0, "SRPI": 1.0}}. '
+            "Non-finite or <=0 reference means make CI undefined."
+        ),
     )
     parser.add_argument(
         '--atlas',
@@ -1897,6 +2065,7 @@ if __name__ == '__main__':
         reuse_step2=args.reuse_step2,
         mpc_metrics=args.mpc_metrics,
         compute_ci=not args.no_ci,
+        ci_reference=args.ci_reference,
         data_origin=args.data_origin,
         dataset_id=args.dataset_id,
         bids_root_override=args.bids_root,

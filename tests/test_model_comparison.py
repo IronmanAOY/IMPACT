@@ -1,5 +1,12 @@
+import numpy as np
 import pandas as pd
+import pytest
+from sklearn.metrics import roc_auc_score
+from statsmodels.stats.multitest import multipletests
+
 from impact_pipeline.model_comparison import compare_models
+from impact_pipeline.utils import delong_roc_test
+
 
 def test_compare_models():
     df=pd.DataFrame({
@@ -11,3 +18,62 @@ def test_compare_models():
     })
     out=compare_models(df)
     assert 'mean_conn' in out
+
+
+def _frame(n=20, seed=0):
+    rng = np.random.RandomState(seed)
+    rows = []
+    for i in range(n):
+        base = rng.randn()
+        for ses, shift in (("awake", 1.0), ("deep", 0.0)):
+            rows.append({
+                "subject": f"s{i}", "session": ses,
+                "S": base + shift + rng.randn() * 0.5,
+                "mean_conn": rng.randn(),
+                "modularity": base + 0.3 * shift + rng.randn(),
+                "lzc": rng.randn(),
+            })
+    return pd.DataFrame(rows)
+
+
+def test_compare_models_uses_correct_paired_delong_and_holm():
+    df = _frame()
+    out = compare_models(df, n_boot=200)
+    y = (df.session == "deep").astype(int).to_numpy()
+    for m in ("mean_conn", "modularity", "lzc"):
+        res = out[m]
+        expected = roc_auc_score(y, df.S) - roc_auc_score(y, df[m])
+        assert res["delta_auc"] == pytest.approx(expected)
+        p_ref = delong_roc_test(y, df.S.values, df[m].values)
+        assert res["p_val"] == pytest.approx(p_ref)
+        lo, hi = res["delta_auc_ci"]
+        assert lo <= res["delta_auc"] <= hi
+    p = [out[m]["p_val"] for m in ("mean_conn", "modularity", "lzc")]
+    p_holm = [out[m]["p_holm"] for m in ("mean_conn", "modularity", "lzc")]
+    np.testing.assert_allclose(p_holm, multipletests(p, method="holm")[1])
+
+
+def test_compare_models_excludes_other_sessions_and_undefined_rows():
+    df = _frame()
+    extra = df[df.session == "awake"].assign(session="recovery", S=100.0)
+    df2 = pd.concat([df, extra], ignore_index=True)
+    df2.loc[0, "S"] = np.nan
+    out = compare_models(df2, n_boot=50)
+    ref = compare_models(df.drop(index=0), n_boot=50)
+    assert out["mean_conn"]["delta_auc"] == pytest.approx(ref["mean_conn"]["delta_auc"])
+    assert out["mean_conn"]["n_rows_excluded"] == 1
+    assert out["mean_conn"]["n_rows"] == len(df) - 1
+
+
+def test_compare_models_missing_metric_is_reported():
+    out = compare_models(_frame().drop(columns="lzc"), n_boot=20)
+    assert np.isnan(out["lzc"]["p_val"]) and "not available" in out["lzc"]["note"]
+    assert np.isfinite(out["mean_conn"]["p_val"])
+
+
+def test_compare_models_alternate_score_column():
+    df = _frame().assign(CI=lambda d: d["S"] * 2.0)
+    out = compare_models(df, score_col="CI", n_boot=20)
+    assert out["mean_conn"]["score"] == "CI"
+    ref = compare_models(df, n_boot=20)["mean_conn"]["auc_score"]
+    assert out["mean_conn"]["auc_score"] == pytest.approx(ref)

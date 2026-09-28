@@ -4705,12 +4705,22 @@ def compute_CI(
     return_details: bool = False,
 ):
     """
-    Human-normalized weighted geometric Consciousness Index (CI).
+    Reference-normalised weighted geometric Consciousness Index (CI).
 
     CI = (RAM*^alpha) (PDI+*^beta) (NAS*^gamma) (IIM_can*^delta) (SRPI*^rho)
 
-    where each * component is normalized by a human reference mean.
-    If any weighted component is undefined, CI is set to 0 (hard criterion).
+    where each * component is divided by an explicit reference mean
+    (``references``; the pipeline default is the cohort high-state mean, see
+    ``synergy_ci.resolve_ci_references``). NAS enters directly; the legacy
+    HypergraphSynergy statistic S is not part of CI.
+
+    Definedness is three-valued:
+      - a component that could not be measured is undefined (NaN), never 0;
+      - if any component with non-zero weight is undefined, or its reference is
+        non-finite or <= 0, CI is undefined and the returned value is NaN;
+      - a measured component <= 0 with non-zero weight is a legitimate measured
+        zero and gives CI = 0.
+    Components with zero weight are ignored (they need not be defined).
     """
     comp_keys = ("RAM", "PDI", "NAS", "IIM", "SRPI")
     comp_vals = {
@@ -4722,14 +4732,19 @@ def compute_CI(
     }
 
     if references is None:
+        # Explicit opt-out of normalisation (unit references).
         references = {k: 1.0 for k in comp_keys}
     else:
-        references = {k: float(references.get(k, 1.0)) for k in comp_keys}
+        # A component missing from a supplied reference dict has no reference (no
+        # silent 1.0); it is treated like a non-finite reference below.
+        references = {k: float(references.get(k, np.nan)) for k in comp_keys}
 
     if weights is None:
         weights = {k: 1.0 / len(comp_keys) for k in comp_keys}
     else:
         weights = {k: float(weights.get(k, 0.0)) for k in comp_keys}
+        if any((not np.isfinite(v)) or v < 0 for v in weights.values()):
+            raise ValueError("weights must be finite and non-negative")
         wsum = sum(weights.values())
         if wsum <= 0:
             raise ValueError("weights must sum to a positive value")
@@ -4746,6 +4761,7 @@ def compute_CI(
 
     norm = {}
     undefined_weighted = []
+    invalid_references = []
     for k in comp_keys:
         if not defined[k]:
             norm[k] = np.nan
@@ -4753,31 +4769,41 @@ def compute_CI(
                 undefined_weighted.append(k)
             continue
         ref = references[k]
-        if ref <= 0:
-            raise ValueError(f"reference for {k} must be > 0")
+        if (not np.isfinite(ref)) or ref <= 0:
+            # No floor: an unusable reference makes the normalised component undefined.
+            norm[k] = np.nan
+            if weights[k] > 0:
+                invalid_references.append(k)
+            continue
         # Metrics are defined as non-negative components in CI.
         norm[k] = max(comp_vals[k] / ref, 0.0)
 
-    # Hard criterion: any undefined weighted component forces CI to 0.
-    if undefined_weighted:
-        ci_val = 0.0
-    # Weighted geometric mean. Any zero component with non-zero weight zeros CI.
-    elif any((norm[k] <= 0.0 and weights[k] > 0.0) for k in comp_keys):
+    missing = list(undefined_weighted) + [f"{k}_reference" for k in invalid_references]
+    ci_defined = not missing
+    if not ci_defined:
+        # Undefined, not zero: missing evidence is never converted into a value.
+        ci_val = float("nan")
+    # Weighted geometric mean; a measured zero with non-zero weight zeros CI.
+    elif any((weights[k] > 0.0 and norm[k] <= 0.0) for k in comp_keys):
         ci_val = 0.0
     else:
         log_ci = 0.0
         for k in comp_keys:
-            log_ci += weights[k] * np.log(norm[k] + eps)
+            if weights[k] > 0.0:
+                log_ci += weights[k] * np.log(norm[k] + eps)
         ci_val = float(np.exp(log_ci))
 
     if return_details:
         return {
             "value": ci_val,
+            "defined": bool(ci_defined),
+            "missing": missing,
             "normalized_components": norm,
             "weights": weights,
             "references": references,
             "defined_components": defined,
             "undefined_weighted_components": undefined_weighted,
+            "invalid_reference_components": invalid_references,
         }
     return ci_val
 
