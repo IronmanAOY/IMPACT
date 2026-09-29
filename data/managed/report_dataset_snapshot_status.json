@@ -1,7 +1,7 @@
 [
   {
     "dataset_id": "ds005620",
-    "local_root": "/Users/anthonyobiri-yeboah/minDev/impact-synergy-pipeline/data/scratch/ds005620_annex",
+    "local_root": "data/scratch/ds005620_annex",
     "mode": "full",
     "snapshot": "1.0.0",
     "snapshot_complete": false,
@@ -14,7 +14,7 @@
   },
   {
     "dataset_id": "ds004295",
-    "local_root": "/Users/anthonyobiri-yeboah/minDev/impact-synergy-pipeline/data/scratch/ds004295",
+    "local_root": "data/scratch/ds004295",
     "mode": "full",
     "snapshot": "1.0.0",
     "snapshot_complete": false,
@@ -27,7 +27,7 @@
   },
   {
     "dataset_id": "ds002336",
-    "local_root": "/Users/anthonyobiri-yeboah/minDev/impact-synergy-pipeline/data/scratch/ds002336",
+    "local_root": "data/scratch/ds002336",
     "mode": "full",
     "snapshot": "2.0.2",
     "snapshot_complete": false,
@@ -40,7 +40,7 @@
   },
   {
     "dataset_id": "ds003171",
-    "local_root": "/Users/anthonyobiri-yeboah/minDev/impact-synergy-pipeline/data/scratch/ds003171",
+    "local_root": "data/scratch/ds003171",
     "mode": "full",
     "snapshot": "2.0.1",
     "snapshot_complete": false,

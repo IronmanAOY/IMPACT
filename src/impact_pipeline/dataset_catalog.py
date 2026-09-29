@@ -359,6 +359,26 @@ def resolve_local_dataset_root(dataset_id: str, repo_root: Path | str) -> Path |
     return None
 
 
+def local_dataset_root_relpath(dataset_id: str, repo_root: Path | str) -> str | None:
+    """
+    The candidate that :func:`resolve_local_dataset_root` selects, as the
+    repository-relative path the pipeline opens (e.g. ``data/scratch/ds003171``).
+
+    Symlinks are not followed, so a dataset linked in from another disk is
+    recorded under its path in the repository. The reports record this form,
+    never an absolute local path; code that reads the data resolves it with
+    :func:`resolve_local_dataset_root`.
+    """
+    entry = get_report_dataset(dataset_id)
+    if entry is None:
+        return None
+    root = Path(repo_root).resolve()
+    for rel in entry.local_root_candidates:
+        if (root / rel).exists():
+            return Path(rel).as_posix()
+    return None
+
+
 def resolve_representative_payload_paths(
     dataset_id: str,
     repo_root: Path | str,
@@ -420,16 +440,6 @@ def _directory_bytes(root: Path) -> int:
     return total
 
 
-def _serialize_local_root(local_root: Path | None, repo_root: Path) -> str | None:
-    if local_root is None:
-        return None
-    resolved = local_root.resolve()
-    try:
-        return str(resolved.relative_to(repo_root))
-    except ValueError:
-        return str(resolved)
-
-
 def build_inventory(
     repo_root: Path,
     snapshot_status: dict[str, dict[str, object]] | None = None,
@@ -438,8 +448,10 @@ def build_inventory(
     rows: list[dict[str, object]] = []
     for entry in iter_report_datasets():
         local_root = resolve_local_dataset_root(entry.dataset_id, repo_root)
+        local_rel = local_dataset_root_relpath(entry.dataset_id, repo_root)
         row = entry.to_record()
-        row["local_root"] = _serialize_local_root(local_root, repo_root)
+        # paths in the inventory are relative to the repository root
+        row["local_root"] = local_rel
         row["local_status"] = "present" if local_root is not None else "missing"
         row["local_bytes"] = 0
         row["local_gib"] = 0.0
@@ -493,7 +505,7 @@ def build_inventory(
             )
             annex_objects = local_root / ".git" / "annex" / "objects"
             if annex_objects.exists() or annex_objects.is_symlink():
-                row["annex_objects_root"] = str(annex_objects.resolve(strict=False))
+                row["annex_objects_root"] = f"{local_rel}/.git/annex/objects"
                 row["annex_objects_externalized"] = annex_objects.is_symlink()
             present = [
                 relpath

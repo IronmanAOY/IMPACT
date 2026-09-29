@@ -85,6 +85,16 @@ decision rules are unchanged. Each change has a regression test.
   contained no protocol file, so a default empirical run in a container
   stopped with `MPC protocol not found`. Test:
   `tests/test_packaging_infra.py`.
+- **No absolute local paths in the dataset reports.**
+  `data/managed/report_dataset_inventory.json` and
+  `data/managed/report_dataset_snapshot_status.json` recorded the dataset
+  roots as absolute paths on the machine that wrote them. They now hold
+  repository-relative paths (e.g. `data/scratch/ds003171`), and
+  `dataset_catalog.build_inventory` writes `local_root` and
+  `annex_objects_root` relative to the repository root: a dataset linked in
+  from another disk is recorded under its path in the repository, while
+  reading still resolves the link (`resolve_local_dataset_root`). Test:
+  `tests/test_dataset_catalog.py`.
 
 #### Changed
 

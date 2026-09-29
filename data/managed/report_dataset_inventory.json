@@ -15,7 +15,7 @@
     "license_note": "",
     "local_bytes": 2018814747,
     "local_gib": 1.88,
-    "local_root": "/Volumes/MPW_OT_AOY/impact-synergy-pipeline/data/scratch/ds006623",
+    "local_root": "data/scratch/ds006623",
     "local_root_candidates": [
       "data/scratch/ds006623",
       "data/ds006623"
@@ -65,7 +65,7 @@
   },
   {
     "annex_objects_externalized": false,
-    "annex_objects_root": "/Volumes/MPW_OT_AOY/impact-synergy-pipeline/data/scratch/ds005620_annex/.git/annex/objects",
+    "annex_objects_root": "data/scratch/ds005620_annex/.git/annex/objects",
     "dataset_description_doi": "doi:10.18112/openneuro.ds005620.v1.0.0",
     "dataset_description_license": "CC0",
     "dataset_description_name": "A repeated awakening study exploring the capacity of complexity measures to capture dreaming during propofol sedation",
@@ -79,7 +79,7 @@
     "license_note": "The report flagged a license inconsistency between README metadata and dataset_description; treat citation conservatively and cite the dataset DOI plus original authors.",
     "local_bytes": 44434483236,
     "local_gib": 41.383,
-    "local_root": "/Volumes/MPW_OT_AOY/impact-synergy-pipeline/data/scratch/ds005620_annex",
+    "local_root": "data/scratch/ds005620_annex",
     "local_root_candidates": [
       "data/scratch/ds005620_annex",
       "data/scratch/ds005620",
@@ -150,7 +150,7 @@
     "license_note": "",
     "local_bytes": 2471448,
     "local_gib": 0.002,
-    "local_root": "/Volumes/MPW_OT_AOY/impact-synergy-pipeline/data/scratch/ds004295",
+    "local_root": "data/scratch/ds004295",
     "local_root_candidates": [
       "data/scratch/ds004295",
       "data/ds004295"
@@ -212,7 +212,7 @@
     "license_note": "",
     "local_bytes": 275498172,
     "local_gib": 0.257,
-    "local_root": "/Volumes/MPW_OT_AOY/impact-synergy-pipeline/data/scratch/ds002547",
+    "local_root": "data/scratch/ds002547",
     "local_root_candidates": [
       "data/scratch/ds002547",
       "data/ds002547"
@@ -274,7 +274,7 @@
     "license_note": "",
     "local_bytes": 8170000,
     "local_gib": 0.008,
-    "local_root": "/Volumes/MPW_OT_AOY/impact-synergy-pipeline/data/scratch/ds002685",
+    "local_root": "data/scratch/ds002685",
     "local_root_candidates": [
       "data/scratch/ds002685",
       "data/ds002685"
@@ -350,7 +350,7 @@
     "license_note": "",
     "local_bytes": 15022838,
     "local_gib": 0.014,
-    "local_root": "/Volumes/MPW_OT_AOY/impact-synergy-pipeline/data/scratch/ds005479",
+    "local_root": "data/scratch/ds005479",
     "local_root_candidates": [
       "data/scratch/ds005479",
       "data/ds005479"
@@ -410,7 +410,7 @@
     "license_note": "",
     "local_bytes": 1699006,
     "local_gib": 0.002,
-    "local_root": "/Volumes/MPW_OT_AOY/impact-synergy-pipeline/data/scratch/ds002336",
+    "local_root": "data/scratch/ds002336",
     "local_root_candidates": [
       "data/scratch/ds002336",
       "data/ds002336"
@@ -483,7 +483,7 @@
     "license_note": "",
     "local_bytes": 5250916,
     "local_gib": 0.005,
-    "local_root": "/Volumes/MPW_OT_AOY/impact-synergy-pipeline/data/scratch/ds003171",
+    "local_root": "data/scratch/ds003171",
     "local_root_candidates": [
       "data/scratch/ds003171",
       "data/ds003171"

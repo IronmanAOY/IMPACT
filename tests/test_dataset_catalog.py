@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from impact_pipeline.dataset_catalog import build_inventory
@@ -5,9 +6,12 @@ from impact_pipeline.dataset_catalog import (
     PIPELINE_ENABLED_DATASET_IDS,
     get_report_dataset,
     iter_report_datasets,
+    local_dataset_root_relpath,
     resolve_local_dataset_root,
     resolve_representative_payload_paths,
 )
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 def test_report_dataset_lookup_exposes_pipeline_flag():
@@ -82,4 +86,70 @@ def test_build_inventory_supports_external_symlinked_roots(tmp_path: Path):
     rows = build_inventory(repo_root)
     row = next(item for item in rows if item["dataset_id"] == "ds006623")
     assert row["local_status"] == "present"
-    assert row["local_root"] == str(real_root.resolve())
+    assert row["dataset_description_name"] == "external-demo"
+    # recorded as the repository path, not as the link target on another disk
+    assert row["local_root"] == "data/scratch/ds006623"
+    # reading still resolves the link
+    assert resolve_local_dataset_root("ds006623", repo_root) == real_root.resolve()
+
+
+def _strings(obj):
+    if isinstance(obj, dict):
+        for value in obj.values():
+            yield from _strings(value)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            yield from _strings(value)
+    elif isinstance(obj, str):
+        yield obj
+
+
+def test_build_inventory_writes_no_absolute_paths(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    external = tmp_path / "external"
+    annex_root = repo_root / "data" / "scratch" / "ds005620_annex"
+    (annex_root / ".git" / "annex").mkdir(parents=True)
+    objects = external / "annex_objects"
+    objects.mkdir(parents=True)
+    (annex_root / ".git" / "annex" / "objects").symlink_to(
+        objects, target_is_directory=True)
+    plain = repo_root / "data" / "ds003171"
+    plain.mkdir(parents=True)
+
+    rows = build_inventory(repo_root)
+    by_id = {row["dataset_id"]: row for row in rows}
+    annex = by_id["ds005620"]
+    assert annex["local_root"] == "data/scratch/ds005620_annex"
+    assert annex["annex_objects_root"] == (
+        "data/scratch/ds005620_annex/.git/annex/objects")
+    assert annex["annex_objects_externalized"] is True
+    assert by_id["ds003171"]["local_root"] == "data/ds003171"
+    assert by_id["ds006623"]["local_root"] is None
+    leaked = [s for s in _strings(rows)
+              if s.startswith("/") or str(tmp_path) in s]
+    assert not leaked, leaked
+
+
+def test_local_dataset_root_relpath_matches_the_resolved_root(tmp_path: Path):
+    (tmp_path / "data" / "scratch" / "ds005620").mkdir(parents=True)
+    rel = local_dataset_root_relpath("ds005620", tmp_path)
+    assert rel == "data/scratch/ds005620"
+    assert (tmp_path / rel).resolve() == resolve_local_dataset_root(
+        "ds005620", tmp_path)
+    assert local_dataset_root_relpath("ds005620", tmp_path / "missing") is None
+    assert local_dataset_root_relpath("not-a-dataset", tmp_path) is None
+
+
+def test_managed_reports_contain_no_absolute_local_paths():
+    for name in ("report_dataset_inventory.json",
+                 "report_dataset_snapshot_status.json"):
+        data = json.loads((REPO / "data" / "managed" / name).read_text(
+            encoding="utf-8"))
+        absolute = [s for s in _strings(data) if s.startswith(("/", "~"))
+                    or (len(s) > 2 and s[1] == ":" and s[2] in "/\\")]
+        assert not absolute, (name, absolute)
+        rows = data if isinstance(data, list) else list(data.values())
+        for row in rows:
+            root = row.get("local_root")
+            if root is not None:
+                assert root.startswith("data/"), (name, root)
