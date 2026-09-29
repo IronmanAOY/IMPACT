@@ -48,10 +48,12 @@ The principles are measured by:
   opts in.
 - **Modes.** Each estimator keeps its original construct as the default mode
   (`legacy`), with values pinned by regression tests. The construct revisions
-  are new modes (`mode=`/`update=` keywords). `run_pipeline.py` uses the default
-  modes unless a protocol (`--protocol`, for example
-  [`protocols/mpc_default_v1.json`](../protocols/README.md)) or the params
-  dicts select others (section 8.6). MPC-Bench uses
+  are new modes (`mode=`/`update=` keywords). `run_pipeline.py` uses the modes
+  of its protocol: on empirical data by default the preregistered
+  [`protocols/mpc_default_v1.json`](../protocols/README.md#mpc_default_v1json-default-for-empirical-data)
+  (selected automatically since the 1.1.0 post-freeze fixes), otherwise the
+  default modes unless `--protocol` or the params dicts select others
+  (section 8.6). MPC-Bench uses
   `impact_pipeline.bench.export.OPTIONAL_MODES` (RAM `prediction_error`, PDI
   `repertoire`, NAS `capacity`, SRPI `agency`).
 - **Bearer.** RAM, PDI, NAS and SRPI accept `bearer_nodes` (the declared system
@@ -150,7 +152,16 @@ a known modality, `run_synergy_ci.resolve_ram_params` raises.
   events; `compute_RAM_by_channel` returns one result per channel. The first two
   channels are implemented; `perturbational` and `endogenous` return NaN with
   `undefined_reason="NOT_IMPLEMENTED"`. Channels are meant to be combined by the
-  evidence layer (Kleene OR), not averaged.
+  evidence layer (Kleene OR), not averaged. The default empirical protocol
+  `protocols/mpc_default_v1.json` declares RAM on the untyped `default`
+  channel and on `perturbational` and `endogenous`, so RAM can be PRESENT but
+  never ABSENT there (behavioural non-response alone never excludes); the
+  opt-in `protocols/mpc_behavioural_ram_v1.json` declares only `default`
+  (RAM can be ABSENT; a choice to preregister, and its results are
+  behavioural-RAM results: an ABSENT RAM means no
+  responsiveness-and-adaptation above the null in the recorded behaviour, not
+  absence of responsiveness; see
+  [`protocols/README.md`](../protocols/README.md#mpc_behavioural_ram_v1json-opt-in)).
 - `update="prediction_error"`: U regresses the change of the stimulus-response
   mapping $d_k = r_{k+1} - r_k$ on the signed prediction error of a
   Rescorla-Wagner / Q-learning model fitted by maximum likelihood to the logged
@@ -361,7 +372,14 @@ $$
 ### 4.2 `mode="capacity"`: Network Availability Score (broadcast capacity)
 
 Requires declared `workspace_nodes` (the hub, integer indices or a boolean mask;
-invalid declarations raise). Every other bearer node is periphery. Hub and
+invalid declarations raise). In the pipeline a missing declaration (neither the
+protocol's NAS options nor `nas_params` declare a hub) makes NAS UNDEFINED
+(`UNDEFINED:NAS:NO_DECLARED_WORKSPACE`) without calling the estimator. The
+default empirical protocol `protocols/mpc_default_v1.json` declares no hub,
+so a run that measures NAS passes a derived protocol that does
+([`protocols/examples/`](../protocols/examples/README.md) has two examples
+derived from v1, to be preregistered before confirmatory use). Every other
+bearer node is periphery. Hub and
 periphery are reduced to their leading principal components
 (`transfer_components`, default 5). Receive (periphery → hub) and return
 (hub → periphery) are lagged Gaussian transfer entropies (`transfer_lags`,
@@ -831,7 +849,7 @@ Stable strings, `;`-joined in the `MPC_reason` column:
 | `NO_SAMPLING_SE:<P>` | an empirical estimate without a sampling SE (e.g. `--bootstrap-se 0`) |
 | `INVALID_ANCHORS:<P>` | the reference is not above the null mean (or not finite) |
 | `INCONCLUSIVE:<P>` | neither credibly present nor credibly absent |
-| `UNDEFINED:<P>:<reason>` | the estimator, the null or the SE is undefined: the estimator's reason, `DEGENERATE_NULL`, `INVALID_SE`, `NULL_FAMILY_MISMATCH:<declared>/<used>`, `null_undefined:<reason>`, `iim_option_mismatch:<option>` |
+| `UNDEFINED:<P>:<reason>` | the estimator, the null or the SE is undefined: the estimator's reason, `DEGENERATE_NULL`, `INVALID_SE`, `NULL_FAMILY_MISMATCH:<declared>/<used>`, `null_undefined:<reason>`, `iim_option_mismatch:<option>`, `NO_DECLARED_WORKSPACE` (NAS `mode="capacity"` without a declared hub; the estimator is not called) |
 | `NOT_IMPLEMENTED:<P>:<channel>` | the evidence channel is not implemented |
 | `ESTIMATOR_NOT_VALIDATED:<P>:<estimator>` | not validated for this substrate, grain or regime |
 | `ABSENT:<P>` | every channel of $P$ is credibly absent (veto) |
@@ -888,11 +906,24 @@ runs once the reference anchors are known and adds the verdict columns
 
 - **Protocol.** `--protocol file.json` declares $N$, channels, cutoffs,
   $\alpha$, null families, reference, source rule, estimator modes and bearer
-  nodes (`protocols/mpc_default_v1.json` is the shipped default for empirical
-  data); its hash is `MPC_protocol_hash`. Without it a default protocol is
-  built from `--necessity-set`, the null kinds, the mode keys of the params
-  dicts (`synergy_ci.MPC_MODE_KEYS`) and the cohort reference; conflicting
-  settings raise an error.
+  nodes; its hash is `MPC_protocol_hash`. `run_pipeline.py` uses the
+  preregistered `protocols/mpc_default_v1.json` (unchanged since the freeze)
+  for empirical data when `--protocol` is not given (and no
+  `--necessity-set`); it logs the protocol's source and hash. Under v1 RAM
+  keeps its unimplemented `perturbational` and `endogenous` channels (never
+  ABSENT) and NAS capacity has no hub (UNDEFINED, `NO_DECLARED_WORKSPACE`)
+  unless a derived protocol declares one (`protocols/examples/`). The opt-in
+  `protocols/mpc_behavioural_ram_v1.json` (RAM on its behavioural channel
+  only; behavioural-RAM results, see section 2.3) is used only with
+  `--protocol`. Without a protocol (`--protocol none`, and always for dummy
+  data) one is built from `--necessity-set`, the null kinds, the mode keys of
+  the params dicts (`synergy_ci.MPC_MODE_KEYS`) and the cohort reference;
+  conflicting settings raise an error. External
+  reference anchors from a held-out subset of participants:
+  `scripts/compute_empirical_reference.py` (keys `P`, or `P:channel` for a
+  principle with several declared channels: `RAM:default` under v1, from
+  per-channel evidence, which its `--data-dir` mode records; the step-2
+  `<P>_*` columns describe only the deciding channel).
 - **Modes.** The protocol's `estimators` select the construct revisions (RAM
   `update="prediction_error"`, PDI `mode="repertoire"` with its `repertoire_*`
   options, NAS `mode="capacity"`, IIM `cut_mode`/`tpm_estimator`, SRPI
@@ -1003,6 +1034,7 @@ subject x session means of the metric columns (no verdicts).
 | `<P>_c`, `<P>_c_se`, `<P>_c_df`, `<P>_c_lower`, `<P>_c_upper` | construct-scale value, its SE, effective degrees of freedom and one-sided bounds |
 | `<P>_reference`, `<P>_reference_se` | reference anchor (excess scale for the cohort reference) and its SE |
 | `<P>_estimator`, `<P>_mode_reason` | estimator id `compute_<P>:<mode>@<version>`; why a declared fallback mode was used (empty otherwise) |
+| `<P>_estimator_version` | the `<version>` of that id, exactly as recorded (for a precomputed Hunter IIM result its `iim_algorithm_version`); `scripts/run_predictions.py` checks (`<P>_estimator`, `<P>_estimator_version`) against the registered estimators |
 | `<P>_channels` | per-channel statuses `<channel>:<status>` |
 
 Hunter campaigns add `<out-dir>/cache/hunter_iim_results.csv` (one row per real

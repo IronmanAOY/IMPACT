@@ -234,6 +234,7 @@ MPC_EVIDENCE_FIELDS = (
     "reference",
     "reference_se",
     "estimator",
+    "estimator_version",
     "mode_reason",
     "channels",
 )
@@ -800,6 +801,20 @@ def _mode_of(principle, opts):
     return str(opts.get("mode") or "legacy")
 
 
+def _nas_hub_missing(nas_kw, opts):
+    """
+    NAS ``mode='capacity'`` without a declared hub: ``workspace_nodes`` is
+    neither in the protocol's NAS options nor in ``nas_params``. The
+    estimator requires the hub (an invalid declaration still raises there);
+    the pipeline records the component as UNDEFINED
+    (``UNDEFINED:NAS:NO_DECLARED_WORKSPACE``) instead of calling it.
+    """
+    return (
+        _mode_of("NAS", opts) == "capacity"
+        and dict(nas_kw or {}).get("workspace_nodes") is None
+    )
+
+
 def _uses_internal_null(principle, opts):
     mode = _mode_of(principle, opts)
     return (
@@ -1048,6 +1063,17 @@ def _item_regime(rec):
     return regime or None
 
 
+def _estimator_version(estimator):
+    """
+    ``<P>_estimator_version``: the version recorded in the evidence estimator
+    id ``compute_<P>:<mode>@<version>`` (ComponentEvidence.estimator), e.g.
+    the ``iim_algorithm_version`` of a precomputed Hunter IIM result, not the
+    current code's :data:`ESTIMATOR_VERSIONS` entry. Empty when the principle
+    was not computed or the id carries no version.
+    """
+    return mpc_evidence.split_estimator(estimator)[1] or ""
+
+
 def _mpc_run_columns(run, proto, registry, refs, null_k, null_seed, boot_k,
                      boot_block_len):
     """ComponentEvidence, the MPC verdict and the evidence columns of one run."""
@@ -1150,6 +1176,11 @@ def _mpc_run_columns(run, proto, registry, refs, null_k, null_seed, boot_k,
         cols[f"{k}_reference"] = _as_float(ref.get("reference"))
         cols[f"{k}_reference_se"] = _as_float(ref.get("reference_se"))
         cols[f"{k}_estimator"] = "" if rec is None else str(rec["estimator"] or "")
+        # the version part of that exact evidence id (compute_<P>:<mode>@<version>),
+        # as scripts/run_predictions.py checks it against the registry
+        cols[f"{k}_estimator_version"] = _estimator_version(
+            None if rec is None else rec["estimator"]
+        )
         cols[f"{k}_mode_reason"] = (
             "" if rec is None else str(rec.get("mode_reason") or "")
         )
@@ -1159,13 +1190,53 @@ def _mpc_run_columns(run, proto, registry, refs, null_k, null_seed, boot_k,
     return cols
 
 
+def _channel_evidence_records(runs):
+    """
+    Every run's evidence record per principle and channel (JSON-safe dicts):
+    what the ``<P>_*`` columns show only for the deciding channel. A requested
+    null without a valid surrogate counts as undefined, as in the verdict.
+    """
+    out = []
+    for run in runs:
+        for p in CI_COMPONENTS:
+            for rec in run["records"].get(p, []):
+                defined, reason = bool(rec["defined"]), rec["reason"]
+                if defined and rec["null_attempted"] and rec["null_n"] == 0:
+                    defined = False
+                    reason = (
+                        "null_undefined:"
+                        f"{rec.get('null_reason') or 'no_valid_surrogates'}"
+                    )
+                out.append({
+                    "subject": str(run["subject"]),
+                    "session": str(run["session"]),
+                    "bearer_id": run["bearer_id"],
+                    "principle": p,
+                    "channel": str(rec["channel"]),
+                    "estimate": _as_float(rec["estimate"]),
+                    "null_mean": _as_float(rec["null_mean"]),
+                    "null_sd": _as_float(rec["null_sd"]),
+                    "null_n": int(rec["null_n"]),
+                    "null_family": rec["null_family"],
+                    "defined": defined,
+                    "reason": None if reason is None else str(reason),
+                    "estimator": (
+                        None if rec["estimator"] is None else str(rec["estimator"])
+                    ),
+                    "mode_reason": str(rec.get("mode_reason") or ""),
+                })
+    return out
+
+
 def _finish_mpc_evidence(
     df, runs, proto, registry, null_k, null_seed, boot_k, boot_block_len, weights,
+    channel_evidence=False,
 ):
     """
     Verdict stage (after all runs, once the reference anchors are known): the
     evidence columns of every run, the MPC degree of MPC_CONSISTENT rows, a
-    verdict summary log and the provenance in ``df.attrs['mpc_evidence']``.
+    verdict summary log and the provenance in ``df.attrs['mpc_evidence']``
+    (with ``channel_evidence``: every run's record per principle and channel).
     """
     if not runs:
         return df
@@ -1209,6 +1280,10 @@ def _finish_mpc_evidence(
             None if registry is None else registry.to_dict()
         ),
     }
+    if channel_evidence:
+        out.attrs["mpc_evidence"]["channel_evidence"] = (
+            _channel_evidence_records(runs)
+        )
     return out
 
 
@@ -1680,6 +1755,7 @@ def compute_synergy_ci(
     protocol=None,
     bootstrap_se=0,
     bootstrap_block_len=None,
+    record_channel_evidence=False,
 ):
     """
     Per-run MPC metrics, the exploratory legacy statistic S (one row per theta)
@@ -1776,9 +1852,26 @@ def compute_synergy_ci(
     ``<P>_null_n``, ``<P>_se``, ``<P>_boot_n``, ``<P>_boot_failed``,
     ``<P>_c``, ``<P>_c_se``,
     ``<P>_c_lower``, ``<P>_c_upper``, ``<P>_reference`` (reference excess),
-    ``<P>_reference_se``, ``<P>_estimator`` (``compute_<P>:<mode>@<version>``)
-    and ``<P>_channels``. IIM evidence is on the integration-mass scale
+    ``<P>_reference_se``, ``<P>_estimator`` (``compute_<P>:<mode>@<version>``),
+    ``<P>_estimator_version`` (the ``<version>`` of that id) and
+    ``<P>_channels``. IIM evidence is on the integration-mass scale
     Delta_Psi (bits).
+
+    NAS ``mode='capacity'`` (e.g. ``protocols/mpc_default_v1.json``, the
+    default empirical protocol, which declares no hub) needs a declared hub
+    (``workspace_nodes`` in the protocol's NAS options or in ``nas_params``,
+    e.g. a derived protocol from ``protocols/examples/``); without one NAS is
+    UNDEFINED (``UNDEFINED:NAS:NO_DECLARED_WORKSPACE``) in every run instead
+    of raising.
+
+    The ``<P>_*`` evidence columns describe only the channel that decides the
+    principle's status. ``record_channel_evidence=True`` (default False; the
+    pipeline's outputs are unchanged) also lists every run's evidence record
+    per principle and declared channel in
+    ``df.attrs['mpc_evidence']['channel_evidence']`` (subject, session,
+    bearer, principle, channel, estimate, null moments, definedness, reason,
+    estimator), e.g. for a per-channel reference anchor
+    (``scripts/compute_empirical_reference.py``).
     """
     if ci_reference is None and ci_human_refs is not None:
         ci_reference = dict(ci_human_refs)
@@ -1859,6 +1952,14 @@ def compute_synergy_ci(
         if do_nas
         else {}
     )
+    if do_nas and _nas_hub_missing({**nas_kwargs, **mpc_modes["NAS"]},
+                                   mpc_modes["NAS"]):
+        log.warning(
+            "NAS mode='capacity' has no declared hub (workspace_nodes in the "
+            "protocol or nas_params): NAS is UNDEFINED (%s) in every run. "
+            "Declare the hub in a derived protocol (protocols/examples/).",
+            mpc_evidence.REASON_NO_DECLARED_WORKSPACE,
+        )
     srpi_kwargs = (
         _resolve_srpi_kwargs(
             srpi_params=srpi_params,
@@ -2575,7 +2676,22 @@ def compute_synergy_ci(
                 pdi_baseline_policy = "not_computed"
                 deep_rest_paths = []
                 state_rest_paths = []
-            if do_nas:
+            if do_nas and _nas_hub_missing(
+                {**nas_kwargs, **mpc_modes["NAS"]}, mpc_modes["NAS"]
+            ):
+                # NAS capacity without a declared hub: UNDEFINED with a stable
+                # reason, never a crash (the estimator requires the hub and is
+                # not called; no null, no bootstrap).
+                mpc_records["NAS"] = [_component_record(
+                    np.nan,
+                    reason=mpc_evidence.REASON_NO_DECLARED_WORKSPACE,
+                    estimator=mpc_evidence.estimator_id(
+                        "NAS", _mode_of("NAS", mpc_modes["NAS"]), nas_version
+                    ),
+                    nodes=_nodes("NAS", n_nodes_run),
+                )]
+                nas = np.nan
+            elif do_nas:
                 nas_opts = dict(mpc_modes["NAS"])
                 nas_mode = _mode_of("NAS", nas_opts)
                 nas_internal = _uses_internal_null("NAS", nas_opts)
@@ -2914,6 +3030,7 @@ def compute_synergy_ci(
         df = _finish_mpc_evidence(
             df, mpc_runs, mpc_proto, mpc_registry, null_k, null_seed, boot_k,
             boot_block_len, ci_weights,
+            channel_evidence=record_channel_evidence,
         )
         ordered_cols.extend(c for c in MPC_EVIDENCE_COLUMNS if c in df.columns)
         return df[ordered_cols]
@@ -2956,7 +3073,7 @@ def compute_synergy_ci(
     ]
     df = _finish_mpc_evidence(
         df, mpc_runs, mpc_proto, mpc_registry, null_k, null_seed, boot_k,
-        boot_block_len, ci_weights,
+        boot_block_len, ci_weights, channel_evidence=record_channel_evidence,
     )
     ordered_cols = [c for c in ordered_cols if c in df.columns]
     return df[ordered_cols]

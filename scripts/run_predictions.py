@@ -24,8 +24,11 @@ Results table (CSV; one row per episode): ``dataset``, ``episode_id``,
 ``MPC_verdict`` (v1 or v2 names), ``MPC_reason`` (``;``-joined codes; the v1
 code ``BEARER_MISMATCH:COHERENCE`` counts as ``SOURCE_INCOHERENT``),
 ``<P>_status``, ``protocol_hash``, ``<P>_estimator``,
-``<P>_estimator_version``; optional ``<P>_c`` and the H2 outcome column, and
-``comparator_<name>`` decisions for H10 (True/False/1/0, empty = abstain).
+``<P>_estimator_version`` (the pipeline's step-2 columns: the evidence id
+``compute_<P>:<mode>@<version>`` and its version, matched against the
+registered ``estimator`` and ``version``); optional ``<P>_c`` and the H2
+outcome column, and ``comparator_<name>`` decisions for H10 (True/False/1/0,
+empty = abstain).
 Episodes whose report label is missing or unrecognised are excluded from
 every hypothesis (never counted as report-negative; ``n_report_unknown``).
 H0 reads ``null_calibration_rates.csv`` (``--null-calibration``); cells whose
@@ -351,6 +354,23 @@ def registered_estimators(reg):
             if e.get("version") and e.get("registration") == "registered"}
 
 
+def _estimator_pair(estimator, version):
+    """
+    ``(estimator, version)`` of a results row as the registry names them. The
+    pipeline writes ``<P>_estimator`` as the evidence id
+    ``compute_<P>:<mode>@<version>`` and ``<P>_estimator_version`` as its
+    ``<version>``; a trailing ``@<version>`` equal to the version column is
+    dropped, so ``compute_NAS:capacity@nas-v2-2026.09`` with version
+    ``nas-v2-2026.09`` is the registry entry (``compute_NAS:capacity``,
+    ``nas-v2-2026.09``). Anything else is compared as written.
+    """
+    est, ver = str(estimator), str(version)
+    name, sep, suffix = est.rpartition("@")
+    if sep and suffix == ver:
+        return name, ver
+    return est, ver
+
+
 def registration_problems(df: pd.DataFrame, reg: dict) -> list:
     """Why the results are not from registered protocols/estimators/datasets."""
     probs = []
@@ -377,7 +397,8 @@ def registration_problems(df: pd.DataFrame, reg: dict) -> list:
         if ec not in df.columns or vc not in df.columns:
             probs.append(f"results lack {ec}/{vc}")
             continue
-        pairs = set(zip(df[ec].astype(str), df[vc].astype(str)))
+        pairs = {_estimator_pair(e, v)
+                 for e, v in zip(df[ec].astype(str), df[vc].astype(str))}
         bad = sorted(f"{e}@{v}" for e, v in pairs if (p, e, v) not in ests)
         if bad:
             probs.append(f"unregistered {p} estimator versions {bad}")

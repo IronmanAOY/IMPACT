@@ -15,6 +15,7 @@ DOCS = (
     "docs/synthetic_data.md",
     "scripts/hunter/README.md",
     "protocols/README.md",
+    "protocols/examples/README.md",
     "docs/preregistration/README.md",
     "docs/preregistration/MPC_BENCH_PREREGISTRATION.md",
 )
@@ -235,3 +236,86 @@ def test_pdi_repertoire_and_protocols_are_documented():
     for doc in ("README.md", "docs/metrics.md", "CHANGELOG.md"):
         body = (REPO / doc).read_text(encoding="utf-8")
         assert "repertoire" in body and "protocols/" in body, doc
+
+
+# --------------------------------------------------------------------------
+# default MPC protocol (1.1.0 post-freeze amendment): the preregistered
+# mpc_default_v1.json; the behavioural-RAM protocol is opt-in only
+# --------------------------------------------------------------------------
+# the documents the post-freeze fixes changed for the default protocol
+PROTOCOL_DOCS = (
+    "README.md",
+    "docs/metrics.md",
+    "docs/ARCHITECTURE.md",
+    "docs/HLRS_HUNTER_RUNBOOK.md",
+    "scripts/hunter/README.md",
+    "protocols/README.md",
+    "protocols/examples/README.md",
+)
+# an intermediate draft had made this file the default; only the changelog
+# records it (as history)
+_WITHDRAWN_DEFAULT = re.compile(r"mpc[_-]default[_-]v1\.1")
+
+
+def _flat(doc):
+    return " ".join((REPO / doc).read_text(encoding="utf-8").split())
+
+
+def test_no_file_refers_to_the_withdrawn_v1_1_default():
+    roots = ("README.md", "run_pipeline.py", "Dockerfile", "Singularity",
+             "docs", "scripts", "src", "protocols", "predictions")
+    suffixes = {".md", ".py", ".sh", ".pbs", ".json", ".yaml", ".yml", ".txt",
+                ".cff", ""}
+    stale = []
+    for root in roots:
+        base = REPO / root
+        paths = [base] if base.is_file() else sorted(base.rglob("*"))
+        for path in paths:
+            if not path.is_file() or path.suffix not in suffixes:
+                continue
+            if "__pycache__" in path.parts:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            if _WITHDRAWN_DEFAULT.search(text):
+                stale.append(str(path.relative_to(REPO)))
+    assert not stale, f"references to the withdrawn mpc_default_v1.1: {stale}"
+    history = [ln for ln in (REPO / "CHANGELOG.md").read_text(
+        encoding="utf-8").splitlines() if _WITHDRAWN_DEFAULT.search(ln)]
+    assert history  # the changelog records why it was withdrawn
+
+
+@pytest.mark.parametrize("doc", PROTOCOL_DOCS)
+def test_docs_name_v1_as_the_default_and_the_behavioural_ram_caveat(doc):
+    text = _flat(doc)
+    assert "mpc_default_v1.json" in text, doc
+    assert "NO_DECLARED_WORKSPACE" in text, doc
+    if "mpc_behavioural_ram_v1" in text:
+        # opt-in only, with the interpretation of an ABSENT RAM
+        assert "opt-in" in text, doc
+        assert "not absence of responsiveness" in text, doc
+
+
+def test_documented_hunter_campaigns_pass_a_protocol_with_a_hub():
+    """A Hunter campaign that computes the evidence must pass a protocol
+    derived from v1 with a declared NAS hub (v1 declares none, so NAS would be
+    UNDEFINED in every run); never the bare v1 or the behavioural-RAM
+    protocol. A preprocessing-only build (discarded) is exempt."""
+    seen = 0
+    for doc in ("README.md", "docs/HLRS_HUNTER_RUNBOOK.md", "scripts/hunter/README.md"):
+        text = (REPO / doc).read_text(encoding="utf-8")
+        flat = " ".join(text.split())
+        assert "protocols/examples/" in flat, doc
+        assert "mpc_default_v1_schaefer400_7networks_hub.json" in flat, doc
+        for cmd in _commands(text, "run_pipeline.py"):
+            if "build-campaign" not in cmd or "--run-preprocessing" in cmd:
+                continue
+            seen += 1
+            m = re.search(r"--protocol\s+(\S+)", cmd)
+            assert m, (doc, cmd)
+            value = m.group(1).strip("\"'")
+            assert value not in ("protocols/mpc_default_v1.json",
+                                 "protocols/mpc_behavioural_ram_v1.json"), (doc, cmd)
+    assert seen >= 3

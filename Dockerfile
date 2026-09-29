@@ -57,6 +57,10 @@ COPY licenses/ licenses/
 COPY atlases/ atlases/
 COPY src/ src/
 COPY scripts/ scripts/
+# MPC protocols: run_pipeline.py's default for empirical data
+# (protocols/mpc_default_v1.json), the example derived protocols and the
+# other declared protocols.
+COPY protocols/ protocols/
 
 # Install the package (dependencies come from the conda env) and pre-create the
 # synthetic-data scaffold that provenance routing expects under the repo root.

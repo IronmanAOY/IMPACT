@@ -15,6 +15,142 @@ review of 1.0.0. Every behavioural fix has a regression test; estimator fixes
 have ground-truth or null tests. Defaults of the existing estimator modes are
 unchanged unless listed under "Changed".
 
+### 1.1.0 — post-freeze fixes
+
+Changes made after the code-freeze tag `mpcbench-freeze-v1` (commit f2cf249).
+None of them changes an estimator, a null, the evidence rule or a bench
+protocol, so the MPC-Bench results stay reproducible from the tag. They fix
+the empirical pipeline and make the default protocol explicit. Each change
+has a regression test.
+
+#### Fixed
+
+- **NAS capacity without a declared hub no longer crashes an empirical run.**
+  `compute_NAS(mode="capacity")` requires `workspace_nodes` and raises without
+  it (unchanged); `protocols/mpc_default_v1.json` declares NAS capacity but no
+  hub, so step 2 of an empirical run under the default protocol stopped with
+  `ValueError`. `compute_synergy_ci` now records NAS as UNDEFINED with the
+  reason `UNDEFINED:NAS:NO_DECLARED_WORKSPACE` (new detail code
+  `evidence.REASON_NO_DECLARED_WORKSPACE`) without calling the estimator, and
+  logs one warning; an invalid hub declaration still raises. A run that is
+  meant to measure NAS (e.g. a Hunter campaign) passes a derived protocol
+  that declares the hub (see the example protocols under "Added"). Tests:
+  `tests/test_nas_declared_workspace.py`,
+  `tests/test_default_empirical_run.py`.
+- **`<P>_estimator_version` columns.** The step-2 outputs (and
+  `synergy_ci.MPC_EVIDENCE_COLUMNS`) carry `<P>_estimator_version` for every
+  principle: the version part of the exact evidence id in `<P>_estimator`
+  (`compute_<P>:<mode>@<version>`, as recorded in
+  `ComponentEvidence.estimator`; for a precomputed Hunter IIM result its own
+  `iim_algorithm_version`). `scripts/run_predictions.py` requires the column
+  and now matches the pipeline's id form: a trailing `@<version>` equal to
+  the version column is dropped before the (estimator, version) pair is
+  looked up in the registry. Before, every pipeline table was refused
+  (`results lack <P>_estimator/<P>_estimator_version`). Test:
+  `tests/test_estimator_version_columns.py`.
+- **Container images ship `protocols/`.** The Docker and Apptainer images
+  contained no protocol file, so a default empirical run in a container
+  stopped with `MPC protocol not found`. Test:
+  `tests/test_packaging_infra.py`.
+
+#### Changed
+
+- **Default protocol for empirical runs: the preregistered
+  `protocols/mpc_default_v1.json`**, byte-identical to the freeze (hash
+  `383eb310…`). `run_pipeline.py` now uses it when `--protocol` is not given
+  for real data (not with `--necessity-set`) and logs its source and hash;
+  before, the command line built a protocol from the flags unless
+  `--protocol` was given. `--protocol none` builds the protocol from the flags
+  as before, and dummy data always do. Under v1 RAM declares its
+  unimplemented `perturbational` and `endogenous` channels, so RAM can be
+  PRESENT but never ABSENT: behavioural non-response alone never excludes,
+  because covert, perturbational and endogenous responsiveness are not
+  measured (the preregistered stance, confirmed at the freeze). NAS capacity
+  has no hub in v1 and is UNDEFINED (`NO_DECLARED_WORKSPACE`) unless a
+  derived protocol declares one. Tests: `tests/test_protocol_examples.py`,
+  `tests/test_default_empirical_run.py` (end to end on tiny synthetic
+  layouts: under the default, RAM is PRESENT on responsive runs and, on
+  behaviourally null runs, its behavioural channel is ABSENT while RAM stays
+  UNDEFINED), `tests/test_protocols.py`, `tests/test_docs_consistency.py`
+  (the documents name v1 as the default and the behavioural-RAM caveat,
+  documented Hunter campaigns pass a protocol with a declared hub, and no
+  file outside this changelog refers to the withdrawn draft default).
+- **Why v1 and not a behavioural-only RAM protocol.** An intermediate draft
+  of these fixes had shipped the behavioural-only RAM protocol (see "Added")
+  as `protocols/mpc_default_v1.1.json` (name `mpc-default-v1.1`, hash
+  `4a94a79c…`) and made it the command-line default, on the grounds that
+  under v1 RAM can never contribute an exclusion. That reversed the
+  preregistered, freeze-confirmed stance (preregistration section 4,
+  "Default protocol"; `protocols/README.md`) on which the accompanying
+  papers rest: behavioural non-response is not evidence that responsiveness
+  is absent, and undefined is not absent. It was undone before release: v1
+  is the default, the draft's file was renamed and made opt-in, and the
+  example protocols were re-derived from v1 (the draft's
+  `protocols/examples/mpc_default_v1.1_*` files are removed).
+
+#### Added
+
+- **Example protocols with a declared NAS hub** (`protocols/examples/`), two
+  **examples** derived from `mpc_default_v1.json`:
+  `mpc_default_v1_schaefer400_7networks_hub.json` (Schaefer-400 / 7
+  networks: the `Cont`, `DorsAttn` and `SalVentAttn` parcels read from the
+  atlas order file) and `mpc_default_v1_eeg64_hub.json` (a 64-channel 10-20
+  montage: fronto-parietal sensors in the pipeline's sorted channel order),
+  each with a `.derivation.json` sidecar (base protocol, its name, hash and
+  RAM channels, hub rule, source file and SHA-256, node order). They are
+  built and checked by `scripts/build_example_protocols.py` (`--check` also
+  fails on a protocol file in `protocols/examples/` that is not part of a
+  fresh build; `--base protocols/mpc_behavioural_ram_v1.json --out-dir
+  <dir>` derives them from the opt-in behavioural-RAM protocol, named after
+  it, with its interpretation caveat in the sidecars). Both must be
+  preregistered before confirmatory use. The EEG example uses the BioSemi-64
+  labels and does not apply to ds005620 (62 scalp channels, another 10-10
+  layout; its indices would be in range but name other channels); the
+  builder derives a hub from a dataset's `channels.tsv` (`--eeg-channels`,
+  classified as the EEG preprocessing does: BOM-safe, EOG/EMG/ECG names and
+  `status=bad` excluded) under the distinct name
+  `EXAMPLE-mpc-default-v1-eeg-custom-hub`. Test:
+  `tests/test_protocol_examples.py`.
+- **`protocols/mpc_behavioural_ram_v1.json` (opt-in only)**: v1 with RAM
+  declared on its behavioural channel only (`channels.RAM = ["default"]`,
+  name `mpc-behavioural-ram-v1`, hash `531c15b9…`), everything else
+  identical. Under it RAM can be ABSENT, so behavioural evidence alone can
+  exclude. It is never selected automatically (`--protocol
+  protocols/mpc_behavioural_ram_v1.json`), selecting it is a substantive
+  choice to preregister, and results under it are behavioural-RAM results
+  (an ABSENT RAM means no responsiveness-and-adaptation above the null in
+  the recorded behaviour, not absence of responsiveness). Test:
+  `tests/test_default_empirical_run.py` (the behaviourally null runs that
+  are RAM UNDEFINED under v1 are RAM ABSENT and EXCLUDED under it).
+- **`scripts/compute_empirical_reference.py`**: an external reference anchor
+  (per-principle rho and SE on the excess scale) from the high-state runs of
+  a declared held-out subset of participants (`--reference-subjects`, checked
+  to be disjoint from `--evaluation-subjects`), from a pipeline step-2 table
+  (`--step2-table`, protocol hash checked) or computed from a preprocessed
+  layout (`--data-dir`). Participant means first, SE = SD / sqrt(n), and the
+  bench anchor rule (a positive one-sided 95% t lower bound); principles
+  without an anchor are listed with the reason. Default `--protocol`:
+  `protocols/mpc_default_v1.json`. Channels: a principle with one declared
+  channel gets the key `P`; one with several gets `P:channel` per channel
+  with an estimator (under v1 `RAM:default`), and channels without an
+  estimator get none (`channels_without_reference`, reason
+  `NOT_IMPLEMENTED`). Per-channel evidence comes from `--data-dir` mode (new
+  opt-in `compute_synergy_ci(record_channel_evidence=True)`, which lists
+  every run's record per principle and channel in
+  `df.attrs['mpc_evidence']['channel_evidence']`; the pipeline's outputs are
+  unchanged). A step-2 table cannot identify the channel of its `<P>_*`
+  columns (they describe the deciding channel; under v1 an unimplemented RAM
+  channel whenever the behavioural one is ABSENT), so in `--step2-table`
+  mode such a principle gets no reference (`CHANNEL_NOT_IDENTIFIABLE`),
+  never a guess. A principle that was not computed is `NOT_COMPUTED` in both
+  modes. The JSON records the provenance (evidence source and SHA-256,
+  evidence mode, protocol hash, declared subset and its SHA-256,
+  participants used and missing, estimator ids and versions, null settings,
+  code version); `--write-protocol` writes the protocol with the external
+  reference. Test: `tests/test_empirical_reference.py` (tiny synthetic
+  layouts; equals the pipeline's cohort reference of the same channel and
+  runs).
+
 ### Added
 
 - **Evidence layer** (`impact_pipeline.evidence`). `ComponentEvidence`, the
@@ -69,7 +205,8 @@ unchanged unless listed under "Changed".
   K = 0 the legacy modes are `NO_NULL_CALIBRATION` and with B = 0 every
   component is `NO_SAMPLING_SE`, so every verdict is `UNDETERMINED`.
 - **Protocols** (`protocols/`): `mpc_default_v1.json` (default for empirical
-  data) and the MPC-Bench protocols `mpc_bench_v1.json` (all five principles)
+  data; selected automatically by `run_pipeline.py` since the post-freeze
+  fixes) and the MPC-Bench protocols `mpc_bench_v1.json` (all five principles)
   and `mpc_bench_v1_anchored.json` (necessity set NAS, IIM, SRPI), frozen at
   the local tag `mpcbench-freeze-v1` with their rationale and hashes. The bench
   reference anchor (development positive control, seeds 900-919) follows an

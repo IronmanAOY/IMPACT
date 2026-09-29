@@ -14,11 +14,13 @@ describes the fields.
 
 | File | Use | SHA-256 |
 |---|---|---|
-| `mpc_default_v1.json` | default protocol for empirical data (`run_pipeline.py --protocol`) | `383eb310cf4479d3260bc5f43f8972bd0b12104a221579fea17c40e410357267` |
+| `mpc_default_v1.json` | default protocol for empirical data (`run_pipeline.py` without `--protocol`, `--data-origin real`); preregistered and confirmed at the freeze, unchanged since | `383eb310cf4479d3260bc5f43f8972bd0b12104a221579fea17c40e410357267` |
+| `mpc_behavioural_ram_v1.json` | **opt-in only**, a substantive choice to preregister before use (`--protocol protocols/mpc_behavioural_ram_v1.json`): v1 with RAM declared on its behavioural channel only; results under it are behavioural-RAM results | `531c15b90ea0338402f3eb2df97ae27ab9a9d9a5ffb22e17c93413231ff220b8` |
 | `mpc_bench_v1.json` | MPC-Bench protocol, all five principles (frozen at `mpcbench-freeze-v1`; `run_bench.py`, `null_calibration.py`; their default) | `855f6a444b77030d33faa68fcb45e8576b931d2d681cf215d4dacdb57a6b2520` |
 | `mpc_bench_v1_anchored.json` | the same with the necessity set restricted to the anchored principles (NAS, IIM, SRPI); verdict-level hypotheses of the preregistration | `780581f57d24251fc8ed8c39565f0a89a96740908f2ada3f65f8961cf1543f4c` |
 | `mpc_bench_v1_reference_summary.json` | how the bench reference anchor was computed (seeds, n, mean, SD, SE and lower bound per principle, the anchor rule, code) | — |
 | `applicability_registry_v1.json` | applicability registry (`--applicability-registry`; schema `impact-mpc-registry/2`) derived from the confirmatory MPC-Bench runs after the freeze; SHA-256 of the file | `a300e08f6bd04b385896272af44a63d4a9c8f63c3828547f2e1aa1167f663ca9` |
+| [`examples/`](examples/README.md) | **examples** of protocols derived from `mpc_default_v1.json` that declare a NAS hub (Schaefer-400 / 7 networks, 64-channel EEG); not preregistered | see `examples/*.derivation.json` |
 
 `tests/test_protocols.py` checks that the hashes in this table are the hashes
 of the files, and `scripts/bench_hypotheses.py` refuses bench protocols whose
@@ -28,7 +30,7 @@ evidence and the decision rules are in the
 [preregistration](../docs/preregistration/MPC_BENCH_PREREGISTRATION.md),
 section 4.
 
-## Cutoffs and alpha (all three protocols)
+## Cutoffs and alpha (all protocols)
 
 `(z, delta) = (0.25, 0.10)` for every principle and `alpha = 0.05`
 (one-sided), unchanged from the initial defaults of spec V2-2 because the
@@ -42,7 +44,70 @@ reached only when an estimate sits at its null with a small SE (null
 systems), which makes the exclusion rule abstain on most single-deficit
 systems (a development finding, not a tuning target).
 
-## `mpc_default_v1.json` (unchanged at the freeze)
+## `mpc_default_v1.json` (default for empirical data)
+
+`run_pipeline.py` uses it when `--protocol` is not given, the data are
+empirical (`--data-origin real`, the default) and no `--necessity-set` is
+given (`--protocol none` builds the protocol from the flags, as at the freeze;
+dummy/synthetic data always do). It is the empirical default protocol of the
+[preregistration](../docs/preregistration/MPC_BENCH_PREREGISTRATION.md)
+(section 3, and the "Default protocol" row of section 4) and the one paper 2
+cites, byte-for-byte as at tag `mpcbench-freeze-v1` (hash above;
+`tests/test_protocol_examples.py` checks the hash and the file's SHA-256).
+
+Why this default. RAM declares its implemented untyped `default` channel
+(behavioural events) **and** `perturbational` and `endogenous`, which have no
+estimator yet. A declared channel without an estimator is UNDEFINED
+(`NOT_IMPLEMENTED:RAM:<channel>`), and a principle is ABSENT only when every
+declared channel is ABSENT (strong-Kleene OR), so under v1 RAM can be PRESENT
+but never ABSENT. That is the preregistered stance, confirmed at the freeze:
+behavioural non-response alone must never exclude, because covert,
+perturbational and endogenous responsiveness (covert command following,
+dreaming, paralysis) are not measured. Undefined is not absent. The price is
+that RAM cannot contribute an exclusion on empirical data, and a necessity
+test of RAM cannot be falsified by RAM evidence, until those channels are
+measured.
+
+NAS. v1 declares NAS `mode='capacity'` without a hub, because the hub depends
+on the grain (atlas or montage). Without a declared hub NAS is UNDEFINED in
+every run (`UNDEFINED:NAS:NO_DECLARED_WORKSPACE`, 1.1.0 post-freeze; the
+frozen code raised instead), so a run that is meant to measure NAS (e.g. a
+Hunter campaign) needs a protocol derived from v1 that declares the hub:
+[`examples/`](examples/README.md) has two worked examples (derived from v1,
+to be preregistered before confirmatory use).
+
+The declarations of v1 are listed in the next section.
+
+## `mpc_behavioural_ram_v1.json` (opt-in)
+
+`mpc_default_v1.json` with one change: RAM declares only its implemented
+behavioural channel, `channels.RAM = ["default"]` (name
+`mpc-behavioural-ram-v1`). Everything else (necessity set, cutoffs, alpha,
+null families, reference, source rule, estimator modes, bearers) is
+identical; `tests/test_protocol_examples.py` checks this. It is never
+selected automatically: `run_pipeline.py --protocol
+protocols/mpc_behavioural_ram_v1.json` only.
+
+Under it RAM can be ABSENT when the behavioural channel is credibly at its
+null, so RAM can exclude. Selecting it is a substantive decision that has to
+be preregistered (with its hash) before use, and results under it are
+reported as **behavioural-RAM results**: an ABSENT RAM means "no
+responsiveness-and-adaptation above the null in the recorded behaviour", not
+absence of responsiveness (covert, perturbational and endogenous
+responsiveness are not measured by this channel). A dataset that measures
+covert or perturbational responsiveness declares those typed channels in a
+derived protocol instead (for example `["behavioural_feedback",
+"covert_neural"]` for events with an `impact_channel` column), so that RAM is
+ABSENT only when every measured channel is. `scripts/build_example_protocols.py
+--base protocols/mpc_behavioural_ram_v1.json --out-dir <dir>` derives the
+example hub protocols from it (their sidecars carry this caveat).
+
+History: an intermediate draft of the 1.1.0 post-freeze fixes had made this
+protocol the command-line default under another name; that reversed the
+preregistered stance above and was undone (see the
+[changelog](../CHANGELOG.md)).
+
+## `mpc_default_v1.json`: declarations (unchanged since the freeze)
 
 - **Necessity set**: all five principles (RAM, PDI, NAS, IIM, SRPI).
 - **Channels**: one untyped `default` channel for PDI, NAS, IIM and SRPI. RAM
@@ -57,8 +122,8 @@ systems (a development finding, not a tuning target).
   confirmed at the freeze: behavioural non-response does not establish the
   absence of responsiveness and adaptation (covert responsiveness,
   dreaming, paralysis), so a necessity-only rule must not exclude on it.
-  Dropping these channels in a derived protocol is a substantive decision
-  that has to be justified.
+  Dropping these channels (as `mpc_behavioural_ram_v1.json` does) is a
+  substantive decision that has to be justified and preregistered.
 - **Cutoffs**: `(z, delta) = (0.25, 0.10)` for every principle, `alpha =
   0.05`, as the bench protocol.
 - **Null families**: RAM `onset_jitter` (rigid event-train shift), PDI
@@ -71,7 +136,11 @@ systems (a development finding, not a tuning target).
   mean excess over the null per principle and channel. The high-state runs
   are part of their own reference (their `c` averages 1), so their verdicts
   are not independent tests of necessity; necessity tests among
-  report-positive episodes need an external reference.
+  report-positive episodes need an external reference
+  (`scripts/compute_empirical_reference.py`, from a declared held-out subset
+  of participants: keys `P` for the single-channel principles and
+  `RAM:default` for RAM's behavioural channel; RAM's unimplemented channels
+  get no reference, `NOT_IMPLEMENTED`, and stay UNDEFINED).
 - **Source rule**: `single_source` (one bearer, joint dependence above null
   when components come from different node sets).
 - **Estimator modes**:
@@ -87,7 +156,8 @@ systems (a development finding, not a tuning target).
     derived protocol; scalp EEG needs the forward-model validation of the
     applicability registry first);
   - NAS: `mode='capacity'` (declare `workspace_nodes` in a derived protocol
-    when the hub set is known);
+    when the hub set is known; without it NAS is UNDEFINED,
+    `NO_DECLARED_WORKSPACE`; see [`examples/`](examples/README.md));
   - IIM: calibrated Delta_Psi with the `node_shrinkage` TPM and
     `cut_mode='bidirectional'` (kept: on the development bench the
     directional mode showed no dose-response to the recurrent loops, see the
@@ -203,9 +273,23 @@ python scripts/bench_reference.py --run --family A --seeds 900-919 \
 ## Use
 
 ```bash
+# default protocol (v1; NAS UNDEFINED without a hub)
 python run_pipeline.py --dataset-id ds003171 \
     --bids-root /data/openneuro/ds003171 --out-dir outputs/ds003171 \
-    --protocol protocols/mpc_default_v1.json --null-surrogates 19 --bootstrap-se 100
+    --null-surrogates 19 --bootstrap-se 100
+# v1 with a declared NAS hub (an example: preregister the hub first)
+python run_pipeline.py --dataset-id ds003171 \
+    --bids-root /data/openneuro/ds003171 --out-dir outputs/ds003171 \
+    --protocol protocols/examples/mpc_default_v1_schaefer400_7networks_hub.json \
+    --null-surrogates 19 --bootstrap-se 100
+# external reference from held-out participants (per channel: RAM:default)
+python scripts/compute_empirical_reference.py \
+    --data-dir outputs/ds003171/preprocessed --atlas schaefer400 \
+    --bids-root /data/openneuro/ds003171 --dataset-id ds003171 \
+    --protocol protocols/examples/mpc_default_v1_schaefer400_7networks_hub.json \
+    --reference-subjects @heldout.txt --evaluation-subjects @evaluation.txt \
+    --out outputs/ds003171_reference/empirical_reference.json \
+    --write-protocol outputs/ds003171_reference/mpc_default_v1_hub_external.json
 python scripts/run_bench.py factorial --seeds 0-19 --null-surrogates 19 \
     --se-groups 10 --protocol protocols/mpc_bench_v1.json --out outputs/bench/factorial_A
 python scripts/null_calibration.py --protocol protocols/mpc_bench_v1.json --out out/null

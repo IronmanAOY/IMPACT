@@ -15,13 +15,15 @@ from impact_pipeline import mpc_metrics as mm
 REPO = Path(__file__).resolve().parents[1]
 PROTOCOLS = REPO / "protocols"
 DEFAULT = PROTOCOLS / "mpc_default_v1.json"
+# opt-in (1.1.0 post-freeze): RAM declared on its behavioural channel only
+BEHAVIOURAL_RAM = PROTOCOLS / "mpc_behavioural_ram_v1.json"
 BENCH = PROTOCOLS / "mpc_bench_v1.json"
 ANCHORED = PROTOCOLS / "mpc_bench_v1_anchored.json"
 
 
 def test_protocols_load_and_their_hashes_are_documented():
     readme = (PROTOCOLS / "README.md").read_text(encoding="utf-8")
-    for path in (DEFAULT, BENCH, ANCHORED):
+    for path in (DEFAULT, BEHAVIOURAL_RAM, BENCH, ANCHORED):
         proto = E.Protocol.from_json(path)
         # canonical: the file is the protocol's own serialisation
         assert json.loads(path.read_text()) == proto.to_dict()

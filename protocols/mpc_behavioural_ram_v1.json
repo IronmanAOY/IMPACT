@@ -1,0 +1,86 @@
+{
+  "alpha": 0.05,
+  "bearer_nodes": {},
+  "channels": {
+    "IIM": [
+      "default"
+    ],
+    "NAS": [
+      "default"
+    ],
+    "PDI": [
+      "default"
+    ],
+    "RAM": [
+      "default"
+    ],
+    "SRPI": [
+      "default"
+    ]
+  },
+  "cutoffs": {
+    "IIM": [
+      0.25,
+      0.1
+    ],
+    "NAS": [
+      0.25,
+      0.1
+    ],
+    "PDI": [
+      0.25,
+      0.1
+    ],
+    "RAM": [
+      0.25,
+      0.1
+    ],
+    "SRPI": [
+      0.25,
+      0.1
+    ]
+  },
+  "estimators": {
+    "IIM": {
+      "cut_mode": "bidirectional",
+      "tpm_estimator": "node_shrinkage"
+    },
+    "NAS": {
+      "mode": "capacity"
+    },
+    "PDI": {
+      "mode": "repertoire",
+      "repertoire_null": "circular_shift"
+    },
+    "RAM": {
+      "require_explicit_feedback": true,
+      "require_explicit_goals": true,
+      "update": "prediction_error",
+      "update_fallback": "feedback_magnitude"
+    },
+    "SRPI": {
+      "mode": "agency",
+      "mode_fallback": "legacy"
+    }
+  },
+  "name": "mpc-behavioural-ram-v1",
+  "necessity_set": [
+    "RAM",
+    "PDI",
+    "NAS",
+    "IIM",
+    "SRPI"
+  ],
+  "null_families": {
+    "IIM": "circular_shift",
+    "NAS": "block_circular_shift",
+    "PDI": "circular_shift",
+    "RAM": "onset_jitter"
+  },
+  "reference": {
+    "kind": "cohort_high_state",
+    "session": "awake"
+  },
+  "schema": "impact-mpc-protocol/2",
+  "source_rule": "single_source"
+}

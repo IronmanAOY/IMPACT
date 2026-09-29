@@ -58,7 +58,9 @@ Reason codes (stable strings, ``;``-joined in tables):
 - ``INCONCLUSIVE:<P>``: neither credibly above ``z_j`` nor credibly below
   ``delta_j``.
 - ``UNDEFINED:<P>:<reason>``: the estimator or the null is undefined (e.g.
-  ``DEGENERATE_NULL``, ``INVALID_SE``, ``NULL_FAMILY_MISMATCH``).
+  ``DEGENERATE_NULL``, ``INVALID_SE``, ``NULL_FAMILY_MISMATCH``;
+  ``UNDEFINED:NAS:NO_DECLARED_WORKSPACE`` when NAS capacity has no declared
+  hub).
 - ``NOT_IMPLEMENTED:<P>:<channel>``: the evidence channel is not implemented.
 - ``ESTIMATOR_NOT_VALIDATED:<P>:<estimator>``: the applicability registry does
   not validate the estimator (version) for this substrate/grain/regime.
@@ -135,6 +137,10 @@ REASON_INVALID_ANCHORS = "INVALID_ANCHORS"
 REASON_DEGENERATE_NULL = "DEGENERATE_NULL"
 REASON_INVALID_SE = "INVALID_SE"
 REASON_NULL_FAMILY_MISMATCH = "NULL_FAMILY_MISMATCH"
+# Detail of ``UNDEFINED:NAS:<detail>``: NAS ``mode='capacity'`` needs a
+# declared hub (``workspace_nodes``); without one the pipeline records the
+# component as UNDEFINED instead of calling the estimator (1.1.0 post-freeze).
+REASON_NO_DECLARED_WORKSPACE = "NO_DECLARED_WORKSPACE"
 REASON_NOT_VALIDATED = "ESTIMATOR_NOT_VALIDATED"
 REASON_NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
 REASON_BEARER_MISMATCH = "BEARER_MISMATCH"

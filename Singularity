@@ -2,7 +2,7 @@ Bootstrap: docker
 From: condaforge/miniforge3:26.7.2-0@sha256:eeb947cc87d61d46820b123bd7c26e1cbdc4b182ff7d0331e501a32a936b82e3
 
 # IMPaCT Synergy Pipeline, Apptainer/Singularity image. Same content as the
-# Dockerfile: pinned conda environment + code + atlases, no data.
+# Dockerfile: pinned conda environment + code + protocols + atlases, no data.
 #
 # Build from the repository root:
 #   apptainer build impact-synergy-pipeline_1.1.0.sif Singularity
@@ -25,6 +25,7 @@ From: condaforge/miniforge3:26.7.2-0@sha256:eeb947cc87d61d46820b123bd7c26e1cbdc4
   run_pipeline.py /opt/impact/run_pipeline.py
   src /opt/impact/src
   scripts /opt/impact/scripts
+  protocols /opt/impact/protocols
   atlases /opt/impact/atlases
   licenses/MIT_LICENSE /opt/impact/licenses/MIT_LICENSE
   licenses/THIRD_PARTY_NOTICES.md /opt/impact/licenses/THIRD_PARTY_NOTICES.md

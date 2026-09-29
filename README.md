@@ -136,10 +136,25 @@ against K surrogates (default 0: `NO_NULL_CALIBRATION:<P>`) and
 `--bootstrap-se B` adds B moving-block bootstrap replicates per run and
 component (default 0: `NO_SAMPLING_SE:<P>`); with either at 0 every verdict is
 `UNDETERMINED`. Runtime grows roughly (K+1)-fold and (B+1)-fold per component.
-`--protocol protocols/mpc_default_v1.json` selects the declared estimator modes
-(RAM prediction-error update, PDI repertoire, NAS capacity, SRPI agency, each
-with its declared fallback). Use `--iim-max-nodes` to bound the IIM subsystem
-on a workstation.
+On empirical data the pipeline uses the preregistered
+`protocols/mpc_default_v1.json` unless `--protocol` says otherwise: the
+declared estimator modes (RAM prediction-error update, PDI repertoire, NAS
+capacity, SRPI agency, each with its declared fallback). RAM also declares its
+unimplemented `perturbational` and `endogenous` channels, so RAM can be
+PRESENT but never ABSENT: behavioural non-response alone never excludes,
+because covert, perturbational and endogenous responsiveness are not measured
+([why](protocols/README.md#mpc_default_v1json-default-for-empirical-data)).
+NAS capacity needs a declared hub; without one NAS is UNDEFINED in every run
+(`UNDEFINED:NAS:NO_DECLARED_WORKSPACE`), so pass a protocol derived from v1
+that declares the hub for your grain:
+[`protocols/examples/`](protocols/examples/README.md) has two (examples, to be
+preregistered before confirmatory use). `--protocol
+protocols/mpc_behavioural_ram_v1.json` is an opt-in alternative that declares
+RAM on its behavioural channel only (a choice to preregister; RAM can then be
+ABSENT, and results under it are behavioural-RAM results: an ABSENT RAM means
+no responsiveness-and-adaptation above the null in the recorded behaviour, not
+absence of responsiveness); `--protocol none` builds the protocol from the
+flags. Use `--iim-max-nodes` to bound the IIM subsystem on a workstation.
 
 fMRI (ds003171, propofol sedation; sessions `awake` and `deep`):
 
@@ -167,8 +182,10 @@ This two-subject example takes several minutes on a laptop. ds005620 has no
 goal/feedback or self/other events, so RAM and SRPI are undefined
 (`UNDEFINED:RAM:missing_stimulus_events`,
 `UNDEFINED:SRPI:missing_self_and_nonself_events`), the legacy CI is undefined,
-and no verdict can be `MPC_CONSISTENT`. Three surrogates only exercise the code;
-use at least 19 for inference.
+NAS is UNDEFINED as well (`UNDEFINED:NAS:NO_DECLARED_WORKSPACE`: the default
+protocol declares no hub, and the 64-channel example in `protocols/examples/`
+does not fit ds005620's montage), and no verdict can be `MPC_CONSISTENT`.
+Three surrogates only exercise the code; use at least 19 for inference.
 
 Useful options (`python run_pipeline.py --help` lists all):
 
@@ -176,7 +193,7 @@ Useful options (`python run_pipeline.py --help` lists all):
 |---|---|
 | `--subjects A B` | restrict to some subjects |
 | `--mpc-metrics RAM PDI NAS IIM SRPI` | subset of estimators (default all) |
-| `--protocol protocol.json` | MPC protocol (`evidence.Protocol` JSON: necessity set, channels, cutoffs, null families, reference, source rule, estimator modes, bearer nodes); its hash is recorded |
+| `--protocol protocol.json` | MPC protocol (`evidence.Protocol` JSON: necessity set, channels, cutoffs, null families, reference, source rule, estimator modes, bearer nodes); its hash is recorded. Default on real data: `protocols/mpc_default_v1.json` (not with `--necessity-set`; declares no NAS hub, see `protocols/examples/`); `none`: built from the flags |
 | `--null-surrogates K` | null calibration per run and component (0 = none) |
 | `--bootstrap-se B`, `--bootstrap-block-len L` | block-bootstrap sampling SE per run and component (0 = none; block default ceil(sqrt(n_time)) samples) |
 | `--necessity-set RAM,PDI,NAS,IIM,SRPI` | principles the verdict requires (default all five; must match `--protocol`) |
@@ -223,7 +240,7 @@ Main columns of `step2_df.csv` (full list: `docs/metrics.md`, section 11):
 | `<P>_estimate`, `<P>_null_mean`, `<P>_null_sd`, `<P>_null_n` | raw estimate and null moments (IIM on the ΔΨ scale, bits) |
 | `<P>_se`, `<P>_se_df`, `<P>_boot_n`, `<P>_boot_failed` | bootstrap sampling SE, its degrees of freedom, valid and failed replicates |
 | `<P>_c`, `<P>_c_se`, `<P>_c_df`, `<P>_c_lower`, `<P>_c_upper`, `<P>_margin`, `<P>_margin_absent` | construct scale `c = (m - nu)/(rho - nu)`, its SE, degrees of freedom, one-sided bounds and the margins to the cutoffs |
-| `<P>_reference`, `<P>_reference_se`, `<P>_estimator`, `<P>_mode_reason`, `<P>_channels` | reference anchor, estimator id `compute_<P>:<mode>@<version>`, fallback reason, per-channel statuses |
+| `<P>_reference`, `<P>_reference_se`, `<P>_estimator`, `<P>_estimator_version`, `<P>_mode_reason`, `<P>_channels` | reference anchor, estimator id `compute_<P>:<mode>@<version>` and its version, fallback reason, per-channel statuses |
 | `MPC_necessity_set`, `MPC_null_surrogates`, `MPC_null_seed`, `MPC_null_families`, `MPC_bootstrap_se`, `MPC_bootstrap_block_len`, `MPC_protocol_hash`, `MPC_joint_dependence`, `MPC_joint_dependence_p` | evidence configuration and the single-source test |
 | `CI`, `CI_defined`, `CI_missing`, `CI_reference` | legacy CI (deprecated, not a gate); NaN with the missing components listed when undefined |
 | `PDI_anchor`, `PDI_task`, `*_reason`; `IIM_raw`, `IIM_defined`, `IIM_undefined_reason` | endpoints and reasons |
@@ -245,11 +262,18 @@ scripts and the configuration variables are described in
 python3 run_pipeline.py --execution-mode hunter --hunter-stage build-campaign \
     --hardware-target hunter-apu --dataset-id ds003171 \
     --bids-root <BIDS> --out-dir <OUT> --iim-max-nodes <N> \
-    --protocol protocols/mpc_default_v1.json \
+    --protocol <PROTOCOL> \
     --hunter-iim-null-surrogates <K> --null-surrogates <K> \
     --hunter-iim-bootstrap-se <B> --bootstrap-se <B>
 bash <OUT>/cache/hunter_iim_campaign/pbs/00_submit_all.sh    # on a Hunter login node
 ```
+
+`<PROTOCOL>` is the protocol derived from `protocols/mpc_default_v1.json` that
+declares the NAS hub for the dataset's grain (the author gives it; for
+`schaefer400` the example
+`protocols/examples/mpc_default_v1_schaefer400_7networks_hub.json` shows the
+form). Without `--protocol` the campaign uses `mpc_default_v1.json`, which
+declares no hub, and NAS is UNDEFINED (`NO_DECLARED_WORKSPACE`) in every run.
 
 `--hunter-iim-null-surrogates K` adds K surrogate runs and
 `--hunter-iim-bootstrap-se B` B block-bootstrap replicate runs per real run to
@@ -328,6 +352,8 @@ files, with `--out` pointing to the manuscript folder.
 | `scripts/definedness_audit.py` | which principle / channel is definable on which dataset, from BIDS metadata only, with an access log |
 | `scripts/null_calibration.py` | false-PRESENT rates on null families under a protocol (`--protocol`, `--se-groups`; `--status-rule legacy_v1` is a diagnostic only) |
 | `scripts/bench_reference.py` | positive-control reference anchor of the bench protocol |
+| `scripts/compute_empirical_reference.py` | external empirical reference anchor (per-principle rho and SE) from the high-state runs of a declared held-out subset of participants, with provenance; optionally writes the protocol with that reference |
+| `scripts/build_example_protocols.py` | the example derived protocols with a declared NAS hub (`protocols/examples/`; `--check` verifies them) |
 | `scripts/benchmark_attribution_rules.py` | rule audit of MPC-Bench on estimated statuses |
 | `scripts/calibrate_bench.py` | development calibration of the bench protocol: reference anchors, construct-scale dose-response, null false-PRESENT rates of candidate cutoffs, SE checks, entry criteria (development records only) |
 | `scripts/iim_validation.py` | IIM against the exact TPMs of family B (both cut modes, run lengths, coupling sweep) |

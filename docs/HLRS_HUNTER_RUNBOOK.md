@@ -590,7 +590,7 @@ guess IIM sizes: the cost of IIM grows steeply with the number of nodes.
 | IIM subsystem size | `--iim-max-nodes` | as given by the author. The pipeline uses 3 bins per node (3^N states; above 1500 states the bins drop to 2). Cost grows steeply with N |
 | IIM cut sample | `--iim-n-parts` | unset = exhaustive |
 | IIM mechanism/purview sizes | `--iim-max-mechanism-size`, `--iim-max-purview-size` | unset = all |
-| MPC protocol | `--protocol` | e.g. `protocols/mpc_default_v1.json` (estimator modes, cutoffs, null families, reference); its hash is recorded, and the campaign computes IIM with its IIM options |
+| MPC protocol | `--protocol` | the protocol file the author gives you: `protocols/mpc_default_v1.json` (the preregistered default for real data, used when `--protocol` is not given: estimator modes, cutoffs, null families, reference) with the NAS hub declared for the dataset's grain, e.g. `protocols/examples/mpc_default_v1_schaefer400_7networks_hub.json` for `schaefer400` (an example; the hub has to be preregistered before confirmatory use). v1 itself declares no hub: without a derived protocol NAS is UNDEFINED (`NO_DECLARED_WORKSPACE`) in every run. The hash is recorded, and the campaign computes IIM with the protocol's IIM options. Do not use `protocols/mpc_behavioural_ram_v1.json` (opt-in: RAM can be ABSENT on behavioural evidence alone; an ABSENT RAM then means no responsiveness-and-adaptation above the null in the recorded behaviour, not absence of responsiveness) unless the author asks for it |
 | IIM surrogate runs per real run | `--hunter-iim-null-surrogates K` | e.g. 19 (for `IIM_null_p`, K >= 19) |
 | IIM bootstrap replicate runs per real run | `--hunter-iim-bootstrap-se B` | as given by the author (e.g. the same B as `--bootstrap-se`); 0 = IIM has no sampling SE |
 | Null surrogates for the evidence layer | `--null-surrogates K` | e.g. 19; 0 = every legacy-mode component `NO_NULL_CALIBRATION` |
@@ -630,10 +630,15 @@ nice -n 19 python3 run_pipeline.py --execution-mode hunter --hunter-stage build-
     --out-dir "$WS/outputs/ds003171" \
     --mpc-metrics RAM PDI NAS IIM SRPI \
     --iim-max-nodes <N> \
-    --protocol protocols/mpc_default_v1.json \
+    --protocol <PROTOCOL> \
     --hunter-iim-null-surrogates <K> --null-surrogates <K> \
     --hunter-iim-bootstrap-se <B> --bootstrap-se <B>
 ```
+
+`<PROTOCOL>` is the protocol file from the table in 9.1 (derived from
+`protocols/mpc_default_v1.json`, with the declared NAS hub). Check the
+`MPC protocol: <path> (hash <12 hex digits>)` line of the log against the
+hash the author gives you.
 
 What happens:
 

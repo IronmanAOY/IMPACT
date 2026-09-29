@@ -174,6 +174,26 @@ def test_container_recipes_do_not_copy_data():
         assert (ROOT / src).exists(), f"Singularity %files source missing: {src}"
 
 
+def test_container_recipes_ship_the_default_protocol():
+    """run_pipeline.py reads protocols/mpc_default_v1.json by default on
+    empirical data (1.1.0 post-freeze fixes), so both images must contain
+    protocols/ next to run_pipeline.py (else every default run stops with
+    'MPC protocol not found')."""
+    import run_pipeline
+
+    default = Path(run_pipeline.DEFAULT_EMPIRICAL_PROTOCOL)
+    assert default == ROOT / "protocols" / "mpc_default_v1.json" and default.is_file()
+    ignore = [ln.strip() for ln in (ROOT / ".dockerignore").read_text().splitlines()]
+    assert "!protocols/" in ignore
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    assert re.search(r"^COPY protocols/ protocols/$", dockerfile, flags=re.M)
+    singularity = (ROOT / "Singularity").read_text()
+    files = singularity.split("%files", 1)[1].split("\n%", 1)[0]
+    lines = [ln.strip() for ln in files.splitlines()]
+    assert "protocols /opt/impact/protocols" in lines
+    assert "/opt/impact/run_pipeline.py" in files
+
+
 @needs_bash
 def test_singularity_sections_are_valid_shell():
     text = (ROOT / "Singularity").read_text()

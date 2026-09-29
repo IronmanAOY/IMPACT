@@ -1754,6 +1754,50 @@ def _run_hunter_stage(
     return None
 
 
+# Default MPC protocol of command-line runs on empirical data (1.1.0
+# post-freeze fixes): the preregistered, freeze-confirmed
+# protocols/mpc_default_v1.json (byte-identical to tag mpcbench-freeze-v1).
+# RAM keeps its unimplemented perturbational and endogenous channels, so
+# behavioural non-response alone can never make RAM ABSENT (covert,
+# perturbational and endogenous responsiveness are unmeasured; see
+# protocols/README.md). protocols/mpc_behavioural_ram_v1.json (RAM declared
+# on its behavioural channel only) is an opt-in alternative, never a default.
+DEFAULT_EMPIRICAL_PROTOCOL = root / "protocols" / "mpc_default_v1.json"
+# --protocol values that build the protocol from the flags instead (the
+# behaviour at the freeze; always used for dummy/synthetic data).
+PROTOCOL_FROM_FLAGS = ("none", "flags")
+
+
+def resolve_cli_protocol(protocol=None, data_origin=REAL_DATA_ORIGIN,
+                         necessity_set=None):
+    """
+    The MPC protocol of a command-line run (``--protocol``).
+
+    - an explicit path is used as given;
+    - ``none`` / ``flags``: no protocol file; the protocol is built from the
+      flags (``--necessity-set``, estimator modes of the dataset config) as
+      at the freeze (tag mpcbench-freeze-v1);
+    - omitted: an empirical run (``--data-origin real``) uses
+      :data:`DEFAULT_EMPIRICAL_PROTOCOL`; a dummy/synthetic run, or a run
+      with an explicit ``--necessity-set`` (which only a flag-built protocol
+      can take), builds the protocol from the flags.
+
+    Returns a path string or None (flag-built protocol).
+    """
+    from impact_pipeline.provenance import normalize_data_origin
+
+    if protocol is not None:
+        text = str(protocol).strip()
+        if text.lower() in PROTOCOL_FROM_FLAGS:
+            return None
+        return text
+    if necessity_set is not None:
+        return None
+    if normalize_data_origin(data_origin) != REAL_DATA_ORIGIN:
+        return None
+    return str(DEFAULT_EMPIRICAL_PROTOCOL)
+
+
 def _mpc_evidence_options(
     null_surrogates=0,
     necessity_set=None,
@@ -1955,6 +1999,12 @@ def main(
         null_surrogates, necessity_set, applicability_registry,
         protocol=protocol, bootstrap_se=bootstrap_se,
         bootstrap_block_len=bootstrap_block_len,
+    )
+    _proto_prov = _mpc_protocol_provenance(mpc_evidence_options, protocol)
+    log.info(
+        "MPC protocol: %s (hash %s)",
+        _proto_prov.get("source") or _proto_prov.get("note"),
+        (_proto_prov.get("hash") or "-")[:12],
     )
 
     catalog_entry = get_report_dataset(dataset_id)
@@ -2914,7 +2964,11 @@ if __name__ == '__main__':
             "MPC protocol JSON (impact_pipeline.evidence.Protocol: necessity "
             "set, channels, construct-scale cutoffs, alpha, null families, "
             "reference, source rule, estimator modes, bearer nodes); its "
-            "SHA-256 is recorded with the verdicts."
+            "SHA-256 is recorded with the verdicts. Default for real data: "
+            "protocols/mpc_default_v1.json, the preregistered protocol (not "
+            "with --necessity-set; NAS capacity needs a hub declared in a "
+            "derived protocol, see protocols/examples/); 'none' builds the "
+            "protocol from the flags (always for dummy data)."
         ),
     )
     parser.add_argument(
@@ -3131,7 +3185,9 @@ if __name__ == '__main__':
         null_surrogates=args.null_surrogates,
         necessity_set=args.necessity_set,
         applicability_registry=args.applicability_registry,
-        protocol=args.protocol,
+        protocol=resolve_cli_protocol(
+            args.protocol, args.data_origin, args.necessity_set
+        ),
         bootstrap_se=args.bootstrap_se,
         bootstrap_block_len=args.bootstrap_block_len,
     )

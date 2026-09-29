@@ -78,11 +78,21 @@ eigh).
 python3 run_pipeline.py --execution-mode hunter --hunter-stage build-campaign \
   --hardware-target hunter-apu --dataset-id ds003171 --bids-root <BIDS> --out-dir <OUT> \
   --mpc-metrics RAM PDI NAS IIM SRPI --iim-max-nodes <N> \
-  --protocol protocols/mpc_default_v1.json \
+  --protocol <PROTOCOL> \
   --hunter-iim-null-surrogates <K> --null-surrogates <K> \
   --hunter-iim-bootstrap-se <B> --bootstrap-se <B>
 bash <OUT>/cache/hunter_iim_campaign/pbs/00_submit_all.sh
 ```
+
+- `<PROTOCOL>`: the protocol derived from the default
+  `protocols/mpc_default_v1.json` that declares the NAS hub for the dataset's
+  grain (the author gives it; `protocols/examples/` shows the form, e.g.
+  `mpc_default_v1_schaefer400_7networks_hub.json` for `schaefer400`). v1
+  declares no hub, so without it NAS is UNDEFINED (`NO_DECLARED_WORKSPACE`) in
+  every run. The opt-in `protocols/mpc_behavioural_ram_v1.json` (RAM on its
+  behavioural channel only, so RAM can be ABSENT: an ABSENT RAM then means no
+  responsiveness-and-adaptation above the null in the recorded behaviour, not
+  absence of responsiveness) is used only when the author asks for it.
 
 - You can build on a login node. If no APU is visible, the problem is prepared on
   the CPU, which gives numerically identical TPMs. The jobs still request
