@@ -187,6 +187,16 @@ unchanged unless listed under "Changed".
   and one script per figure (`scripts/figures/`).
 - Documentation: `docs/HLRS_HUNTER_RUNBOOK.md`, `docs/ARCHITECTURE.md`, this
   changelog; `docs/metrics.md` rewritten against the code.
+- `protocols/applicability_registry_v1.json`, the first applicability
+  registry built from benchmark evidence, and
+  `scripts/build_applicability_registry.py`, which derives it from the
+  confirmatory MPC-Bench results with the entry criteria of the preregistration
+  (valid anchor, null false-PRESENT rate, dose-response, specificity without
+  the mechanism, cross-talk). Validated: SRPI-agency on the rate agents,
+  NAS-capacity and bidirectional IIM on the oscillator agents; every other
+  estimator and substrate is listed as excluded with the failed criteria. No
+  forward-modelled EEG or BOLD entry exists, so human EEG and fMRI components
+  are `ESTIMATOR_NOT_VALIDATED` under this registry.
 
 ### Changed
 

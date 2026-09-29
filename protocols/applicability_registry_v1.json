@@ -1,0 +1,1830 @@
+{
+  "schema": "impact-mpc-registry/2",
+  "version": "1.0.0",
+  "criteria": {
+    "alpha": 0.05,
+    "false_present_tolerance": 0.02,
+    "two_sided": false,
+    "min_recovery_slope": 0.0,
+    "cross_talk_max": 1.0
+  },
+  "entries": [
+    {
+      "principle": "SRPI",
+      "estimator": "compute_SRPI:agency",
+      "version": "srpi-v2-2026.09",
+      "substrate": "synthetic_rate",
+      "grain": "*",
+      "regime": {
+        "T_min": 11497,
+        "nodes_min": 30,
+        "nodes_max": 30,
+        "fs_or_tr": {
+          "min": 0.05,
+          "max": 0.05
+        }
+      },
+      "evidence": {
+        "run_id": "mpcbench-freeze-v1:confirmatory:family-A",
+        "null_false_present_rate": 0.03,
+        "null_false_present_rate_is": "maximum over the null classes",
+        "null_false_present_pooled": {
+          "k": 12,
+          "n": 1640,
+          "rate": 0.007317073170731708,
+          "cp_upper_95": 0.011828320604909133
+        },
+        "null_classes": 18,
+        "recovery_slope": 1.7648681762841345,
+        "recovery_spearman_rho": 0.9246865502052052,
+        "recovery_spearman_p": 5.606862904137749e-85,
+        "recovery_monotone": true,
+        "recovery_monotone_is": "criterion (b1): Spearman rho > 0 at p < alpha",
+        "own_knob_level_means_nondecreasing": true,
+        "off_mechanism_present": {
+          "k": 0,
+          "n": 60,
+          "rate": 0.0,
+          "cp_upper_95": 0.04870291331009749
+        },
+        "cross_talk": 0.16166869024747682,
+        "cross_talk_is": "max |median paired delta c| of another switch / own switch's (declared dependencies excluded)",
+        "anchor": {
+          "mean_excess": 0.16436844616154844,
+          "se": 0.011773090322829168,
+          "one_sided_lower_bound": 0.14401120939133985,
+          "n": 20
+        },
+        "own_knob": "e",
+        "witness_contrasts": [
+          {
+            "switch": "eta",
+            "own": false,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": -0.0001980226609513691
+          },
+          {
+            "switch": "K",
+            "own": false,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": -0.196146293696293
+          },
+          {
+            "switch": "g_b",
+            "own": false,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": -0.014813931735087715
+          },
+          {
+            "switch": "c_int",
+            "own": false,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": -0.06739165383122236
+          },
+          {
+            "switch": "e",
+            "own": true,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": 1.2132608571025043
+          }
+        ],
+        "records_git_sha": [
+          "b908ee3230d8b93a1983960a9621e49bdd5752b2"
+        ],
+        "adversarial_descriptive": {
+          "source": {
+            "path": "outputs/paper1_mpcbench/c3/summary/adversarial_status_summary.csv",
+            "sha256": "8e6341f4f294b638a1d0c74da1ab50b5084b48ce14c5a5821189644a241a68e5"
+          },
+          "rows": [
+            {
+              "construction": "common_driver",
+              "mechanism_on_by_design": false,
+              "present": "0/20",
+              "absent": "1/20"
+            },
+            {
+              "construction": "hypersynchrony",
+              "mechanism_on_by_design": false,
+              "present": "0/20",
+              "absent": "0/20"
+            },
+            {
+              "construction": "parity_grid",
+              "mechanism_on_by_design": false,
+              "present": "0/20",
+              "absent": "0/20"
+            },
+            {
+              "construction": "random_label_self_other",
+              "mechanism_on_by_design": false,
+              "present": "0/20",
+              "absent": "0/20"
+            },
+            {
+              "construction": "reflex_arc",
+              "mechanism_on_by_design": false,
+              "present": "1/20",
+              "absent": "0/20"
+            },
+            {
+              "construction": "scrambled_feedback",
+              "mechanism_on_by_design": true,
+              "present": "18/20",
+              "absent": "0/20"
+            }
+          ]
+        }
+      },
+      "status": "validated",
+      "conditions": {
+        "estimator_options": {
+          "mode": "agency"
+        },
+        "null_family": "yoked_label_permutation",
+        "null_surrogates": 19,
+        "sampling_se": "delete-a-group jackknife, G = 10",
+        "cutoffs": [
+          0.25,
+          0.1
+        ],
+        "reference": "frozen family-A anchor (development seeds 900-919)"
+      },
+      "related_preregistered_outcomes": {
+        "HC3_own_switch": {
+          "outcome": "SUPPORTED",
+          "target_fraction": 0.95,
+          "target_median_delta_c": 1.2132608571025043
+        },
+        "HC4_witnesses": {
+          "A:W_SRPI_no_efference": {
+            "outcome": "FALSIFIED",
+            "pass_fraction": 0.05,
+            "target_absent_rate": 0.05,
+            "target": "SRPI",
+            "n_seeds": 20
+          }
+        },
+        "HC6_factorial_off_cells": {
+          "off_cells": 16,
+          "point_rate_above_bound": 0,
+          "familywise_lower_above_bound": 0,
+          "k": 0,
+          "n": 160
+        },
+        "HC8": [
+          {
+            "outcome": "FALSIFIED",
+            "reason": "SRPI ABSENT in >= 80% of seeds",
+            "family": "A",
+            "part": "a",
+            "n": 20,
+            "absent_rate": 0.05,
+            "not_present_rate": 1.0
+          },
+          {
+            "outcome": "NOT_EVALUABLE",
+            "reason": "RAM has no anchor",
+            "family": "A",
+            "part": "b_RAM"
+          },
+          {
+            "outcome": "SUPPORTED",
+            "reason": "|c_NAS(lesion) - c_NAS(nominal)| < z in >= 80%",
+            "family": "A",
+            "part": "b_NAS",
+            "n": 20,
+            "fraction": 1.0
+          }
+        ]
+      },
+      "note": "Related preregistered outcomes (not entry criteria; report them with the entry): HC3 own switch SUPPORTED (target drop >= 0.5 in 95% of seeds, 80% required); HC4 W_SRPI_no_efference FALSIFIED (target ABSENT in 5% of seeds); HC6: 0 of 16 factorial cells without the mechanism have a point PRESENT rate above 0.07, 0 a family-wise lower bound above 0.07 (pooled 0/160); HC8(a) FALSIFIED (efference lesion ABSENT in 5% of seeds, not PRESENT in 100%)."
+    },
+    {
+      "principle": "NAS",
+      "estimator": "compute_NAS:capacity",
+      "version": "nas-v2-2026.09",
+      "substrate": "stuart_landau",
+      "grain": "*",
+      "regime": {
+        "T_min": 11497,
+        "nodes_min": 30,
+        "nodes_max": 30,
+        "fs_or_tr": {
+          "min": 0.05,
+          "max": 0.05
+        }
+      },
+      "evidence": {
+        "run_id": "mpcbench-freeze-v1:confirmatory:family-C",
+        "null_false_present_rate": 0.0,
+        "null_false_present_rate_is": "maximum over the null classes",
+        "null_false_present_pooled": {
+          "k": 0,
+          "n": 1240,
+          "rate": 0.0,
+          "cp_upper_95": 0.0024129971544385033
+        },
+        "null_classes": 14,
+        "recovery_slope": 4.267626816899558,
+        "recovery_spearman_rho": 0.9748586650983008,
+        "recovery_spearman_p": 4.576305856902769e-131,
+        "recovery_monotone": true,
+        "recovery_monotone_is": "criterion (b1): Spearman rho > 0 at p < alpha",
+        "own_knob_level_means_nondecreasing": true,
+        "off_mechanism_present": {
+          "k": 0,
+          "n": 60,
+          "rate": 0.0,
+          "cp_upper_95": 0.04870291331009749
+        },
+        "cross_talk": 0.29876825038641464,
+        "cross_talk_is": "max |median paired delta c| of another switch / own switch's (declared dependencies excluded)",
+        "anchor": {
+          "mean_excess": 0.02920970377699224,
+          "se": 0.0007450603706836776,
+          "one_sided_lower_bound": 0.02792139544347882,
+          "n": 20
+        },
+        "own_knob": "g_b",
+        "witness_contrasts": [
+          {
+            "switch": "eta",
+            "own": false,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": -0.00442072358242146
+          },
+          {
+            "switch": "K",
+            "own": false,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": 0.26807891843935916
+          },
+          {
+            "switch": "g_b",
+            "own": true,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": 0.8972804777369645
+          },
+          {
+            "switch": "c_int",
+            "own": false,
+            "declared_dependency": true,
+            "n": 20,
+            "median_delta_c": 0.7134771655277548
+          },
+          {
+            "switch": "e",
+            "own": false,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": 0.0009719677323164477
+          }
+        ],
+        "records_git_sha": [
+          "b908ee3230d8b93a1983960a9621e49bdd5752b2"
+        ]
+      },
+      "status": "validated",
+      "conditions": {
+        "estimator_options": {
+          "mode": "capacity"
+        },
+        "null_family": "block_circular_shift",
+        "null_surrogates": 19,
+        "sampling_se": "delete-a-group jackknife, G = 10",
+        "cutoffs": [
+          0.25,
+          0.1
+        ],
+        "reference": "family-C anchor (confirmatory reference seeds 19000-19019)"
+      },
+      "related_preregistered_outcomes": {
+        "HC3_own_switch": {
+          "outcome": "SUPPORTED",
+          "target_fraction": 1.0,
+          "target_median_delta_c": 0.8972804777369645
+        },
+        "HC4_witnesses": {
+          "C:W_NAS_no_workspace": {
+            "outcome": "FALSIFIED",
+            "pass_fraction": 0.0,
+            "target_absent_rate": 0.15,
+            "target": "NAS",
+            "n_seeds": 20
+          },
+          "C:W_NAS_broadcast_only": {
+            "outcome": "FALSIFIED",
+            "pass_fraction": 0.0,
+            "target_absent_rate": 0.0,
+            "target": "NAS",
+            "n_seeds": 20
+          }
+        },
+        "HC6_factorial_off_cells": {
+          "off_cells": 16,
+          "point_rate_above_bound": 0,
+          "familywise_lower_above_bound": 0,
+          "k": 0,
+          "n": 160
+        }
+      },
+      "note": "Related preregistered outcomes (not entry criteria; report them with the entry): HC3 own switch SUPPORTED (target drop >= 0.5 in 100% of seeds, 80% required); HC4 W_NAS_broadcast_only FALSIFIED (target ABSENT in 0% of seeds); HC4 W_NAS_no_workspace FALSIFIED (target ABSENT in 15% of seeds); HC6: 0 of 16 factorial cells without the mechanism have a point PRESENT rate above 0.07, 0 a family-wise lower bound above 0.07 (pooled 0/160)."
+    },
+    {
+      "principle": "IIM",
+      "estimator": "compute_IIM:bidirectional",
+      "version": "iim-v4-2026.09",
+      "substrate": "stuart_landau",
+      "grain": "module_mean_periphery",
+      "regime": {
+        "T_min": 11497,
+        "nodes_min": 4,
+        "nodes_max": 4,
+        "bins": 2,
+        "fs_or_tr": {
+          "min": 0.05,
+          "max": 0.05
+        }
+      },
+      "evidence": {
+        "run_id": "mpcbench-freeze-v1:confirmatory:family-C",
+        "null_false_present_rate": 0.0,
+        "null_false_present_rate_is": "maximum over the null classes",
+        "null_false_present_pooled": {
+          "k": 0,
+          "n": 1240,
+          "rate": 0.0,
+          "cp_upper_95": 0.0024129971544385033
+        },
+        "null_classes": 14,
+        "recovery_slope": 2.1050425433962596,
+        "recovery_spearman_rho": 0.879157768060629,
+        "recovery_spearman_p": 1.1759065426301755e-65,
+        "recovery_monotone": true,
+        "recovery_monotone_is": "criterion (b1): Spearman rho > 0 at p < alpha",
+        "own_knob_level_means_nondecreasing": true,
+        "off_mechanism_present": {
+          "k": 0,
+          "n": 60,
+          "rate": 0.0,
+          "cp_upper_95": 0.04870291331009749
+        },
+        "cross_talk": 0.19845374509693114,
+        "cross_talk_is": "max |median paired delta c| of another switch / own switch's (declared dependencies excluded)",
+        "anchor": {
+          "mean_excess": 0.0020807997867637023,
+          "se": 0.00017672289983550055,
+          "one_sided_lower_bound": 0.0017752224221109342,
+          "n": 20
+        },
+        "own_knob": "c_int",
+        "witness_contrasts": [
+          {
+            "switch": "eta",
+            "own": false,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": -0.01079709672601653
+          },
+          {
+            "switch": "K",
+            "own": false,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": -0.11150621135765565
+          },
+          {
+            "switch": "g_b",
+            "own": false,
+            "declared_dependency": true,
+            "n": 20,
+            "median_delta_c": 0.45032415002985804
+          },
+          {
+            "switch": "c_int",
+            "own": true,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": 0.5618750671759429
+          },
+          {
+            "switch": "e",
+            "own": false,
+            "declared_dependency": false,
+            "n": 20,
+            "median_delta_c": 0.01327332030530376
+          }
+        ],
+        "records_git_sha": [
+          "b908ee3230d8b93a1983960a9621e49bdd5752b2"
+        ]
+      },
+      "status": "validated",
+      "conditions": {
+        "estimator_options": {
+          "cut_mode": "bidirectional",
+          "tpm_estimator": "node_shrinkage"
+        },
+        "null_family": "circular_shift",
+        "null_surrogates": 19,
+        "sampling_se": "delete-a-group jackknife, G = 10",
+        "cutoffs": [
+          0.25,
+          0.1
+        ],
+        "reference": "family-C anchor (confirmatory reference seeds 19000-19019)"
+      },
+      "related_preregistered_outcomes": {
+        "HC3_own_switch": {
+          "outcome": "FALSIFIED",
+          "target_fraction": 0.65,
+          "target_median_delta_c": 0.5618750671759429
+        },
+        "HC4_witnesses": {
+          "C:W_IIM_feedforward": {
+            "outcome": "FALSIFIED",
+            "pass_fraction": 0.0,
+            "target_absent_rate": 0.0,
+            "target": "IIM",
+            "n_seeds": 20
+          }
+        },
+        "HC6_factorial_off_cells": {
+          "off_cells": 16,
+          "point_rate_above_bound": 3,
+          "familywise_lower_above_bound": 0,
+          "k": 3,
+          "n": 160
+        }
+      },
+      "note": "Related preregistered outcomes (not entry criteria; report them with the entry): HC3 own switch FALSIFIED (target drop >= 0.5 in 65% of seeds, 80% required); HC4 W_IIM_feedforward FALSIFIED (target ABSENT in 0% of seeds); HC6: 3 of 16 factorial cells without the mechanism have a point PRESENT rate above 0.07, 0 a family-wise lower bound above 0.07 (pooled 3/160)."
+    }
+  ],
+  "description": "Applicability registry v1 of the MPC estimators, derived after the confirmatory MPC-Bench runs of the frozen code (tag mpcbench-freeze-v1) by applying the entry criteria preregistered in docs/preregistration/MPC_BENCH_PREREGISTRATION.md, section 4, unchanged. 'entries' holds only the combinations that meet every criterion; 'excluded' documents the others. No human EEG or fMRI use is covered: no estimator met the criteria on a forward-modelled substrate, so evidence on 'eeg'/'fmri' is ESTIMATOR_NOT_VALIDATED under this registry.",
+  "entry_criteria": {
+    "0": "valid reference anchor (one-sided 95% t lower bound of the positive control's mean excess > 0)",
+    "a": "false-PRESENT rate <= alpha + 0.02 on every statistical null class (point rate; one-sided, as preregistered)",
+    "b1": "Spearman rho(c, own dose) > 0 at p < alpha (sweeps, 10 levels, 20 seeds)",
+    "b2": "PRESENT rate <= alpha + 0.02 on the systems without the mechanism (own sweep at dose 0, own single-deficit witness, O_inert)",
+    "c": "the own switch changes c more than any other switch in the paired witness contrasts (declared dependencies c_int->NAS and g_b->IIM excluded); registry field cross_talk = ratio, cross_talk_max = 1",
+    "operationalisation": "scripts/calibrate_bench.py::entry_criteria and ::off_dose_rates (frozen code)"
+  },
+  "derived_from": {
+    "freeze_tag": "mpcbench-freeze-v1",
+    "freeze_commit": "f2cf2492a6cb4a1b0b1f5b8d680802fded31c1d1",
+    "freeze_tree": "72fcc7031de5cc6f660af7f54dc5e0a8b3bd6a6d",
+    "records_git_sha": [
+      "b908ee3230d8b93a1983960a9621e49bdd5752b2"
+    ],
+    "protocol": "protocols/mpc_bench_v1.json",
+    "protocol_hash": "855f6a444b77030d33faa68fcb45e8576b931d2d681cf215d4dacdb57a6b2520",
+    "family_C_protocol_hash": "45c9eea3b315f165cd45e2282fc7ce9759803ae8f5fe607821422ae0c38aaf00",
+    "reference_family_A": {
+      "source": "frozen protocol protocols/mpc_bench_v1.json (family-A PC_nominal, development seeds 900-919)",
+      "reference_summary": "protocols/mpc_bench_v1_reference_summary.json"
+    },
+    "reference_family_C": {
+      "source": "family-C PC_nominal, confirmatory reference seeds 19000-19019 (n=20), frozen anchor rule",
+      "n_records": 20,
+      "values": {
+        "NAS": 0.02920970377699224,
+        "IIM": 0.0020807997867637023
+      },
+      "se": {
+        "NAS": 0.0007450603706836776,
+        "IIM": 0.00017672289983550055
+      }
+    },
+    "null_calibration": {
+      "path": "outputs/paper1_mpcbench/c1/null_calibration/null_calibration_replicates.csv",
+      "sha256": "70c9e9799def564a7193e218c40356e24a135803346529904734330d0b823595",
+      "statuses_reproduced_family_A": 1.0
+    },
+    "bench_inputs": {
+      "A": [
+        {
+          "path": "outputs/paper1_mpcbench/c2/bench/A/witnesses/results.jsonl",
+          "sha256": "8ae7b29fbe46d0e52b5665aa8d9b98e346bf7389d55dea15225a2c7ac438a68b"
+        },
+        {
+          "path": "outputs/paper1_mpcbench/c2/bench/A/sweep/results.jsonl",
+          "sha256": "ba686ff3ea91528177689998938493a9c1ebbe2f3b80c8b52e886602da427a73"
+        }
+      ],
+      "C": [
+        {
+          "path": "outputs/paper1_mpcbench/c2/bench/C/witnesses/results.jsonl",
+          "sha256": "dff27a5b1b9062d770742ab3a966c0ae59b70bc4d6c070b1333ecbf03606afe4"
+        },
+        {
+          "path": "outputs/paper1_mpcbench/c2/bench/C/sweep/results.jsonl",
+          "sha256": "d4be0ae91cb0174eaa5d13e537813c180ba70299308e94f9429ed1003f9650b1"
+        },
+        {
+          "path": "outputs/paper1_mpcbench/c2/reference_C/results.jsonl",
+          "sha256": "f504477525b343f633d9fc238266890235e071c4608830abd377ab64c06d6e55"
+        }
+      ]
+    },
+    "results_root": "outputs/paper1_mpcbench (git-ignored)",
+    "builder": "scripts/build_applicability_registry.py",
+    "builder_version": "mpc-applicability-registry-builder/1.0.0",
+    "hypothesis_context": {
+      "source": {
+        "path": "outputs/paper1_mpcbench/c2/hypotheses/hypotheses.json",
+        "sha256": "85de683ecefa687394014723c92ffff78494bf10b73f047f3ca2542a63e8ec16"
+      },
+      "HC3": {
+        "A:eta->RAM": {
+          "outcome": "NOT_EVALUABLE",
+          "target_fraction": null,
+          "target_median_delta_c": null
+        },
+        "A:K->PDI": {
+          "outcome": "NOT_EVALUABLE",
+          "target_fraction": null,
+          "target_median_delta_c": null
+        },
+        "A:g_b->NAS": {
+          "outcome": "FALSIFIED",
+          "target_fraction": 0.0,
+          "target_median_delta_c": 0.06916320162029332
+        },
+        "A:c_int->IIM": {
+          "outcome": "FALSIFIED",
+          "target_fraction": 0.3,
+          "target_median_delta_c": -0.08218459713081311
+        },
+        "A:e->SRPI": {
+          "outcome": "SUPPORTED",
+          "target_fraction": 0.95,
+          "target_median_delta_c": 1.2132608571025043
+        },
+        "C:eta->RAM": {
+          "outcome": "NOT_EVALUABLE",
+          "target_fraction": null,
+          "target_median_delta_c": null
+        },
+        "C:K->PDI": {
+          "outcome": "NOT_EVALUABLE",
+          "target_fraction": null,
+          "target_median_delta_c": null
+        },
+        "C:g_b->NAS": {
+          "outcome": "SUPPORTED",
+          "target_fraction": 1.0,
+          "target_median_delta_c": 0.8972804777369645
+        },
+        "C:c_int->IIM": {
+          "outcome": "FALSIFIED",
+          "target_fraction": 0.65,
+          "target_median_delta_c": 0.5618750671759429
+        },
+        "C:e->SRPI": {
+          "outcome": "NOT_EVALUABLE",
+          "target_fraction": null,
+          "target_median_delta_c": null
+        }
+      },
+      "HC4": {
+        "A:W_RAM_no_plasticity": {
+          "outcome": "NOT_EVALUABLE",
+          "pass_fraction": null,
+          "target_absent_rate": null,
+          "target": null,
+          "n_seeds": null
+        },
+        "C:W_RAM_no_plasticity": {
+          "outcome": "NOT_EVALUABLE",
+          "pass_fraction": null,
+          "target_absent_rate": null,
+          "target": null,
+          "n_seeds": null
+        },
+        "A:W_PDI_single_attractor": {
+          "outcome": "NOT_EVALUABLE",
+          "pass_fraction": null,
+          "target_absent_rate": null,
+          "target": null,
+          "n_seeds": null
+        },
+        "C:W_PDI_single_attractor": {
+          "outcome": "NOT_EVALUABLE",
+          "pass_fraction": null,
+          "target_absent_rate": null,
+          "target": null,
+          "n_seeds": null
+        },
+        "A:W_NAS_no_workspace": {
+          "outcome": "FALSIFIED",
+          "pass_fraction": 0.0,
+          "target_absent_rate": 0.0,
+          "target": "NAS",
+          "n_seeds": 20
+        },
+        "C:W_NAS_no_workspace": {
+          "outcome": "FALSIFIED",
+          "pass_fraction": 0.0,
+          "target_absent_rate": 0.15,
+          "target": "NAS",
+          "n_seeds": 20
+        },
+        "A:W_NAS_broadcast_only": {
+          "outcome": "FALSIFIED",
+          "pass_fraction": 0.0,
+          "target_absent_rate": 0.0,
+          "target": "NAS",
+          "n_seeds": 20
+        },
+        "C:W_NAS_broadcast_only": {
+          "outcome": "FALSIFIED",
+          "pass_fraction": 0.0,
+          "target_absent_rate": 0.0,
+          "target": "NAS",
+          "n_seeds": 20
+        },
+        "A:W_IIM_feedforward": {
+          "outcome": "FALSIFIED",
+          "pass_fraction": 0.0,
+          "target_absent_rate": 0.0,
+          "target": "IIM",
+          "n_seeds": 20
+        },
+        "C:W_IIM_feedforward": {
+          "outcome": "FALSIFIED",
+          "pass_fraction": 0.0,
+          "target_absent_rate": 0.0,
+          "target": "IIM",
+          "n_seeds": 20
+        },
+        "A:W_SRPI_no_efference": {
+          "outcome": "FALSIFIED",
+          "pass_fraction": 0.05,
+          "target_absent_rate": 0.05,
+          "target": "SRPI",
+          "n_seeds": 20
+        },
+        "C:W_SRPI_no_efference": {
+          "outcome": "FALSIFIED",
+          "pass_fraction": 0.0,
+          "target_absent_rate": 0.0,
+          "target": "SRPI",
+          "n_seeds": 20
+        }
+      },
+      "HC6": {
+        "A:IIM": {
+          "off_cells": 16,
+          "point_rate_above_bound": 16,
+          "familywise_lower_above_bound": 13,
+          "k": 111,
+          "n": 160
+        },
+        "A:NAS": {
+          "off_cells": 16,
+          "point_rate_above_bound": 8,
+          "familywise_lower_above_bound": 8,
+          "k": 80,
+          "n": 160
+        },
+        "A:SRPI": {
+          "off_cells": 16,
+          "point_rate_above_bound": 0,
+          "familywise_lower_above_bound": 0,
+          "k": 0,
+          "n": 160
+        },
+        "C:IIM": {
+          "off_cells": 16,
+          "point_rate_above_bound": 3,
+          "familywise_lower_above_bound": 0,
+          "k": 3,
+          "n": 160
+        },
+        "C:NAS": {
+          "off_cells": 16,
+          "point_rate_above_bound": 0,
+          "familywise_lower_above_bound": 0,
+          "k": 0,
+          "n": 160
+        }
+      },
+      "HC8": [
+        {
+          "outcome": "FALSIFIED",
+          "reason": "SRPI ABSENT in >= 80% of seeds",
+          "family": "A",
+          "part": "a",
+          "n": 20,
+          "absent_rate": 0.05,
+          "not_present_rate": 1.0
+        },
+        {
+          "outcome": "NOT_EVALUABLE",
+          "reason": "RAM has no anchor",
+          "family": "A",
+          "part": "b_RAM"
+        },
+        {
+          "outcome": "SUPPORTED",
+          "reason": "|c_NAS(lesion) - c_NAS(nominal)| < z in >= 80%",
+          "family": "A",
+          "part": "b_NAS",
+          "n": 20,
+          "fraction": 1.0
+        },
+        {
+          "outcome": "NOT_EVALUABLE",
+          "reason": "no SRPI anchor or failed manipulation check",
+          "family": "C"
+        },
+        {
+          "outcome": "NOT_EVALUABLE",
+          "reason": "legacy SRPI comparison not run by the bench",
+          "part": "c_legacy"
+        }
+      ],
+      "note": "HC1, HC2 and HC9 of this evaluator file are out of its scope (see c1/ and c3/); they are not copied here."
+    }
+  },
+  "excluded": [
+    {
+      "principle": "RAM",
+      "estimator": "compute_RAM:prediction_error",
+      "version": "ram-v2-2026.09",
+      "substrate": "synthetic_rate",
+      "failed_criteria": [
+        "(0) no valid reference anchor",
+        "(b1), (c) not evaluable: c is undefined without an anchor ((a) and (b2) hold trivially: the status is UNDEFINED everywhere)"
+      ],
+      "criteria": {
+        "anchor_valid": false,
+        "anchor": {
+          "mean_excess": 0.0050178230768639105,
+          "se": 0.004141397978872668,
+          "one_sided_lower_bound": -0.0021432040539730926,
+          "n": 20
+        },
+        "null_ok": true,
+        "null_false_present_max_rate": 0.0,
+        "null_false_present_worst_class": null,
+        "null_false_present_pooled": {
+          "k": 0,
+          "n": 1640,
+          "rate": 0.0,
+          "cp_upper_95": 0.0018249986814629496
+        },
+        "null_classes": 18,
+        "own_knob": "eta",
+        "monotone_ok": false,
+        "own_knob_spearman_rho": null,
+        "own_knob_spearman_p": null,
+        "own_knob_ols_slope_c_per_unit_dose": null,
+        "own_knob_level_means_nondecreasing": null,
+        "off_dose_specific_ok": true,
+        "off_mechanism_present": {
+          "k": 0,
+          "n": 60,
+          "rate": 0.0,
+          "cp_upper_95": 0.04870291331009749
+        },
+        "crosstalk_ok": false,
+        "own_switch_median_abs_delta_c": null,
+        "max_other_switch_median_abs_delta_c": null,
+        "cross_talk_ratio": null,
+        "validated": false,
+        "alpha": 0.05
+      },
+      "related_preregistered_outcomes": {
+        "HC3_own_switch": {
+          "outcome": "NOT_EVALUABLE",
+          "target_fraction": null,
+          "target_median_delta_c": null
+        },
+        "HC4_witnesses": {
+          "A:W_RAM_no_plasticity": {
+            "outcome": "NOT_EVALUABLE",
+            "pass_fraction": null,
+            "target_absent_rate": null,
+            "target": null,
+            "n_seeds": null
+          }
+        }
+      },
+      "note": "The positive control's prediction-error adaptation term over its null is not credibly positive (mean 0.005018, SE 0.0041, one-sided 95% lower bound -0.00214, n = 20): no construct scale in family A."
+    },
+    {
+      "principle": "PDI",
+      "estimator": "compute_PDI:repertoire",
+      "version": "pdi-v2-2026.09",
+      "substrate": "synthetic_rate",
+      "failed_criteria": [
+        "(0) no valid reference anchor",
+        "(b1), (c) not evaluable: c is undefined without an anchor ((a) and (b2) hold trivially: the status is UNDEFINED everywhere)"
+      ],
+      "criteria": {
+        "anchor_valid": false,
+        "anchor": {
+          "mean_excess": 0.0,
+          "se": 0.0,
+          "one_sided_lower_bound": 0.0,
+          "n": 20
+        },
+        "null_ok": true,
+        "null_false_present_max_rate": 0.0,
+        "null_false_present_worst_class": null,
+        "null_false_present_pooled": {
+          "k": 0,
+          "n": 1640,
+          "rate": 0.0,
+          "cp_upper_95": 0.0018249986814629496
+        },
+        "null_classes": 18,
+        "own_knob": "K",
+        "monotone_ok": false,
+        "own_knob_spearman_rho": null,
+        "own_knob_spearman_p": null,
+        "own_knob_ols_slope_c_per_unit_dose": null,
+        "own_knob_level_means_nondecreasing": null,
+        "off_dose_specific_ok": true,
+        "off_mechanism_present": {
+          "k": 0,
+          "n": 60,
+          "rate": 0.0,
+          "cp_upper_95": 0.04870291331009749
+        },
+        "crosstalk_ok": false,
+        "own_switch_median_abs_delta_c": null,
+        "max_other_switch_median_abs_delta_c": null,
+        "cross_talk_ratio": null,
+        "validated": false,
+        "alpha": 0.05
+      },
+      "related_preregistered_outcomes": {
+        "HC3_own_switch": {
+          "outcome": "NOT_EVALUABLE",
+          "target_fraction": null,
+          "target_median_delta_c": null
+        },
+        "HC4_witnesses": {
+          "A:W_PDI_single_attractor": {
+            "outcome": "NOT_EVALUABLE",
+            "pass_fraction": null,
+            "target_absent_rate": null,
+            "target": null,
+            "n_seeds": null
+          }
+        }
+      },
+      "note": "The positive control's unlabelled repertoire excess over its null is not credibly positive (mean 0, SE 0, one-sided 95% lower bound 0, n = 20): no construct scale in family A."
+    },
+    {
+      "principle": "NAS",
+      "estimator": "compute_NAS:capacity",
+      "version": "nas-v2-2026.09",
+      "substrate": "synthetic_rate",
+      "failed_criteria": [
+        "(b2) PRESENT without the mechanism above alpha + 0.02",
+        "(c) another switch changes c more than the own switch"
+      ],
+      "criteria": {
+        "anchor_valid": true,
+        "anchor": {
+          "mean_excess": 0.07059490897510279,
+          "se": 0.0022578991381785223,
+          "one_sided_lower_bound": 0.06669070149017249,
+          "n": 20
+        },
+        "null_ok": true,
+        "null_false_present_max_rate": 0.0,
+        "null_false_present_worst_class": null,
+        "null_false_present_pooled": {
+          "k": 0,
+          "n": 1240,
+          "rate": 0.0,
+          "cp_upper_95": 0.0024129971544385033
+        },
+        "null_classes": 14,
+        "own_knob": "g_b",
+        "monotone_ok": true,
+        "own_knob_spearman_rho": 0.6902585494276692,
+        "own_knob_spearman_p": 1.2245802743059332e-29,
+        "own_knob_ols_slope_c_per_unit_dose": 0.5248050775545927,
+        "own_knob_level_means_nondecreasing": false,
+        "off_dose_specific_ok": false,
+        "off_mechanism_present": {
+          "k": 40,
+          "n": 60,
+          "rate": 0.6666666666666666,
+          "cp_upper_95": 0.766963015097639
+        },
+        "crosstalk_ok": false,
+        "own_switch_median_abs_delta_c": 0.06916320162029332,
+        "max_other_switch_median_abs_delta_c": 0.642350576224893,
+        "cross_talk_ratio": 9.28746155725127,
+        "validated": false,
+        "alpha": 0.05
+      },
+      "related_preregistered_outcomes": {
+        "HC3_own_switch": {
+          "outcome": "FALSIFIED",
+          "target_fraction": 0.0,
+          "target_median_delta_c": 0.06916320162029332
+        },
+        "HC4_witnesses": {
+          "A:W_NAS_no_workspace": {
+            "outcome": "FALSIFIED",
+            "pass_fraction": 0.0,
+            "target_absent_rate": 0.0,
+            "target": "NAS",
+            "n_seeds": 20
+          },
+          "A:W_NAS_broadcast_only": {
+            "outcome": "FALSIFIED",
+            "pass_fraction": 0.0,
+            "target_absent_rate": 0.0,
+            "target": "NAS",
+            "n_seeds": 20
+          }
+        },
+        "HC6_factorial_off_cells": {
+          "off_cells": 16,
+          "point_rate_above_bound": 8,
+          "familywise_lower_above_bound": 8,
+          "k": 80,
+          "n": 160
+        }
+      },
+      "note": null
+    },
+    {
+      "principle": "IIM",
+      "estimator": "compute_IIM:bidirectional",
+      "version": "iim-v4-2026.09",
+      "substrate": "synthetic_rate",
+      "failed_criteria": [
+        "(b1) no dose-response of c to the own knob (Spearman rho > 0 at p < alpha)",
+        "(b2) PRESENT without the mechanism above alpha + 0.02",
+        "(c) another switch changes c more than the own switch"
+      ],
+      "criteria": {
+        "anchor_valid": true,
+        "anchor": {
+          "mean_excess": 0.009395145040549686,
+          "se": 0.0016265887065119908,
+          "one_sided_lower_bound": 0.006582557137269704,
+          "n": 20
+        },
+        "null_ok": true,
+        "null_false_present_max_rate": 0.0,
+        "null_false_present_worst_class": null,
+        "null_false_present_pooled": {
+          "k": 0,
+          "n": 1240,
+          "rate": 0.0,
+          "cp_upper_95": 0.0024129971544385033
+        },
+        "null_classes": 14,
+        "own_knob": "c_int",
+        "monotone_ok": false,
+        "own_knob_spearman_rho": -0.002834242067278247,
+        "own_knob_spearman_p": 0.9682277993911172,
+        "own_knob_ols_slope_c_per_unit_dose": 0.0017535721730395977,
+        "own_knob_level_means_nondecreasing": false,
+        "off_dose_specific_ok": false,
+        "off_mechanism_present": {
+          "k": 40,
+          "n": 60,
+          "rate": 0.6666666666666666,
+          "cp_upper_95": 0.766963015097639
+        },
+        "crosstalk_ok": false,
+        "own_switch_median_abs_delta_c": 0.08218459713081311,
+        "max_other_switch_median_abs_delta_c": 0.25961914683960063,
+        "cross_talk_ratio": 3.158975719335403,
+        "validated": false,
+        "alpha": 0.05
+      },
+      "related_preregistered_outcomes": {
+        "HC3_own_switch": {
+          "outcome": "FALSIFIED",
+          "target_fraction": 0.3,
+          "target_median_delta_c": -0.08218459713081311
+        },
+        "HC4_witnesses": {
+          "A:W_IIM_feedforward": {
+            "outcome": "FALSIFIED",
+            "pass_fraction": 0.0,
+            "target_absent_rate": 0.0,
+            "target": "IIM",
+            "n_seeds": 20
+          }
+        },
+        "HC6_factorial_off_cells": {
+          "off_cells": 16,
+          "point_rate_above_bound": 16,
+          "familywise_lower_above_bound": 13,
+          "k": 111,
+          "n": 160
+        }
+      },
+      "note": null
+    },
+    {
+      "principle": "RAM",
+      "estimator": "compute_RAM:prediction_error",
+      "version": "ram-v2-2026.09",
+      "substrate": "stuart_landau",
+      "failed_criteria": [
+        "(0) no valid reference anchor",
+        "(b1), (c) not evaluable: c is undefined without an anchor ((a) and (b2) hold trivially: the status is UNDEFINED everywhere)"
+      ],
+      "criteria": {
+        "anchor_valid": false,
+        "anchor": {
+          "mean_excess": 0.0001392992153549047,
+          "se": 0.0011017067105032158,
+          "one_sided_lower_bound": -0.0017711302964950426,
+          "n": 19
+        },
+        "null_ok": true,
+        "null_false_present_max_rate": 0.0,
+        "null_false_present_worst_class": null,
+        "null_false_present_pooled": {
+          "k": 0,
+          "n": 1640,
+          "rate": 0.0,
+          "cp_upper_95": 0.0018249986814629496
+        },
+        "null_classes": 18,
+        "own_knob": "eta",
+        "monotone_ok": false,
+        "own_knob_spearman_rho": null,
+        "own_knob_spearman_p": null,
+        "own_knob_ols_slope_c_per_unit_dose": null,
+        "own_knob_level_means_nondecreasing": null,
+        "off_dose_specific_ok": true,
+        "off_mechanism_present": {
+          "k": 0,
+          "n": 60,
+          "rate": 0.0,
+          "cp_upper_95": 0.04870291331009749
+        },
+        "crosstalk_ok": false,
+        "own_switch_median_abs_delta_c": null,
+        "max_other_switch_median_abs_delta_c": null,
+        "cross_talk_ratio": null,
+        "validated": false,
+        "alpha": 0.05
+      },
+      "related_preregistered_outcomes": {
+        "HC3_own_switch": {
+          "outcome": "NOT_EVALUABLE",
+          "target_fraction": null,
+          "target_median_delta_c": null
+        },
+        "HC4_witnesses": {
+          "C:W_RAM_no_plasticity": {
+            "outcome": "NOT_EVALUABLE",
+            "pass_fraction": null,
+            "target_absent_rate": null,
+            "target": null,
+            "n_seeds": null
+          }
+        }
+      },
+      "note": "The positive control's prediction-error adaptation term over its null is not credibly positive (mean 0.0001393, SE 0.0011, one-sided 95% lower bound -0.00177, n = 19): no construct scale in family C."
+    },
+    {
+      "principle": "PDI",
+      "estimator": "compute_PDI:repertoire",
+      "version": "pdi-v2-2026.09",
+      "substrate": "stuart_landau",
+      "failed_criteria": [
+        "(0) no valid reference anchor",
+        "(b1), (c) not evaluable: c is undefined without an anchor ((a) and (b2) hold trivially: the status is UNDEFINED everywhere)"
+      ],
+      "criteria": {
+        "anchor_valid": false,
+        "anchor": {
+          "mean_excess": 0.0,
+          "se": 0.0,
+          "one_sided_lower_bound": 0.0,
+          "n": 20
+        },
+        "null_ok": true,
+        "null_false_present_max_rate": 0.0,
+        "null_false_present_worst_class": null,
+        "null_false_present_pooled": {
+          "k": 0,
+          "n": 1640,
+          "rate": 0.0,
+          "cp_upper_95": 0.0018249986814629496
+        },
+        "null_classes": 18,
+        "own_knob": "K",
+        "monotone_ok": false,
+        "own_knob_spearman_rho": null,
+        "own_knob_spearman_p": null,
+        "own_knob_ols_slope_c_per_unit_dose": null,
+        "own_knob_level_means_nondecreasing": null,
+        "off_dose_specific_ok": true,
+        "off_mechanism_present": {
+          "k": 0,
+          "n": 60,
+          "rate": 0.0,
+          "cp_upper_95": 0.04870291331009749
+        },
+        "crosstalk_ok": false,
+        "own_switch_median_abs_delta_c": null,
+        "max_other_switch_median_abs_delta_c": null,
+        "cross_talk_ratio": null,
+        "validated": false,
+        "alpha": 0.05
+      },
+      "related_preregistered_outcomes": {
+        "HC3_own_switch": {
+          "outcome": "NOT_EVALUABLE",
+          "target_fraction": null,
+          "target_median_delta_c": null
+        },
+        "HC4_witnesses": {
+          "C:W_PDI_single_attractor": {
+            "outcome": "NOT_EVALUABLE",
+            "pass_fraction": null,
+            "target_absent_rate": null,
+            "target": null,
+            "n_seeds": null
+          }
+        }
+      },
+      "note": "The positive control's unlabelled repertoire excess over its null is not credibly positive (mean 0, SE 0, one-sided 95% lower bound 0, n = 20): no construct scale in family C."
+    },
+    {
+      "principle": "SRPI",
+      "estimator": "compute_SRPI:agency",
+      "version": "srpi-v2-2026.09",
+      "substrate": "stuart_landau",
+      "failed_criteria": [
+        "(0) no valid reference anchor",
+        "(b1), (c) not evaluable: c is undefined without an anchor ((a) and (b2) hold trivially: the status is UNDEFINED everywhere)"
+      ],
+      "criteria": {
+        "anchor_valid": false,
+        "anchor": {
+          "mean_excess": -0.0009452675726097364,
+          "se": 0.009340459254576182,
+          "one_sided_lower_bound": -0.017096162144375822,
+          "n": 20
+        },
+        "null_ok": true,
+        "null_false_present_max_rate": 0.0,
+        "null_false_present_worst_class": null,
+        "null_false_present_pooled": {
+          "k": 0,
+          "n": 1640,
+          "rate": 0.0,
+          "cp_upper_95": 0.0018249986814629496
+        },
+        "null_classes": 18,
+        "own_knob": "e",
+        "monotone_ok": false,
+        "own_knob_spearman_rho": null,
+        "own_knob_spearman_p": null,
+        "own_knob_ols_slope_c_per_unit_dose": null,
+        "own_knob_level_means_nondecreasing": null,
+        "off_dose_specific_ok": true,
+        "off_mechanism_present": {
+          "k": 0,
+          "n": 60,
+          "rate": 0.0,
+          "cp_upper_95": 0.04870291331009749
+        },
+        "crosstalk_ok": false,
+        "own_switch_median_abs_delta_c": null,
+        "max_other_switch_median_abs_delta_c": null,
+        "cross_talk_ratio": null,
+        "validated": false,
+        "alpha": 0.05
+      },
+      "related_preregistered_outcomes": {
+        "HC3_own_switch": {
+          "outcome": "NOT_EVALUABLE",
+          "target_fraction": null,
+          "target_median_delta_c": null
+        },
+        "HC4_witnesses": {
+          "C:W_SRPI_no_efference": {
+            "outcome": "FALSIFIED",
+            "pass_fraction": 0.0,
+            "target_absent_rate": 0.0,
+            "target": "SRPI",
+            "n_seeds": 20
+          }
+        },
+        "HC8": [
+          {
+            "outcome": "NOT_EVALUABLE",
+            "reason": "no SRPI anchor or failed manipulation check",
+            "family": "C"
+          }
+        ]
+      },
+      "note": "The positive control's agency excess over its null is not credibly positive (mean -0.0009453, SE 0.0093, one-sided 95% lower bound -0.0171, n = 20): no construct scale in family C."
+    },
+    {
+      "principle": "IIM",
+      "estimator": "compute_IIM:bidirectional",
+      "version": "iim-v4-2026.09",
+      "substrate": "ising_exact",
+      "failed_criteria": [
+        "(0) no construct-scale anchor exists for the exact-TPM systems (family B has no positive control)",
+        "(a) independent units exceed the null margin 1.645 in more than 7% of runs in 5 of 8 (cut mode, T) cells (HC2 part c)",
+        "(b) the error against the exact value does not shrink strictly with T for all-to-all and the feedforward star (HC2 part b)"
+      ],
+      "evidence": {
+        "source": {
+          "path": "outputs/paper1_mpcbench/c1/hypotheses_c1/hypotheses.json",
+          "sha256": "02eaba82c28a740ede9680bf9ebcfee8d6645d81525b98a9940911afd462d8a2"
+        },
+        "HC2_outcome": "FALSIFIED",
+        "part_outcomes": {
+          "a_exact": "SUPPORTED",
+          "b_bias_shrinks": "FALSIFIED",
+          "c_independent_calibrated": "FALSIFIED",
+          "d_feedforward": "FALSIFIED",
+          "e_coupling_monotone": "SUPPORTED",
+          "f_hidden_driver": "NOT_EVALUABLE"
+        },
+        "independent_units_rate_z_above_1.645": [
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 1000,
+            "n": 20,
+            "rate": 0.1,
+            "median_z": -0.0464374232218431
+          },
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 3000,
+            "n": 20,
+            "rate": 0.0,
+            "median_z": 0.3819901862612989
+          },
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 10000,
+            "n": 20,
+            "rate": 0.2,
+            "median_z": -0.07132172886229156
+          },
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 30000,
+            "n": 20,
+            "rate": 0.1,
+            "median_z": -0.7116495772236684
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 1000,
+            "n": 20,
+            "rate": 0.05,
+            "median_z": 0.20715532074135565
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 3000,
+            "n": 20,
+            "rate": 0.15,
+            "median_z": -0.0824445478177704
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 10000,
+            "n": 20,
+            "rate": 0.15,
+            "median_z": -0.23846416078388394
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 30000,
+            "n": 20,
+            "rate": 0.05,
+            "median_z": -0.013274078886105448
+          }
+        ],
+        "median_abs_error_not_decreasing": [
+          {
+            "system": "all_to_all",
+            "cut_mode": "bidirectional",
+            "median_abs_error": {
+              "1000": 0.06072334546673715,
+              "3000": 0.028741173084912502,
+              "10000": 0.04425485343573944,
+              "30000": 0.037985346103870346
+            }
+          },
+          {
+            "system": "all_to_all",
+            "cut_mode": "directional",
+            "median_abs_error": {
+              "1000": 0.02583167750965929,
+              "3000": 0.01764204046369295,
+              "10000": 0.01661684418505435,
+              "30000": 0.0186322168347768
+            }
+          },
+          {
+            "system": "feedforward_star",
+            "cut_mode": "bidirectional",
+            "median_abs_error": {
+              "1000": 0.00527233501232925,
+              "3000": 0.001253127035338801,
+              "10000": 0.0005522130267542995,
+              "30000": 0.0006720375258886992
+            }
+          }
+        ],
+        "ring_coupling_spearman": [
+          {
+            "cut_mode": "bidirectional",
+            "rho": 0.945619586582233,
+            "p": 2.1600357583144243e-59,
+            "n": 120
+          },
+          {
+            "cut_mode": "directional",
+            "rho": 0.4013213469645139,
+            "p": 5.553612410513469e-06,
+            "n": 120
+          }
+        ],
+        "feedforward_star_rate_z_above_1.645": [
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 3000,
+            "n": 20,
+            "rate": 1.0
+          },
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 10000,
+            "n": 20,
+            "rate": 1.0
+          },
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 30000,
+            "n": 20,
+            "rate": 1.0
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 3000,
+            "n": 20,
+            "rate": 0.7
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 10000,
+            "n": 20,
+            "rate": 0.65
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 30000,
+            "n": 20,
+            "rate": 0.35
+          }
+        ]
+      },
+      "note": "Family B tests IIM against exact values (HC2, FALSIFIED); it is ground truth for the estimator, not a registry validation."
+    },
+    {
+      "principle": "IIM",
+      "estimator": "compute_IIM:directional",
+      "version": "iim-v4-2026.09",
+      "substrate": "ising_exact",
+      "failed_criteria": [
+        "(0) no construct-scale anchor exists for the exact-TPM systems (family B has no positive control)",
+        "(a) independent units exceed the null margin 1.645 in more than 7% of runs in 5 of 8 (cut mode, T) cells (HC2 part c)",
+        "(b) the error against the exact value does not shrink strictly with T for all-to-all and the feedforward star (HC2 part b)",
+        "(d) the feedforward star exceeds its null under directional cuts in 35-70% of runs (HC2 part d)"
+      ],
+      "evidence": {
+        "source": {
+          "path": "outputs/paper1_mpcbench/c1/hypotheses_c1/hypotheses.json",
+          "sha256": "02eaba82c28a740ede9680bf9ebcfee8d6645d81525b98a9940911afd462d8a2"
+        },
+        "HC2_outcome": "FALSIFIED",
+        "part_outcomes": {
+          "a_exact": "SUPPORTED",
+          "b_bias_shrinks": "FALSIFIED",
+          "c_independent_calibrated": "FALSIFIED",
+          "d_feedforward": "FALSIFIED",
+          "e_coupling_monotone": "SUPPORTED",
+          "f_hidden_driver": "NOT_EVALUABLE"
+        },
+        "independent_units_rate_z_above_1.645": [
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 1000,
+            "n": 20,
+            "rate": 0.1,
+            "median_z": -0.0464374232218431
+          },
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 3000,
+            "n": 20,
+            "rate": 0.0,
+            "median_z": 0.3819901862612989
+          },
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 10000,
+            "n": 20,
+            "rate": 0.2,
+            "median_z": -0.07132172886229156
+          },
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 30000,
+            "n": 20,
+            "rate": 0.1,
+            "median_z": -0.7116495772236684
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 1000,
+            "n": 20,
+            "rate": 0.05,
+            "median_z": 0.20715532074135565
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 3000,
+            "n": 20,
+            "rate": 0.15,
+            "median_z": -0.0824445478177704
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 10000,
+            "n": 20,
+            "rate": 0.15,
+            "median_z": -0.23846416078388394
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 30000,
+            "n": 20,
+            "rate": 0.05,
+            "median_z": -0.013274078886105448
+          }
+        ],
+        "median_abs_error_not_decreasing": [
+          {
+            "system": "all_to_all",
+            "cut_mode": "bidirectional",
+            "median_abs_error": {
+              "1000": 0.06072334546673715,
+              "3000": 0.028741173084912502,
+              "10000": 0.04425485343573944,
+              "30000": 0.037985346103870346
+            }
+          },
+          {
+            "system": "all_to_all",
+            "cut_mode": "directional",
+            "median_abs_error": {
+              "1000": 0.02583167750965929,
+              "3000": 0.01764204046369295,
+              "10000": 0.01661684418505435,
+              "30000": 0.0186322168347768
+            }
+          },
+          {
+            "system": "feedforward_star",
+            "cut_mode": "bidirectional",
+            "median_abs_error": {
+              "1000": 0.00527233501232925,
+              "3000": 0.001253127035338801,
+              "10000": 0.0005522130267542995,
+              "30000": 0.0006720375258886992
+            }
+          }
+        ],
+        "ring_coupling_spearman": [
+          {
+            "cut_mode": "bidirectional",
+            "rho": 0.945619586582233,
+            "p": 2.1600357583144243e-59,
+            "n": 120
+          },
+          {
+            "cut_mode": "directional",
+            "rho": 0.4013213469645139,
+            "p": 5.553612410513469e-06,
+            "n": 120
+          }
+        ],
+        "feedforward_star_rate_z_above_1.645": [
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 3000,
+            "n": 20,
+            "rate": 1.0
+          },
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 10000,
+            "n": 20,
+            "rate": 1.0
+          },
+          {
+            "cut_mode": "bidirectional",
+            "n_time": 30000,
+            "n": 20,
+            "rate": 1.0
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 3000,
+            "n": 20,
+            "rate": 0.7
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 10000,
+            "n": 20,
+            "rate": 0.65
+          },
+          {
+            "cut_mode": "directional",
+            "n_time": 30000,
+            "n": 20,
+            "rate": 0.35
+          }
+        ]
+      },
+      "note": "Family B tests IIM against exact values (HC2, FALSIFIED); it is ground truth for the estimator, not a registry validation."
+    },
+    {
+      "principle": "RAM",
+      "estimator": "compute_RAM:prediction_error",
+      "version": "ram-v2-2026.09",
+      "substrate": "eeg_like_forward",
+      "failed_criteria": [
+        "(0) no substrate anchor (the whole-brain runs are judged with the family-A anchor)",
+        "(b2), (c) not testable: the whole-brain model has no mechanism switches (external manipulations only; preregistered as descriptive)",
+        "RAM undefined: the model has no events"
+      ],
+      "evidence": null
+    },
+    {
+      "principle": "RAM",
+      "estimator": "compute_RAM:prediction_error",
+      "version": "ram-v2-2026.09",
+      "substrate": "bold_like_forward",
+      "failed_criteria": [
+        "no evidence: all 140 planned BOLD-like whole-brain tasks failed in the frozen runner (NAS band 0.5-4 Hz above the Nyquist frequency 0.25 Hz at TR = 2 s; the error ends the whole task) and were excluded after the preregistered re-run"
+      ],
+      "evidence": {
+        "bold": {
+          "tasks_planned": 140,
+          "tasks_final_error": 140,
+          "error": "compute_NAS invalid band (0.5, 4.0) for Nyquist 0.25 (TR = 2 s); run_task scores all estimators in one try block"
+        },
+        "exploratory_rerun_without_NAS": "c3/deviation_bold_noNAS (not preregistered, not audited; cannot enter the registry)"
+      }
+    },
+    {
+      "principle": "PDI",
+      "estimator": "compute_PDI:repertoire",
+      "version": "pdi-v2-2026.09",
+      "substrate": "eeg_like_forward",
+      "failed_criteria": [
+        "(0) no substrate anchor (the whole-brain runs are judged with the family-A anchor)",
+        "(b2), (c) not testable: the whole-brain model has no mechanism switches (external manipulations only; preregistered as descriptive)",
+        "PDI has no anchor"
+      ],
+      "evidence": null
+    },
+    {
+      "principle": "PDI",
+      "estimator": "compute_PDI:repertoire",
+      "version": "pdi-v2-2026.09",
+      "substrate": "bold_like_forward",
+      "failed_criteria": [
+        "no evidence: all 140 planned BOLD-like whole-brain tasks failed in the frozen runner (NAS band 0.5-4 Hz above the Nyquist frequency 0.25 Hz at TR = 2 s; the error ends the whole task) and were excluded after the preregistered re-run"
+      ],
+      "evidence": {
+        "bold": {
+          "tasks_planned": 140,
+          "tasks_final_error": 140,
+          "error": "compute_NAS invalid band (0.5, 4.0) for Nyquist 0.25 (TR = 2 s); run_task scores all estimators in one try block"
+        },
+        "exploratory_rerun_without_NAS": "c3/deviation_bold_noNAS (not preregistered, not audited; cannot enter the registry)"
+      }
+    },
+    {
+      "principle": "NAS",
+      "estimator": "compute_NAS:capacity",
+      "version": "nas-v2-2026.09",
+      "substrate": "eeg_like_forward",
+      "failed_criteria": [
+        "(0) no substrate anchor (the whole-brain runs are judged with the family-A anchor)",
+        "(b2), (c) not testable: the whole-brain model has no mechanism switches (external manipulations only; preregistered as descriptive)"
+      ],
+      "evidence": {
+        "sources": [
+          {
+            "path": "outputs/paper1_mpcbench/c3/summary/whole_brain_status_summary.csv",
+            "sha256": "c84c167f8390a7094353487d46d05a829cbb1e3dfd03de61a31233eca2766d34"
+          },
+          {
+            "path": "outputs/paper1_mpcbench/c3/summary/whole_brain_summary.json",
+            "sha256": "e352a45575125e6d10742c285aef7976b18ef4aec3d5e08d16423a869cf4aa3f"
+          },
+          {
+            "path": "outputs/paper1_mpcbench/c3/summary/whole_brain_G_sweep.csv",
+            "sha256": "e7328d83359255cdb304b44e0152955480e38cfc0b3332ec023e6a45458051e6"
+          }
+        ],
+        "source": {
+          "NAS": {
+            "present_at_G0": "0/10",
+            "c_median_at_G0": 0.003067048662686,
+            "spearman_rho_c_vs_G": 0.9761695177691708,
+            "spearman_p": 1.6219286531847875e-53
+          },
+          "IIM": {
+            "present_at_G0": "0/10",
+            "c_median_at_G0": -0.0070038038673013,
+            "spearman_rho_c_vs_G": 0.6792079776346481,
+            "spearman_p": 4.346738699650231e-12
+          }
+        },
+        "eeg": {
+          "NAS": {
+            "present_at_G0": "0/10",
+            "c_median_at_G0": 0.2169685964067669,
+            "spearman_rho_c_vs_G": 0.8663150100821756,
+            "spearman_p": 3.167191992130176e-25
+          },
+          "IIM": {
+            "present_at_G0": "10/10",
+            "c_median_at_G0": 1.0988337053428223,
+            "spearman_rho_c_vs_G": -0.4165021441982207,
+            "spearman_p": 0.0001216183944116
+          }
+        },
+        "bold": {
+          "tasks_planned": 140,
+          "tasks_final_error": 140,
+          "error": "compute_NAS invalid band (0.5, 4.0) for Nyquist 0.25 (TR = 2 s); run_task scores all estimators in one try block"
+        }
+      }
+    },
+    {
+      "principle": "NAS",
+      "estimator": "compute_NAS:capacity",
+      "version": "nas-v2-2026.09",
+      "substrate": "bold_like_forward",
+      "failed_criteria": [
+        "no evidence: all 140 planned BOLD-like whole-brain tasks failed in the frozen runner (NAS band 0.5-4 Hz above the Nyquist frequency 0.25 Hz at TR = 2 s; the error ends the whole task) and were excluded after the preregistered re-run"
+      ],
+      "evidence": {
+        "bold": {
+          "tasks_planned": 140,
+          "tasks_final_error": 140,
+          "error": "compute_NAS invalid band (0.5, 4.0) for Nyquist 0.25 (TR = 2 s); run_task scores all estimators in one try block"
+        },
+        "exploratory_rerun_without_NAS": "c3/deviation_bold_noNAS (not preregistered, not audited; cannot enter the registry)"
+      }
+    },
+    {
+      "principle": "IIM",
+      "estimator": "compute_IIM:bidirectional",
+      "version": "iim-v4-2026.09",
+      "substrate": "eeg_like_forward",
+      "failed_criteria": [
+        "(0) no substrate anchor (the whole-brain runs are judged with the family-A anchor)",
+        "(b2), (c) not testable: the whole-brain model has no mechanism switches (external manipulations only; preregistered as descriptive)",
+        "(specificity, descriptive) IIM PRESENT in 10 of 10 uncoupled (G = 0) EEG-like runs: volume conduction read as integration"
+      ],
+      "evidence": {
+        "sources": [
+          {
+            "path": "outputs/paper1_mpcbench/c3/summary/whole_brain_status_summary.csv",
+            "sha256": "c84c167f8390a7094353487d46d05a829cbb1e3dfd03de61a31233eca2766d34"
+          },
+          {
+            "path": "outputs/paper1_mpcbench/c3/summary/whole_brain_summary.json",
+            "sha256": "e352a45575125e6d10742c285aef7976b18ef4aec3d5e08d16423a869cf4aa3f"
+          },
+          {
+            "path": "outputs/paper1_mpcbench/c3/summary/whole_brain_G_sweep.csv",
+            "sha256": "e7328d83359255cdb304b44e0152955480e38cfc0b3332ec023e6a45458051e6"
+          }
+        ],
+        "source": {
+          "NAS": {
+            "present_at_G0": "0/10",
+            "c_median_at_G0": 0.003067048662686,
+            "spearman_rho_c_vs_G": 0.9761695177691708,
+            "spearman_p": 1.6219286531847875e-53
+          },
+          "IIM": {
+            "present_at_G0": "0/10",
+            "c_median_at_G0": -0.0070038038673013,
+            "spearman_rho_c_vs_G": 0.6792079776346481,
+            "spearman_p": 4.346738699650231e-12
+          }
+        },
+        "eeg": {
+          "NAS": {
+            "present_at_G0": "0/10",
+            "c_median_at_G0": 0.2169685964067669,
+            "spearman_rho_c_vs_G": 0.8663150100821756,
+            "spearman_p": 3.167191992130176e-25
+          },
+          "IIM": {
+            "present_at_G0": "10/10",
+            "c_median_at_G0": 1.0988337053428223,
+            "spearman_rho_c_vs_G": -0.4165021441982207,
+            "spearman_p": 0.0001216183944116
+          }
+        },
+        "bold": {
+          "tasks_planned": 140,
+          "tasks_final_error": 140,
+          "error": "compute_NAS invalid band (0.5, 4.0) for Nyquist 0.25 (TR = 2 s); run_task scores all estimators in one try block"
+        }
+      }
+    },
+    {
+      "principle": "IIM",
+      "estimator": "compute_IIM:bidirectional",
+      "version": "iim-v4-2026.09",
+      "substrate": "bold_like_forward",
+      "failed_criteria": [
+        "no evidence: all 140 planned BOLD-like whole-brain tasks failed in the frozen runner (NAS band 0.5-4 Hz above the Nyquist frequency 0.25 Hz at TR = 2 s; the error ends the whole task) and were excluded after the preregistered re-run"
+      ],
+      "evidence": {
+        "bold": {
+          "tasks_planned": 140,
+          "tasks_final_error": 140,
+          "error": "compute_NAS invalid band (0.5, 4.0) for Nyquist 0.25 (TR = 2 s); run_task scores all estimators in one try block"
+        },
+        "exploratory_rerun_without_NAS": "c3/deviation_bold_noNAS (not preregistered, not audited; cannot enter the registry)"
+      }
+    },
+    {
+      "principle": "SRPI",
+      "estimator": "compute_SRPI:agency",
+      "version": "srpi-v2-2026.09",
+      "substrate": "eeg_like_forward",
+      "failed_criteria": [
+        "(0) no substrate anchor (the whole-brain runs are judged with the family-A anchor)",
+        "(b2), (c) not testable: the whole-brain model has no mechanism switches (external manipulations only; preregistered as descriptive)",
+        "SRPI undefined: the model has no events"
+      ],
+      "evidence": null
+    },
+    {
+      "principle": "SRPI",
+      "estimator": "compute_SRPI:agency",
+      "version": "srpi-v2-2026.09",
+      "substrate": "bold_like_forward",
+      "failed_criteria": [
+        "no evidence: all 140 planned BOLD-like whole-brain tasks failed in the frozen runner (NAS band 0.5-4 Hz above the Nyquist frequency 0.25 Hz at TR = 2 s; the error ends the whole task) and were excluded after the preregistered re-run"
+      ],
+      "evidence": {
+        "bold": {
+          "tasks_planned": 140,
+          "tasks_final_error": 140,
+          "error": "compute_NAS invalid band (0.5, 4.0) for Nyquist 0.25 (TR = 2 s); run_task scores all estimators in one try block"
+        },
+        "exploratory_rerun_without_NAS": "c3/deviation_bold_noNAS (not preregistered, not audited; cannot enter the registry)"
+      }
+    }
+  ],
+  "scope_notes": [
+    "Entries cover the validation regime only: 30-node MPC-Bench agents, about 11,500-12,400 samples at dt = 0.05 s, K = 19 null surrogates, jackknife G = 10, the frozen cutoffs (z, delta) = (0.25, 0.10).",
+    "The whole-brain source model carries the substrate label stuart_landau too; it lies outside the family-C regime (76 regions, dt = 0.004 s, another IIM grain) and is not covered.",
+    "Admission follows the preregistered entry criteria, which are weaker than the selectivity hypothesis HC3; related hypothesis outcomes are listed in each entry's note and must be reported with it.",
+    "The registry does not change any preregistered hypothesis outcome and was built after they were evaluated."
+  ]
+}

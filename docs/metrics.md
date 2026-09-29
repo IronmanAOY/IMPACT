@@ -810,6 +810,14 @@ anchor is not finite, the component is UNDEFINED (`INVALID_ANCHORS`).
   the regime of the component (bearer size; for IIM the scored subsystem,
   bins, series length and sample interval). Without a registry, determinate
   verdicts are possible for unvalidated estimators (the registry is opt-in).
+  The shipped registry, `protocols/applicability_registry_v1.json`, was
+  derived from the confirmatory MPC-Bench runs with the preregistered entry
+  criteria (see [protocols/README.md](../protocols/README.md)). It validates
+  SRPI-agency on the family-A rate agents and NAS-capacity and bidirectional
+  IIM on the family-C oscillator agents, each for the benchmark's regime
+  only, and no estimator on a forward-modelled EEG or BOLD substrate: with it,
+  every component of human EEG or fMRI data is UNDEFINED
+  (`ESTIMATOR_NOT_VALIDATED`).
 
 ### 8.4 Reason codes
 

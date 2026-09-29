@@ -18,6 +18,7 @@ describes the fields.
 | `mpc_bench_v1.json` | MPC-Bench protocol, all five principles (frozen at `mpcbench-freeze-v1`; `run_bench.py`, `null_calibration.py`; their default) | `855f6a444b77030d33faa68fcb45e8576b931d2d681cf215d4dacdb57a6b2520` |
 | `mpc_bench_v1_anchored.json` | the same with the necessity set restricted to the anchored principles (NAS, IIM, SRPI); verdict-level hypotheses of the preregistration | `780581f57d24251fc8ed8c39565f0a89a96740908f2ada3f65f8961cf1543f4c` |
 | `mpc_bench_v1_reference_summary.json` | how the bench reference anchor was computed (seeds, n, mean, SD, SE and lower bound per principle, the anchor rule, code) | — |
+| `applicability_registry_v1.json` | applicability registry (`--applicability-registry`; schema `impact-mpc-registry/2`) derived from the confirmatory MPC-Bench runs after the freeze; SHA-256 of the file | `a300e08f6bd04b385896272af44a63d4a9c8f63c3828547f2e1aa1167f663ca9` |
 
 `tests/test_protocols.py` checks that the hashes in this table are the hashes
 of the files, and `scripts/bench_hypotheses.py` refuses bench protocols whose
@@ -147,6 +148,45 @@ with a valid construct scale on the bench (and name
 preregistration use it, because with RAM and PDI in `N` every bench verdict
 is `UNDETERMINED` or `EXCLUDED` by construction. It is not a claim that RAM
 and PDI are unnecessary.
+
+## `applicability_registry_v1.json` (derived after the confirmatory runs)
+
+Built by `scripts/build_applicability_registry.py` from the confirmatory
+MPC-Bench results of the frozen code (families A and C, the null-calibration
+grid, family B and the whole-brain runs; seeds >= 10000). It applies the
+entry criteria of the
+[preregistration](../docs/preregistration/MPC_BENCH_PREREGISTRATION.md),
+section 4, unchanged: (0) a valid anchor, (a) false-PRESENT rate <= 0.07 on
+every statistical null class, (b1) a dose-response of `c` to the own knob,
+(b2) PRESENT rate <= 0.07 on the systems without the mechanism, (c) the own
+switch changes `c` more than any other switch. It was built after the
+preregistered hypotheses had been evaluated and changes none of them.
+
+| Principle | Estimator | Substrate | Regime |
+|---|---|---|---|
+| SRPI | `compute_SRPI:agency@srpi-v2-2026.09` | `synthetic_rate` (family A) | 30 nodes, >= 11,497 samples at 0.05 s |
+| NAS | `compute_NAS:capacity@nas-v2-2026.09` | `stuart_landau` (family C) | 30 nodes, >= 11,497 samples at 0.05 s |
+| IIM | `compute_IIM:bidirectional@iim-v4-2026.09` | `stuart_landau` (family C), grain `module_mean_periphery` | 4 macro nodes, 2 bins, >= 11,497 samples at 0.05 s |
+
+Every other combination the confirmatory runs reached is listed under
+`excluded` with the criteria it fails: RAM and PDI have no anchor in either
+family; NAS and IIM fail (b2) and (c) in family A; SRPI has no anchor in
+family C; IIM on the exact-TPM systems (family B) and every estimator on the
+EEG-like and BOLD-like forward models cannot meet the criteria (no anchor, no
+mechanism switches; all BOLD-like tasks failed in the frozen runner). Each
+entry also lists the related preregistered outcomes, which are stricter than
+the entry criteria (for example, HC3 is falsified for IIM in family C) and
+have to be reported with it.
+
+No entry covers a forward-modelled substrate, so with this registry every
+component of human EEG or fMRI data is UNDEFINED
+(`ESTIMATOR_NOT_VALIDATED`) and every empirical verdict is UNDETERMINED.
+
+```bash
+python scripts/build_applicability_registry.py --results outputs/paper1_mpcbench \
+    --out protocols/applicability_registry_v1.json \
+    --evidence-dir outputs/paper1_mpcbench/registry
+```
 
 ## Regenerate the reference
 
