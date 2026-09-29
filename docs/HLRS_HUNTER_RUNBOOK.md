@@ -658,7 +658,10 @@ nice -n 19 python3 run_pipeline.py --execution-mode hunter --hunter-stage build-
 `<PROTOCOL>` is the protocol file from the table in 9.1 (derived from
 `protocols/mpc_default_v1.json`, with the declared NAS hub). Check the
 `MPC protocol: <path> (hash <12 hex digits>)` line of the log against the
-hash the author gives you.
+hash the author gives you. The PBS jobs of the campaign run without
+`--protocol` and use the protocol recorded in the campaign, so their logs
+show the same line, ending in `; the campaign's protocol`, followed by a
+note that the command-line default is not used.
 
 What happens:
 

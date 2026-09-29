@@ -466,6 +466,111 @@ def test_build_campaign_through_main_regression(tmp_path):
     assert prov["parameters"]["iim"]["iim_max_nodes"] == 3
 
 
+def _protocol_lines(caplog):
+    return [r.getMessage() for r in caplog.records
+            if r.getMessage().startswith("MPC protocol:")]
+
+
+def test_stage_jobs_log_the_campaign_protocol(tmp_path, caplog, monkeypatch):
+    """The PBS stage jobs run without --protocol, so the command line resolves
+    the default protocol; their log must name the protocol the campaign was
+    built with (and computes with), not that default."""
+    import logging
+
+    from impact_pipeline import run_synergy_ci
+    from impact_pipeline.evidence import Protocol
+
+    bids, out = _tiny_bids_and_prep(tmp_path)
+    derived = (Path(run_pipeline.root) / "protocols" / "examples"
+               / "mpc_default_v1_schaefer400_7networks_hub.json").resolve()
+    default = run_pipeline.resolve_cli_protocol(None, "real")
+    assert Path(default) == Path(run_pipeline.DEFAULT_EMPIRICAL_PROTOCOL)
+    derived_hash = Protocol.from_json(derived).hash
+    default_hash = Protocol.from_json(default).hash
+    assert derived_hash != default_hash
+    common = dict(
+        dataset_id="ds003171",
+        bids_root_override=str(bids),
+        execution_mode="hunter",
+        mpc_metrics=["IIM"],
+        compute_ci=False,
+        iim_max_nodes_override=3,
+        iim_n_parts_override=2,
+    )
+    caplog.set_level(logging.INFO)
+    run_pipeline.main(str(out), hunter_stage="build-campaign",
+                      protocol=str(derived), **common)
+    (line,) = _protocol_lines(caplog)
+    assert str(derived) in line and derived_hash[:12] in line
+    campaign = out / "cache" / "hunter_iim_campaign"
+
+    class _Stop(Exception):
+        pass
+
+    captured = {}
+
+    def fake_run_s_ci(**kwargs):
+        captured.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(run_synergy_ci, "run_s_ci", fake_run_s_ci)
+    monkeypatch.setattr(run_pipeline, "collect_iim_results_by_path", lambda d: {})
+    stages = (("status", None), ("phase1-reduce", FileNotFoundError),
+              ("finalize-pipeline", _Stop))
+    for stage, error in stages:
+        caplog.clear()
+        # what a stage job's command line resolves: the default protocol
+        kwargs = dict(hunter_stage=stage, hunter_campaign_dir=str(campaign),
+                      hunter_run_index=0, protocol=default, **common)
+        if error is None:
+            run_pipeline.main(str(out), **kwargs)
+        else:
+            with pytest.raises(error):
+                run_pipeline.main(str(out), **kwargs)
+        lines = _protocol_lines(caplog)
+        assert len(lines) == 1, (stage, lines)
+        assert str(derived) in lines[0], (stage, lines)
+        assert derived_hash[:12] in lines[0], (stage, lines)
+        assert default_hash[:12] not in lines[0], (stage, lines)
+        assert "the campaign's protocol" in lines[0]
+        notes = [r.getMessage() for r in caplog.records
+                 if "not the command-line protocol" in r.getMessage()]
+        assert len(notes) == 1 and default_hash[:12] in notes[0], (stage, notes)
+    # and finalize computes the verdicts under the campaign's protocol
+    assert Protocol.from_dict(captured["protocol"]).hash == derived_hash
+
+
+def test_campaign_protocol_falls_back_without_a_manifest(tmp_path):
+    options = run_pipeline._mpc_evidence_options(
+        protocol=run_pipeline.DEFAULT_EMPIRICAL_PROTOCOL)
+    prov, from_campaign = run_pipeline._hunter_campaign_protocol(
+        tmp_path / "missing", options, run_pipeline.DEFAULT_EMPIRICAL_PROTOCOL)
+    assert from_campaign is False
+    assert prov == run_pipeline._mpc_protocol_provenance(
+        options, run_pipeline.DEFAULT_EMPIRICAL_PROTOCOL)
+    # a campaign built with a flag-built protocol says so
+    campaign = tmp_path / "campaign"
+    campaign.mkdir()
+    flags = run_pipeline._mpc_evidence_options()
+    (campaign / "campaign_manifest.json").write_text(json.dumps(
+        {"step2_context": {"mpc_evidence": flags, "run_parameters": {
+            "mpc_protocol": run_pipeline._mpc_protocol_provenance(flags)}}}))
+    prov, from_campaign = run_pipeline._hunter_campaign_protocol(
+        campaign, options, run_pipeline.DEFAULT_EMPIRICAL_PROTOCOL)
+    assert from_campaign is True
+    assert prov["hash"] is None and prov["note"] == "default protocol from flags"
+
+
+def test_only_non_build_hunter_jobs_are_stage_jobs():
+    stage_job = run_pipeline._is_hunter_stage_job
+    assert stage_job("hunter", "finalize-pipeline")
+    assert stage_job("HUNTER", "cut-shard")
+    assert not stage_job("hunter", None)
+    assert not stage_job("hunter", "build-campaign")
+    assert not stage_job("local", "finalize-pipeline")
+    assert not stage_job("no-such-mode", "status")
+
+
 def test_build_campaign_requires_iim(tmp_path):
     bids, out = _tiny_bids_and_prep(tmp_path)
     with pytest.raises(ValueError, match="IIM"):

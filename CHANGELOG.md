@@ -95,6 +95,15 @@ decision rules are unchanged. Each change has a regression test.
   from another disk is recorded under its path in the repository, while
   reading still resolves the link (`resolve_local_dataset_root`). Test:
   `tests/test_dataset_catalog.py`.
+- **Hunter stage jobs log the campaign's protocol.** The PBS jobs of a
+  campaign (phase-1 and cut shards, reduces, finalize, status) run without
+  `--protocol`, so their `MPC protocol:` log line named the command-line
+  default `protocols/mpc_default_v1.json` even for a campaign built with a
+  derived protocol, although their IIM options, verdicts, hashes and
+  manifests came from the campaign. They now log the protocol recorded in
+  the campaign manifest (source and hash, marked `; the campaign's
+  protocol`) and note when the command-line protocol differs. Test:
+  `tests/test_hunter_pbs.py`.
 
 #### Changed
 

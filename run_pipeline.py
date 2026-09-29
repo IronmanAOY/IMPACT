@@ -1933,6 +1933,57 @@ def _mpc_protocol_provenance(mpc_evidence_options, protocol_source=None):
     return {"source": source, "hash": Protocol.from_dict(payload).hash}
 
 
+def _log_mpc_protocol(prov, origin=None):
+    """The ``MPC protocol: <source> (hash <12 hex>)`` line of every run."""
+    log.info(
+        "MPC protocol: %s (hash %s)%s",
+        prov.get("source") or prov.get("note"),
+        (prov.get("hash") or "-")[:12],
+        f"; {origin}" if origin else "",
+    )
+
+
+def _is_hunter_stage_job(execution_mode, hunter_stage) -> bool:
+    """True for a Hunter job other than build-campaign (a PBS stage job)."""
+    try:
+        hunter = get_execution_profile(execution_mode).name == "hunter"
+    except ValueError:
+        return False
+    stage = str(hunter_stage or "build-campaign").strip().lower()
+    return hunter and stage != "build-campaign"
+
+
+def _hunter_campaign_protocol(campaign_dir, mpc_evidence_options, protocol=None):
+    """
+    ``(provenance, from_campaign)`` of the protocol a Hunter stage job uses.
+
+    The stage jobs (phase-1 and cut shards, reduce, finalize, status) run
+    without ``--protocol``: the campaign computes IIM with the protocol's IIM
+    options prepared at the build, and finalize computes the verdicts with
+    the evidence options stored in the campaign manifest
+    (``step2_context.mpc_evidence``). This returns that protocol's hash and
+    the source recorded at the build, so the job logs the campaign's
+    protocol rather than the command-line default. Without a readable
+    manifest (or evidence options in it) the command-line protocol is
+    returned with ``from_campaign`` False, as finalize would fall back to it.
+    """
+    try:
+        manifest = json.loads(
+            (Path(campaign_dir) / "campaign_manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        manifest = {}
+    ctx = manifest.get("step2_context") or {}
+    evidence = ctx.get("mpc_evidence")
+    if not evidence:
+        return _mpc_protocol_provenance(mpc_evidence_options, protocol), False
+    prov = _mpc_protocol_provenance(evidence)
+    recorded = (ctx.get("run_parameters") or {}).get("mpc_protocol") or {}
+    if prov.get("hash") and recorded.get("hash") == prov["hash"]:
+        prov["source"] = recorded.get("source")
+    return prov, True
+
+
 def _cli_count(text):
     """argparse type: positive count, scientific notation allowed (1e12)."""
     from impact_pipeline.hunter_cost import parse_count
@@ -2043,12 +2094,9 @@ def main(
         protocol=protocol, bootstrap_se=bootstrap_se,
         bootstrap_block_len=bootstrap_block_len,
     )
-    _proto_prov = _mpc_protocol_provenance(mpc_evidence_options, protocol)
-    log.info(
-        "MPC protocol: %s (hash %s)",
-        _proto_prov.get("source") or _proto_prov.get("note"),
-        (_proto_prov.get("hash") or "-")[:12],
-    )
+    if not _is_hunter_stage_job(execution_mode, hunter_stage):
+        # a Hunter stage job logs the campaign's protocol instead (below)
+        _log_mpc_protocol(_mpc_protocol_provenance(mpc_evidence_options, protocol))
 
     catalog_entry = get_report_dataset(dataset_id)
     cfg = DATASET_CONFIGS.get(dataset_id)
@@ -2132,6 +2180,27 @@ def main(
         else _first_existing_path(*cfg["bids_candidates"])
     )
     if hunter_mode and hunter_stage_key != "build-campaign":
+        stage_campaign_dir = Path(
+            hunter_campaign_dir
+            if hunter_campaign_dir is not None
+            else cache_dir / "hunter_iim_campaign"
+        ).resolve()
+        campaign_prov, from_campaign = _hunter_campaign_protocol(
+            stage_campaign_dir, mpc_evidence_options, protocol
+        )
+        _log_mpc_protocol(
+            campaign_prov,
+            "the campaign's protocol" if from_campaign
+            else "command line; the campaign manifest records none",
+        )
+        cli_prov = _mpc_protocol_provenance(mpc_evidence_options, protocol)
+        if from_campaign and cli_prov.get("hash") != campaign_prov.get("hash"):
+            log.info(
+                "This stage uses the campaign's protocol, not the command-line "
+                "protocol %s (hash %s).",
+                cli_prov.get("source") or cli_prov.get("note"),
+                (cli_prov.get("hash") or "-")[:12],
+            )
         _run_hunter_stage(
             hunter_stage=hunter_stage_key,
             hunter_campaign_dir=hunter_campaign_dir,
