@@ -401,7 +401,8 @@ These errata correct two descriptive numbers in section 7. They change no
 hypothesis, decision rule, threshold, protocol, seed or task: the
 confirmatory runs execute the tasks that the frozen code enumerates, and
 those already have the corrected sizes. Both values were checked against the
-frozen code (commit `b908ee3`).
+frozen code (freeze commit `f2cf249`, which was `b908ee3` before the commit
+messages were edited on 2026-09-29; both have the same tree).
 
 1. **Whole-brain grain (section 7, run-plan note).** The note says "the
    whole-brain systems, 209 regions". The whole-brain systems have **76

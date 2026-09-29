@@ -307,6 +307,12 @@ decision rules are unchanged. Each change has a regression test.
   confidence in the connectome file name. There are 260 witness tasks per
   family (13 x 20 seeds), not 280. The frozen text itself is unchanged
   (`tests/test_hunter_cost.py` compares it with the tag).
+- `docs/preregistration/README.md`: the OSF steps now say to attach the
+  errata section with the frozen document (or to mention it alongside), and
+  to record that the commit messages up to the freeze were edited on
+  2026-09-29 without any file change: the freeze commit `f2cf249` was
+  `b908ee3` before, and both have the tree `72fcc70`. The README also names
+  the second frozen protocol correctly (`mpc_bench_v1_anchored.json`).
 
 ### Added
 
