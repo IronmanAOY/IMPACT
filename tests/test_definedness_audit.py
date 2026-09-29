@@ -257,3 +257,56 @@ def test_default_dataset_list_matches_the_spec():
     assert set(da.DEFAULT_DATASETS) == {
         "ds003171", "ds005620", "ds006623", "ds002547",
         "ds004295", "ds005479", "ds002685", "ds002336"}
+
+
+def test_nas_capacity_needs_a_hub_declared_in_the_protocol(bids, tmp_path):
+    """As in the evidence layer (UNDEFINED:NAS:NO_DECLARED_WORKSPACE), NAS
+    capacity is not definable without a declared hub; the default protocol
+    (mpc_default_v1.json) declares none."""
+    from impact_pipeline.evidence import Protocol
+
+    res = da.run_audit(bids, tmp_path / "out", datasets=("dsA", "dsB"))
+    rec = res["recordings"]
+    assert _status(rec, "dsA", "sub-01_task-game", "NAS", "capacity") == (
+        da.NOT_DEFINABLE, "NO_DECLARED_WORKSPACE")
+    # the timing rule still comes first, and the other principles are unchanged
+    assert _status(rec, "dsB", "noev", "NAS", "capacity") == (
+        da.NOT_DEFINABLE, "missing_SamplingFrequency")
+    assert _status(rec, "dsA", "sub-01_task-game", "IIM", "default")[0] == (
+        da.DEFINABLE)
+    info = res["summary"]["protocol"]
+    assert info["source"] == "protocols/mpc_default_v1.json"
+    assert info["hash"] == Protocol.from_json(da.DEFAULT_PROTOCOL).hash
+    assert info["nas_hub_declared"] is False
+    assert res["summary"]["version"] == "definedness-audit/1.1.0"
+
+    hub = (da.REPO_ROOT / "protocols" / "examples"
+           / "mpc_default_v1_schaefer400_7networks_hub.json")
+    res = da.run_audit(bids, tmp_path / "hub", datasets=("dsA", "dsB"),
+                       protocol=hub)
+    rec = res["recordings"]
+    assert _status(rec, "dsA", "sub-01_task-game", "NAS", "capacity") == (
+        da.DEFINABLE, None)
+    assert _status(rec, "dsB", "noev", "NAS", "capacity") == (
+        da.NOT_DEFINABLE, "missing_SamplingFrequency")
+    assert res["summary"]["protocol"]["nas_hub_declared"] is True
+
+    res = da.run_audit(bids, tmp_path / "none", datasets=("dsA",), protocol=None)
+    assert _status(res["recordings"], "dsA", "sub-01_task-game", "NAS",
+                   "capacity") == (da.NOT_DEFINABLE, "NO_DECLARED_WORKSPACE")
+    assert res["summary"]["protocol"]["hash"] is None
+
+
+def test_audit_cli_takes_a_protocol(bids, tmp_path):
+    hub = (da.REPO_ROOT / "protocols" / "examples"
+           / "mpc_default_v1_eeg64_hub.json")
+    assert da.main(["--data-root", str(bids), "--out", str(tmp_path / "o"),
+                    "--datasets", "dsA", "--protocol", str(hub)]) == 0
+    summary = json.loads((tmp_path / "o" / "definedness_summary.json").read_text())
+    assert summary["protocol"]["source"] == (
+        "protocols/examples/mpc_default_v1_eeg64_hub.json")
+    assert summary["protocol"]["nas_hub_declared"] is True
+    assert da.main(["--data-root", str(bids), "--out", str(tmp_path / "n"),
+                    "--datasets", "dsA", "--protocol", "none"]) == 0
+    summary = json.loads((tmp_path / "n" / "definedness_summary.json").read_text())
+    assert summary["protocol"]["nas_hub_declared"] is False

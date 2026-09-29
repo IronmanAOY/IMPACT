@@ -27,6 +27,15 @@ from impact_pipeline.event_parsing import (
 
 # Event parsing is shared with the compute path (run_synergy_ci.load_onsets)
 # so that readiness and metric computation classify events identically.
+
+# Reason of NAS_reason when NAS mode='capacity' has no declared hub; the same
+# detail code as the evidence layer (UNDEFINED:NAS:NO_DECLARED_WORKSPACE).
+NAS_NO_DECLARED_WORKSPACE = "NO_DECLARED_WORKSPACE"
+# The empirical default protocol of run_pipeline.py in a source checkout (the
+# command-line default here as well).
+DEFAULT_EMPIRICAL_PROTOCOL = (
+    Path(__file__).resolve().parents[2] / "protocols" / "mpc_default_v1.json"
+)
 _STIM_RE = STIM_RE
 _GOAL_RE = GOAL_RE
 _FEEDBACK_RE = FEEDBACK_RE
@@ -158,7 +167,39 @@ def _assess_ram(
     return True, "ok", n_stim, n_fb, n_fvals
 
 
-def _assess_nas(n_regions: int, n_time: int) -> Tuple[bool, str]:
+def _nas_setup(protocol, nas_params) -> Dict[str, object]:
+    """
+    NAS mode and hub under the run's protocol and ``nas_params``, decided as
+    ``compute_synergy_ci`` decides them: NAS ``mode='capacity'`` without a
+    declared hub (``workspace_nodes``) is UNDEFINED in every run
+    (``NO_DECLARED_WORKSPACE``), so no run is NAS-ready.
+    """
+    if protocol is None and not nas_params:
+        return {"protocol_hash": None, "nas_mode": "legacy",
+                "nas_hub_declared": None, "nas_hub_missing": False}
+    from impact_pipeline import evidence
+    from impact_pipeline.synergy_ci import nas_hub_missing
+
+    proto = evidence.resolve_protocol(protocol)
+    opts = {**dict(nas_params or {}),
+            **(proto.estimator_options("NAS") if proto is not None else {})}
+    mode = str(opts.get("mode") or "legacy")
+    missing = bool(nas_hub_missing(proto, nas_params))
+    return {
+        "protocol_hash": None if proto is None else proto.hash,
+        "nas_mode": mode,
+        "nas_hub_declared": (
+            None if mode != "capacity" else opts.get("workspace_nodes") is not None
+        ),
+        "nas_hub_missing": missing,
+    }
+
+
+def _assess_nas(
+    n_regions: int, n_time: int, hub_missing: bool = False
+) -> Tuple[bool, str]:
+    if hub_missing:
+        return False, NAS_NO_DECLARED_WORKSPACE
     if n_regions < 2:
         return False, "insufficient_regions"
     if n_time < 4:
@@ -295,7 +336,18 @@ def check_mpc_readiness(
     iim_lag_trs: int = 1,
     iim_max_state_space: int = 1500,
     iim_max_nodes: Optional[int] = None,
+    protocol=None,
+    nas_params: Optional[Dict[str, object]] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, object]]:
+    """
+    Per-run readiness of every MPC metric and the summary.
+
+    ``protocol`` (JSON path, dict or ``evidence.Protocol``) and ``nas_params``
+    are those of the run being planned; they decide the NAS mode. Under NAS
+    ``mode='capacity'`` without a declared hub no run is NAS-ready
+    (``NAS_reason`` ``NO_DECLARED_WORKSPACE``), as the evidence layer records
+    NAS as UNDEFINED. Without either, NAS is checked in its legacy mode.
+    """
     if not bool(require_explicit_srpi):
         raise ValueError("Neutral SRPI mode is disabled; explicit SRPI evidence is required.")
     if int(srpi_min_events_per_class) < SRPI_MIN_EVENTS_PER_CLASS:
@@ -307,6 +359,7 @@ def check_mpc_readiness(
     bids = Path(bids_root) if bids_root is not None else None
     if not prep.exists():
         raise FileNotFoundError(f"Preprocessed root not found: {prep}")
+    nas_setup = _nas_setup(protocol, nas_params)
 
     prep_subjects = sorted(
         p.name for p in prep.iterdir() if p.is_dir() and (not p.name.startswith("."))
@@ -476,7 +529,9 @@ def check_mpc_readiness(
                 else:
                     pdi_reason = "missing_state_rest_baseline"
                 pdi_mode = f"anchor_runs={len(pdi_anchor_runs)};task_runs={len(pdi_task_runs)}"
-                nas_ok, nas_reason = _assess_nas(n_regions, n_time)
+                nas_ok, nas_reason = _assess_nas(
+                    n_regions, n_time, hub_missing=bool(nas_setup["nas_hub_missing"])
+                )
                 iim_ok, iim_reason, iim_nodes, iim_bins_used = _assess_iim(
                     n_regions=n_regions,
                     n_time=n_time,
@@ -543,6 +598,9 @@ def check_mpc_readiness(
                 "require_explicit_srpi": True,
                 "srpi_min_events_per_class": int(srpi_min_events_per_class),
                 "pdi_baseline_policy": "strict_deep_rest_plus_state_rest",
+                "nas_mode": nas_setup["nas_mode"],
+                "nas_hub_declared": nas_setup["nas_hub_declared"],
+                "protocol_hash": nas_setup["protocol_hash"],
             },
         }
         return df, summary
@@ -590,6 +648,9 @@ def check_mpc_readiness(
             "iim_lag_trs": int(iim_lag_trs),
             "iim_max_state_space": int(iim_max_state_space),
             "iim_max_nodes": None if iim_max_nodes is None else int(iim_max_nodes),
+            "nas_mode": nas_setup["nas_mode"],
+            "nas_hub_declared": nas_setup["nas_hub_declared"],
+            "protocol_hash": nas_setup["protocol_hash"],
         },
     }
     return df, summary
@@ -612,7 +673,28 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--iim-lag-trs", type=int, default=1)
     p.add_argument("--iim-max-state-space", type=int, default=1500)
     p.add_argument("--iim-max-nodes", type=int, default=None)
+    p.add_argument(
+        "--protocol",
+        default=None,
+        help=(
+            "MPC protocol of the planned run; it decides the NAS mode (NAS "
+            "capacity without a declared hub is never ready: "
+            "NO_DECLARED_WORKSPACE). Default: protocols/mpc_default_v1.json, "
+            "the default of empirical runs; 'none' checks the flag-built "
+            "legacy NAS mode (as for dummy data)."
+        ),
+    )
     return p
+
+
+def resolve_protocol_arg(value: Optional[str]) -> Optional[str]:
+    """``--protocol``: a path, ``none``/``flags`` (None) or the default."""
+    if value is None:
+        default = DEFAULT_EMPIRICAL_PROTOCOL
+        return str(default) if default.is_file() else None
+    if str(value).strip().lower() in ("none", "flags"):
+        return None
+    return str(value)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -632,6 +714,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         iim_lag_trs=args.iim_lag_trs,
         iim_max_state_space=args.iim_max_state_space,
         iim_max_nodes=args.iim_max_nodes,
+        protocol=resolve_protocol_arg(args.protocol),
     )
 
     if args.out_csv:

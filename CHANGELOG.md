@@ -104,6 +104,24 @@ decision rules are unchanged. Each change has a regression test.
   the campaign manifest (source and hash, marked `; the campaign's
   protocol`) and note when the command-line protocol differs. Test:
   `tests/test_hunter_pbs.py`.
+- **Readiness and definedness reports follow the NAS hub rule.**
+  `impact_pipeline.mpc_readiness` and `scripts/definedness_audit.py`
+  reported NAS capacity as ready or DEFINABLE without a declared hub,
+  although the pipeline records NAS as UNDEFINED
+  (`NO_DECLARED_WORKSPACE`) in that case. `check_mpc_readiness` now takes
+  the run's `protocol` and `nas_params` and applies the pipeline's own rule
+  (`synergy_ci.nas_hub_missing`): under NAS capacity without a hub no run is
+  NAS-ready (`NAS_reason` `NO_DECLARED_WORKSPACE`, so `CI_ready` is false as
+  well), and the summary records the NAS mode, whether a hub is declared and
+  the protocol hash. Without a protocol NAS is checked in its legacy mode as
+  before. Its command line checks against `protocols/mpc_default_v1.json`
+  unless `--protocol` says otherwise (`none`: the flag-built legacy mode),
+  and the dashboard passes the protocol its runs use (v1 on real data). The
+  definedness audit (now `definedness-audit/1.1.0`) takes `--protocol`
+  (default v1): NAS capacity is NOT_DEFINABLE with the reason
+  `NO_DECLARED_WORKSPACE` unless the protocol declares `workspace_nodes`,
+  and its summary records the protocol's source and hash. Tests:
+  `tests/test_mpc_readiness.py`, `tests/test_definedness_audit.py`.
 
 #### Changed
 

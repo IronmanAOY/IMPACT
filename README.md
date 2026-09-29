@@ -349,7 +349,7 @@ files, with `--out` pointing to the manuscript folder.
 | `scripts/audit_aggregation.py` | audit of the legacy CI aggregation (compensation, implied floors, sensitivity) |
 | `scripts/necessity_power.py` | power of the symmetric necessity criteria (`--level component`, H3-H7) and of the verdict-level EXCLUDED-rate criterion (`--level verdict`, H1) |
 | `scripts/simulate_rule_recovery.py` | recovery of the aggregation exponent of the MPC degree (H2) |
-| `scripts/definedness_audit.py` | which principle / channel is definable on which dataset, from BIDS metadata only, with an access log |
+| `scripts/definedness_audit.py` | which principle / channel is definable on which dataset, from BIDS metadata only, with an access log (NAS capacity only with a hub declared in `--protocol`; the default `protocols/mpc_default_v1.json` declares none: `NO_DECLARED_WORKSPACE`) |
 | `scripts/null_calibration.py` | false-PRESENT rates on null families under a protocol (`--protocol`, `--se-groups`; `--status-rule legacy_v1` is a diagnostic only) |
 | `scripts/bench_reference.py` | positive-control reference anchor of the bench protocol |
 | `scripts/compute_empirical_reference.py` | external empirical reference anchor (per-principle rho and SE) from the high-state runs of a declared held-out subset of participants, with provenance; optionally writes the protocol with that reference |

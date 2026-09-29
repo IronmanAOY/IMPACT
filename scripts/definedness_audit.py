@@ -23,6 +23,12 @@ Definedness rules mirror the pipeline contracts (``event_parsing`` patterns,
 ``mpc_metrics`` channels, with the pipeline's strict defaults): PDI
 (repertoire, unlabelled), NAS (capacity) and IIM need a recording with its sampling
 metadata (``RepetitionTime`` / ``SamplingFrequency``; no silent TR fallback);
+NAS capacity also needs a hub (``workspace_nodes``) declared in the protocol
+(``--protocol``, default ``protocols/mpc_default_v1.json``, which declares
+none): without one it is ``NOT_DEFINABLE`` with the reason
+``NO_DECLARED_WORKSPACE``, as the evidence layer records NAS as UNDEFINED
+(``UNDEFINED:NAS:NO_DECLARED_WORKSPACE``); the audit does not check that a
+declared hub fits the recording's grain;
 PDI's legacy baseline needs a rest recording of the same subject and
 modality; RAM needs an events table with ``trial_type`` goal, stimulus and
 feedback levels and a numeric feedback value column
@@ -89,7 +95,11 @@ from impact_pipeline.event_parsing import (  # noqa: E402
     classify_self_nonself,
 )
 
-AUDIT_VERSION = "definedness-audit/1.0.0"
+AUDIT_VERSION = "definedness-audit/1.1.0"
+# NAS capacity needs a declared hub; the default protocol of empirical runs
+# declares none (derived protocols in protocols/examples/ do).
+DEFAULT_PROTOCOL = REPO_ROOT / "protocols" / "mpc_default_v1.json"
+NO_DECLARED_WORKSPACE = "NO_DECLARED_WORKSPACE"
 DEFAULT_DATASETS = (
     "ds003171", "ds005620", "ds006623", "ds002547",
     "ds004295", "ds005479", "ds002685", "ds002336",
@@ -336,11 +346,15 @@ def _level_rule(rec, cols, levels_by_col, label_cols, checks, extra_cols=(),
     return (NOT_DEFINABLE, "no_levels:" + ",".join(failed))
 
 
-def evaluate_recording(rec, sidecar, columns, levels_by_col, subject_tasks):
+def evaluate_recording(rec, sidecar, columns, levels_by_col, subject_tasks,
+                       nas_hub_declared=False):
     """
     Status and reason per (principle, channel) for one recording.
     ``columns``: events header (None without an events file);
-    ``levels_by_col``: level labels described per column in events sidecars.
+    ``levels_by_col``: level labels described per column in events sidecars;
+    ``nas_hub_declared``: whether the protocol declares the NAS hub
+    (``workspace_nodes``); without it NAS capacity is ``NOT_DEFINABLE``
+    (``NO_DECLARED_WORKSPACE``) whatever the recording.
     """
     out = {}
     levels_by_col = dict(levels_by_col or {})
@@ -352,7 +366,10 @@ def evaluate_recording(rec, sidecar, columns, levels_by_col, subject_tasks):
     else:
         timing = (DEFINABLE, None)
     out[("PDI", "repertoire")] = timing
-    out[("NAS", "capacity")] = timing
+    out[("NAS", "capacity")] = (
+        timing if (nas_hub_declared or timing[0] != DEFINABLE)
+        else (NOT_DEFINABLE, NO_DECLARED_WORKSPACE)
+    )
     out[("IIM", "default")] = timing
     has_rest = any(REST_TASK_RE.search(t or "") for t in subject_tasks)
     out[("PDI", "legacy_baseline")] = (
@@ -420,7 +437,32 @@ def evaluate_recording(rec, sidecar, columns, levels_by_col, subject_tasks):
 # --------------------------------------------------------------------------
 # audit driver
 # --------------------------------------------------------------------------
-def audit_dataset(reader, dataset_root: Path, dataset_id: str):
+def protocol_nas_hub(protocol):
+    """
+    ``(info, hub_declared)`` of the protocol the audit applies (JSON path,
+    dict, ``evidence.Protocol`` or None): its source and hash, and whether it
+    declares the NAS hub (``workspace_nodes`` of its NAS options).
+    """
+    from impact_pipeline.evidence import resolve_protocol
+
+    source = None
+    if isinstance(protocol, (str, os.PathLike)):
+        path = Path(protocol).resolve()
+        try:
+            source = path.relative_to(REPO_ROOT).as_posix()
+        except ValueError:
+            source = path.name
+    proto = resolve_protocol(protocol)
+    if proto is None:
+        return {"source": None, "name": None, "hash": None,
+                "nas_hub_declared": False}, False
+    declared = proto.estimator_options("NAS").get("workspace_nodes") is not None
+    return {"source": source, "name": proto.name, "hash": proto.hash,
+            "nas_hub_declared": declared}, declared
+
+
+def audit_dataset(reader, dataset_root: Path, dataset_id: str,
+                  nas_hub_declared=False):
     recs, meta_by_dir = discover(dataset_root)
     desc_path = dataset_root / "dataset_description.json"
     description = reader.json(desc_path) if desc_path.exists() or os.path.islink(
@@ -448,7 +490,8 @@ def audit_dataset(reader, dataset_root: Path, dataset_id: str):
             levels.update(_levels(reader.json(p)))
         cells = evaluate_recording(
             r, sidecar, columns, levels,
-            tasks_by_subject.get((r["entities"].get("sub"), r["modality"]), set()))
+            tasks_by_subject.get((r["entities"].get("sub"), r["modality"]), set()),
+            nas_hub_declared=nas_hub_declared)
         base = {
             "dataset": dataset_id,
             "recording": os.path.relpath(r["path"], dataset_root),
@@ -500,11 +543,13 @@ def _provenance():
     return info
 
 
-def run_audit(data_root, out_dir, datasets=DEFAULT_DATASETS) -> dict:
+def run_audit(data_root, out_dir, datasets=DEFAULT_DATASETS,
+              protocol=DEFAULT_PROTOCOL) -> dict:
     data_root = Path(data_root).resolve()
     out = Path(out_dir).resolve()
     if out == data_root or data_root in out.parents:
         raise ValueError("the output directory must lie outside the data root")
+    protocol_info, hub_declared = protocol_nas_hub(protocol)
     out.mkdir(parents=True, exist_ok=True)
     reader = MetadataReader(data_root)
     all_rows, ds_info = [], {}
@@ -515,7 +560,7 @@ def run_audit(data_root, out_dir, datasets=DEFAULT_DATASETS) -> dict:
         if not root.is_dir():
             ds_info[ds] = {"present": False, "prior_access": prior}
             continue
-        rows, info = audit_dataset(reader, root, ds)
+        rows, info = audit_dataset(reader, root, ds, nas_hub_declared=hub_declared)
         all_rows.extend(rows)
         ds_info[ds] = {"present": True, "prior_access": prior, **info,
                        "confirmatory_eligible": prior != "exploratory_calibration"}
@@ -541,6 +586,7 @@ def run_audit(data_root, out_dir, datasets=DEFAULT_DATASETS) -> dict:
         "open_policy": {"allowed": METADATA_OPEN_RE.pattern, "mode": "rb",
                         "events_tsv": "header line only"},
         "status_definitions": list(STATUSES),
+        "protocol": protocol_info,
         "seconds": round(time.time() - t0, 3),
         "provenance": _provenance(),
     }
@@ -554,9 +600,16 @@ def main(argv=None) -> int:
     ap.add_argument("--data-root", default=str(REPO_ROOT / "data" / "scratch"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--datasets", default=",".join(DEFAULT_DATASETS))
+    ap.add_argument(
+        "--protocol", default=str(DEFAULT_PROTOCOL),
+        help="MPC protocol whose NAS hub (workspace_nodes) decides whether NAS "
+             "capacity is definable (default: protocols/mpc_default_v1.json, "
+             "which declares none; 'none': no protocol, no hub)")
     args = ap.parse_args(argv)
     datasets = tuple(d.strip() for d in args.datasets.split(",") if d.strip())
-    res = run_audit(args.data_root, args.out, datasets)
+    protocol = (None if str(args.protocol).strip().lower() in ("none", "")
+                else args.protocol)
+    res = run_audit(args.data_root, args.out, datasets, protocol=protocol)
     s = res["summary"]
     keys = ("n_recordings", "n_files_opened", "n_annex_not_fetched",
             "only_metadata_opened")

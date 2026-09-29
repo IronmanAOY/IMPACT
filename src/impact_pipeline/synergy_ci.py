@@ -815,6 +815,22 @@ def _nas_hub_missing(nas_kw, opts):
     )
 
 
+def nas_hub_missing(protocol=None, nas_params=None):
+    """
+    Whether :func:`compute_synergy_ci` records NAS as UNDEFINED
+    (``UNDEFINED:NAS:NO_DECLARED_WORKSPACE``) in every run under this protocol
+    and ``nas_params``: NAS ``mode='capacity'`` (from the protocol's NAS
+    options or ``nas_params``) without a declared hub (``workspace_nodes``).
+    Readiness and definedness reports use it so that they agree with the
+    evidence layer. Conflicting options raise ValueError, as in the pipeline.
+    """
+    proto = mpc_evidence.resolve_protocol(protocol)
+    params_opts, _ = _params_modes("NAS", nas_params)
+    proto_opts = proto.estimator_options("NAS") if proto is not None else {}
+    opts = _merge_estimator_options("NAS", params_opts, proto_opts)
+    return _nas_hub_missing({**dict(nas_params or {}), **opts}, opts)
+
+
 def _uses_internal_null(principle, opts):
     mode = _mode_of(principle, opts)
     return (

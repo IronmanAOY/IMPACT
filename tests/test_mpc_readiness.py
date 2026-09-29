@@ -1,7 +1,18 @@
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+import pytest
 
+from impact_pipeline import evidence as E
+from impact_pipeline import mpc_readiness
 from impact_pipeline.mpc_readiness import check_mpc_readiness
+from impact_pipeline.synergy_ci import nas_hub_missing
+
+REPO = Path(__file__).resolve().parents[1]
+V1 = REPO / "protocols" / "mpc_default_v1.json"
+HUB_EXAMPLE = (REPO / "protocols" / "examples"
+               / "mpc_default_v1_schaefer400_7networks_hub.json")
 
 
 def _write_events(path, rows):
@@ -17,7 +28,7 @@ def _write_ts(path, n_time=80, n_regions=6):
     np.save(path, arr)
 
 
-def test_readiness_all_mpcs_ready(tmp_path):
+def _all_ready_layout(tmp_path):
     prep = tmp_path / "preprocessed"
     bids = tmp_path / "bids"
     subj = "01"
@@ -46,14 +57,23 @@ def test_readiness_all_mpcs_ready(tmp_path):
         rows.append({"onset": t0, "duration": 0.1, "trial_type": "self_name"})
         rows.append({"onset": t0 + 0.6, "duration": 0.1, "trial_type": "other_name"})
     _write_events(ev_path, rows)
+    return prep, bids, ses
 
-    df, summary = check_mpc_readiness(
+
+def _check(prep, bids, ses, **kwargs):
+    return check_mpc_readiness(
         prep_root=str(prep),
         bids_root=str(bids),
         atlas="schaefer400",
         condition="audio",
         sessions=[ses],
+        **kwargs,
     )
+
+
+def test_readiness_all_mpcs_ready(tmp_path):
+    prep, bids, ses = _all_ready_layout(tmp_path)
+    df, summary = _check(prep, bids, ses)
     assert df.shape[0] == 1
     row = df.iloc[0]
     assert bool(row["RAM_ready"])
@@ -65,6 +85,71 @@ def test_readiness_all_mpcs_ready(tmp_path):
     assert bool(row["SRPI_ready"])
     assert bool(row["CI_ready"])
     assert summary["metrics"]["CI"]["ready"] == 1
+
+
+# --------------------------------------------------------------------------
+# NAS capacity needs a declared hub, as in the evidence layer
+# --------------------------------------------------------------------------
+def _v1_with_hub(nodes):
+    payload = E.Protocol.from_json(V1).to_dict()
+    payload["estimators"]["NAS"] = {**payload["estimators"]["NAS"],
+                                    "workspace_nodes": list(nodes)}
+    return payload
+
+
+def test_nas_capacity_without_a_declared_hub_is_never_ready(tmp_path):
+    prep, bids, ses = _all_ready_layout(tmp_path)
+    df, summary = _check(prep, bids, ses, protocol=str(V1))
+    row = df.iloc[0]
+    assert not bool(row["NAS_ready"])
+    assert row["NAS_reason"] == "NO_DECLARED_WORKSPACE"
+    assert row["NAS_reason"] == E.REASON_NO_DECLARED_WORKSPACE
+    assert not bool(row["CI_ready"])
+    # the other metrics do not depend on the hub
+    assert bool(row["IIM_ready"]) and bool(row["PDI_ready"])
+    assert summary["metrics"]["NAS"]["ready"] == 0
+    settings = summary["settings"]
+    assert settings["nas_mode"] == "capacity"
+    assert settings["nas_hub_declared"] is False
+    assert settings["protocol_hash"] == E.Protocol.from_json(V1).hash
+    # the same through nas_params alone (no protocol)
+    df, _ = _check(prep, bids, ses, nas_params={"mode": "capacity"})
+    assert df.iloc[0]["NAS_reason"] == "NO_DECLARED_WORKSPACE"
+
+
+def test_nas_capacity_with_a_declared_hub_is_ready(tmp_path):
+    prep, bids, ses = _all_ready_layout(tmp_path)
+    df, summary = _check(prep, bids, ses, protocol=_v1_with_hub([0, 1, 2]))
+    row = df.iloc[0]
+    assert bool(row["NAS_ready"]) and row["NAS_reason"] == "ok"
+    assert summary["settings"]["nas_hub_declared"] is True
+    df, _ = _check(prep, bids, ses,
+                   nas_params={"mode": "capacity", "workspace_nodes": [0, 1]})
+    assert bool(df.iloc[0]["NAS_ready"])
+    # without a protocol NAS is checked in its legacy mode, as before
+    df, summary = _check(prep, bids, ses)
+    assert bool(df.iloc[0]["NAS_ready"])
+    assert summary["settings"]["nas_mode"] == "legacy"
+    assert summary["settings"]["nas_hub_declared"] is None
+
+
+def test_readiness_nas_rule_is_the_evidence_layer_rule():
+    assert nas_hub_missing(V1) is True
+    assert nas_hub_missing(HUB_EXAMPLE) is False
+    assert nas_hub_missing(None) is False
+    assert nas_hub_missing(None, {"mode": "capacity"}) is True
+    assert nas_hub_missing(None, {"mode": "capacity", "workspace_nodes": [0]}) is False
+    assert nas_hub_missing(_v1_with_hub([0, 1])) is False
+    with pytest.raises(ValueError, match="differs"):
+        nas_hub_missing(V1, {"mode": "legacy"})
+
+
+def test_readiness_cli_defaults_to_the_empirical_protocol():
+    resolve = mpc_readiness.resolve_protocol_arg
+    assert Path(mpc_readiness.DEFAULT_EMPIRICAL_PROTOCOL) == V1
+    assert resolve(None) == str(V1)
+    assert resolve("none") is None and resolve("FLAGS") is None
+    assert resolve(str(HUB_EXAMPLE)) == str(HUB_EXAMPLE)
 
 
 def test_readiness_ram_not_ready_without_feedback(tmp_path):

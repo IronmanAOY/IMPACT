@@ -8703,6 +8703,10 @@ class DashboardState:
             "condition": str(resolved["condition"]),
             "sessions": [str(s) for s in resolved["sessions"]],
             "subjects": sorted([str(s) for s in resolved["subjects"]]),
+            # the origin selects the protocol (NAS hub rule); summaries cached
+            # before that rule are not reused
+            "data_origin": str(resolved.get("data_origin") or ""),
+            "nas_rule": "declared_hub",
         }
         digest = hashlib.sha1(
             json.dumps(signature, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -8895,6 +8899,14 @@ class DashboardState:
         else:
             if check_mpc_readiness is None:
                 raise RuntimeError("MPC readiness module is not available in this runtime.")
+            # The runs started here pass no --protocol, so run_pipeline.py uses
+            # the default protocol on real data (NAS capacity without a hub is
+            # never ready) and a flag-built one on dummy data.
+            readiness_protocol = (
+                str(self._repo_root / "protocols" / "mpc_default_v1.json")
+                if normalize_data_origin(resolved["data_origin"]) == REAL_DATA_ORIGIN
+                else None
+            )
             df, summary = check_mpc_readiness(
                 prep_root=str(prep_root),
                 bids_root=str(Path(resolved["bids_root"]).resolve()),
@@ -8908,6 +8920,7 @@ class DashboardState:
                 iim_lag_trs=1,
                 iim_max_state_space=1500,
                 iim_max_nodes=None,
+                protocol=readiness_protocol,
             )
             preview = self._readiness_preview_from_df(df)
 
