@@ -64,7 +64,9 @@ def make_figure(power_dir, recovery_dir, out_dir, tau=None, target_power=None):
     target = float(target_power if target_power is not None
                    else sorted(min_n["target_power"].unique())[0])
     fc.setup_style()
-    fig, axes = plt.subplots(2, 2, figsize=(7.4, 5.6))
+    fig, axes = plt.subplots(2, 2, figsize=(fc.FULL_WIDTH, 5.2))
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.93, bottom=0.14, wspace=0.28,
+                        hspace=0.45)
     rows = []
 
     ax = axes[0, 0]
@@ -78,14 +80,24 @@ def make_figure(power_dir, recovery_dir, out_dir, tau=None, target_power=None):
                 continue
             lab = f"label noise {lam:g}" if truth == "necessity_holds" else None
             ax.plot(s["n"], s["power"], color=fc.SLOTS[j], alpha=alpha_,
-                    lw=2.0 if truth == "necessity_holds" else 1.5, label=lab)
+                    lw=1.3 if truth == "necessity_holds" else 1.0, label=lab)
             rows += [{"panel": "A", "label_noise": lam, "truth": truth, "n": n,
                       "power": p} for n, p in zip(s["n"], s["power"])]
     ax.axhline(target, color=fc.INK["axis"], lw=0.8)
     ax.set_ylim(-0.02, 1.02)
     ax.set_xlabel("determinate report-positive episodes n")
     ax.set_ylabel("P(correct outcome)")
-    fc.panel_title(ax, "A", f"Power (tau = {tau:g}; lighter: violated)")
+    fc.panel_title(ax, "A", f"Power, \u03c4 = {tau:g} (lighter: necessity violated)")
+    fixed = {k: sorted(sub[k].unique())[0] for k in FIX if k in sub.columns}
+    if "coverage" in sub.columns and len(sub):
+        fixed["coverage"] = float(sub["coverage"].max())
+    items = [f"{k.replace('_', ' ')} {v:g}" for k, v in fixed.items()]
+    half = (len(items) + 1) // 2
+    ax.text(0.99, 0.3, "fixed: " + ", ".join(items[:half]) + ",\n"
+            + ", ".join(items[half:]), transform=ax.transAxes, ha="right",
+            va="bottom", fontsize=5, color=fc.INK["secondary"],
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.9,
+                  "pad": 1.0})
     ax.legend(fontsize=6, loc="lower right")
 
     ax = axes[0, 1]
@@ -96,11 +108,14 @@ def make_figure(power_dir, recovery_dir, out_dir, tau=None, target_power=None):
         # both truths must reach the target; NaN = not reached on the grid
         s = s.groupby("label_noise")["n_stable"].apply(
             lambda v: v.max() if v.notna().all() else np.nan)
-        ax.plot(s.index, s.values, marker="o", color=fc.SLOTS[j], label=f"tau {t:g}",
+        ax.plot(s.index, s.values, marker="o", color=fc.SLOTS[j], label=f"\u03c4 {t:g}",
                 markeredgecolor=fc.INK["surface"], markeredgewidth=1.0)
         for lam in s.index[s.isna()]:
+            ax.plot([lam], [1.0], marker="x", ms=4, color=fc.SLOTS[j],
+                    transform=ax.get_xaxis_transform(), clip_on=False)
             ax.annotate("not reached", (lam, 1.0), xycoords=("data", "axes fraction"),
-                        ha="center", va="top", fontsize=5.5, color=fc.INK["muted"])
+                        xytext=(0, -6), textcoords="offset points", ha="center",
+                        va="top", fontsize=5, color=fc.SLOTS[j])
         rows += [{"panel": "B", "tau": t, "label_noise": lam, "n_stable": v}
                  for lam, v in s.items()]
     ax.set_xlabel("label noise (report-positive but not conscious)")
@@ -127,9 +142,12 @@ def make_figure(power_dir, recovery_dir, out_dir, tau=None, target_power=None):
         ax.set_xlabel("component reliability")
         ax.set_ylabel(ylabel)
         fc.panel_title(ax, "CD"[k], f"Exponent recovery (N = {int(n_max)}, "
-                       f"rho = {rho:g})" if k == 0 else "Profile-interval coverage")
-        ax.legend(fontsize=6)
-    fig.tight_layout()
+                       f"\u03c1 = {rho:g})" if k == 0 else "Profile-interval coverage")
+        if k == 1:
+            h, lab = ax.get_legend_handles_labels()
+            fig.legend(h, [x.replace("p = ", "true p = ") for x in lab],
+                       loc="lower center", ncol=len(lab), fontsize=6.5,
+                       bbox_to_anchor=(0.5, 0.0))
     prov = fc.provenance(__file__, [pdir / "necessity_power.csv",
                                     pdir / "necessity_min_n.csv",
                                     rdir / "rule_recovery_cells.csv"])

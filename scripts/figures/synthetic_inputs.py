@@ -6,9 +6,10 @@ and tests only; never figure content for the paper).
 ``write_all(out_dir, seed=0)`` writes, under ``out_dir``: ``audit/`` (from
 ``scripts/audit_aggregation.py`` with a tiny sensitivity run),
 ``null_calibration_rates.csv``, ``null_calibration_verdicts.csv``,
-``iim_validation.csv``, ``bench_sweep_results.csv``,
-``bench_witness_results.csv``, ``patchwork_results.csv``,
-``rule_summary.csv``, ``rule_cases.csv``, ``power/`` (from
+``iim_validation.csv``, ``sweep.csv`` (construct-scale components, long),
+``witnesses.csv`` (wide statuses), ``witness_components.csv`` and
+``witness_verdicts.csv`` (long layout of the evaluator), ``patchwork.csv``,
+``rule_summary.csv``, ``rule_cases.csv``, ``audit_decisions.csv``, ``power/`` (from
 ``scripts/necessity_power.py``) and ``recovery/`` (from
 ``scripts/simulate_rule_recovery.py``), and returns their paths.
 """
@@ -68,16 +69,92 @@ def iim_table(rng):
     return pd.DataFrame(rows)
 
 
-def sweep_results(rng):
+KNOBS_BY_SWITCH = {k: p for p, k in KNOBS.items()}
+SWITCH_WITNESS = {"eta": "W_RAM_no_plasticity", "K": "W_PDI_single_attractor",
+                  "g_b": "W_NAS_no_workspace", "c_int": "W_IIM_feedforward",
+                  "e": "W_SRPI_no_efference"}
+
+
+def _status(c, se=0.1):
+    if not np.isfinite(c):
+        return "UNDEFINED", "INVALID_ANCHORS"
+    lo, hi = c - 1.833 * se, c + 1.833 * se
+    if lo > 0.25:
+        return "PRESENT", ""
+    if hi < 0.10:
+        return "ABSENT", ""
+    return "UNDEFINED", "INCONCLUSIVE"
+
+
+def component_table(rng):
+    """Construct-scale components (long; the evaluator's ``components.csv``
+    layout): sweeps and witnesses of two families; RAM and PDI have no
+    anchor (``c`` undefined), as on the bench."""
     rows = []
-    for p, knob in KNOBS.items():
-        for lv in np.linspace(0, 1, 5):
-            for seed in range(3):
-                row = {"sweep_knob": knob, "sweep_level": lv, "seed": seed}
+    anchored = ("NAS", "IIM", "SRPI")
+    for fam in ("A", "C"):
+        for seed in range(4):
+            for p, knob in KNOBS.items():
+                for lv in np.linspace(0, 1, 5):
+                    for q in PRINCIPLES:
+                        eff = 1.2 * lv if q == p else 0.2 * lv * (q == "IIM")
+                        c = (0.1 + eff + 0.1 * rng.standard_normal()
+                             if q in anchored else np.nan)
+                        st, why = _status(c)
+                        rows.append({"family": fam, "design": "sweep",
+                                     "witness_id": None, "bearer_mode": "system",
+                                     "seed": seed, "sweep_knob": knob,
+                                     "sweep_level": lv, "principle": q, "c": c,
+                                     "se_c": 0.1, "status": st,
+                                     "status_reason": why})
+            witnesses = [("PC_nominal", None)] + [
+                (w, KNOBS_BY_SWITCH[k]) for k, w in SWITCH_WITNESS.items()]
+            for wid, off in witnesses:
                 for q in PRINCIPLES:
-                    eff = 6 * lv if q == p else 0.8 * lv * (q == "IIM")
-                    row[f"{q}_z"] = eff + rng.standard_normal()
-                rows.append(row)
+                    c = (1.0 - (0.9 if q == off else 0.0) + 0.1 * rng.standard_normal()
+                         if q in anchored else np.nan)
+                    st, why = _status(c)
+                    rows.append({"family": fam, "design": "witnesses",
+                                 "witness_id": wid, "bearer_mode": "system",
+                                 "seed": seed, "sweep_knob": None,
+                                 "sweep_level": None, "principle": q, "c": c,
+                                 "se_c": 0.1, "status": st, "status_reason": why,
+                                 "intended_bits": "11111" if off is None else
+                                 "".join("0" if x == off else "1"
+                                         for x in PRINCIPLES)})
+    return pd.DataFrame(rows)
+
+
+def verdict_table(components):
+    """One verdict per witness run under the anchored set (Kleene AND)."""
+    w = components[components["design"] == "witnesses"]
+    rows = []
+    for (fam, wid, seed), sub in w.groupby(["family", "witness_id", "seed"]):
+        st = sub[sub["principle"].isin(("NAS", "IIM", "SRPI"))]["status"].tolist()
+        verdict = ("EXCLUDED" if "ABSENT" in st else "MPC_CONSISTENT"
+                   if all(x == "PRESENT" for x in st) else "UNDETERMINED")
+        rows.append({"task_id": f"{wid}-{fam}-{seed}", "family": fam,
+                     "design": "witnesses", "witness_id": wid,
+                     "bearer_mode": "system", "seed": seed, "verdict": "UNDETERMINED",
+                     "verdict_val": verdict})
+    return pd.DataFrame(rows)
+
+
+def audit_decisions(rng):
+    """Per-system decisions of two rules (``audit_decisions.csv`` layout)."""
+    rows = []
+    classes = (["all_present"] * 30 + ["single_deficit:NAS"] * 20
+               + ["witness:W_IIM_feedforward"] * 20 + ["multi_deficit:3"] * 10)
+    for rule, p_cons in (("impact_c", (0.3, 0.02)), ("union", (0.9, 0.6))):
+        for scen in ("none", "RAM+SRPI_missing"):
+            for i, cl in enumerate(classes):
+                pos = cl == "all_present"
+                u = rng.random()
+                dec = ("MPC_CONSISTENT" if u < p_cons[0 if pos else 1] else
+                       "UNDETERMINED" if u < 0.9 else "EXCLUDED")
+                rows.append({"task_id": f"t{i}", "class": cl, "rule": rule,
+                             "scenario": scen, "label_noise": 0.0,
+                             "decision": dec})
     return pd.DataFrame(rows)
 
 
@@ -154,9 +231,13 @@ def write_all(out_dir, seed=0) -> dict:
     pd.DataFrame([{"null_kind": "ar1", "n_time": 1200, "n_nodes": 8,
                    "necessity_set": "IIM,NAS,PDI,RAM,SRPI", "n": 100,
                    "consistent_rate": 0.0}]).to_csv(paths["null_verdicts"], index=False)
-    for name, df in (("iim", iim_table(rng)), ("sweep", sweep_results(rng)),
+    comp = component_table(rng)
+    for name, df in (("iim", iim_table(rng)), ("sweep", comp),
                      ("witnesses", witness_results(rng)),
-                     ("patchwork", patchwork_results(rng))):
+                     ("witness_components", comp),
+                     ("witness_verdicts", verdict_table(comp)),
+                     ("patchwork", patchwork_results(rng)),
+                     ("audit_decisions", audit_decisions(rng))):
         paths[name] = out / f"{name}.csv"
         df.to_csv(paths[name], index=False)
     summ, cases = rule_tables(rng)
@@ -196,7 +277,9 @@ def render_all(paths: dict, out_dir) -> dict:
         "fig8": fig8_witnesses.make_figure(paths["witnesses"], out_dir,
                                            paths["patchwork"]),
         "fig9": fig9_rule_audit.make_figure(paths["rule_summary"], out_dir,
-                                            cases_path=paths["rule_cases"]),
+                                            cases_path=paths["rule_cases"],
+                                            decisions_path=paths.get(
+                                                "audit_decisions")),
         "fig10": fig10_power.make_figure(paths["power_dir"], paths["recovery_dir"],
                                          out_dir),
     }

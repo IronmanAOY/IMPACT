@@ -332,9 +332,10 @@ files, with `--out` pointing to the manuscript folder.
 | `scripts/calibrate_bench.py` | development calibration of the bench protocol: reference anchors, construct-scale dose-response, null false-PRESENT rates of candidate cutoffs, SE checks, entry criteria (development records only) |
 | `scripts/iim_validation.py` | IIM against the exact TPMs of family B (both cut modes, run lengths, coupling sweep) |
 | `scripts/bench_hypotheses.py` | the preregistered hypotheses HC1-HC10 on the confirmatory bench runs ([preregistration](docs/preregistration/README.md)) |
+| `scripts/build_applicability_registry.py` | derives `protocols/applicability_registry_v1.json` from the confirmatory bench results with the preregistered entry criteria |
 | `scripts/mpcbench_confirmatory.sh` | the preregistered confirmatory run plan (frozen code only) |
 | `scripts/run_predictions.py` | evaluates the hypothesis registry `predictions/registry.yaml` (refuses unregistered estimators, protocol hashes and datasets) |
-| `scripts/figures/fig*.py` | one script per figure (`synthetic_inputs.py` writes test inputs) |
+| `scripts/figures/fig*.py` | one script per figure (`synthetic_inputs.py` writes test inputs; `render_paper1_figures.py` renders all of them from the confirmatory results with a manifest of code and input hashes) |
 
 ## Dashboard
 

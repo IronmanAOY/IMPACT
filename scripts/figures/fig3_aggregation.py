@@ -60,18 +60,18 @@ def make_figure(audit_dir, out_dir, threshold=0.5, floor_weight=0.2) -> dict:
     floors = fc.read_table(paths["implied_floors"],
                            ("p", "others", "weight", "threshold", "floor"))
     fc.setup_style()
-    fig = plt.figure(figsize=(7.4, 6.6))
-    top = fig.add_gridspec(1, 5, width_ratios=[1, 1, 1, 1, 0.06], wspace=0.3,
-                           left=0.1, right=0.93, top=0.9, bottom=0.6)
-    bottom = fig.add_gridspec(1, 2, wspace=0.4, left=0.2, right=0.97, top=0.47,
-                              bottom=0.08)
+    fig = plt.figure(figsize=(fc.FULL_WIDTH, 5.3))
+    top = fig.add_gridspec(1, 5, width_ratios=[1, 1, 1, 1, 0.06], wspace=0.25,
+                           left=0.08, right=0.93, top=0.88, bottom=0.57)
+    bottom = fig.add_gridspec(1, 2, wspace=0.42, left=0.17, right=0.98, top=0.44,
+                              bottom=0.09)
     levels = np.linspace(0.0, 1.5, 16)
     cmap = fc.sequential_cmap()
     xname = str(grid["x_name"].iloc[0]) if "x_name" in grid else "component 1"
     yname = str(grid["y_name"].iloc[0]) if "y_name" in grid else "component 2"
-    fig.text(0.1, 0.975, "Two components varied, the other three at the reference "
-             f"(dot); black line: aggregate = {threshold:g}",
-             fontsize=7.5, color=fc.INK["secondary"], va="top")
+    fig.text(0.08, 0.95, "A-D: two components varied, the other three at the "
+             f"reference (dot); black line: aggregate = {threshold:g}",
+             fontsize=6.5, color=fc.INK["secondary"], va="top")
     cs = None
     for i, (rule, title) in enumerate(CONTOUR_RULES):
         ax = fig.add_subplot(top[0, i])
@@ -118,8 +118,8 @@ def make_figure(audit_dir, out_dir, threshold=0.5, floor_weight=0.2) -> dict:
             if not np.isfinite(v):
                 ax.text(0.03, yy[k], "undefined", va="center", fontsize=5.5,
                         color=fc.INK["muted"])
-            elif rule == "legacy_CI":
-                ax.text(v + 0.05, yy[k], f"{v:.3g}", va="center", fontsize=6,
+            else:
+                ax.text(v + 0.04, yy[k], f"{v:.3g}", va="center", fontsize=5.3,
                         color=fc.INK["secondary"])
     ax.axvline(1.0, color=fc.INK["axis"], lw=0.8)
     ax.set_yticks(ypos, [lab for _, lab in cases])
@@ -144,7 +144,7 @@ def make_figure(audit_dir, out_dir, threshold=0.5, floor_weight=0.2) -> dict:
     ax.set_yscale("log")
     ax.set_xlabel("CI threshold t")
     ax.set_ylabel(f"implied floor of one component (w = {floor_weight:g})")
-    fc.panel_title(ax, "F", "Implied floor (t / M^(1-w))^(1/w)")
+    fc.panel_title(ax, "F", "Implied floor $(t\\,/\\,M^{1-w})^{1/w}$")
     ax.legend(loc="lower right")
 
     g = grid.copy()
