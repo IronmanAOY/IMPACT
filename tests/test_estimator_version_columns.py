@@ -96,17 +96,24 @@ def test_run_predictions_accepts_the_pipeline_estimator_columns(tmp_path):
     probs = rp.registration_problems(
         table.drop(columns=["IIM_estimator_version"]), reg)
     assert "results lack IIM_estimator/IIM_estimator_version" in probs
-    # another version is still refused, with the id as written
+    # a version column that contradicts the id is refused, never guessed
     bad = table.copy()
     bad["NAS_estimator_version"] = "nas-v0"
-    assert any("unregistered NAS estimator versions" in p
+    assert any("inconsistent NAS_estimator / NAS_estimator_version" in p
                for p in rp.registration_problems(bad, reg))
+    # a consistent but unregistered version is refused as unregistered
+    bad["NAS_estimator"] = "compute_NAS:capacity@nas-v0"
+    probs = rp.registration_problems(bad, reg)
+    assert "unregistered NAS estimator versions ['compute_NAS:capacity@nas-v0']" in (
+        probs)
 
 
-def test_estimator_pair_only_drops_a_matching_version_suffix():
-    assert rp._estimator_pair("compute_NAS:capacity@nas-v2", "nas-v2") == (
-        "compute_NAS:capacity", "nas-v2")
-    assert rp._estimator_pair("compute_NAS:capacity@nas-v2", "nas-v3") == (
-        "compute_NAS:capacity@nas-v2", "nas-v3")
-    assert rp._estimator_pair("compute_NAS:capacity", "nas-v2") == (
-        "compute_NAS:capacity", "nas-v2")
+def test_estimator_identity_splits_the_pipeline_id():
+    ident = rp.estimator_identity
+    assert ident("compute_NAS:capacity@nas-v2", "nas-v2") == (
+        "compute_NAS:capacity", "nas-v2", None)
+    assert ident("compute_NAS:capacity", "nas-v2") == (
+        "compute_NAS:capacity", "nas-v2", None)
+    # a version suffix that differs from the version column is a conflict
+    assert ident("compute_NAS:capacity@nas-v2", "nas-v3")[2] == (
+        "versions 'nas-v2' / 'nas-v3'")

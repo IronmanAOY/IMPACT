@@ -14,8 +14,9 @@ from impact_pipeline import necessity as nc
 
 PRINCIPLES = rp.PRINCIPLES
 VERSION = "1.1.0+gtest"
+# names as the evidence layer records them (compute_<P>:<mode>@<version>)
 EST = {"RAM": "compute_RAM:prediction_error", "PDI": "compute_PDI:repertoire",
-       "NAS": "compute_NAS:capacity", "IIM": "compute_IIM:delta_psi",
+       "NAS": "compute_NAS:capacity", "IIM": "compute_IIM:bidirectional",
        "SRPI": "compute_SRPI:agency"}
 
 
@@ -33,6 +34,7 @@ def frozen(reg):
     r = copy.deepcopy(reg)
     r["status"] = "frozen"
     r["freeze_tag"] = "paper2-freeze-test"
+    r["registry_version"] = r["registry_version"].split("-")[0]  # a release
     p = r["protocols"][0]
     p["hash_algorithm"] = "canonical_json_sha256"
     p["hash"] = rp.canonical_json_sha256(p["spec"])
@@ -96,6 +98,10 @@ def test_shipped_registry_is_valid(registry, schema):
     if js is not None:
         assert js == []
     assert registry["status"] == "draft"
+    assert registry["registry_version"] == "0.3.0-draft"
+    assert registry["defaults"]["stance_falsification"] == "sensitivity_confirmed"
+    assert registry["defaults"]["sensitivity_missing"] == "worst_case"
+    assert {e["principle"]: e["estimator"] for e in registry["estimators"]} == EST
     ids = [h["id"] for h in registry["hypotheses"]]
     assert ids == list(rp.REQUIRED_HYPOTHESES)
     h2 = next(h for h in registry["hypotheses"] if h["id"] == "H2")
@@ -124,6 +130,21 @@ def test_shipped_registry_is_valid(registry, schema):
     (lambda r: r["protocols"][0].update(hash="XYZ"), "does not match"),
     (lambda r: r["defaults"].update(alpha=0.5), "> 0.2"),
     (lambda r: r["estimators"][0].update(principle="PHI"), "not in"),
+    # estimator names are the evidence-layer ids without the version
+    (lambda r: r["estimators"][3].update(estimator="compute_IIM:bidirectional@iim-v4"),
+     "the name must be compute_IIM:<mode>"),
+    (lambda r: r["estimators"][3].update(estimator="compute_NAS:capacity"),
+     "the name must be compute_IIM:<mode>"),
+    (lambda r: r["estimators"][3].update(estimator="delta_psi"),
+     "the name must be compute_IIM:<mode>"),
+    # the stance rule needs the registered worst-case sensitivity analysis
+    (lambda r: r["defaults"].update(sensitivity_missing="determinate"),
+     "H1: a FALSIFIED outcome counts against the stance only if"),
+    (lambda r: r["defaults"].pop("stance_falsification"),
+     "missing required 'stance_falsification'"),
+    (lambda r: r["defaults"].update(stance_falsification="primary"),
+     "must equal 'sensitivity_confirmed'"),
+    (lambda r: r.update(registry_version="0.3.0-"), "does not match"),
 ])
 def test_registry_mutations_are_rejected(registry, schema, mutate, fragment):
     reg = copy.deepcopy(registry)
@@ -135,12 +156,15 @@ def test_registry_mutations_are_rejected(registry, schema, mutate, fragment):
 def test_builtin_validator_agrees_with_jsonschema(registry, schema):
     jsonschema = pytest.importorskip("jsonschema")
     assert jsonschema is not None
-    variants = [copy.deepcopy(registry) for _ in range(6)]
+    variants = [copy.deepcopy(registry) for _ in range(9)]
     variants[1]["registry_version"] = "v1"
     variants[2]["hypotheses"][0]["statistic"] = "p_value"
     variants[3]["datasets"][0]["prior_access"] = "sometimes"
     variants[4]["protocols"][0]["necessity_set"] = ["RAM", "RAM"]
     variants[5]["hypotheses"][4]["power_assumptions"]["extra"] = 1
+    variants[6]["registry_version"] = "0.3.0-rc.1"
+    variants[7]["registry_version"] = "0.3.0-"
+    variants[8]["defaults"].pop("stance_falsification")
     for v in variants:
         assert (rp.validate_schema(v, schema) == []) == (
             rp.jsonschema_errors(v, schema) == [])
@@ -236,6 +260,10 @@ def test_frozen_registry_rules(registry, schema):
     bad["estimators"][4]["registration"] = "pending_validation"
     assert any("no registered estimator for SRPI" in e
                for e in rp.validate_registry(bad))
+    # a frozen registry carries a release version, never the draft suffix
+    bad = copy.deepcopy(reg)
+    bad["registry_version"] = "0.3.0-draft"
+    assert any("release registry_version" in e for e in rp.validate_registry(bad))
 
 
 # --------------------------------------------------------------------------
@@ -544,6 +572,136 @@ def test_aggregation_exponent_is_auxiliary(registry):
 
 
 # --------------------------------------------------------------------------
+# stance rule: FALSIFIED counts only if the worst-case analysis confirms it
+# --------------------------------------------------------------------------
+def test_falsified_counts_against_the_stance_only_if_worst_case_confirms(registry):
+    """Registry 0.3.0 (companion article, Sections 3 and 9, supplementary
+    preregistration): a FALSIFIED H1 or H3-H7 counts against the stance only
+    if the worst-case sensitivity analysis (UNDEFINED counted as not ABSENT /
+    not EXCLUDED for the lower bound) also returns FALSIFIED."""
+    reg = frozen(registry)
+    no_neg = {p: 0.0 for p in PRINCIPLES}
+    no_neg["RAM"] = 0.5  # RAM varies (H3 SUPPORTED)
+    # PDI: 40 ABSENT and 400 UNDEFINED among 800 report-positive episodes.
+    # Primary 40/400 = 0.10 -> FALSIFIED; worst case 40/800 = 0.05 -> not.
+    df = episodes(n_pos=800, n_neg=200, reg=reg, absent_pos={"PDI": 0.05},
+                  undefined_pos={"PDI": 0.5}, absent_neg=no_neg)
+    res = rp.evaluate(reg, df)
+    out = outcomes(res)
+    for h in ("H1", "H4"):
+        assert out[h]["outcome"] == nc.FALSIFIED, h
+        assert out[h]["sensitivity_outcome"] != nc.FALSIFIED, h
+        assert out[h]["counts_against_stance"] is False, h
+    st = res["stance"]["confirmatory"]
+    assert st["stance"] == "INDETERMINATE"
+    assert st["falsified_by"] == []
+    assert st["falsified_not_confirmed"] == ["H1", "H4"]
+    assert st["rule"] == "sensitivity_confirmed"
+    # 80 ABSENT among 800 (worst-case rate 0.10): the sensitivity analysis
+    # confirms, so both count against the stance
+    df = episodes(n_pos=800, n_neg=200, reg=reg, absent_pos={"PDI": 0.1},
+                  undefined_pos={"PDI": 0.5}, absent_neg=no_neg)
+    res = rp.evaluate(reg, df)
+    out = outcomes(res)
+    for h in ("H1", "H4"):
+        assert out[h]["outcome"] == out[h]["sensitivity_outcome"] == nc.FALSIFIED
+        assert out[h]["counts_against_stance"] is True
+    st = res["stance"]["confirmatory"]
+    assert st["stance"] == "FALSIFIED"
+    assert st["falsified_by"] == ["H1", "H4"]
+    assert st["falsified_not_confirmed"] == []
+
+
+def test_stance_rule_edge_cases():
+    """H8 has no missingness dimension and counts as evaluated; rows that do
+    not count for the stance never count against it; a FALSIFIED H1/H3-H7 row
+    without a sensitivity outcome does not count."""
+    def row(h, stat, outcome, sens=None, counts=True):
+        r = {"hypothesis": h, "statistic": stat, "outcome": outcome,
+             "counts_for_stance": counts}
+        if sens is not None:
+            r["sensitivity_outcome"] = sens
+        return r
+
+    rows = [row("H8", "reason_rate_report_positive", nc.FALSIFIED),
+            row("H5", "absent_rate_report_positive", nc.FALSIFIED),
+            row("H6", "absent_rate_report_positive", nc.FALSIFIED, nc.INDETERMINATE),
+            row("H9", "coverage", nc.FALSIFIED, counts=False)]
+    assert [rp.counts_against_stance(r) for r in rows] == [True, False, False, False]
+    st = rp.stance_summary(rows)
+    assert st["stance"] == "FALSIFIED" and st["falsified_by"] == ["H8"]
+    assert st["falsified_not_confirmed"] == ["H5", "H6"]
+    assert st["n_counted"] == 3
+    # SUPPORTED needs every counted hypothesis SUPPORTED (unchanged)
+    ok = [row("H4", "absent_rate_report_positive", nc.SUPPORTED, nc.INDETERMINATE),
+          row("H8", "reason_rate_report_positive", nc.SUPPORTED)]
+    assert rp.stance_summary(ok)["stance"] == "SUPPORTED"
+    assert rp.stance_summary([row("H9", "coverage", nc.FALSIFIED, counts=False)]) == {
+        "stance": "NOT_EVALUATED", "rule": "sensitivity_confirmed"}
+
+
+def test_h8_falsified_counts_against_the_stance(registry):
+    reg = frozen(registry)
+    df = episodes(reg=reg, absent_neg={p: 0.5 for p in PRINCIPLES})
+    df.loc[:149, "MPC_reason"] = "SOURCE_INCOHERENT"
+    res = rp.evaluate(reg, df)
+    h8 = outcomes(res)["H8"]
+    assert h8["outcome"] == nc.FALSIFIED and "sensitivity_outcome" not in h8
+    assert h8["counts_against_stance"] is True
+    assert res["stance"]["confirmatory"]["falsified_by"] == ["H8"]
+
+
+# --------------------------------------------------------------------------
+# estimator identity and protocol hash columns
+# --------------------------------------------------------------------------
+def test_estimator_identity_accepts_the_recorded_id_in_either_column():
+    ident = rp.estimator_identity
+    full = "compute_IIM:bidirectional@iim-v4-2026.09"
+    name, ver = "compute_IIM:bidirectional", "iim-v4-2026.09"
+    assert ident(name, ver) == (name, ver, None)
+    assert ident(full, ver) == (name, ver, None)  # pipeline id + version
+    assert ident(full, full) == (name, ver, None)  # id in both columns
+    assert ident(name, full) == (name, ver, None)
+    assert ident("", full) == (name, ver, None)
+    # the version is read from the version column, never from the id alone
+    assert ident(full, np.nan) == (name, "", None)
+    assert ident(np.nan, None) == ("", "", None)
+    # disagreements are refused, never resolved
+    assert ident(full, "iim-v3")[2] == "versions 'iim-v4-2026.09' / 'iim-v3'"
+    assert ident("compute_IIM:directional@iim-v4-2026.09", full)[2].startswith(
+        "names ")
+
+
+def test_pipeline_id_columns_and_protocol_hash_alias(registry):
+    reg = frozen(registry)
+    df = episodes(reg=reg)
+    for p in PRINCIPLES:  # the pipeline writes the recorded id in <P>_estimator
+        df[f"{p}_estimator"] = f"{EST[p]}@{VERSION}"
+    df = df.rename(columns={"protocol_hash": "MPC_protocol_hash"})
+    assert rp.registration_problems(df, reg) == []
+    assert outcomes(rp.evaluate(reg, df))["H3"]["outcome"] == nc.SUPPORTED
+    # an id whose version differs from the version column is refused
+    bad = df.copy()
+    bad.loc[3, "NAS_estimator"] = f"{EST['NAS']}@0.0.1"
+    probs = rp.registration_problems(bad, reg)
+    assert probs == [f"inconsistent NAS_estimator / NAS_estimator_version "
+                     f"[\"versions '0.0.1' / '{VERSION}'\"]"]
+    # missing identification is refused with a readable name
+    bad = df.copy()
+    bad.loc[0, ["IIM_estimator", "IIM_estimator_version"]] = [np.nan, np.nan]
+    assert any("'<missing>@<missing>'" in p for p in rp.registration_problems(bad, reg))
+    # both hash columns: they must agree
+    both = df.assign(protocol_hash=df["MPC_protocol_hash"])
+    assert rp.registration_problems(both, reg) == []
+    both.loc[0, "protocol_hash"] = "e" * 64
+    probs = rp.registration_problems(both, reg)
+    assert "protocol_hash and MPC_protocol_hash disagree" in probs
+    none = df.drop(columns=["MPC_protocol_hash"])
+    assert any("lack the 'protocol_hash' column" in p
+               for p in rp.registration_problems(none, reg))
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 def test_cli_validate_refuse_and_run(tmp_path, registry, capsys):
@@ -572,9 +730,13 @@ def test_cli_validate_refuse_and_run(tmp_path, registry, capsys):
     assert report["freeze_tag_checked"] is False
     assert report["registry_sha256"] == rp.file_sha256(reg_path)
     assert report["results_sha256"] == rp.file_sha256(res_csv)
+    assert report["version"] == "run-predictions/1.1.0"
     assert "confirmatory" in report["stance"]
+    assert report["stance"]["confirmatory"]["rule"] == "sensitivity_confirmed"
+    assert "falsified_not_confirmed" in report["stance"]["confirmatory"]
     table = pd.read_csv(out2 / "predictions_results.csv")
     assert set(table["hypothesis"]) == set(rp.REQUIRED_HYPOTHESES)
+    assert "counts_against_stance" in table.columns
     spec = tmp_path / "protocol.json"
     spec.write_text(json.dumps(reg["protocols"][0]["spec"]))
     capsys.readouterr()

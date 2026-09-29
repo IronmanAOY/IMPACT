@@ -7,7 +7,7 @@
   "required": ["registry_version", "status", "freeze_tag", "defaults", "protocols", "estimators", "datasets", "hypotheses"],
   "additionalProperties": false,
   "properties": {
-    "registry_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "registry_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z]+(\\.[0-9A-Za-z]+)*)?$"},
     "status": {"enum": ["draft", "frozen"]},
     "freeze_tag": {"type": ["string", "null"], "minLength": 1},
     "created": {"type": "string"},
@@ -29,7 +29,7 @@
     },
     "defaults": {
       "type": "object",
-      "required": ["alpha", "tau", "epsilon", "missing"],
+      "required": ["alpha", "tau", "epsilon", "missing", "sensitivity_missing", "stance_falsification"],
       "additionalProperties": false,
       "properties": {
         "alpha": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.2},
@@ -37,6 +37,7 @@
         "epsilon": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
         "missing": {"enum": ["determinate", "worst_case"]},
         "sensitivity_missing": {"enum": ["determinate", "worst_case"]},
+        "stance_falsification": {"const": "sensitivity_confirmed"},
         "ci_method": {"const": "clopper_pearson_one_sided"},
         "null_band": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.1}
       }

@@ -23,17 +23,26 @@ Results table (CSV; one row per episode): ``dataset``, ``episode_id``,
 ``report_positive`` (bool or 0/1) or ``report`` (positive/negative),
 ``MPC_verdict`` (v1 or v2 names), ``MPC_reason`` (``;``-joined codes; the v1
 code ``BEARER_MISMATCH:COHERENCE`` counts as ``SOURCE_INCOHERENT``),
-``<P>_status``, ``protocol_hash``, ``<P>_estimator``,
-``<P>_estimator_version`` (the pipeline's step-2 columns: the evidence id
-``compute_<P>:<mode>@<version>`` and its version, matched against the
-registered ``estimator`` and ``version``); optional ``<P>_c`` and the H2
-outcome column, and ``comparator_<name>`` decisions for H10 (True/False/1/0,
-empty = abstain).
+``<P>_status``, ``protocol_hash`` (or the pipeline's ``MPC_protocol_hash``),
+``<P>_estimator``, ``<P>_estimator_version`` (the pipeline's step-2 columns:
+the evidence id ``compute_<P>:<mode>@<version>`` and its version, matched
+against the registered ``estimator`` and ``version``; see "Estimator
+identity" below); optional ``<P>_c`` and the H2 outcome column, and
+``comparator_<name>`` decisions for H10 (True/False/1/0, empty = abstain).
 Episodes whose report label is missing or unrecognised are excluded from
 every hypothesis (never counted as report-negative; ``n_report_unknown``).
 H0 reads ``null_calibration_rates.csv`` (``--null-calibration``); cells whose
 statuses did not come from the evidence layer (``status_impl``, e.g. the
 ``legacy_v1`` diagnostic rule) make H0 NOT_EVALUABLE.
+
+Estimator identity: the evidence layer records ``compute_<P>:<mode>@<version>``
+(``ComponentEvidence.estimator``, e.g.
+``compute_IIM:bidirectional@iim-v4-2026.09``), and the registry lists the name
+``compute_<P>:<mode>`` and the version separately. ``<P>_estimator`` may hold
+the recorded id or the bare name, and ``<P>_estimator_version`` the version
+or the recorded id; the (name, version) pair is compared exactly with the
+registered entries of the principle. A row whose two columns state different
+names or versions is refused, never guessed.
 
 H0 (decision ``null_calibration``): one-sided calibration of the false-PRESENT
 rate on the null families, with bound ``alpha + null_band``. FALSIFIED if some
@@ -59,6 +68,23 @@ and of every comparator are reported with it.
 Outcomes per hypothesis and stratum (confirmatory datasets / exploratory
 datasets): SUPPORTED, FALSIFIED, INDETERMINATE (also below the registered
 minimum n), AUXILIARY_REPORTED (H2) or NOT_EVALUABLE (inputs missing).
+
+Stance summary per stratum, over the hypotheses with ``counts_for_stance``
+(registry ``defaults.stance_falsification: sensitivity_confirmed``, the rule
+of the companion article, Sections 3 and 9 and the supplementary
+preregistration): FALSIFIED if some FALSIFIED outcome counts against the
+stance, SUPPORTED if every counted hypothesis is SUPPORTED, INDETERMINATE
+otherwise. A FALSIFIED outcome of a hypothesis with the registered worst-case
+sensitivity analysis (``sensitivity_missing: worst_case``; H1 and H3-H7,
+whose primary analysis drops UNDEFINED statuses / UNDETERMINED verdicts)
+counts against the stance only if that analysis, which counts every such
+report-positive episode as not ABSENT (not EXCLUDED) for the lower bound,
+also returns FALSIFIED. Otherwise it is listed under
+``falsified_not_confirmed`` and does not count: INCONCLUSIVE statuses are
+UNDEFINED, so a weakly expressed capacity can inflate the primary rate when
+necessity holds. H8 has no missingness dimension (every labelled
+report-positive episode is in its denominator), so its FALSIFIED outcome
+counts as evaluated. Each row records ``counts_against_stance``.
 
 Example::
 
@@ -88,8 +114,9 @@ for _p in (SRC_ROOT, SCRIPTS_DIR):
         sys.path.insert(0, str(_p))
 
 from impact_pipeline import necessity as nc  # noqa: E402
+from impact_pipeline.evidence import split_estimator  # noqa: E402
 
-RUNNER_VERSION = "run-predictions/1.0.0"
+RUNNER_VERSION = "run-predictions/1.1.0"
 DEFAULT_REGISTRY = REPO_ROOT / "predictions" / "registry.yaml"
 DEFAULT_SCHEMA = REPO_ROOT / "predictions" / "registry.schema.json"
 PRINCIPLES = ("RAM", "PDI", "NAS", "IIM", "SRPI")
@@ -98,6 +125,16 @@ EXPLORATORY_ONLY = ("ds003171", "ds005620", "ds006623")
 NOT_EVALUABLE = "NOT_EVALUABLE"
 AUXILIARY_REPORTED = "AUXILIARY_REPORTED"
 REFUSAL_EXIT = 2
+# Stance rule (registry defaults.stance_falsification): a FALSIFIED outcome of
+# a statistic with a missingness dimension counts against the stance only if
+# its registered worst-case sensitivity analysis also returns FALSIFIED.
+STANCE_FALSIFICATION = "sensitivity_confirmed"
+SENSITIVITY_STATISTICS = ("excluded_rate_report_positive",
+                          "absent_rate_report_positive")
+# The pipeline writes the protocol hash as MPC_protocol_hash.
+PROTOCOL_HASH_COLUMNS = ("protocol_hash", "MPC_protocol_hash")
+_ESTIMATOR_NAME = re.compile(r"^compute_(RAM|PDI|NAS|IIM|SRPI):[A-Za-z0-9_.+-]+$")
+_RELEASE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 
 class RegistryRefusal(Exception):
@@ -275,6 +312,22 @@ def semantic_errors(reg: dict) -> list:
                            or h2.get("level") != "auxiliary"):
         errs.append("H2 (aggregation exponent) must be auxiliary and not count for "
                     "the stance")
+    defaults = reg.get("defaults") or {}
+    for h in hyps:
+        # the stance rule reads the worst-case sensitivity outcome of these
+        if (h.get("counts_for_stance") and h.get("statistic") in SENSITIVITY_STATISTICS
+                and _params(h, defaults).get("sensitivity_missing") != "worst_case"):
+            errs.append(f"{h.get('id')}: a FALSIFIED outcome counts against the "
+                        "stance only if the registered worst-case sensitivity "
+                        "analysis confirms it; set sensitivity_missing: worst_case")
+    for e in reg.get("estimators") or []:
+        name, pr = str(e.get("estimator", "")), e.get("principle")
+        m = _ESTIMATOR_NAME.match(name)
+        if m is None or m.group(1) != pr:
+            errs.append(f"estimator {name!r} of {pr}: the name must be "
+                        f"compute_{pr}:<mode> as the evidence layer records it "
+                        "(compute_<P>:<mode>@<version>), with the version in "
+                        "'version'")
     dsets = {d.get("id"): d for d in reg.get("datasets") or []}
     for ds in EXPLORATORY_ONLY:
         d = dsets.get(ds)
@@ -289,6 +342,9 @@ def semantic_errors(reg: dict) -> list:
     if reg.get("status") == "frozen":
         if not reg.get("freeze_tag"):
             errs.append("a frozen registry needs a freeze_tag")
+        if not _RELEASE_VERSION.match(str(reg.get("registry_version", ""))):
+            errs.append("a frozen registry needs a release registry_version "
+                        "(no pre-release suffix such as -draft)")
         for h in hyps:
             if h.get("minimum_n_status") == "provisional":
                 errs.append(f"frozen registry: {h.get('id')} has a provisional "
@@ -354,21 +410,59 @@ def registered_estimators(reg):
             if e.get("version") and e.get("registration") == "registered"}
 
 
-def _estimator_pair(estimator, version):
+def _cell(value) -> str:
+    """Text of a results cell; '' for a missing one (None, NaN, empty)."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
+def estimator_identity(estimator, version):
     """
-    ``(estimator, version)`` of a results row as the registry names them. The
-    pipeline writes ``<P>_estimator`` as the evidence id
-    ``compute_<P>:<mode>@<version>`` and ``<P>_estimator_version`` as its
-    ``<version>``; a trailing ``@<version>`` equal to the version column is
-    dropped, so ``compute_NAS:capacity@nas-v2-2026.09`` with version
-    ``nas-v2-2026.09`` is the registry entry (``compute_NAS:capacity``,
-    ``nas-v2-2026.09``). Anything else is compared as written.
+    ``(name, version, conflict)`` of one results row from its
+    ``<P>_estimator`` and ``<P>_estimator_version`` cells.
+
+    The evidence layer records ``compute_<P>:<mode>@<version>``
+    (``ComponentEvidence.estimator``); the registry lists the name and the
+    version separately. ``<P>_estimator`` may hold the recorded id or the
+    bare name; ``<P>_estimator_version`` the version or the recorded id (the
+    version is always read from it). ``conflict`` names a disagreement
+    between the two cells (different names, or a version in the id that
+    differs from the version column); such rows are refused, never guessed.
     """
-    est, ver = str(estimator), str(version)
-    name, sep, suffix = est.rpartition("@")
-    if sep and suffix == ver:
-        return name, ver
-    return est, ver
+    e, v = _cell(estimator), _cell(version)
+    name, id_version = split_estimator(e) if e else ("", None)
+    if "@" in v:
+        v_name, v_version = split_estimator(v)
+    else:
+        v_name, v_version = None, (v or None)
+    conflict = None
+    if v_name is not None and name and v_name != name:
+        conflict = f"names {name!r} / {v_name!r}"
+    elif id_version and v_version and id_version != v_version:
+        conflict = f"versions {id_version!r} / {v_version!r}"
+    return (name or v_name or ""), (v_version or ""), conflict
+
+
+def protocol_hash_column(df: pd.DataFrame):
+    """
+    ``(hashes, problem)``: the protocol hash per row from ``protocol_hash``
+    or, for pipeline output, ``MPC_protocol_hash``; ``hashes`` is None when
+    neither column exists. Both columns present and disagreeing is a
+    problem.
+    """
+    have = [c for c in PROTOCOL_HASH_COLUMNS if c in df.columns]
+    if not have:
+        return None, None
+    cols = [df[c].map(_cell) for c in have]
+    if len(cols) == 2 and not (cols[0] == cols[1]).all():
+        return cols[0], "protocol_hash and MPC_protocol_hash disagree"
+    return cols[0], None
 
 
 def registration_problems(df: pd.DataFrame, reg: dict) -> list:
@@ -382,11 +476,15 @@ def registration_problems(df: pd.DataFrame, reg: dict) -> list:
         if unknown:
             probs.append(f"undeclared datasets {unknown}")
     protos = registered_protocols(reg)
-    if "protocol_hash" not in df.columns:
-        probs.append("results lack the 'protocol_hash' column")
+    hash_col, hash_problem = protocol_hash_column(df)
+    if hash_col is None:
+        probs.append("results lack the 'protocol_hash' column "
+                     "(or the pipeline's 'MPC_protocol_hash')")
         nsets = set()
     else:
-        hashes = sorted(set(df["protocol_hash"].astype(str)))
+        if hash_problem:
+            probs.append(hash_problem)
+        hashes = sorted(set(hash_col))
         bad = [h for h in hashes if h not in protos]
         if bad:
             probs.append(f"unregistered protocol hashes {bad}")
@@ -397,9 +495,12 @@ def registration_problems(df: pd.DataFrame, reg: dict) -> list:
         if ec not in df.columns or vc not in df.columns:
             probs.append(f"results lack {ec}/{vc}")
             continue
-        pairs = {_estimator_pair(e, v)
-                 for e, v in zip(df[ec].astype(str), df[vc].astype(str))}
-        bad = sorted(f"{e}@{v}" for e, v in pairs if (p, e, v) not in ests)
+        ids = {estimator_identity(e, v) for e, v in zip(df[ec], df[vc])}
+        conflicts = sorted(c for _, _, c in ids if c)
+        if conflicts:
+            probs.append(f"inconsistent {p}_estimator / {vc} {conflicts}")
+        bad = sorted(f"{n or '<missing>'}@{v or '<missing>'}"
+                     for n, v, c in ids if not c and (p, n, v) not in ests)
         if bad:
             probs.append(f"unregistered {p} estimator versions {bad}")
     return probs
@@ -774,11 +875,37 @@ def dataset_roles(reg):
     return {d["id"]: d["role"] for d in reg.get("datasets") or []}
 
 
+def counts_against_stance(row) -> bool:
+    """
+    Whether a result row's FALSIFIED outcome counts against the stance: the
+    hypothesis counts for the stance, its outcome is FALSIFIED and, for a
+    statistic with the registered worst-case sensitivity analysis (H1,
+    H3-H7), that analysis also returns FALSIFIED. Without a sensitivity
+    outcome such a FALSIFIED outcome does not count (the registry
+    validation requires the analysis for every counted hypothesis of these
+    statistics).
+    """
+    if not row.get("counts_for_stance") or row.get("outcome") != nc.FALSIFIED:
+        return False
+    if row.get("statistic") in SENSITIVITY_STATISTICS:
+        return row.get("sensitivity_outcome") == nc.FALSIFIED
+    return True
+
+
 def stance_summary(rows):
+    """
+    Stance of one stratum: FALSIFIED if some FALSIFIED outcome counts
+    against the stance (:func:`counts_against_stance`), SUPPORTED if every
+    counted hypothesis is SUPPORTED, else INDETERMINATE. FALSIFIED outcomes
+    that the worst-case sensitivity analysis does not confirm are listed in
+    ``falsified_not_confirmed`` and do not count.
+    """
     counted = [r for r in rows if r["counts_for_stance"]]
     if not counted:
-        return {"stance": "NOT_EVALUATED"}
-    fals = [r["hypothesis"] for r in counted if r["outcome"] == nc.FALSIFIED]
+        return {"stance": "NOT_EVALUATED", "rule": STANCE_FALSIFICATION}
+    fals = [r["hypothesis"] for r in counted if counts_against_stance(r)]
+    unconfirmed = [r["hypothesis"] for r in counted
+                   if r["outcome"] == nc.FALSIFIED and not counts_against_stance(r)]
     supp = [r["hypothesis"] for r in counted if r["outcome"] == nc.SUPPORTED]
     if fals:
         stance = "FALSIFIED"
@@ -786,8 +913,9 @@ def stance_summary(rows):
         stance = "SUPPORTED"
     else:
         stance = "INDETERMINATE"
-    return {"stance": stance, "falsified_by": fals, "supported": supp,
-            "n_counted": len(counted)}
+    return {"stance": stance, "falsified_by": fals,
+            "falsified_not_confirmed": unconfirmed, "supported": supp,
+            "n_counted": len(counted), "rule": STANCE_FALSIFICATION}
 
 
 def evaluate(reg, results: pd.DataFrame, *, null_rates=None, exploratory=False,
@@ -830,6 +958,7 @@ def evaluate(reg, results: pd.DataFrame, *, null_rates=None, exploratory=False,
             r = eval_hypothesis(h, df, defaults, null_rates)
             r["stratum"] = name
             r["unregistered"] = bool(probs)
+            r["counts_against_stance"] = counts_against_stance(r)
             srows.append(r)
         rows.extend(srows)
         stance[name] = stance_summary(srows)

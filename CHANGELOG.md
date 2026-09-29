@@ -20,7 +20,9 @@ unchanged unless listed under "Changed".
 Changes made after the code-freeze tag `mpcbench-freeze-v1` (commit f2cf249).
 None of them changes an estimator, a null, the evidence rule or a bench
 protocol, so the MPC-Bench results stay reproducible from the tag. They fix
-the empirical pipeline and make the default protocol explicit. Each change
+the empirical pipeline and the interface between its outputs and the
+hypothesis registry, and make the default protocol explicit. Hypotheses,
+statistics, margins, minimum n and decision rules are unchanged. Each change
 has a regression test.
 
 #### Fixed
@@ -42,12 +44,42 @@ has a regression test.
   principle: the version part of the exact evidence id in `<P>_estimator`
   (`compute_<P>:<mode>@<version>`, as recorded in
   `ComponentEvidence.estimator`; for a precomputed Hunter IIM result its own
-  `iim_algorithm_version`). `scripts/run_predictions.py` requires the column
-  and now matches the pipeline's id form: a trailing `@<version>` equal to
-  the version column is dropped before the (estimator, version) pair is
-  looked up in the registry. Before, every pipeline table was refused
-  (`results lack <P>_estimator/<P>_estimator_version`). Test:
+  `iim_algorithm_version`). `scripts/run_predictions.py` requires the
+  column; before, every pipeline table was refused (`results lack
+  <P>_estimator/<P>_estimator_version`). Test:
   `tests/test_estimator_version_columns.py`.
+- **`run_predictions.py` refused pipeline output.** The pipeline writes the
+  recorded id `compute_<P>:<mode>@<version>` into `<P>_estimator` and the
+  protocol hash as `MPC_protocol_hash`. The evaluator compared
+  `<P>_estimator` with the bare registry name and required a
+  `protocol_hash` column, so it refused every principle of every pipeline
+  row even with all versions registered. It now splits the recorded id
+  (`evidence.split_estimator`), reads `<P>_estimator_version` as the version
+  or as the recorded id, refuses rows whose two columns state different
+  names or versions (never guessed), and reads `MPC_protocol_hash` when
+  `protocol_hash` is absent (when both are present they must agree). Tests:
+  `tests/test_predictions_end_to_end.py` feeds a synthetic step-2 table in
+  the pipeline's column format through the command line, and
+  `compute_synergy_ci` output on a tiny synthetic layout through `evaluate`:
+  registered versions are accepted (confirmatory stratum); a later IIM
+  version, the directional cut, the RAM fallback, an inconsistent id and the
+  registry-0.2.0 IIM name are refused; `--allow-unregistered` gives a
+  labelled exploratory run. `tests/test_estimator_version_columns.py` runs
+  the same check on the pipeline's own step-2 columns.
+- **IIM estimator id in the hypothesis registry**
+  (`predictions/registry.yaml`). The IIM entry was named
+  `compute_IIM:delta_psi`, but the evidence layer records
+  `compute_IIM:<cut_mode>@<version>`
+  (`compute_IIM:bidirectional@iim-v4-2026.09` under
+  `protocols/mpc_default_v1.json`), so `scripts/run_predictions.py` would
+  have refused every IIM row. The entry is now `compute_IIM:bidirectional`;
+  the RAM, PDI, NAS and SRPI names already matched. The registry validator
+  now refuses an estimator name that is not `compute_<P>:<mode>` of its own
+  principle (the version belongs in `version`). Tests:
+  `tests/test_predictions_end_to_end.py` (registry names equal the ids
+  `synergy_ci` records under the registry's protocol file; the declared RAM
+  and SRPI fallbacks stay unregistered) and
+  `tests/test_predictions_registry.py` (malformed names are refused).
 - **Container images ship `protocols/`.** The Docker and Apptainer images
   contained no protocol file, so a default empirical run in a container
   stopped with `MPC protocol not found`. Test:
@@ -87,6 +119,35 @@ has a regression test.
   is the default, the draft's file was renamed and made opt-in, and the
   example protocols were re-derived from v1 (the draft's
   `protocols/examples/mpc_default_v1.1_*` files are removed).
+- **Stance summary: a FALSIFIED outcome must survive the worst-case
+  sensitivity analysis** (`scripts/run_predictions.py`, now
+  `run-predictions/1.1.0`). A FALSIFIED outcome of H1 or H3-H7 counts
+  against the stance only if the registered worst-case sensitivity analysis
+  (UNDEFINED statuses / UNDETERMINED verdicts of report-positive episodes
+  counted as not ABSENT / not EXCLUDED for the lower bound) also returns
+  FALSIFIED; otherwise it is listed under `falsified_not_confirmed` and does
+  not count. H8 has no missingness dimension and counts as evaluated. Every
+  result row records `counts_against_stance`. Reason: INCONCLUSIVE statuses
+  are UNDEFINED, so a weakly expressed capacity can inflate the primary
+  ABSENT rate when necessity holds; this is the rule stated in the companion
+  article (Sections 3 and 9, supplementary preregistration). The registry
+  declares it (`defaults.stance_falsification: sensitivity_confirmed`,
+  required by the schema), and the validator refuses a registry in which a
+  hypothesis on the EXCLUDED or ABSENT rate among report-positive episodes
+  (H1, H3-H7) counts for the stance without `sensitivity_missing:
+  worst_case`. Hypothesis outcomes, statistics, margins, minimum n and
+  decision rules are unchanged. Tests: `tests/test_predictions_registry.py`
+  (primary FALSIFIED with an unconfirming and a confirming worst case; H8;
+  rule edge cases; registry mutations; command-line report fields).
+- **Hypothesis registry 0.3.0-draft** (from 0.2.0). Besides the IIM id and
+  the stance rule above, the protocol note no longer says the cutoffs are
+  "to be justified by MPC-Bench dose-response": it states the preregistered
+  keep-unless rule (keep `(z, delta, alpha) = (0.25, 0.10, 0.05)` unless an
+  anchored principle's development false-PRESENT rate exceeds `alpha + 0.02`
+  at `z`, or the nominal positive control is ever ABSENT; neither occurred)
+  and the frozen values z = 0.25, δ = 0.10, α = 0.05. The schema's
+  `registry_version` admits a pre-release suffix, and a frozen registry must
+  carry a release version (the suffix is dropped at the freeze).
 
 #### Added
 
