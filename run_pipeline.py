@@ -1390,6 +1390,9 @@ def _run_hunter_stage(
     repo_root=None,
     mpc_evidence_options=None,
     hunter_iim_bootstrap_se=0,
+    hunter_max_psi_evals=None,
+    hunter_allow_large=False,
+    hunter_seconds_per_psi_eval=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
@@ -1508,6 +1511,11 @@ def _run_hunter_stage(
             # Checkout the jobs run: --repo-root > IMPACT_REPO_ROOT > package
             # checkout > this script's directory (non-editable installs).
             repo_root=resolve_repo_root(repo_root, fallback=root),
+            # Size guard: refuse campaigns above the Psi-evaluation ceiling
+            # unless --hunter-allow-large (hunter_cost; runbook section 10a).
+            max_psi_evaluations=hunter_max_psi_evals,
+            allow_large=bool(hunter_allow_large),
+            seconds_per_psi_evaluation=hunter_seconds_per_psi_eval,
             **_hunter_iim_protocol_options(mpc_evidence_options),
         )
         sched = manifest.get("scheduler") or {}
@@ -1580,6 +1588,18 @@ def _run_hunter_stage(
     if stage == "status":
         status = campaign_status(campaign_dir)
         log.info("Hunter campaign status: %s", json.dumps(status["stages"]))
+        calib = status.get("cost_calibration") or {}
+        if calib.get("psi_evaluations"):
+            log.info(
+                "Measured IIM rate: %.3g shard wall-seconds per Psi evaluation "
+                "over %d shard(s) and %.3g evaluations%s (cost_calibration.json).",
+                calib["shard_wall_seconds_per_psi_evaluation"],
+                calib["n_shards"],
+                calib["psi_evaluations"],
+                "; overhead-dominated, calibrate with a larger subsystem"
+                if calib.get("overhead_dominated")
+                else "",
+            )
         return status
 
     # finalize-pipeline
@@ -1913,6 +1933,26 @@ def _mpc_protocol_provenance(mpc_evidence_options, protocol_source=None):
     return {"source": source, "hash": Protocol.from_dict(payload).hash}
 
 
+def _cli_count(text):
+    """argparse type: positive count, scientific notation allowed (1e12)."""
+    from impact_pipeline.hunter_cost import parse_count
+
+    try:
+        return parse_count(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _cli_rate(text):
+    """argparse type: seconds per Psi evaluation (> 0)."""
+    from impact_pipeline.hunter_cost import parse_rate
+
+    try:
+        return parse_rate(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _normalize_subjects(subjects):
     """Accept subject IDs with or without the 'sub-' prefix everywhere."""
     if subjects is None:
@@ -1990,6 +2030,9 @@ def main(
     bootstrap_se=0,
     bootstrap_block_len=None,
     hunter_iim_bootstrap_se=None,
+    hunter_max_psi_evals=None,
+    hunter_allow_large=False,
+    hunter_seconds_per_psi_eval=None,
 ):
     from impact_pipeline.run_synergy_ci import load_onsets, run_s_ci
 
@@ -2367,6 +2410,9 @@ def main(
                 "shards_per_node": hunter_shards_per_node,
                 "iim_null_surrogates": int(hunter_iim_null_surrogates or 0),
                 "iim_bootstrap_se": int(hunter_iim_bootstrap_se or 0),
+                "max_psi_evals": hunter_max_psi_evals,
+                "allow_large": bool(hunter_allow_large),
+                "seconds_per_psi_eval": hunter_seconds_per_psi_eval,
                 "repo_root": (None if repo_root is None else str(repo_root)),
             }
         ),
@@ -2526,6 +2572,9 @@ def main(
             repo_root=repo_root,
             mpc_evidence_options=mpc_evidence_options,
             hunter_iim_bootstrap_se=int(hunter_iim_bootstrap_se or 0),
+            hunter_max_psi_evals=hunter_max_psi_evals,
+            hunter_allow_large=bool(hunter_allow_large),
+            hunter_seconds_per_psi_eval=hunter_seconds_per_psi_eval,
         )
         _write_run_provenance_manifest(
             status="hunter_campaign_built",
@@ -2857,6 +2906,38 @@ if __name__ == '__main__':
         ),
     )
     parser.add_argument(
+        "--hunter-max-psi-evals",
+        type=_cli_count,
+        default=None,
+        help=(
+            "build-campaign: ceiling on the estimated IIM work in Psi evaluations "
+            "(mechanisms x purviews x bipartitions x (1 + cuts) x runs x "
+            "(1 + K_null + K_boot)); larger campaigns are refused unless "
+            "--hunter-allow-large (default: IMPACT_HUNTER_MAX_PSI_EVALS or 1e11). "
+            "Accepts e.g. 1e12."
+        ),
+    )
+    parser.add_argument(
+        "--hunter-allow-large",
+        action="store_true",
+        help=(
+            "build-campaign: build even if the estimated Psi evaluations exceed "
+            "the ceiling (after sizing the configuration; runbook section 10a)."
+        ),
+    )
+    parser.add_argument(
+        "--hunter-seconds-per-psi-eval",
+        type=_cli_rate,
+        default=None,
+        help=(
+            "build-campaign: measured shard wall-seconds per Psi evaluation "
+            "(shard_wall_seconds_per_psi_evaluation in a smoke/calibration "
+            "campaign's cost_calibration.json) for the runtime estimate "
+            "(default: IMPACT_HUNTER_SECONDS_PER_PSI_EVAL, else the single-core "
+            "reference rate)."
+        ),
+    )
+    parser.add_argument(
         "--repo-root",
         default=None,
         help=(
@@ -3181,6 +3262,9 @@ if __name__ == '__main__':
         cli_argv=sys.argv,
         hunter_iim_null_surrogates=args.hunter_iim_null_surrogates,
         hunter_iim_bootstrap_se=args.hunter_iim_bootstrap_se,
+        hunter_max_psi_evals=args.hunter_max_psi_evals,
+        hunter_allow_large=args.hunter_allow_large,
+        hunter_seconds_per_psi_eval=args.hunter_seconds_per_psi_eval,
         repo_root=args.repo_root,
         null_surrogates=args.null_surrogates,
         necessity_set=args.necessity_set,

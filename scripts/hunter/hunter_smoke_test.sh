@@ -17,6 +17,11 @@
 #   --python PY              interpreter (default: $IMPACT_HUNTER_PYTHON or python3)
 #   --null-surrogates K      add K circular-shift surrogate runs per run (IIM null calibration;
 #                            default 0; each surrogate costs one more IIM run)
+#   --iim-max-nodes N        IIM subsystem size (default 4)
+#   --iim-max-mechanism-size S|all, --iim-max-purview-size S|all, --iim-n-parts P|all
+#                            (defaults 2, 2, 4; 'all' = exhaustive). A calibration run for
+#                            sizing the production campaign uses e.g. --iim-max-nodes 6 and
+#                            'all' for the other three (runbook section 10a)
 #   --submit                 qsub the smoke job (default: only print the command)
 # Output location: with --data-origin dummy, --out-dir is used only if it lies under
 # ${IMPACT_SYNTH_ROOT:-<repo>}/test_objects; otherwise the preprocessed inputs are read from and
@@ -34,8 +39,12 @@ CAMPAIGN_DIR=""
 PY="${IMPACT_HUNTER_PYTHON:-python3}"
 SUBMIT=0
 NULL_SURROGATES=0
+IIM_MAX_NODES=4
+IIM_MAX_MECH=2
+IIM_MAX_PURVIEW=2
+IIM_N_PARTS=4
 
-usage() { sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,6 +57,10 @@ while [ $# -gt 0 ]; do
     --campaign-dir) CAMPAIGN_DIR="${2:?}"; shift ;;
     --python) PY="${2:?}"; shift ;;
     --null-surrogates) NULL_SURROGATES="${2:?}"; shift ;;
+    --iim-max-nodes) IIM_MAX_NODES="${2:?}"; shift ;;
+    --iim-max-mechanism-size) IIM_MAX_MECH="${2:?}"; shift ;;
+    --iim-max-purview-size) IIM_MAX_PURVIEW="${2:?}"; shift ;;
+    --iim-n-parts) IIM_N_PARTS="${2:?}"; shift ;;
     --submit) SUBMIT=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -75,7 +88,13 @@ if [ -n "${SUBJECTS}" ]; then
   subject_args=(--subjects ${SUBJECTS})
 fi
 
-# Tiny, fast IIM problem: 4 nodes, <=2-node mechanisms/purviews, 4 cuts, one shard of each kind per run.
+# Default: tiny, fast IIM problem (4 nodes, <=2-node mechanisms/purviews, 4 cuts); one shard of
+# each kind per run. 'all' leaves a size flag out (exhaustive). The shard jobs record their wall
+# time and Psi evaluations (timing/); reduce-all writes cost_calibration.json from them.
+iim_args=(--iim-max-nodes "${IIM_MAX_NODES}")
+[ "${IIM_MAX_MECH}" = "all" ] || iim_args+=(--iim-max-mechanism-size "${IIM_MAX_MECH}")
+[ "${IIM_MAX_PURVIEW}" = "all" ] || iim_args+=(--iim-max-purview-size "${IIM_MAX_PURVIEW}")
+[ "${IIM_N_PARTS}" = "all" ] || iim_args+=(--iim-n-parts "${IIM_N_PARTS}")
 "${PY}" "${repo_root}/run_pipeline.py" \
   --execution-mode hunter \
   --hunter-stage build-campaign \
@@ -87,10 +106,7 @@ fi
   --hardware-target "${TARGET}" \
   --mpc-metrics IIM \
   --no-ci \
-  --iim-max-nodes 4 \
-  --iim-n-parts 4 \
-  --iim-max-mechanism-size 2 \
-  --iim-max-purview-size 2 \
+  "${iim_args[@]}" \
   --hunter-phase1-shards-per-run 1 \
   --hunter-cut-shards-per-run 1 \
   --hunter-iim-null-surrogates "${NULL_SURROGATES}" \
@@ -109,3 +125,5 @@ else
   echo "  ${cmd}"
 fi
 echo "Afterwards: python3 run_pipeline.py --execution-mode hunter --hunter-stage status --hunter-campaign-dir ${CAMPAIGN_DIR} --dataset-id ${DATASET_ID} --data-origin ${ORIGIN} --out-dir ${OUT_DIR}"
+echo "Measured rate for sizing the production campaign: ${CAMPAIGN_DIR}/cost_calibration.json"
+echo "  (shard_wall_seconds_per_psi_evaluation -> --hunter-seconds-per-psi-eval; runbook section 10a)"

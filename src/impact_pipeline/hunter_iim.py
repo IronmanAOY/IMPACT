@@ -5,6 +5,7 @@ import contextlib
 import csv
 import dataclasses
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -28,6 +29,23 @@ from impact_pipeline.execution_profiles import (
     normalize_hunter_scheduler,
 )
 from impact_pipeline import iim_xp
+from impact_pipeline.hunter_cost import (
+    COST_SCHEMA,
+    CALIBRATION_SCHEMA,
+    UNIT_DEFINITION,
+    apply_ceiling,
+    calibration_from_records,
+    check_ceiling,
+    enumerated_run_cost,
+    format_cost_summary,
+    iim_run_cost,
+    n_system_cuts,
+    planned_iim_structure,
+    resolve_psi_eval_ceiling,
+    resolve_seconds_per_psi_eval,
+    runtime_estimate,
+    subset_range_bipartition_sum,
+)
 from impact_pipeline.hardware_backend import (
     backend_summary,
     configure_process_for_hardware,
@@ -1061,6 +1079,40 @@ def _register_defined_run(run_dir: Path, meta: dict, prep, profile, iim_bins) ->
         len(prep["cuts_eval"]),
         int(profile.hunter_cut_shards_per_run),
     )
+    # Work of this run in Psi evaluations (hunter_cost.UNIT_DEFINITION), from
+    # the enumerations actually prepared: feeds the campaign cost estimate and
+    # the per-shard calibration records.
+    cost = enumerated_run_cost(
+        prep["mechanisms_all"], prep["purviews_all"], len(prep["cuts_eval"])
+    )
+    iim_cost = {
+        key: int(cost[key])
+        for key in (
+            "mechanism_bipartitions",
+            "purview_bipartitions",
+            "psi_evaluations_per_tpm",
+            "tpm_evaluations",
+            "psi_evaluations",
+        )
+    }
+    iim_cost["max_phase1_shard_psi_evaluations"] = max(
+        (
+            int(
+                enumerated_run_cost(
+                    prep["mechanisms_all"][a:b], prep["purviews_all"], 0
+                )["psi_evaluations_per_tpm"]
+            )
+            for a, b in phase1_ranges
+        ),
+        default=0,
+    )
+    iim_cost["max_cut_shard_psi_evaluations"] = max(
+        (
+            (int(b) - int(a)) * int(cost["psi_evaluations_per_tpm"])
+            for a, b in cut_ranges
+        ),
+        default=0,
+    )
     bins_used = int(prep["bins_used"])
     bins_reason = None
     if bins_used != int(iim_bins):
@@ -1091,6 +1143,7 @@ def _register_defined_run(run_dir: Path, meta: dict, prep, profile, iim_bins) ->
                 {"task_index": int(i), "start": int(a), "stop": int(b)}
                 for i, (a, b) in enumerate(cut_ranges)
             ],
+            "iim_cost": iim_cost,
             **_prep_record(prep),
         }
     )
@@ -1230,6 +1283,323 @@ def _add_bootstrap_runs(
     return info
 
 
+# ---------------------------------------------------------------------------
+# Cost estimate and size guard (see impact_pipeline.hunter_cost)
+# ---------------------------------------------------------------------------
+
+# State budget prepare_iim_problem applies when the campaign does not pass one.
+_PREPARE_MAX_STATE_SPACE = int(
+    inspect.signature(prepare_iim_problem).parameters["max_state_space"].default
+)
+
+
+def _ts_n_regions(path) -> int | None:
+    """Regions of a (time x region) series without reading the data."""
+    try:
+        shape = np.load(path, mmap_mode="r", allow_pickle=False).shape
+    except Exception:  # unreadable here: preparation reports the real error
+        return None
+    return int(shape[1]) if len(shape) == 2 else None
+
+
+def _slurm_time_seconds(text) -> int:
+    """
+    Seconds of a Slurm ``--time`` value: M, M:S, H:M:S, D-H, D-H:M, D-H:M:S
+    (a bare number is minutes; after ``D-`` the first field is hours).
+    """
+    raw = str(text).strip()
+    days = 0
+    if "-" in raw:
+        day_txt, raw = raw.split("-", 1)
+        days = int(day_txt)
+        parts = [int(p) for p in raw.split(":")]
+        if not 1 <= len(parts) <= 3:
+            raise ValueError(f"Invalid Slurm time {text!r}")
+        hours, minutes, seconds = (parts + [0, 0])[:3]
+    else:
+        parts = [int(p) for p in raw.split(":")]
+        if len(parts) == 1:
+            hours, minutes, seconds = 0, parts[0], 0
+        elif len(parts) == 2:
+            hours, (minutes, seconds) = 0, parts
+        elif len(parts) == 3:
+            hours, minutes, seconds = parts
+        else:
+            raise ValueError(f"Invalid Slurm time {text!r}")
+    if min(days, hours, minutes, seconds) < 0:
+        raise ValueError(f"Invalid Slurm time {text!r}")
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def _walltime_seconds(settings: dict, key: str) -> int | None:
+    """Walltime of a stage in seconds for the cost estimate (None if unknown)."""
+    raw = settings.get(key)
+    if raw in (None, ""):
+        return None
+    try:
+        if settings.get("scheduler") == "pbs":
+            return parse_walltime(raw)
+        # Slurm passes --time verbatim; its D-H:M form differs from PBS.
+        return _slurm_time_seconds(raw)
+    except ValueError:  # e.g. Slurm 'UNLIMITED': no walltime check
+        return None
+
+
+def _cost_runtime(
+    *,
+    psi_evaluations,
+    max_phase1,
+    max_cut,
+    profile,
+    settings,
+    rate,
+    rate_source,
+):
+    return runtime_estimate(
+        psi_evaluations=int(psi_evaluations),
+        max_phase1_shard_psi_evaluations=int(max_phase1),
+        max_cut_shard_psi_evaluations=int(max_cut),
+        workers_per_task=int(profile.hunter_phase1_workers_per_task or 1),
+        shards_per_node=int(settings.get("shards_per_node") or 1),
+        seconds_per_psi_evaluation=rate,
+        rate_source=rate_source,
+        phase1_walltime_seconds=_walltime_seconds(settings, "phase1_time"),
+        cut_walltime_seconds=_walltime_seconds(settings, "cut_time"),
+    )
+
+
+def _preflight_cost_estimate(
+    unique_specs,
+    *,
+    iim_bins,
+    iim_max_nodes,
+    iim_max_mechanism_size,
+    iim_max_purview_size,
+    iim_n_parts,
+    iim_state_budget_policy,
+    iim_cut_mode,
+    n_bearer,
+    n_null,
+    n_boot,
+    profile,
+    settings,
+    rate,
+    rate_source,
+) -> dict:
+    """
+    Closed-form cost of the campaign before anything is prepared: subsystem
+    size from each run's region count and the state-budget rule of
+    ``prepare_iim_problem``, every real run assumed defined and every surrogate
+    and bootstrap replicate run counted (an upper bound of the enumerated
+    cost).
+    """
+    groups: dict = {}
+    for spec in unique_specs:
+        n_regions = _ts_n_regions(spec["ts_path"])
+        if n_regions is None:
+            plan = {"defined": False, "reason": "unreadable_or_not_2d"}
+        else:
+            plan = planned_iim_structure(
+                n_regions,
+                bins=int(iim_bins),
+                max_nodes=iim_max_nodes,
+                max_state_space=_PREPARE_MAX_STATE_SPACE,
+                state_budget_policy=str(iim_state_budget_policy),
+                n_bearer=n_bearer,
+            )
+        key = (
+            plan["defined"], plan.get("n_nodes"), plan.get("bins"), plan.get("reason")
+        )
+        groups[key] = groups.get(key, 0) + 1
+
+    replicates = 1 + int(n_null) + int(n_boot)
+    structures = []
+    total = tpms = total_runs = max_p1 = max_cut = 0
+    for (defined, n_nodes, bins, reason), count in sorted(
+        groups.items(), key=lambda kv: (not kv[0][0], kv[0][1] or 0)
+    ):
+        if not defined:
+            structures.append(
+                {"defined": False, "n_real_runs": count, "reason": reason}
+            )
+            total_runs += count
+            continue
+        cost = iim_run_cost(
+            n_nodes,
+            max_mechanism_size=iim_max_mechanism_size,
+            max_purview_size=iim_max_purview_size,
+            n_parts=iim_n_parts,
+            cut_mode=str(iim_cut_mode),
+        )
+        p1_max = max(
+            (
+                subset_range_bipartition_sum(n_nodes, iim_max_mechanism_size, a, b)
+                * cost["purview_bipartitions"]
+                for a, b in _split_evenly(
+                    cost["n_mechanisms"], int(profile.hunter_phase1_shards_per_run)
+                )
+            ),
+            default=0,
+        )
+        cut_max = max(
+            (
+                (b - a) * cost["psi_evaluations_per_tpm"]
+                for a, b in _split_evenly(
+                    cost["n_cuts_evaluated"], int(profile.hunter_cut_shards_per_run)
+                )
+            ),
+            default=0,
+        )
+        n_runs = count * replicates
+        structures.append(
+            {
+                "defined": True,
+                "n_real_runs": count,
+                "n_iim_runs": n_runs,
+                "bins": bins,
+                **cost,
+                "psi_evaluations_total": cost["psi_evaluations"] * n_runs,
+            }
+        )
+        total += cost["psi_evaluations"] * n_runs
+        tpms += cost["tpm_evaluations"] * n_runs
+        total_runs += n_runs
+        max_p1, max_cut = max(max_p1, p1_max), max(max_cut, cut_max)
+    return {
+        "schema": COST_SCHEMA,
+        "basis": "closed form before preparation; upper bound",
+        "unit": UNIT_DEFINITION,
+        "runs": {
+            "real": len(unique_specs),
+            "null_per_run": int(n_null),
+            "bootstrap_per_run": int(n_boot),
+            "total_iim_runs": total_runs,
+        },
+        "structures": structures,
+        "psi_evaluations": int(total),
+        "tpm_evaluations": int(tpms),
+        "max_phase1_shard_psi_evaluations": int(max_p1),
+        "max_cut_shard_psi_evaluations": int(max_cut),
+        "runtime": _cost_runtime(
+            psi_evaluations=total,
+            max_phase1=max_p1,
+            max_cut=max_cut,
+            profile=profile,
+            settings=settings,
+            rate=rate,
+            rate_source=rate_source,
+        ),
+    }
+
+
+def _enumerated_cost_estimate(
+    runs, *, n_null, n_boot, cut_mode, profile, settings, rate, rate_source
+) -> dict:
+    """Cost of the built campaign from the prepared problems' enumerations."""
+    groups: dict = {}
+    total = tpms = max_p1 = max_cut = 0
+    n_real = 0
+    for run in runs:
+        auxiliary = _is_auxiliary_run(run)
+        n_real += 0 if auxiliary else 1
+        if not bool(run.get("defined", False)):
+            if not auxiliary:
+                key = ("undefined", str(run.get("undefined_reason")))
+                grp = groups.setdefault(
+                    key,
+                    {
+                        "defined": False,
+                        "n_real_runs": 0,
+                        "reason": run.get("undefined_reason"),
+                    },
+                )
+                grp["n_real_runs"] += 1
+            continue
+        cost = run.get("iim_cost") or {}
+        n_nodes = int(run["n_nodes_used"])
+        key = (
+            "defined",
+            n_nodes,
+            int(run["bins_used"]),
+            int(run["n_mechanisms"]),
+            int(run["n_purviews"]),
+            int(run["n_cuts_evaluated"]),
+        )
+        grp = groups.setdefault(
+            key,
+            {
+                "defined": True,
+                "n_real_runs": 0,
+                "n_iim_runs": 0,
+                "n_nodes": n_nodes,
+                "bins": int(run["bins_used"]),
+                "n_mechanisms": int(run["n_mechanisms"]),
+                "n_purviews": int(run["n_purviews"]),
+                "mechanism_bipartitions": int(cost.get("mechanism_bipartitions", 0)),
+                "purview_bipartitions": int(cost.get("purview_bipartitions", 0)),
+                "psi_evaluations_per_tpm": int(cost.get("psi_evaluations_per_tpm", 0)),
+                "n_cuts_total": n_system_cuts(n_nodes, "all", cut_mode),
+                "n_cuts_evaluated": int(run["n_cuts_evaluated"]),
+                "tpm_evaluations": int(cost.get("tpm_evaluations", 0)),
+                "psi_evaluations": int(cost.get("psi_evaluations", 0)),
+                "psi_evaluations_total": 0,
+            },
+        )
+        grp["n_iim_runs"] += 1
+        grp["n_real_runs"] += 0 if auxiliary else 1
+        grp["psi_evaluations_total"] += int(cost.get("psi_evaluations", 0))
+        total += int(cost.get("psi_evaluations", 0))
+        tpms += int(cost.get("tpm_evaluations", 0))
+        max_p1 = max(max_p1, int(cost.get("max_phase1_shard_psi_evaluations", 0)))
+        max_cut = max(max_cut, int(cost.get("max_cut_shard_psi_evaluations", 0)))
+    return {
+        "schema": COST_SCHEMA,
+        "basis": "enumerated from the prepared problems",
+        "unit": UNIT_DEFINITION,
+        "runs": {
+            "real": n_real,
+            "null_per_run": int(n_null),
+            "bootstrap_per_run": int(n_boot),
+            "total_iim_runs": len(runs),
+        },
+        "structures": list(groups.values()),
+        "psi_evaluations": int(total),
+        "tpm_evaluations": int(tpms),
+        "max_phase1_shard_psi_evaluations": int(max_p1),
+        "max_cut_shard_psi_evaluations": int(max_cut),
+        "runtime": _cost_runtime(
+            psi_evaluations=total,
+            max_phase1=max_p1,
+            max_cut=max_cut,
+            profile=profile,
+            settings=settings,
+            rate=rate,
+            rate_source=rate_source,
+        ),
+    }
+
+
+def _log_cost_estimate(estimate: dict) -> None:
+    for line in format_cost_summary(estimate):
+        log.info(line)
+    guard = estimate.get("guard") or {}
+    if guard.get("exceeds_ceiling") and guard.get("allow_large"):
+        log.warning(
+            "IIM campaign above the Psi-evaluation ceiling (%.3g > %.3g) is built "
+            "because allow_large (--hunter-allow-large) was given.",
+            estimate["psi_evaluations"],
+            guard["max_psi_evaluations"],
+        )
+    stages = (estimate.get("runtime") or {}).get("stages_exceeding_walltime") or []
+    if stages:
+        log.warning(
+            "Estimated longest shard exceeds the walltime in %s (order-of-magnitude "
+            "estimate): use more shards per run or measure the rate with the "
+            "smoke test (runbook section 10a).",
+            ", ".join(stages),
+        )
+
+
 def prepare_hunter_campaign(
     *,
     data_dir,
@@ -1266,10 +1636,25 @@ def prepare_hunter_campaign(
     iim_bootstrap_n=0,
     iim_bootstrap_seed=0,
     iim_bootstrap_block_len=None,
+    max_psi_evaluations=None,
+    allow_large=False,
+    seconds_per_psi_evaluation=None,
 ):
     """
     Build a Hunter IIM campaign: one prepared IIM problem per unique run plus
     phase-1 (mechanism) and cut shards, and the scheduler scripts.
+
+    Size guard: before anything is prepared, the campaign's work is counted in
+    Psi evaluations (``impact_pipeline.hunter_cost``: mechanisms x purviews x
+    bipartitions x (1 + cuts) x runs x (1 + K_null + K_boot), closed form from
+    each run's region count) and logged with an order-of-magnitude runtime
+    (reference single-core rate, or ``seconds_per_psi_evaluation`` measured
+    with the smoke test / IMPACT_HUNTER_SECONDS_PER_PSI_EVAL). A campaign above
+    ``max_psi_evaluations`` (else IMPACT_HUNTER_MAX_PSI_EVALS, else
+    ``hunter_cost.DEFAULT_MAX_PSI_EVALS``) raises ``HunterCostError`` unless
+    ``allow_large`` is True. After preparation the count is recomputed from
+    the enumerated problems; both estimates and the guard decision are stored
+    in the manifest (``iim_cost_estimate``).
 
     ``hardware_target`` is the target the compute jobs will request;
     ``build_hardware_backend`` (optional) is the backend used for the
@@ -1376,6 +1761,40 @@ def prepare_hunter_campaign(
             None if iim_bootstrap_block_len is None else int(iim_bootstrap_block_len)
         ),
     }
+
+    # Size guard: count the work before preparing (or writing) anything.
+    ceiling, ceiling_source = resolve_psi_eval_ceiling(max_psi_evaluations)
+    rate, rate_source = resolve_seconds_per_psi_eval(seconds_per_psi_evaluation)
+    cost_context = {
+        "profile": effective_profile,
+        "settings": scheduler_settings,
+        "rate": rate,
+        "rate_source": rate_source,
+    }
+    preflight = _preflight_cost_estimate(
+        unique_specs,
+        iim_bins=iim_bins,
+        iim_max_nodes=iim_max_nodes,
+        iim_max_mechanism_size=iim_max_mechanism_size,
+        iim_max_purview_size=iim_max_purview_size,
+        iim_n_parts=iim_n_parts,
+        iim_state_budget_policy=iim_state_budget_policy,
+        iim_cut_mode=iim_cut_mode,
+        n_bearer=(
+            None
+            if iim_settings["bearer_nodes"] is None
+            else len(iim_settings["bearer_nodes"])
+        ),
+        n_null=int(iim_null_surrogates),
+        n_boot=int(iim_bootstrap_n),
+        **cost_context,
+    )
+    apply_ceiling(
+        preflight, ceiling=ceiling, source=ceiling_source, allow_large=allow_large
+    )
+    _log_cost_estimate(preflight)
+    check_ceiling(preflight)
+
     runs = []
     phase1_tasks = []
     cut_tasks = []
@@ -1607,6 +2026,30 @@ def prepare_hunter_campaign(
         meta["iim_null"] = null_info
         _json_dump(run_dir / "meta.json", meta)
 
+    cost_estimate = _enumerated_cost_estimate(
+        runs,
+        n_null=int(iim_null_surrogates),
+        n_boot=int(iim_bootstrap_n),
+        cut_mode=str(iim_cut_mode),
+        **cost_context,
+    )
+    apply_ceiling(
+        cost_estimate, ceiling=ceiling, source=ceiling_source, allow_large=allow_large
+    )
+    cost_estimate["preflight"] = preflight
+    log.info(
+        "IIM cost of the prepared campaign: %.4g Psi evaluations in %d IIM runs "
+        "(preflight upper bound %.4g); about %.3g node-hours (%s).",
+        cost_estimate["psi_evaluations"],
+        len(runs),
+        preflight["psi_evaluations"],
+        cost_estimate["runtime"]["node_hours"],
+        cost_estimate["runtime"]["rate_source"],
+    )
+    # Defensive: the preflight count is an upper bound, so this never refuses
+    # a campaign the preflight accepted; no manifest or script is written.
+    check_ceiling(cost_estimate)
+
     manifest = {
         "created_unix": float(time.time()),
         "campaign_dir": str(campaign_dir),
@@ -1632,6 +2075,7 @@ def prepare_hunter_campaign(
         "iim_algorithm_version": IIM_ALGORITHM_VERSION,
         "iim_settings": iim_settings,
         "iim_psi_kernel": str(iim_psi_kernel),
+        "iim_cost_estimate": cost_estimate,
         "runs": runs,
         "phase1_tasks": phase1_tasks,
         "cut_tasks": cut_tasks,
@@ -2047,6 +2491,20 @@ def _write_hunter_pbs_scripts(campaign_dir: Path, manifest) -> dict:
             "IMPACT_HUNTER_MAX_ARRAY_SIZE.",
         ],
     }
+    cost = manifest.get("iim_cost_estimate")
+    if cost:
+        # Expected (not worst-case) work, order of magnitude; the full
+        # estimate is in campaign_manifest.json (iim_cost_estimate).
+        runtime = cost.get("runtime") or {}
+        plan["iim_cost_estimate"] = {
+            "psi_evaluations": cost.get("psi_evaluations"),
+            "node_hours_estimate": runtime.get("node_hours"),
+            "rate_source": runtime.get("rate_source"),
+            "longest_phase1_shard_seconds": runtime.get("longest_phase1_shard_seconds"),
+            "longest_cut_shard_seconds": runtime.get("longest_cut_shard_seconds"),
+            "stages_exceeding_walltime": runtime.get("stages_exceeding_walltime"),
+            "guard": cost.get("guard"),
+        }
     _json_dump(scripts_dir / "campaign_plan.json", plan)
     return {
         "scripts_dir": str(scripts_dir),
@@ -2380,6 +2838,13 @@ def run_phase1_shard(campaign_dir, task_index, *, hardware_target=None):
         n_mechanisms=len(shard_mechanisms),
         hardware_backend=backend_summary(hardware_backend),
         psi_kernel=psi_kernel,
+        # work of this shard for the measured calibration (cost_calibration.json)
+        psi_evaluations=int(
+            enumerated_run_cost(shard_mechanisms, problem["purviews_all"], 0)[
+                "psi_evaluations_per_tpm"
+            ]
+        ),
+        workers_per_task=profile["hunter_phase1_workers_per_task"],
     )
     payload = {
         "status": "complete",
@@ -2518,11 +2983,13 @@ def run_cut_shard(
         xp = get_array_module(hardware_backend)
         xp_workspace = iim_xp.IIMXpWorkspace(xp, problem["states_full"], base)
         tpm_full_xp = xp.asarray(problem["tpm_full"], dtype=xp.float64)
+    computed_cuts = 0
     with _kernel_cache_scope(campaign_dir, _task_label("cut", task)) as cache_dir:
         for local_idx, (A, B) in enumerate(shard_cuts):
             cut_key = _iim_cut_to_key(A, B)
             if cut_key in cut_scores:
                 continue
+            computed_cuts += 1
             if psi_kernel == "xp":
                 psi_cut = iim_xp.psi_contribution(
                     problem["mechanisms_all"],
@@ -2593,6 +3060,11 @@ def run_cut_shard(
             best_psi = float(psi_cut)
             best_cut = [list(A), list(B)]
 
+    psi_per_tpm = int(
+        enumerated_run_cost(problem["mechanisms_all"], problem["purviews_all"], 0)[
+            "psi_evaluations_per_tpm"
+        ]
+    )
     timing = _timing_finish(
         start,
         stage=CUT_STAGE,
@@ -2601,6 +3073,11 @@ def run_cut_shard(
         resumed_cuts=int(resumed_cuts),
         hardware_backend=backend_summary(hardware_backend),
         psi_kernel=psi_kernel,
+        # work done in this invocation (resumed cuts excluded), for the
+        # measured calibration (cost_calibration.json)
+        computed_cuts=int(computed_cuts),
+        psi_evaluations=int(computed_cuts) * psi_per_tpm,
+        workers_per_task=profile["hunter_phase1_workers_per_task"],
     )
     payload = {
         "status": "complete",
@@ -3002,6 +3479,11 @@ def run_reduce_all(campaign_dir):
     write_iim_results_table(campaign_dir)
     timing = _timing_finish(start, stage="reduce-all", n_runs=len(final))
     _write_timing(campaign_dir, "reduce-all", "reduce_all", timing)
+    try:
+        # Measured rate for sizing the next campaign (the smoke job ends here).
+        summarize_cost_calibration(campaign_dir)
+    except Exception as exc:  # diagnostics only: never fail the reduction
+        log.warning("Could not write cost_calibration.json: %s", exc)
     return {"phase1": p1, "final": final, "timing": timing}
 
 
@@ -3181,6 +3663,11 @@ def campaign_status(campaign_dir) -> dict:
         return rec.get("problem_digest") == run_meta.get("problem_digest")
 
     finals = [_final_current(r) for r in manifest.get("runs", [])]
+    try:
+        calibration = summarize_cost_calibration(campaign_dir)
+    except Exception as exc:  # diagnostics only: never fail the status stage
+        log.warning("Could not write cost_calibration.json: %s", exc)
+        calibration = None
     summary = {
         "campaign_dir": str(campaign_dir),
         "n_runs": len(finals),
@@ -3194,6 +3681,7 @@ def campaign_status(campaign_dir) -> dict:
             for stage, v in status.items()
         },
         "timing": summarize_campaign_timing(campaign_dir, write=False),
+        "cost_calibration": calibration,
     }
     _json_dump(campaign_dir / "status.json", summary)
     return summary
@@ -3232,6 +3720,99 @@ def summarize_campaign_timing(campaign_dir, write=True) -> dict:
                 }
     if write:
         _json_dump(campaign_dir / "timing_summary.json", out)
+    return out
+
+
+def summarize_cost_calibration(campaign_dir, write=True) -> dict:
+    """
+    Measured time per Psi evaluation from the shard timing records of a
+    (smoke or calibration) campaign, written to ``cost_calibration.json``.
+
+    ``shard_wall_seconds_per_psi_evaluation`` is the value to pass as
+    ``--hunter-seconds-per-psi-eval`` (or IMPACT_HUNTER_SECONDS_PER_PSI_EVAL)
+    when building the production campaign with the same hardware target,
+    kernel and packing; the build then extrapolates shard and node hours from
+    it. A calibration with fewer than ``hunter_cost.MIN_CALIBRATION_PSI_EVALS``
+    evaluations is flagged ``overhead_dominated`` (fixed per-shard costs
+    dominate and the rate is overstated).
+    """
+    campaign_dir = Path(campaign_dir).resolve()
+    by_stage = {}
+    root = campaign_dir / "timing"
+    for stage in (PHASE1_STAGE, CUT_STAGE):
+        recs = []
+        for path in sorted((root / stage).glob("*.json")):
+            try:
+                rec = _json_load(path)
+            except Exception:
+                continue
+            if isinstance(rec, dict):
+                recs.append(rec)
+        by_stage[stage] = recs
+    all_recs = [r for recs in by_stage.values() for r in recs]
+    try:
+        manifest = _load_manifest(campaign_dir)
+    except Exception:
+        manifest = {}
+    structures = sorted(
+        {
+            (
+                int(r["n_nodes_used"]),
+                int(r["bins_used"]),
+                int(r.get("max_mechanism_size_used", 0)),
+                int(r.get("max_purview_size_used", 0)),
+                int(r["n_cuts_evaluated"]),
+            )
+            for r in manifest.get("runs", [])
+            if r.get("defined")
+        }
+    )
+    overall = calibration_from_records(all_recs)
+    out = {
+        "schema": CALIBRATION_SCHEMA,
+        "unit": UNIT_DEFINITION,
+        "campaign_dir": str(campaign_dir),
+        **overall,
+        "stages": {
+            stage: calibration_from_records(recs) for stage, recs in by_stage.items()
+        },
+        "context": {
+            "hardware_target": manifest.get("hardware_target"),
+            "psi_kernels": sorted(
+                {str(r["psi_kernel"]) for r in all_recs if r.get("psi_kernel")}
+            ),
+            "hardware_backends": sorted(
+                {
+                    str(r["hardware_backend"])
+                    for r in all_recs
+                    if r.get("hardware_backend")
+                }
+            ),
+            "hosts": sorted({str(r["host"]) for r in all_recs if r.get("host")}),
+            "workers_per_task": (manifest.get("execution_profile") or {}).get(
+                "hunter_phase1_workers_per_task"
+            ),
+            "shards_per_node": (manifest.get("scheduler") or {}).get("shards_per_node"),
+            "iim_structures": [
+                {
+                    "n_nodes": s[0],
+                    "bins": s[1],
+                    "max_mechanism_size": s[2],
+                    "max_purview_size": s[3],
+                    "n_cuts_evaluated": s[4],
+                }
+                for s in structures
+            ],
+        },
+        "use": (
+            "Build the production campaign with --hunter-seconds-per-psi-eval "
+            "<shard_wall_seconds_per_psi_evaluation> (same hardware target, kernel "
+            "and packing) to extrapolate its shard and node hours; see "
+            "docs/HLRS_HUNTER_RUNBOOK.md, section 10a."
+        ),
+    }
+    if write:
+        _json_dump(campaign_dir / "cost_calibration.json", out)
     return out
 
 

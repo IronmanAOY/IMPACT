@@ -21,7 +21,7 @@ HLRS (`rt-platform-hunter@hlrs.de`) before a production run.
 |---|---|
 | `install_hunter_env.sh` | One-time login-node setup: stack modules, workspace, cray-python venv with `--system-site-packages`, `requirements-hunter.txt` under `constraints-hunter.txt`, CuPy (`--cupy none\|source-13.6\|wheel-rocm7`) and a CPU self-test. Prints the steps by default; `--run` executes them. |
 | `hunter_pbs_setup.sh` | Template of the setup file that every generated job sources (modules, workspace, venv, caches off HOME, ROCm, threads, no proxies in jobs). Copy it to the workspace and export `IMPACT_HUNTER_SETUP_FILE`. |
-| `hunter_smoke_test.sh` | Builds a tiny campaign (4 IIM nodes) and, with `--submit`, sends `pbs/90_smoke_all_in_one.pbs` to the `test` queue (25 min, 1 job per user). |
+| `hunter_smoke_test.sh` | Builds a tiny campaign (4 IIM nodes) and, with `--submit`, sends `pbs/90_smoke_all_in_one.pbs` to the `test` queue (25 min, 1 job per user). With `--iim-max-nodes 6` and `all` for the other IIM sizes it is the calibration run that measures the time per Ψ evaluation (`cost_calibration.json`). |
 
 The Python environment pins live in the repository root:
 `requirements-hunter.txt` and `constraints-hunter.txt` (numpy 1.24.4 and scipy
@@ -46,7 +46,10 @@ bash scripts/hunter/hunter_smoke_test.sh --bids-root <BIDS> --out-dir <OUT> \
 
 Options: `--dataset-id` (default ds003171), `--data-origin real|dummy` (default
 dummy), `--campaign-dir` (default `<out-dir>/cache/hunter_iim_smoke`),
-`--python`, `--null-surrogates K` (IIM surrogate calibration). With
+`--python`, `--null-surrogates K` (IIM surrogate calibration), `--iim-max-nodes
+N` (default 4), `--iim-max-mechanism-size`, `--iim-max-purview-size`,
+`--iim-n-parts` (defaults 2, 2, 4; `all` = exhaustive, for the calibration run
+of the section below). With
 `--data-origin dummy`, `--out-dir` is used only if it lies under
 `${IMPACT_SYNTH_ROOT:-<repo>}/test_objects`; otherwise inputs and results go to
 `test_objects/runs/<dataset>`. With `real`, use a separate `--out-dir` (a copy
@@ -60,8 +63,8 @@ The smoke job runs, in order:
   the IIM TPM kernels and `iim_psi_xp_parity`: phase-1 Ψ and the
   bidirectional/directional cut TPMs and their Ψ from the device kernel against
   the numba/host reference kernel;
-- all shards;
-- the merged reduce;
+- all shards (each records its wall time and Ψ evaluations in `timing/`);
+- the merged reduce, which also writes `cost_calibration.json`;
 - finalize.
 
 The self-test is the first thing to run on a node (also standalone, in an
@@ -71,6 +74,51 @@ Exit code 0 = all required cases
 passed, 1 = a comparison failed (do not run a campaign), 2 = no accelerator
 visible. A failing `eigh` alone is not fatal (the pipeline then uses the CPU
 eigh).
+
+## IIM cost guard and sizing
+
+Exhaustive IIM grows roughly 30x per added subsystem node (one CPU core,
+T = 1000: 1.7 s at 4 nodes, 46 s at 5, about 27 min at 6). Without
+`--iim-max-nodes` the state budget gives a 10-node subsystem (2 bins), which is
+infeasible exhaustively (4.2e11 Ψ evaluations, about 7 core-years, per IIM
+run). Therefore:
+
+- `build-campaign` counts the IIM work in **Ψ evaluations**: one (mechanism,
+  purview, mechanism bipartition, purview bipartition) term of Ψ under one TPM,
+  i.e. mechanisms x purviews x bipartitions x (1 + cuts) x runs x (1 + K_null +
+  K_boot). The count is made in closed form before anything is prepared (from
+  each run's region count and the state-budget rule; an upper bound) and again
+  from the enumerated problems after preparation. It logs both with an
+  order-of-magnitude runtime and stores them in `campaign_manifest.json`
+  (`iim_cost_estimate`, with `preflight`); `pbs/campaign_plan.json` gets a
+  summary.
+- Above the ceiling the build stops before writing anything
+  (`HunterCostError: Hunter IIM campaign refused: ...`). Ceiling:
+  `--hunter-max-psi-evals N` > `IMPACT_HUNTER_MAX_PSI_EVALS` > 1e11 (about 160
+  node-hours at the reference rate); `1e12` notation is accepted.
+  `--hunter-allow-large` builds anyway and records the decision.
+- Runtime: without a measured rate the estimate uses the reference single-core
+  rate (5.6e-4 s per evaluation, the 6-node workstation measurement) divided
+  by the workers per shard. The APU (device) kernel is not covered by it.
+  `--hunter-seconds-per-psi-eval R` (or `IMPACT_HUNTER_SECONDS_PER_PSI_EVAL`)
+  uses a measured rate R in shard wall-seconds per evaluation. The build warns
+  when the longest shard is expected to exceed its walltime.
+- Measured calibration: every phase-1 and cut shard records `psi_evaluations`
+  (work done in that invocation; resumed cuts excluded) next to its wall time
+  in `timing/<stage>/<task>.json`. `reduce-all` and `status` summarise them in
+  `cost_calibration.json`: `shard_wall_seconds_per_psi_evaluation` is R.
+  Runs with fewer than 1e6 timed evaluations are flagged
+  `overhead_dominated` (start-up costs dominate). Calibrate with
+  `hunter_smoke_test.sh --iim-max-nodes 6 --iim-max-mechanism-size all
+  --iim-max-purview-size all --iim-n-parts all --subjects <one ID>`.
+- Tables without data: `PYTHONPATH=src python3 -m impact_pipeline.hunter_cost
+  --nodes 5-10 --runs R --null K --boot B [--seconds-per-psi-eval R]
+  [--max-mechanism-size S --max-purview-size S --n-parts P] [--json]`.
+
+The procedure (measure, extrapolate, let the author choose, what to report) is
+in [runbook section 10a](../../docs/HLRS_HUNTER_RUNBOOK.md#10a-size-the-iim-configuration-before-the-full-campaign).
+Restricting mechanism/purview sizes or sampling cuts changes what is
+estimated, so these sizes are the author's decision.
 
 ## Production campaign
 
@@ -121,8 +169,9 @@ bash <OUT>/cache/hunter_iim_campaign/pbs/00_submit_all.sh
   sources. The `IMPACT_HUNTER_*` scheduler settings in the table below are read
   when the campaign is built.
 - Status and timing: `--hunter-stage status` writes `status.json`, which lists
-  missing shard indices. Every task writes `timing/<stage>/<task>.json` (wall/CPU
-  time, peak RSS, host, PBS ids, backend and Ψ kernel). Finalize writes
+  missing shard indices, and `cost_calibration.json`. Every task writes
+  `timing/<stage>/<task>.json` (wall/CPU time, peak RSS, host, PBS ids, backend
+  and Ψ kernel; shards also their Ψ evaluations). Finalize writes
   `timing_summary.json`.
 - Checkout: the jobs `cd` into the checkout recorded at build time and export it
   as `IMPACT_REPO_ROOT`. It is resolved as `--repo-root` > `IMPACT_REPO_ROOT` >
@@ -225,6 +274,8 @@ when the campaign is built; "job" variables must be exported in the setup file.
 | `IMPACT_HUNTER_PHASE1_SHARDS_PER_RUN`, `IMPACT_HUNTER_CUT_SHARDS_PER_RUN` | build | 16 / 256 | `--hunter-phase1-shards-per-run`, `--hunter-cut-shards-per-run` |
 | `IMPACT_HUNTER_WORKERS_PER_TASK` | build | cores per rank minus 2 (22) | `--hunter-workers-per-task` |
 | `IMPACT_HUNTER_MAX_ARRAY_SIZE` | build | 10000 (PBS default) | **UNVERIFIED** for Hunter. Exceeding it is a build-time error |
+| `IMPACT_HUNTER_MAX_PSI_EVALS` | build | 1e11 | ceiling on the estimated IIM work in Ψ evaluations (`--hunter-max-psi-evals`); above it the build is refused unless `--hunter-allow-large` |
+| `IMPACT_HUNTER_SECONDS_PER_PSI_EVAL` | build | unset | measured shard wall-seconds per Ψ evaluation (`cost_calibration.json`) for the runtime estimate (`--hunter-seconds-per-psi-eval`); unset = reference single-core rate / workers |
 | `IMPACT_HUNTER_PBS_CPU_BIND`, `IMPACT_HUNTER_PBS_GPU_BIND` | build | derived | GPU binding for packings other than 4 ranks per node is **UNVERIFIED** |
 | `IMPACT_HUNTER_PBS_LAUNCHER` | build | `mpiexec` | launcher of packed shards |
 | `IMPACT_HUNTER_FORCE` | job | unset | `1` recomputes completed shards |
@@ -241,8 +292,9 @@ when the campaign is built; "job" variables must be exported in the setup file.
   NumPy-backed stand-in for ROCm CuPy; its numerical parity and speed on a real
   MI300A (ROCm 6.4.1 / CuPy 13.6.0, where HPE warns about rocBLAS results) are
   **UNVERIFIED** until `hardware_selftest` has been run there. Its work grows like
-  the host kernel's (all mechanism/purview bipartitions); up to 6-7 nodes (2
-  bins) per run keep campaigns tractable.
+  the host kernel's (all mechanism/purview bipartitions, roughly 30x per node);
+  size the configuration with the calibration run before a production campaign
+  (see "IIM cost guard and sizing").
 - These points are **UNVERIFIED** on Hunter:
   - whether array subjobs count against the `single` queue limits (40 queued and
     20 running jobs per user);

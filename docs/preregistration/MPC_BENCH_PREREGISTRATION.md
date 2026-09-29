@@ -392,3 +392,31 @@ Any deviation from this plan (a bug fix, a changed step, a failed run) is
 reported with its reason in the paper, and results obtained after a code
 change to `src/` or `scripts/` are exploratory: the confirmatory guard
 refuses to run such code under the freeze tag.
+
+## Errata (documentation only; no change to hypotheses or decision rules)
+
+Added 2026-09-29, after the freeze tag `mpcbench-freeze-v1`, in a
+documentation-only commit. The frozen text above is left as it was frozen.
+These errata correct two descriptive numbers in section 7. They change no
+hypothesis, decision rule, threshold, protocol, seed or task: the
+confirmatory runs execute the tasks that the frozen code enumerates, and
+those already have the corrected sizes. Both values were checked against the
+frozen code (commit `b908ee3`).
+
+1. **Whole-brain grain (section 7, run-plan note).** The note says "the
+   whole-brain systems, 209 regions". The whole-brain systems have **76
+   regions and 265 region-level edges** (grain `region`, the default used by
+   the run plan: the fine edge list is aggregated to its 76 parent regions).
+   209 is not a region count: it is the minimum edge confidence of the
+   connectome export in the file name
+   (`data/managed/structural/budapest_connectome_3.0_209_0_median.csv`; every
+   edge has confidence >= 209). Checked with
+   `impact_pipeline.bench.whole_brain.load_connectome()` (its `provenance`:
+   `n_nodes` = 76, `n_edges` = 265, `edge_confidence_min` = 209).
+2. **Witness tasks per family (section 7, table row `bench_A / bench_C`,
+   witnesses).** The size column says "280 per family". The correct number is
+   **260 per family**: 13 witness tasks per seed (the 12 catalogue witnesses,
+   with the patchwork witness scored in both bearer modes) x 20 seeds
+   (10000-10019). Checked with `impact_pipeline.bench.run_bench.witness_tasks`
+   for families A and C (260 tasks each). The design column ("13 per family")
+   was already correct.

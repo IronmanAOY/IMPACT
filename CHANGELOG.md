@@ -21,9 +21,10 @@ Changes made after the code-freeze tag `mpcbench-freeze-v1` (commit f2cf249).
 None of them changes an estimator, a null, the evidence rule or a bench
 protocol, so the MPC-Bench results stay reproducible from the tag. They fix
 the empirical pipeline and the interface between its outputs and the
-hypothesis registry, and make the default protocol explicit. Hypotheses,
-statistics, margins, minimum n and decision rules are unchanged. Each change
-has a regression test.
+hypothesis registry, make the default protocol explicit, guard Hunter
+campaigns against infeasible IIM sizes, and correct two descriptive numbers
+in the preregistration. Hypotheses, statistics, margins, minimum n and
+decision rules are unchanged. Each change has a regression test.
 
 #### Fixed
 
@@ -211,6 +212,64 @@ has a regression test.
   reference. Test: `tests/test_empirical_reference.py` (tiny synthetic
   layouts; equals the pipeline's cohort reference of the same channel and
   runs).
+- **Hunter IIM cost guard** (`impact_pipeline.hunter_cost`). Exhaustive IIM
+  grows roughly 30x per added subsystem node (one core, T = 1000: 1.7 s at 4
+  nodes, 46 s at 5, about 27 min at 6), and the default subsystem of 10
+  nodes needs about 4.2e11 Psi evaluations (about 7 core-years) per IIM run,
+  but the campaign build accepted any configuration without saying so.
+  `--execution-mode hunter --hunter-stage build-campaign` and
+  `prepare_hunter_campaign` now count the work in Psi evaluations
+  (mechanisms x purviews x bipartitions x (1 + cuts) x runs x (1 + K_null +
+  K_boot); one evaluation is one mechanism/purview/bipartition-pair term of
+  Psi under one TPM). The count is made in closed form before anything is
+  prepared (from each run's region count and the state-budget rule of
+  `prepare_iim_problem`; an upper bound) and again from the enumerated
+  problems afterwards. The build logs it with an order-of-magnitude runtime:
+  the reference single-core rate of 5.6e-4 s per evaluation, or a measured
+  rate from `--hunter-seconds-per-psi-eval` /
+  `IMPACT_HUNTER_SECONDS_PER_PSI_EVAL`. It warns when the longest shard would
+  exceed its walltime and records everything in `campaign_manifest.json`
+  (`iim_cost_estimate`, with `preflight`) and `pbs/campaign_plan.json`.
+  Configurations above the ceiling (`--hunter-max-psi-evals` >
+  `IMPACT_HUNTER_MAX_PSI_EVALS` > 1e11) are refused before anything is
+  written (`HunterCostError`), unless `--hunter-allow-large` is given.
+  `python -m impact_pipeline.hunter_cost` prints the same counts per
+  subsystem size without data. Tests: `tests/test_hunter_cost.py`
+  (closed-form counts equal the `prepare_iim_problem` enumerations, refusal
+  with no files written, environment ceiling, `--hunter-allow-large`,
+  command-line flags, manifest records).
+- **Measured cost calibration.** Phase-1 and cut shards record the Psi
+  evaluations they computed next to their wall time
+  (`timing/<stage>/<task>.json`; resumed cuts are not counted). `reduce-all`
+  (the last step of the smoke job) and `status` write
+  `cost_calibration.json` with `shard_wall_seconds_per_psi_evaluation`,
+  per-stage totals, the per-shard spread and an `overhead_dominated` flag
+  below 1e6 timed evaluations. `scripts/hunter/hunter_smoke_test.sh` takes
+  `--iim-max-nodes`, `--iim-max-mechanism-size`, `--iim-max-purview-size`
+  and `--iim-n-parts` (`all` = exhaustive), so the same helper runs the
+  calibration.
+
+#### Documentation
+
+- `docs/HLRS_HUNTER_RUNBOOK.md`: a new section 10a, "Size the IIM
+  configuration before the full campaign", linked from the top of the
+  runbook. It covers why (growth per node, the infeasible 10-node default),
+  what the guard does, the calibration smoke test, extrapolation, how the
+  author chooses `iim_max_nodes`, mechanism/purview sizes and `n_parts`, and
+  what to report back. Sections 8.2, 9, 14-17 and 19 were updated to match
+  (the preprocessing-only build of section 8.2 now sets `--iim-max-nodes 4`;
+  without it the guard refuses the 10-node default after preprocessing).
+  `scripts/hunter/README.md` has a new section, "IIM cost guard and sizing",
+  and `docs/ARCHITECTURE.md` shows the guard in the campaign flow. The
+  runbook, `scripts/hunter/README.md` and `README.md` also say which
+  protocol a Hunter campaign passes (one derived from v1 with a declared NAS
+  hub), and the runbook shows how to check its hash in the build log.
+- `docs/preregistration/MPC_BENCH_PREREGISTRATION.md`: a dated section,
+  "Errata (documentation only; no change to hypotheses or decision rules)".
+  The whole-brain grain is 76 regions / 265 edges; 209 is the minimum edge
+  confidence in the connectome file name. There are 260 witness tasks per
+  family (13 x 20 seeds), not 280. The frozen text itself is unchanged
+  (`tests/test_hunter_cost.py` compares it with the tag).
 
 ### Added
 

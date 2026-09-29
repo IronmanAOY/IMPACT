@@ -99,6 +99,8 @@ jobs; everything else is computed by the finalize stage on one node.
 
 ```text
  build-campaign (login node)
+   size guard (hunter_cost): Ψ evaluations of the campaign, closed form from each run's region
+     count, and an order-of-magnitude runtime; above the ceiling HunterCostError, nothing written
    prepare_hunter_campaign: for every run (and every IIM surrogate run):
      node selection, discretisation, TPM ─► runs/<run>/{tpm_full,states_full,curr_obs}.npy,
      mechanisms.json, purviews.json, cuts.json, meta.json
@@ -111,7 +113,7 @@ jobs; everything else is computed by the finalize stage on one node.
      Ψ of a slice of system cuts, checkpoint per cut ─► runs/<run>/cut_shards/shard_NNNN.json
  03 reduce-all + finalize-pipeline (one job, afterok on 01 and 02)
      reduce: Ψ_full, max_κ Ψ^κ, ΔΨ, IIM null calibration from the surrogate runs
-       ─► runs/<run>/final_result.json, iim_results.json/.csv
+       ─► runs/<run>/final_result.json, iim_results.json/.csv, cost_calibration.json
      finalize: run_s_ci with the campaign's IIM results (iim_precomputed_by_path), steps 3-9
        ─► the same outputs as a local run, plus cache/hunter_iim_results.csv, timing_summary.json
 ```
@@ -214,7 +216,7 @@ unchanged `src/` and `scripts/`, and records the tag and commit.
 | legacy defaults pinned | `test_construct_modes_legacy_pins.py` |
 | evidence layer | `test_evidence.py`, `test_evidence_properties.py`, `test_verdict_wiring.py`, `test_nulls.py` |
 | CI and statistics | `test_ci_assembly.py`, `test_ci_undefined.py`, `test_analysis_bootstrap.py`, `test_model_comparison.py` |
-| Hunter | `test_hunter_pbs.py`, `test_hunter_iim.py`, `test_hunter_calibration.py`, `test_hunter_scripts.py`, `test_hardware_selftest.py`, `test_iim_xp_kernel.py` |
+| Hunter | `test_hunter_pbs.py`, `test_hunter_iim.py`, `test_hunter_cost.py`, `test_hunter_calibration.py`, `test_hunter_scripts.py`, `test_hardware_selftest.py`, `test_iim_xp_kernel.py` |
 | MPC-Bench | `test_bench_generators.py`, `test_bench_export.py`, `test_bench_rules.py`, `test_bench_audit.py`, `test_bench_reference.py`, `test_bench_runner_v2.py`, `test_bench_calibration.py`, `test_phiid_gaussian.py` |
 | protocols, analysis and registry | `test_protocols.py`, `test_protocol_examples.py`, `test_nas_declared_workspace.py`, `test_estimator_version_columns.py`, `test_empirical_reference.py`, `test_default_empirical_run.py`, `test_analysis_scripts.py`, `test_necessity.py`, `test_predictions_registry.py`, `test_definedness_audit.py`, `test_figures.py` |
 | preprocessing, events, orchestration | `test_preprocessing_fmri.py`, `test_preprocessing_eeg.py`, `test_event_parsing.py`, `test_run_pipeline_orchestration.py`, `test_tr_fallback.py` |
