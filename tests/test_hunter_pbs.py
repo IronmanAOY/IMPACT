@@ -515,13 +515,16 @@ def test_stage_jobs_log_the_campaign_protocol(tmp_path, caplog, monkeypatch):
 
     monkeypatch.setattr(run_synergy_ci, "run_s_ci", fake_run_s_ci)
     monkeypatch.setattr(run_pipeline, "collect_iim_results_by_path", lambda d: {})
-    stages = (("status", None), ("phase1-reduce", FileNotFoundError),
-              ("finalize-pipeline", _Stop))
-    for stage, error in stages:
+    # (stage, expected error, campaign directory given as in the PBS jobs)
+    stages = (("status", None, True), ("phase1-reduce", FileNotFoundError, True),
+              ("finalize-pipeline", _Stop, True), ("status", None, False))
+    for stage, error, campaign_given in stages:
         caplog.clear()
         # what a stage job's command line resolves: the default protocol
-        kwargs = dict(hunter_stage=stage, hunter_campaign_dir=str(campaign),
-                      hunter_run_index=0, protocol=default, **common)
+        kwargs = dict(hunter_stage=stage, hunter_run_index=0, protocol=default,
+                      **common)
+        if campaign_given:
+            kwargs["hunter_campaign_dir"] = str(campaign)
         if error is None:
             run_pipeline.main(str(out), **kwargs)
         else:
@@ -536,6 +539,14 @@ def test_stage_jobs_log_the_campaign_protocol(tmp_path, caplog, monkeypatch):
         notes = [r.getMessage() for r in caplog.records
                  if "not the command-line protocol" in r.getMessage()]
         assert len(notes) == 1 and default_hash[:12] in notes[0], (stage, notes)
+        # With the campaign directory given, the protocol line comes first,
+        # before the hardware (and dataset and provenance) setup; the default
+        # directory is known only once the output directory is resolved.
+        messages = [r.getMessage() for r in caplog.records]
+        protocol_at = messages.index(lines[0])
+        hardware_at = next(i for i, m in enumerate(messages)
+                           if m.startswith("Hardware target:"))
+        assert (protocol_at < hardware_at) == campaign_given, (stage, messages)
     # and finalize computes the verdicts under the campaign's protocol
     assert Protocol.from_dict(captured["protocol"]).hash == derived_hash
 

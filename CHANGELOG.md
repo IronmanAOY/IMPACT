@@ -102,7 +102,11 @@ decision rules are unchanged. Each change has a regression test.
   derived protocol, although their IIM options, verdicts, hashes and
   manifests came from the campaign. They now log the protocol recorded in
   the campaign manifest (source and hash, marked `; the campaign's
-  protocol`) and note when the command-line protocol differs. Test:
+  protocol`) and note when the command-line protocol differs. With the
+  campaign directory given (as in every PBS job) this line comes first,
+  before the dataset, hardware and provenance setup; without it the
+  default campaign directory under the output directory is known only
+  after that setup, so the line follows it. Test:
   `tests/test_hunter_pbs.py`.
 - **Readiness and definedness reports follow the NAS hub rule.**
   `impact_pipeline.mpc_readiness` and `scripts/definedness_audit.py`

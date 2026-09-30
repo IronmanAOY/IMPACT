@@ -1984,6 +1984,30 @@ def _hunter_campaign_protocol(campaign_dir, mpc_evidence_options, protocol=None)
     return prov, True
 
 
+def _log_hunter_stage_protocol(campaign_dir, mpc_evidence_options, protocol=None):
+    """
+    Log the protocol of a Hunter stage job: the campaign's protocol
+    (:func:`_hunter_campaign_protocol`), and a note when the command-line
+    protocol differs from it.
+    """
+    campaign_prov, from_campaign = _hunter_campaign_protocol(
+        campaign_dir, mpc_evidence_options, protocol
+    )
+    _log_mpc_protocol(
+        campaign_prov,
+        "the campaign's protocol" if from_campaign
+        else "command line; the campaign manifest records none",
+    )
+    cli_prov = _mpc_protocol_provenance(mpc_evidence_options, protocol)
+    if from_campaign and cli_prov.get("hash") != campaign_prov.get("hash"):
+        log.info(
+            "This stage uses the campaign's protocol, not the command-line "
+            "protocol %s (hash %s).",
+            cli_prov.get("source") or cli_prov.get("note"),
+            (cli_prov.get("hash") or "-")[:12],
+        )
+
+
 def _cli_count(text):
     """argparse type: positive count, scientific notation allowed (1e12)."""
     from impact_pipeline.hunter_cost import parse_count
@@ -2095,8 +2119,15 @@ def main(
         bootstrap_block_len=bootstrap_block_len,
     )
     if not _is_hunter_stage_job(execution_mode, hunter_stage):
-        # a Hunter stage job logs the campaign's protocol instead (below)
         _log_mpc_protocol(_mpc_protocol_provenance(mpc_evidence_options, protocol))
+    elif hunter_campaign_dir is not None:
+        # A Hunter stage job logs the campaign's protocol instead, also before
+        # the dataset, hardware and provenance setup. The PBS jobs always pass
+        # the campaign directory; without it the default directory lies under
+        # the output directory and is logged once that is resolved (below).
+        _log_hunter_stage_protocol(
+            Path(hunter_campaign_dir).resolve(), mpc_evidence_options, protocol
+        )
 
     catalog_entry = get_report_dataset(dataset_id)
     cfg = DATASET_CONFIGS.get(dataset_id)
@@ -2180,26 +2211,13 @@ def main(
         else _first_existing_path(*cfg["bids_candidates"])
     )
     if hunter_mode and hunter_stage_key != "build-campaign":
-        stage_campaign_dir = Path(
-            hunter_campaign_dir
-            if hunter_campaign_dir is not None
-            else cache_dir / "hunter_iim_campaign"
-        ).resolve()
-        campaign_prov, from_campaign = _hunter_campaign_protocol(
-            stage_campaign_dir, mpc_evidence_options, protocol
-        )
-        _log_mpc_protocol(
-            campaign_prov,
-            "the campaign's protocol" if from_campaign
-            else "command line; the campaign manifest records none",
-        )
-        cli_prov = _mpc_protocol_provenance(mpc_evidence_options, protocol)
-        if from_campaign and cli_prov.get("hash") != campaign_prov.get("hash"):
-            log.info(
-                "This stage uses the campaign's protocol, not the command-line "
-                "protocol %s (hash %s).",
-                cli_prov.get("source") or cli_prov.get("note"),
-                (cli_prov.get("hash") or "-")[:12],
+        if hunter_campaign_dir is None:
+            # the default campaign directory (the stage job's protocol was
+            # logged above when the directory was given)
+            _log_hunter_stage_protocol(
+                (cache_dir / "hunter_iim_campaign").resolve(),
+                mpc_evidence_options,
+                protocol,
             )
         _run_hunter_stage(
             hunter_stage=hunter_stage_key,

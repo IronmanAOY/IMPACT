@@ -661,7 +661,8 @@ nice -n 19 python3 run_pipeline.py --execution-mode hunter --hunter-stage build-
 hash the author gives you. The PBS jobs of the campaign run without
 `--protocol` and use the protocol recorded in the campaign, so their logs
 show the same line, ending in `; the campaign's protocol`, followed by a
-note that the command-line default is not used.
+note that the command-line default is not used. In the PBS jobs this line
+comes before the dataset, hardware and provenance setup.
 
 What happens:
 
