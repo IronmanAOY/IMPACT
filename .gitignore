@@ -223,5 +223,5 @@ docs/manuscript/
 *.sif
 *.simg
 
-# Claude Code local worktrees and session files
+# Local per-user tool directory (worktrees and session files)
 .claude/

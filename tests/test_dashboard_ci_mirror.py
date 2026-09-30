@@ -410,7 +410,7 @@ def test_checkpoint_filename_mirror_matches_synergy_ci(tmp_path, monkeypatch):
     assert Path(seen["checkpoint_path"]).name == mirrored
 
 
-def test_checkpoint_signature_mirror_follows_compute_iim_d6(dash_state, tmp_path):
+def test_checkpoint_signature_mirror_follows_compute_iim(dash_state, tmp_path):
     from impact_pipeline.mpc_metrics import IIM_ALGORITHM_VERSION, compute_IIM
 
     dash, state = dash_state
