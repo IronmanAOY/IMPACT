@@ -1,0 +1,114 @@
+{
+  "schema": "mpc-bench-seed-map/2",
+  "name": "mpc-bench-v2-seed-map",
+  "policy": {
+    "development": {"min": 0, "max": 999},
+    "confirmatory": {"min": 20000},
+    "never_reused": [
+      {"min": 10000, "max": 19999, "why": "v1 confirmatory seeds (mpcbench-freeze-v1)"}
+    ],
+    "unassigned": [
+      {"min": 1000, "max": 9999, "why": "neither development nor confirmatory"}
+    ],
+    "one_split_per_run": true,
+    "applies_to": "task seeds and seed bases; seeds derived inside a task from a task seed or a seed base are not classified",
+    "split_labels": "every split label is derived from this policy, never written by hand"
+  },
+  "streams": {
+    "structural": "SeedSequence(seed): network, oscillator frequencies and every v1 stream (existing draws are never re-ordered)",
+    "twin": {"entropy": "[seed, r]", "r_min": 1, "r_max": 30, "streams": "task schedule, process noise and rest; r = 0 reproduces the v1 streams bit for bit"},
+    "keys": {"label_error": 41, "cue_jitter": 42, "staggered_driver": 43}
+  },
+  "development": {
+    "used_before_v2": [
+      {"min": 0, "max": 39},
+      {"min": 100, "max": 119},
+      {"min": 200, "max": 279},
+      {"min": 300, "max": 319},
+      {"min": 440, "max": 449},
+      {"min": 500, "max": 803},
+      {"min": 900, "max": 919},
+      {"min": 985, "max": 998}
+    ],
+    "assignments": [
+      {
+        "min": 900, "max": 939,
+        "use": "reference blocks: PC_nominal and the own-lesion witnesses for every family protocol and view",
+        "reuse_allowed": true
+      },
+      {
+        "min": 320, "max": 399,
+        "use": "dry run of every Tier-A design at about 15 % scale",
+        "parts": [
+          {"min": 320, "max": 331, "use": "witnesses"},
+          {"min": 332, "max": 335, "use": "sweeps"},
+          {"min": 336, "max": 339, "use": "factorial"},
+          {"min": 340, "max": 351, "use": "adversaries"},
+          {"min": 352, "max": 371, "use": "RAM-only arm"},
+          {"min": 372, "max": 383, "use": "family C1"},
+          {"min": 384, "max": 399, "use": "forward arms"}
+        ]
+      },
+      {
+        "min": 400, "max": 439,
+        "use": "family-B dry run and IIM calibration cells (null-calibration seed base 400)"
+      },
+      {
+        "min": 804, "max": 819,
+        "use": "Hopf and forward-family-A development at the development regime (lead-field seed 20260928, width 0.5)"
+      },
+      {
+        "min": 820, "max": 824,
+        "use": "development twin networks (r = 1..6)"
+      },
+      {
+        "min": 870, "max": 899,
+        "use": "PDI concordance admission batteries (10 classes x 30 seeds)"
+      },
+      {
+        "min": 940, "max": 979,
+        "use": "spare"
+      },
+      {
+        "min": 980, "max": 984,
+        "use": "smoke tests of held-out conditions",
+        "outputs_discarded_unread": true
+      }
+    ]
+  },
+  "confirmatory": {
+    "assignments": [
+      {"min": 20000, "max": 20039, "use": "manipulation checks; RAM-only arm"},
+      {"min": 20000, "max": 20019, "use": "witnesses, adversaries, held-out conditions"},
+      {"min": 20000, "max": 20044, "use": "PC_nominal and the single deficits (45 seed clusters)"},
+      {"min": 20000, "max": 20009, "use": "sweeps, factorial, twin networks"},
+      {"min": 20000, "max": 20060, "use": "Hopf G = 0 extension; forward family-A null classes"},
+      {"min": 20000, "max": 20149, "use": "Hopf G_nom extension; forward family-A on classes"},
+      {
+        "min": 20000, "max": 20499,
+        "use": "family B",
+        "parts": [
+          {"min": 20000, "max": 20199, "use": "HCv2-2"},
+          {"min": 20240, "max": 20279, "use": "HCv2-12(a)"},
+          {"min": 20280, "max": 20319, "use": "HCv2-11"},
+          {"min": 20320, "max": 20419, "use": "HCv2-13"},
+          {"min": 20420, "max": 20459, "use": "HCv2-12(b)"},
+          {"min": 20460, "max": 20499, "use": "HCv2-12(c, d)"}
+        ]
+      },
+      {"min": 20000, "max": 20000, "use": "null-calibration generator seed base"},
+      {
+        "min": 20900, "max": 20919,
+        "use": "anchor replication blocks",
+        "extendable_to": 20939,
+        "extension_rule": "20900-20939 where the operating-characteristics check shows replication power < 0.9 at 20 seeds"
+      }
+    ]
+  },
+  "lead_field_seeds": {
+    "development_regime": 20260928,
+    "held_out_regime": 20261001,
+    "note": "lead-field seeds are regime parameters of the forward model, not task seeds"
+  },
+  "freeze_tag": "mpcbench-freeze-v2"
+}
