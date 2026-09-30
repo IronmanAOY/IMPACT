@@ -104,7 +104,7 @@ def test_synthetic_dataset_cannot_be_labelled_real(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Package version, code version and checkout resolution (stream I2)
+# Package version, code version and checkout resolution
 # ---------------------------------------------------------------------------
 
 

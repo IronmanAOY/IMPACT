@@ -21,7 +21,7 @@ modules. Module-internal layout (sub-groups from ``np.array_split``):
 ``meta['iim_macro_nodes']`` is the system grain (one macro node per module),
 ``meta['principle_macro_nodes']['IIM']`` the IIM module's own sub-groups.
 
-Graded patchworks (spec v2, V2-4): ``inter_module_coupling = lambda`` in
+Graded patchworks: ``inter_module_coupling = lambda`` in
 [0, 1] adds bidirectional random positive couplings between neighbouring
 modules of the ring RAM - PDI - NAS - IIM - SRPI - RAM, scaled by ``lambda``
 (0 = the disconnected patchwork, 1 = the nominal inter-module gain: the

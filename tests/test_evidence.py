@@ -31,7 +31,7 @@ def _all(estimate=1.0, **kw):
 
 
 # --------------------------------------------------------------------------
-# construct-scale component status (V2-2)
+# construct-scale component status
 # --------------------------------------------------------------------------
 def test_component_assessment_known_answers():
     a = E.component_assessment(_ev("RAM", 1.0, se=0.1))
@@ -532,7 +532,7 @@ def test_mpc_verdict_input_validation():
 
 
 # --------------------------------------------------------------------------
-# protocol (V2-3)
+# protocol
 # --------------------------------------------------------------------------
 def _protocol():
     return E.Protocol(
@@ -582,7 +582,7 @@ def test_protocol_json_round_trip_and_hash(tmp_path):
     assert proto.estimator_options("NAS")["mode"] == "capacity"
     with pytest.raises(Exception):
         proto.alpha = 0.5
-    # read-only all the way down (review of stream E2): nested reference and
+    # read-only all the way down: nested reference and
     # estimator values cannot be changed, so the hash cannot drift
     h = proto.hash
     with pytest.raises(TypeError):
@@ -623,7 +623,7 @@ def test_protocol_from_dict_is_strict():
 
 
 # --------------------------------------------------------------------------
-# applicability registry (V2-5)
+# applicability registry
 # --------------------------------------------------------------------------
 def _entry(**kw):
     entry = {
@@ -880,7 +880,7 @@ def test_verdict_stability():
 
 
 # --------------------------------------------------------------------------
-# single-source constraint: joint dependence (V2-4)
+# single-source constraint: joint dependence
 # --------------------------------------------------------------------------
 def _modules(seed=0, n_time=800, couplings=(0.8, 0.8)):
     """Three 3-node AR(1) modules; module k+1 is driven by module k (lag 1)."""
@@ -924,7 +924,7 @@ def test_joint_dependence_each_criterion_rejects_a_partial_patchwork():
 
 
 def test_joint_dependence_with_too_few_surrogates_is_not_a_finding():
-    """Regression (review of stream E2): with K surrogates the smallest p is
+    """Regression: with K surrogates the smallest p is
     1 / (K + 1); for K < 19 (alpha 0.05) a strongly coupled system (z ~ 40)
     was reported as SOURCE_INCOHERENT as if tested. It is now
     INSUFFICIENT_SURROGATES (still not dependent: the verdict stays
@@ -1035,7 +1035,7 @@ def test_bearer_coherence_edge_cases():
 
 
 # --------------------------------------------------------------------------
-# numerical stability of the degree (review regressions of stream I1)
+# numerical stability of the degree
 # --------------------------------------------------------------------------
 def _log_sum_exp_power_mean(x, w, p):
     x = np.asarray(x, dtype=float)

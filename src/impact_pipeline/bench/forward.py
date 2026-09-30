@@ -1,7 +1,7 @@
 """
-Forward models from simulated sources to EEG-like and BOLD-like observations
-(Paper-1 spec v2, V2-5/V2-6): human EEG/fMRI registry entries require
-validation on forward-modelled synthetic data.
+Forward models from simulated sources to EEG-like and BOLD-like observations:
+human EEG/fMRI entries of the applicability registry require validation on
+forward-modelled synthetic data.
 
 EEG-like (:func:`eeg_forward`)
     ``sensors = L @ sources + EMG + sensor noise``, then average reference and

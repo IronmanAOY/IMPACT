@@ -1,6 +1,6 @@
 """
 MPC-Bench adversarial systems: constructions designed to fool one estimator
-(or one single-marker rule) at a time (Paper-1 spec v2, V2-6).
+(or one single-marker rule) at a time.
 
 Each system is defined by mechanism, documented in ``ADVERSARIAL_CATALOGUE``
 with the estimator it is designed to fool, its intended mechanism pattern

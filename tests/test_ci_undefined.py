@@ -7,7 +7,7 @@ from impact_pipeline import mpc_metrics as mm
 
 
 def test_ci_undefined_when_iim_undefined():
-    # D1: an unmeasurable weighted component makes CI undefined (NaN), never 0.
+    # An unmeasurable weighted component makes CI undefined (NaN), never 0.
     out = mm.compute_CI(
         ram=1.0,
         pdi=1.0,
@@ -53,7 +53,7 @@ def test_ci_is_weighted_geometric_mean_of_reference_normalised_components():
 
 @pytest.mark.parametrize("bad_ref", [0.0, -1.0, float("nan"), float("inf")])
 def test_ci_invalid_reference_is_undefined_without_floor(bad_ref):
-    # D3: no 1e-12 floor and no exception; an unusable reference makes CI undefined.
+    # No 1e-12 floor and no exception; an unusable reference makes CI undefined.
     refs = {"RAM": 1.0, "PDI": 1.0, "NAS": bad_ref, "IIM": 1.0, "SRPI": 1.0}
     out = mm.compute_CI(1.0, 1.0, 1.0, 1.0, 1.0, references=refs, return_details=True)
     assert math.isnan(out["value"])

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Rule audit of MPC-Bench on estimated component statuses (spec v2, V2-6).
+Rule audit of MPC-Bench on estimated component statuses.
 
 Runs bench systems through the public estimators and the evidence layer
 (``impact_pipeline.bench.run_bench``: components, null families, jackknife

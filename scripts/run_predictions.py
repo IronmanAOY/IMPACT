@@ -56,7 +56,7 @@ rule needs ``c_lower > z``, so a calibrated estimator's false-PRESENT rate is
 well below ``alpha``); the rule does not degrade with the number of cells.
 
 H10 (statistic ``selective_exclusion_accuracy_gap``): only exclusion claims
-are scored (V2-1: MPC_CONSISTENT is "not excluded", never an attribution, so
+are scored (MPC_CONSISTENT is "not excluded", never an attribution, so
 MPC_CONSISTENT on a report-negative episode is not an error, and neither
 MPC_CONSISTENT nor UNDETERMINED is a claim). The selective accuracy of a rule
 is the fraction of its exclusion claims (EXCLUDED; comparator ``False``) made
@@ -576,7 +576,7 @@ def _gate_minimum_n(res, n, minimum_n):
     return res
 
 
-# v1 spellings of v2 reason codes (spec V2-4 renamed the bearer-coherence
+# v1 spellings of v2 reason codes (v2 renamed the bearer-coherence
 # failure of the v1 evidence layer to the single-source code).
 REASON_ALIASES = {"SOURCE_INCOHERENT": ("BEARER_MISMATCH:COHERENCE",)}
 

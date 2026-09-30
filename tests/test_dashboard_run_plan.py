@@ -367,7 +367,7 @@ def test_guardrails_block_preprocessing_for_catalog_only_dataset(tmp_path, monke
 
 
 # ---------------------------------------------------------------------------
-# Regression tests for the 2026-09 dashboard remediation (spec D11 / D1).
+# Regression tests: run plans, datasets, mixed-source CI and run control.
 # ---------------------------------------------------------------------------
 
 
@@ -390,7 +390,7 @@ def _state(
 
 
 def test_library_out_dirs_do_not_follow_the_active_dataset(tmp_path, monkeypatch):
-    """Critical finding: activating ds005620 gave ds003171 ds005620's folder."""
+    """Regression: activating ds005620 gave ds003171 ds005620's folder."""
     dash, state = _state(tmp_path, monkeypatch)
     base = (tmp_path / "outputs" / "scratch").resolve()
     r1 = tmp_path / "data" / "scratch" / "ds003171"
@@ -1050,11 +1050,6 @@ def test_powermetrics_feed_falls_back_to_base_cache(tmp_path, monkeypatch):
     feed = state._read_powermetrics_cache()
     assert feed["available"] is True
     assert np.isfinite(feed["cpu_temp_c"])
-
-
-# ---------------------------------------------------------------------------
-# Independent-review regressions (2026-09-28).
-# ---------------------------------------------------------------------------
 
 
 def test_compose_reads_each_runs_effective_folder_not_the_requested_base(

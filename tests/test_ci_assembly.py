@@ -1,4 +1,4 @@
-"""CI assembly: three-valued definedness (D1), no S in CI (D2), explicit reference (D3).
+"""CI assembly: three-valued definedness, no S in CI, explicit reference.
 """
 
 import json

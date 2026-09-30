@@ -1,5 +1,5 @@
 """Null / ground-truth tests for the optional PDI and NAS surrogate calibration
-(remediation spec D7) and for undefined-input handling (NaN, never 0.0)."""
+and for undefined-input handling (NaN, never 0.0)."""
 
 import numpy as np
 import pytest

@@ -1,5 +1,5 @@
 """
-Reference anchor of the MPC-Bench construct scale (spec v2, V2-2).
+Reference anchor of the MPC-Bench construct scale.
 
 The construct scale ``c = (m - nu) / (rho - nu)`` needs a reference anchor
 ``rho`` besides the null anchor ``nu``. The pipeline takes it from the

@@ -24,7 +24,7 @@ a comparator only) works on null-standardised margins
 ``z = (estimate - null_mean) / null_sd``: PRESENT if
 ``z - z_{1-alpha} se > z_present``, ABSENT if
 ``|z| + z_{1-alpha} se <= delta_equiv`` (TOST), else UNDEFINED.
-:func:`rule_impact_c` (v2, spec V2-2) works on the two-anchor construct scale
+:func:`rule_impact_c` (v2 status rule) works on the two-anchor construct scale
 ``c = (m - nu) / (rho - nu)`` with a genuine sampling SE of ``c``: PRESENT if
 the one-sided ``1 - alpha`` lower bound of ``c`` exceeds ``z_j`` (default
 0.25), ABSENT if the upper bound is below ``delta_j`` (default 0.10), else
@@ -50,8 +50,8 @@ MPC_CONSISTENT = "MPC_CONSISTENT"
 EXCLUDED = "EXCLUDED"
 UNDETERMINED = "UNDETERMINED"
 VERDICTS = (MPC_CONSISTENT, EXCLUDED, UNDETERMINED)
-# Construct-scale smallest effects of interest (spec v2, V2-2; initial
-# defaults to be justified by MPC-Bench dose-response).
+# Construct-scale smallest effects of interest (initial defaults to be
+# justified by MPC-Bench dose-response).
 C_PRESENT_DEFAULT = 0.25
 C_ABSENT_DEFAULT = 0.10
 PRESENT, ABSENT, UNDEFINED = "PRESENT", "ABSENT", "UNDEFINED"
@@ -497,14 +497,14 @@ def construct_scale(
     return_df=False,
 ):
     """
-    Two-anchor construct scale ``c = (m - nu) / (rho - nu)`` and its SE
-    (spec v2, V2-2): the sampling SE of ``m``, the Monte-Carlo error of the
+    Two-anchor construct scale ``c = (m - nu) / (rho - nu)`` and its SE:
+    the sampling SE of ``m``, the Monte-Carlo error of the
     null mean ``sigma_null / sqrt(K)`` and (optionally) the SE of the
     reference are propagated through the ratio by the delta method,
     ``se_c^2 = [se_m^2 + (1 - c)^2 se_nu^2 + c^2 se_rho^2] / (rho - nu)^2``.
     Element-wise; ``c`` is NaN (invalid anchors) unless every anchor is
     finite and ``rho > nu``; ``se_c`` is NaN when the sampling SE
-    ``se_estimate`` is missing, non-finite, zero or negative (spec V2-2:
+    ``se_estimate`` is missing, non-finite, zero or negative (reason
     ``NO_SAMPLING_SE``; the Monte-Carlo error of the anchors never stands in
     for it; exact known-TPM values use ``exact=True`` in
     :func:`component_status_c`). Returns ``(c, se_c)``, or ``(c, se_c, df)``
@@ -572,7 +572,7 @@ def component_status_c(
     df=None,
 ) -> np.ndarray:
     """
-    v2 component status on the construct scale (spec V2-2): PRESENT if
+    v2 component status on the construct scale: PRESENT if
     ``c - q se > z_present``, ABSENT if ``c + q se < delta_absent`` (this
     includes estimates credibly *below* the null), else UNDEFINED, with
     ``q = z_{1-alpha}`` or, where ``df`` (degrees of freedom of ``se``, see

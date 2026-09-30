@@ -1,5 +1,5 @@
 """
-TR resolution in fMRI preprocessing (spec D10: no silent TR fallback).
+TR resolution in fMRI preprocessing (no silent TR fallback).
 
 Before the fix an implausible header TR (e.g. 20 s) was silently replaced by
 2.0 s. The TR now comes from measured metadata (BIDS sidecar, then NIfTI

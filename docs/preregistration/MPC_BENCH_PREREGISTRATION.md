@@ -421,3 +421,7 @@ messages were edited on 2026-09-29; both have the same tree).
    (10000-10019). Checked with `impact_pipeline.bench.run_bench.witness_tasks`
    for families A and C (260 tasks each). The design column ("13 per family")
    was already correct.
+
+Note on bracketed codes (added 2026-09-30): codes of the form `V2-x` in
+the frozen text (section 4: "spec V2-5") refer to design notes of the
+1.1.0 development and are not needed to read this document.

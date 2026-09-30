@@ -97,7 +97,7 @@ TRIAL_TYPES = (
 IMPACT_CHANNEL_TASK = "behavioural_feedback"
 IMPACT_CHANNEL_AGENCY = "agency"
 DYNAMICS = ("rate", "stuart_landau")
-# Substrate labels of the applicability registry (spec v2, V2-5).
+# Substrate labels of the applicability registry.
 SUBSTRATE_OF_DYNAMICS = {"rate": "synthetic_rate", "stuart_landau": "stuart_landau"}
 FAMILY_C_DESIGN = 2
 

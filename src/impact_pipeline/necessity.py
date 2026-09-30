@@ -44,7 +44,7 @@ consistency ``sum min(x, y) / sum y``, coverage ``sum min(x, y) / sum x`` and
 relevance of necessity ``RoN = sum (1 - x) / sum (1 - min(x, y))`` (low RoN
 flags a trivially necessary, near-constant condition).
 
-Symmetric three-outcome necessity criteria (spec V2-7): with ``k`` ABSENT
+Symmetric three-outcome necessity criteria: with ``k`` ABSENT
 statuses among ``n`` report-positive episodes and exact one-sided
 Clopper-Pearson bounds at level ``1 - alpha``,
 
@@ -82,7 +82,7 @@ INDETERMINATE = "INDETERMINATE"
 NECESSITY_OUTCOMES = (SUPPORTED, FALSIFIED, INDETERMINATE)
 MISSING_POLICIES = ("determinate", "worst_case")
 
-# v2 verdict names (spec V2-1) and the accepted v1 aliases.
+# v2 verdict names (necessity-only stance) and the accepted v1 aliases.
 EXCLUDED = "EXCLUDED"
 MPC_CONSISTENT = "MPC_CONSISTENT"
 UNDETERMINED = "UNDETERMINED"
@@ -314,7 +314,7 @@ def necessity_outcome_probabilities(
 
 
 # --------------------------------------------------------------------------
-# symmetric three-outcome necessity criteria (V2-7)
+# symmetric three-outcome necessity criteria
 # --------------------------------------------------------------------------
 def symmetric_necessity(
     k_absent,
@@ -444,7 +444,7 @@ def verdict_level_summary(
     missing="determinate",
 ) -> dict:
     """
-    Verdict-level analysis (spec V2-7): EXCLUDED rate among report-positive
+    Verdict-level analysis: EXCLUDED rate among report-positive
     episodes with exact one-sided bounds, and the symmetric decision against
     the margin ``epsilon`` (FALSIFIED if the lower bound exceeds ``epsilon``;
     SUPPORTED if the upper bound is below it; no variation requirement at the
@@ -507,7 +507,7 @@ def coverage_by_necessity_set(statuses: pd.DataFrame, necessity_sets,
                               report_positive=None) -> pd.DataFrame:
     """
     Coverage (fraction of determinate Kleene verdicts) and verdict rates for
-    each necessity set (spec V2-7, "coverage per N"); with ``report_positive``
+    each necessity set ("coverage per N"); with ``report_positive``
     also per report class.
     """
     rows = []

@@ -2,7 +2,7 @@
 Compatibility shim between MPC-Bench and the evidence layer
 (``impact_pipeline.evidence``) across its verdict-name revision.
 
-The necessity-only stance (Paper-1 spec v2, V2-1) renames the verdicts:
+The necessity-only stance renames the verdicts:
 
     ATTRIBUTED      -> MPC_CONSISTENT  (every principle in N is PRESENT: the
                                         MPC stance does not exclude

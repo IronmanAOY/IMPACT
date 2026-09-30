@@ -1,5 +1,5 @@
 """
-Array-module (xp) IIM Psi kernel (stream I2).
+Array-module (xp) IIM Psi kernel.
 
 ``impact_pipeline.iim_xp`` re-implements the phase-1 Psi contribution and the
 cut-Psi evaluation with NumPy/CuPy array operations (vectorised over

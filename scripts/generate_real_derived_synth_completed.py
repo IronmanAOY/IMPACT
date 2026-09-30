@@ -19,7 +19,7 @@ The validation report keeps three things apart:
        (metric table columns and one row per run), BIDS/array consistency,
        non-destructiveness (the objects and shipped reports are unchanged by
        validation), readable validation outputs, documented bounds, and the
-       three-valued definedness contract (spec D1): every metric/CI value is
+       three-valued definedness contract: every metric/CI value is
        either finite or NaN with a recorded reason (``CI_missing`` for CI,
        ``undefined_reason``-style fields for the components). An undefined
        metric with a reason is a valid outcome, not a failure; an undefined
@@ -2635,7 +2635,7 @@ def _undefined_reason(
 
 
 def _ci_status_consistent(rec: dict[str, Any]) -> bool:
-    """CI, CI_defined and CI_missing agree (spec D1).
+    """CI, CI_defined and CI_missing agree (three-valued definedness).
 
     A finite CI has CI_defined true, nothing missing and every component
     defined (an undefined component must never enter CI, e.g. as 0). A NaN CI
@@ -2998,7 +2998,8 @@ def _validate_dataset(
                 undefined_reasons[metric] = _undefined_reason(
                     metric, rec, direct=direct.get(metric), readiness=ready
                 )
-            # Spec D1: finite, or undefined (NaN) with a recorded reason.
+            # Three-valued definedness: finite, or undefined (NaN) with a
+            # recorded reason.
             checks[f"{metric}_finite_or_reasoned"] = bool(
                 np.isfinite(val) or undefined_reasons[metric] is not None
             )
@@ -3074,7 +3075,7 @@ def _validate_dataset(
         "missing_metric_columns": missing_columns,
         "modified_paths": changes,
         "n_rows": len(rows),
-        # Observations, not gates (spec D1: undefined with a reason is valid).
+        # Observations, not gates (undefined with a reason is valid).
         "all_ready": bool(ready_fraction == 1.0),
         "ready_fraction_CI": ready_fraction,
         "metric_definedness": {

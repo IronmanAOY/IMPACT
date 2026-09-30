@@ -270,7 +270,7 @@ def test_minimum_n_for_support():
 
 
 # --------------------------------------------------------------------------
-# symmetric three-outcome criteria (V2-7)
+# symmetric three-outcome criteria
 # --------------------------------------------------------------------------
 def test_symmetric_necessity_known_outcomes():
     s = nc.symmetric_necessity(0, 100, 0.05, k_absent_negative=10, n_negative=50)

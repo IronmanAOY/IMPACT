@@ -1,4 +1,4 @@
-"""Ground-truth and null tests for IIM (remediation spec D6).
+"""Ground-truth and null tests for IIM.
 
 Small systems (2-4 binary nodes) keep the runtime low while exercising the full
 estimator: TPM estimation, mechanism/purview MIP search, system cuts and

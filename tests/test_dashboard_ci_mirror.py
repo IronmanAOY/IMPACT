@@ -1,5 +1,5 @@
 """
-Dashboard parity with the pipeline (stream I3).
+Dashboard parity with the pipeline.
 
 - The mixed-source combined index is assembled by synergy_ci.assemble_ci (no
   NAS*S, no 1e-12 reference floor, NaN semantics) and, because different
@@ -8,7 +8,7 @@ Dashboard parity with the pipeline (stream I3).
 - MPC_verdict / MPC_reason are carried through when the step-2 tables have them.
 - 'aal90' is the 116-label AAL image: shown and requested as 'aal116'.
 - The IIM checkpoint mirrors follow synergy_ci's file naming and compute_IIM's
-  D6 checkpoint signature.
+  checkpoint signature.
 """
 
 import json
@@ -438,7 +438,7 @@ def test_checkpoint_signature_mirror_follows_compute_iim_d6(dash_state, tmp_path
     assert rows[0]["signature_status"] == "current" and rows[0]["resumable"]
     assert rows[0]["sig_tpm_alpha"] == sig["tpm_alpha"]
     assert rows[0]["progress_estimate"] == pytest.approx(1.0)
-    # Written by another algorithm version (or before D6): not resumable, so
+    # Written by another algorithm version (or unversioned): not resumable, so
     # its progress does not count.
     for stale_sig, status in (
         ({**sig, "iim_algorithm_version": "iim-v3-old"}, "stale_algorithm_version"),

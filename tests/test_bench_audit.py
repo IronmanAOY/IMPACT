@@ -239,7 +239,7 @@ def test_benchmark_script_on_existing_results(tmp_path):
 
 
 def test_zero_sampling_se_is_undefined_not_absent():
-    """Spec V2-2 (NO_SAMPLING_SE): a zero, negative or missing sampling SE
+    """NO_SAMPLING_SE: a zero, negative or missing sampling SE
     leaves the component UNDEFINED; the Monte-Carlo error of the null mean
     and the reference SE never stand in for it (a clipped estimate at 0 with
     identical jackknife replicates is not credibly absent)."""

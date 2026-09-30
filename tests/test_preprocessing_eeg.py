@@ -1,5 +1,5 @@
 """
-EEG preprocessing (spec D10): non-EEG channels are excluded by type, BIDS run
+EEG preprocessing: non-EEG channels are excluded by type, BIDS run
 numbers are kept, and rest/baseline segments are written when the dataset has
 them so the strict PDI anchor can be defined (otherwise it stays undefined
 with a reason).

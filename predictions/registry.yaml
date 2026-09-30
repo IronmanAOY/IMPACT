@@ -6,12 +6,12 @@
 # draft, and never lets data with prior access contribute to a confirmatory
 # outcome.
 #
-# Stance (spec V2-1): necessary conditions license only exclusion. EXCLUDED means
+# Stance: necessary conditions license only exclusion. EXCLUDED means
 # some principle of the necessity set is credibly ABSENT; MPC_CONSISTENT means
 # consciousness is not excluded by the MPC stance (no attribution);
 # UNDETERMINED otherwise. v1 names (ATTRIBUTED / NOT_ATTRIBUTED) are accepted and
 # mapped. H2 (aggregation exponent) is auxiliary and never counts for or against
-# the stance (V2-7).
+# the stance.
 #
 # Decision rules (impact_pipeline.necessity; one-sided exact Clopper-Pearson
 # bounds at level 1 - alpha):
@@ -60,7 +60,7 @@
 #
 # Before the freeze: fill the protocol hash (evidence.Protocol JSON of the frozen
 # protocol), register the estimator versions validated in the applicability
-# registry (V2-5), drop the pre-release suffix of registry_version, set
+# registry, drop the pre-release suffix of registry_version, set
 # status: frozen and freeze_tag, and commit the tag.
 #
 # 0.3.0-draft (2026-09-29, after the tag mpcbench-freeze-v1): IIM entry named as
@@ -80,8 +80,8 @@ description: >-
   (H3-H7), the single-source constraint (H8), coverage (H9) and selective accuracy
   against comparators (H10).
 spec_refs:
-  - "PAPER1_SCIENCE_SPEC (2026-09-28)"
-  - "PAPER1_SCIENCE_SPEC v2 addendum V2-1 to V2-7 (2026-09-28)"
+  - "IMPaCT 1.1.0 design specification (2026-09-28)"
+  - "IMPaCT 1.1.0 design specification, v2 addendum (2026-09-28)"
 
 verdict_names:
   excluded: EXCLUDED
@@ -127,7 +127,7 @@ protocols:
       Neither occurred, so the values were kept. Whether this justification
       transfers to human recordings, where the cutoffs are fractions of an awake
       excess, is checked on forward-modelled dose-response curves (applicability
-      registry, V2-5). The cohort_high_state reference is circular
+      registry). The cohort_high_state reference is circular
       for high-state (report-positive) episodes, whose c averages 1 by construction:
       the confirmatory necessity tests (H1, H3-H7) need a protocol with an external
       reference before the freeze.
@@ -152,7 +152,7 @@ estimators:
     note: >-
       Unlabelled repertoire of distinguishable states (bits over its state-count
       null). surrogate_excess is a documented negative result and is not
-      registered. Human EEG/fMRI entries need forward-model validation (V2-5).
+      registered. Human EEG/fMRI entries need forward-model validation.
   - principle: NAS
     estimator: "compute_NAS:capacity"
     version: null
@@ -185,17 +185,17 @@ datasets:
     prior_access: exploratory_calibration
     role: exploratory
     modality: fmri
-    note: Analysed during development; exploratory / calibration only (V2-7).
+    note: Analysed during development; exploratory / calibration only.
   - id: ds005620
     prior_access: exploratory_calibration
     role: exploratory
     modality: eeg
-    note: Analysed during development; exploratory / calibration only (V2-7).
+    note: Analysed during development; exploratory / calibration only.
   - id: ds006623
     prior_access: exploratory_calibration
     role: exploratory
     modality: fmri
-    note: Analysed during development; exploratory / calibration only (V2-7).
+    note: Analysed during development; exploratory / calibration only.
   - id: ds002547
     prior_access: metadata_only
     role: exploratory
@@ -247,8 +247,9 @@ hypotheses:
       Not a power computation for the pooled rule.
     prediction: >-
       The false-PRESENT rate on the declared null families is at most alpha + 0.02
-      (V2-5 entry criterion a, one-sided): no cell credibly above it (family-wise)
-      and every principle's pooled rate credibly below it.
+      (entry criterion (a) of the applicability registry, one-sided): no cell
+      credibly above it (family-wise) and every principle's pooled rate
+      credibly below it.
     note: >-
       Evaluated on scripts/null_calibration.py output (--null-calibration; v2
       evidence rule under the bench protocol, jackknife SEs); NOT_EVALUABLE when a
@@ -402,7 +403,8 @@ hypotheses:
     minimum_n_source: same value as H3-H7; no power computation for this statistic yet
     note: >-
       Joint dependence of the component node sets above the between-set null
-      (V2-4); SOURCE_INCOHERENT is read from the MPC_reason column.
+      (single-source constraint); SOURCE_INCOHERENT is read from the MPC_reason
+      column.
 
   - id: H9
     title: The verdict is determinate for at least half of the episodes (coverage)
@@ -432,7 +434,7 @@ hypotheses:
     minimum_n: 155
     minimum_n_source: same value as H3-H7; no power computation for this statistic yet
     note: >-
-      Only exclusion claims are scored (V2-1): an EXCLUDED verdict (comparator
+      Only exclusion claims are scored: an EXCLUDED verdict (comparator
       False) is correct on a report-negative and an error on a report-positive
       episode; MPC_CONSISTENT ("not excluded", never an attribution) and
       UNDETERMINED make no claim, so MPC_CONSISTENT on a report-negative episode

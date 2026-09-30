@@ -184,7 +184,7 @@ def test_cross_origin_and_non_json_posts_are_rejected(server):
         extra={"Origin": f"http://127.0.0.1:{port}"},
     )
     assert status == 200
-    # The original finding: a text/plain "simple" POST was parsed and executed.
+    # The original bug: a text/plain "simple" POST was parsed and executed.
     status, _, _ = _request(
         server,
         "POST",

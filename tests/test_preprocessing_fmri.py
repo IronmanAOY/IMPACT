@@ -1,5 +1,5 @@
 """
-ds003171 task handling (spec D10) and atlas naming.
+ds003171 task handling and atlas naming.
 
 sub-10JR's awake audio run is labelled task-audio. Before the fix fMRI
 preprocessing silently skipped it (and every 'light' run), so run-spec
@@ -247,7 +247,7 @@ class _Header:
 
 
 def test_mean_fd_is_written_per_run_not_overwritten_per_folder(tmp_path, monkeypatch):
-    """Two runs of one condition folder: each keeps its own FD (deferred D10 fix)."""
+    """Two runs of one condition folder: each keeps its own FD."""
     from impact_pipeline.motion_model import _weighted_session_fd
 
     deriv = tmp_path / "fmriprep"

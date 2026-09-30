@@ -24,7 +24,7 @@ the run is resumable and skips completed task ids), ``iim_validation.csv``
 ``iim_z``, ``coupling``), ``iim_validation_exact.csv`` and
 ``iim_validation.json`` (parameters, provenance).
 
-Seed policy (spec v2, V2-6): development seeds 0-999; confirmatory seeds
+Seed policy: development seeds 0-999; confirmatory seeds
 >= 10000 only with ``--confirmatory`` and the code-freeze tag
 (``--freeze-tag``, checked by ``bench.run_bench.confirmatory_guard``).
 

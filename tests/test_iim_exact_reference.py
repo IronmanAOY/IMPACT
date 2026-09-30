@@ -1,5 +1,5 @@
 """
-Independent brute-force reference for the exact IIM (review of stream I2).
+Independent brute-force reference for the exact IIM.
 
 ``compute_IIM_from_tpm`` and both Psi kernels (numba host kernel, array-module
 xp kernel) are checked against a direct transcription of the definitions,

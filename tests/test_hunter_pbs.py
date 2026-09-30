@@ -1,5 +1,5 @@
 """
-PBS Pro backend for HLRS Hunter (spec D9).
+PBS Pro backend for HLRS Hunter.
 
 Covers generated *.pbs content (directives, arrays, dependencies), packing
 math (4 shards per mi300a node via PALS PMI_LOCAL_RANK), single-task jobs

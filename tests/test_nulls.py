@@ -384,7 +384,7 @@ def test_block_bootstrap_keeps_bundle_lists_aligned():
     ],
 )
 def test_block_bootstrap_keeps_the_sample_of_off_grid_onsets(tr, offset):
-    """Regression (review of stream E2): events are assigned to blocks by
+    """Regression: events are assigned to blocks by
     their nearest sample ``rint(onset / tr)``, the mapping of the estimators,
     and keep it. With a continuous-time assignment an onset in the last half
     sample of a block (or, with round-half-to-even, any half-sample onset

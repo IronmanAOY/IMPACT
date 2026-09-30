@@ -126,7 +126,7 @@ kept for pipeline compatibility.
 things separate.
 
 1. **Smoke test (`smoke_test_passed`).** This is the only pass gate. It
-   follows the three-valued definedness contract (remediation spec D1): a
+   follows the three-valued definedness contract: a
    metric that cannot be measured is undefined (NaN) with a recorded reason,
    never 0, and that is a valid outcome. The gate checks, per run:
    - the task and rest arrays exist, load, are finite and have no
@@ -176,7 +176,8 @@ things separate.
    passes the gate; read `undefined_metrics` to see how much of the metric
    code these objects actually exercised. Up to generator 2.1.0 the gate
    required every metric and CI to be defined and readiness to be 1.0,
-   which contradicted D1 and failed on correctly undefined values.
+   which contradicted that contract and failed on correctly undefined
+   values.
 2. **Generator self-check (`planted_structure_verified`).** It uses simple
    statistics computed without the metric code: participation ratio, directed
    module coupling, directed workspace broadcast, evoked projection and

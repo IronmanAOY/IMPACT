@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Power of the symmetric three-outcome necessity criteria (spec V2-7).
+Power of the symmetric three-outcome necessity criteria.
 
 For one principle and ``n`` determinate report-positive episodes the ABSENT
 count is ``Bin(n, q_pos)`` with (``impact_pipeline.necessity``)

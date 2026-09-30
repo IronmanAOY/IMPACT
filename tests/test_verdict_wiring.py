@@ -683,7 +683,7 @@ def test_applicability_registry_is_applied(tmp_path):
                    necessity_set=("IIM",)).iloc[0]
         assert row["MPC_reason"] == (
             f"ESTIMATOR_NOT_VALIDATED:IIM:compute_IIM:bidirectional@{VERSIONS['IIM']}")
-    # Regression (review of stream E2): with iim_max_timepoints IIM scores a
+    # Regression: with iim_max_timepoints IIM scores a
     # subsampled series (here 240 samples at 2 * TR), and that is the regime
     # the registry checks, not the 480-sample run at TR
     for regime, ok in (({"T_min": 400}, False), ({"T_min": 240}, True),
@@ -735,7 +735,7 @@ def test_precomputed_iim_without_null_fields_is_not_calibrated(tmp_path):
 
 
 def test_precomputed_iim_with_other_options_is_not_judged(tmp_path):
-    """Regression (review of stream E2): a precomputed (Hunter) IIM result is
+    """Regression: a precomputed (Hunter) IIM result is
     computed without the protocol's IIM options; a result whose recorded
     cut mode or bearer differs from the declared ones is undefined
     (iim_option_mismatch), never judged under the protocol."""
@@ -776,7 +776,7 @@ def test_precomputed_iim_with_other_options_is_not_judged(tmp_path):
 
 
 def test_bootstrap_se_needs_a_majority_of_valid_replicates():
-    """Regression (review of stream E2): an SE from the few replicates on
+    """Regression: an SE from the few replicates on
     which the estimator is defined is withheld (NO_SAMPLING_SE) when most
     replicates fail; the failures are reported in <P>_boot_failed."""
     x = np.random.default_rng(0).standard_normal((2, 400))
@@ -817,7 +817,7 @@ def test_bootstrap_se_needs_a_majority_of_valid_replicates():
 
 
 def test_margin_column_describes_the_deciding_channel():
-    """Regression (review of stream E2): <P>_margin is the presence margin of
+    """Regression: <P>_margin is the presence margin of
     the channel that decides the principle (the channel <P>_c and
     <P>_c_lower describe), not the largest margin over the channels."""
     proto = E.Protocol(necessity_set=("RAM",),

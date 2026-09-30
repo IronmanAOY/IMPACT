@@ -47,7 +47,7 @@ rates with Wilson intervals, the mean and SD of ``c``, the rate of null-SD
 margins above ``z_{1-alpha}`` and the false-PRESENT rate expected for an
 exchangeable Gaussian null under the v1 rule with ``K`` surrogates
 (``P(sqrt(1 + 1/K) t_{K-1} > z_present)``; v1 diagnostics), and the entry
-check of spec V2-5 (a): rate at most ``alpha + 0.02`` (one-sided, the
+check (a) of the applicability registry: rate at most ``alpha + 0.02`` (one-sided, the
 registry default; a calibrated v2 rule has a false-PRESENT rate far below
 ``alpha``) and within ``alpha +- 0.02``. Verdict-level: the rate of
 MPC_CONSISTENT (and EXCLUDED) verdicts on the null systems over the
@@ -560,8 +560,8 @@ def summarise(rep: pd.DataFrame, alpha=0.05, z_present=1.645) -> tuple:
 
 def seed_policy(seed, confirmatory=False, freeze_tag=None):
     """
-    Development / confirmatory split of the replicate seed base (spec v2,
-    V2-6): development calibrations use a base in 0-999; a confirmatory
+    Development / confirmatory split of the replicate seed base:
+    development calibrations use a base in 0-999; a confirmatory
     calibration uses a base >= 10000 and runs only on the frozen code
     (``bench.run_bench.confirmatory_guard`` with the freeze tag). Returns the
     code identity (the guard's record for a confirmatory run, else None).

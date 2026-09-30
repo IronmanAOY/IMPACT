@@ -13,7 +13,7 @@ observed as sources, EEG-like and BOLD-like signals), ``manipulation``
 with ``--n-shards`` / ``--shard-index`` a run is split deterministically
 (``--pbs-template`` writes a PBS Pro array script for HLRS Hunter).
 
-Development / confirmatory split (spec v2, V2-6): development runs use seeds
+Development / confirmatory split: development runs use seeds
 0-999 and families A/B (factorial, sweeps, witnesses, rate patchworks);
 seeds >= 10000, family C (incl. its patchwork), the whole-brain generator and
 the adversarial set are confirmatory and run only with ``--confirmatory``,
@@ -126,7 +126,7 @@ def is_held_out(task: BenchTask) -> bool:
 
 
 def split_of(task: BenchTask) -> str:
-    """'confirmatory' or 'development' (spec v2, V2-6)."""
+    """'confirmatory' or 'development'."""
     held = is_held_out(task) or seed_set(task.seed) == "confirmatory"
     return "confirmatory" if held else "development"
 

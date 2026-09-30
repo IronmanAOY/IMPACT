@@ -86,7 +86,7 @@ BENCH_ESTIMATOR_PARAMS = {
     },
 }
 
-# Optional construct revisions (added by other streams). They are used when the
+# Optional construct revisions (opt-in estimator modes). They are used when the
 # installed estimator accepts them and recorded in ``estimator_modes``. PDI is
 # the repertoire of distinguishable states (``mode='repertoire'``, unlabelled:
 # the generators' context states are hidden oracle channels, never labels);
@@ -664,7 +664,7 @@ def _event_null(principle, fn, ts, events, n, seed, dt):
     kind = EVENT_NULL_KINDS[principle]
     kwargs = _event_null_kwargs(principle, ts.shape[1], dt)
     try:
-        from impact_pipeline import nulls  # optional (stream I1)
+        from impact_pipeline import nulls  # optional module
     except ImportError:
         nulls = None
     if nulls is not None:

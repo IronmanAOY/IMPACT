@@ -1,5 +1,5 @@
 """
-Hunter IIM surrogate calibration, provenance and device Psi kernel (stream I2).
+Hunter IIM surrogate calibration, provenance and device Psi kernel.
 
 The Hunter campaign turns compute_IIM's surrogate-null calibration into extra
 campaign runs (K circular-shift surrogates per real run, seeded and recorded).

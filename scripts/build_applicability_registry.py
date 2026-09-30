@@ -6,7 +6,7 @@ The registry (``evidence.ApplicabilityRegistry``, schema
 ``impact-mpc-registry/2``) lists the estimator versions validated for a
 principle on a substrate, grain and regime. This script applies the entry
 criteria preregistered in ``docs/preregistration/MPC_BENCH_PREREGISTRATION.md``
-(section 4; spec V2-5 as operationalised by
+(section 4, as operationalised by
 ``scripts/calibrate_bench.py::entry_criteria``) to the confirmatory runs made
 on the frozen code (tag ``mpcbench-freeze-v1``), unchanged:
 

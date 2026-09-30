@@ -46,7 +46,7 @@ the estimators run.
 Statuses: ``DEFINABLE``, ``REQUIRES_EVENT_VALUES``, ``NOT_DEFINABLE``,
 ``NOT_IMPLEMENTED``, ``METADATA_UNAVAILABLE``.
 
-Prior-access levels (spec V2-7): ds003171, ds005620 and ds006623 have been
+Prior-access levels: ds003171, ds005620 and ds006623 have been
 analysed with the author's code and are exploratory / calibration only; the
 other datasets are recorded as ``metadata_only`` (this audit read metadata;
 confirmatory eligibility additionally requires a declaration that no time

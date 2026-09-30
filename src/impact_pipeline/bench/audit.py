@@ -1,5 +1,5 @@
 """
-MPC-Bench rule audit on **estimated** component statuses (spec v2, V2-6).
+MPC-Bench rule audit on **estimated** component statuses.
 
 Input: bench records (``run_bench`` JSONL: per system the estimated
 components with their null families and jackknife SEs, markers, the exact
@@ -9,7 +9,7 @@ the rules.
 
 Pipeline (:func:`audit`)
 ------------------------
-1. Construct scale (V2-2): ``c = (m - nu) / (rho - nu)`` with ``nu`` the
+1. Construct scale: ``c = (m - nu) / (rho - nu)`` with ``nu`` the
    system's own null mean and ``rho`` the reference anchor (mean estimate of
    the reference systems: design positive controls of the *training* fold),
    ``se_c`` from the jackknife SE of ``m``, the Monte-Carlo error of ``nu``
@@ -318,7 +318,7 @@ def _evidence_layer_verdicts(arrs, c_missing, rho, se_rho, necessity_set):
         try:
             v = compat.call_mpc_verdict(ev, items, necessity_set=necessity_set)
             out[i] = compat.verdict_name(getattr(v, "verdict", None))
-        except Exception:  # pragma: no cover - depends on the other stream's API
+        except Exception:  # pragma: no cover - depends on the evidence layer's API
             out[i] = R.UNDETERMINED
     return out
 

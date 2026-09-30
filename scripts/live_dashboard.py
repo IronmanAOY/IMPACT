@@ -133,13 +133,13 @@ HISTORY_MIN_INTERVAL_S = 1.0
 ADOPTED_EXIT_UNKNOWN = -999
 _IS_WINDOWS = os.name == "nt"
 MIXED_CI_COMPONENTS = ("RAM", "PDI", "NAS", "IIM", "SRPI")
-# Cohort high-state condition used as the default CI reference (D3).
+# Cohort high-state condition used as the default CI reference.
 MIXED_CI_HIGH_STATE_SESSION = "awake"
 # MPC verdict columns written by synergy_ci (carried through when present).
 MPC_VERDICT_COLUMNS = ("MPC_verdict", "MPC_reason")
-# Stable verdict/reason codes of impact_pipeline.evidence (paper-1 spec v2:
-# the verdict is an exclusion rule; MPC_CONSISTENT means "not excluded", never
-# an attribution of consciousness).
+# Stable verdict/reason codes of impact_pipeline.evidence (the verdict is an
+# exclusion rule; MPC_CONSISTENT means "not excluded", never an attribution
+# of consciousness).
 MPC_EXCLUDED = "EXCLUDED"
 MPC_CONSISTENT = "MPC_CONSISTENT"
 MPC_UNDETERMINED = "UNDETERMINED"
@@ -158,7 +158,7 @@ MIXED_CI_EXPLORATORY_NOTE = (
     "or MPC verdict for any bearer, and its MPC verdict is UNDETERMINED "
     "(BEARER_MISMATCH)."
 )
-# Fields of compute_IIM's checkpoint signature (spec D6, mpc_metrics) shown per
+# Fields of compute_IIM's checkpoint signature (mpc_metrics) shown per
 # checkpoint. compute_IIM resumes a checkpoint only when the whole signature
 # matches; one written by another IIM algorithm version restarts from scratch,
 # so its progress does not count for the running code.
@@ -5692,7 +5692,7 @@ def _checkpoint_filename_for_ts(
     (which uses os.path.abspath, so symlinks are not resolved here either).
 
     The file name only locates a run's checkpoint. Whether compute_IIM resumes
-    it is decided by the signature stored inside (spec D6: algorithm version,
+    it is decided by the signature stored inside (algorithm version,
     TPM estimator/alpha, state budget, bins, lag, nodes, cut family, data
     hash); see _checkpoint_signature_status.
     """
@@ -5717,7 +5717,7 @@ def _checkpoint_signature_status(signature: Any) -> str:
     """
     'current' when the checkpoint was written by the running IIM algorithm
     version (compute_IIM can resume it), 'stale_algorithm_version' when it was
-    written by another version, 'legacy_unversioned' for pre-D6 checkpoints
+    written by another version, 'legacy_unversioned' for older checkpoints
     without a version. Only 'current' checkpoints are resumed.
     """
     sig = signature if isinstance(signature, dict) else {}
@@ -9051,7 +9051,7 @@ class DashboardState:
           (identity by default; manual entries are user assertions); rows are
           joined on (subject, session), never by list position.
         - CI is assembled by ``impact_pipeline.synergy_ci.assemble_ci``, the
-          pipeline's own rules (spec D1-D3): NAS enters directly (no
+          pipeline's own rules: NAS enters directly (no
           HypergraphSynergy multiplier); references are the cohort high-state
           (awake) means unless an external ``ci_reference_means`` mapping is
           supplied; a non-finite or <= 0 reference makes CI undefined (no

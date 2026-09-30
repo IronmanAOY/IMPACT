@@ -313,6 +313,9 @@ decision rules are unchanged. Each change has a regression test.
   2026-09-29 without any file change: the freeze commit `f2cf249` was
   `b908ee3` before, and both have the tree `72fcc70`. The README also names
   the second frozen protocol correctly (`mpc_bench_v1_anchored.json`).
+- Comments, docstrings, tests and documents no longer refer to internal
+  design-note codes; the frozen modules changed in comments and docstrings
+  only.
 
 ### Added
 
@@ -510,17 +513,17 @@ decision rules are unchanged. Each change has a regression test.
   returns the DataFrame; the evidence reference comes from the protocol only
   (`--ci-reference` affects the legacy CI); a tie in `verdict_stability` gives
   `UNDETERMINED`.
-- **Three-valued CI (D1).** An undefined component is NaN, never 0; CI is NaN
+- **Three-valued CI.** An undefined component is NaN, never 0; CI is NaN
   when a weighted component or its reference is unusable, with `CI_defined`,
   `CI_missing` and `CI_reference` columns; statistics exclude undefined rows and
   report how many.
-- **CI uses NAS directly (D2).** The HypergraphSynergy multiplier was removed, so
+- **CI uses NAS directly.** The HypergraphSynergy multiplier was removed, so
   CI no longer depends on theta. S is reported separately, at every theta with
   Holm correction.
-- **Reference-normalised CI (D3)** instead of "human-normalised": default
+- **Reference-normalised CI** instead of "human-normalised": default
   reference = cohort high-state (awake) means, or an external JSON; no 1e-12
   floor.
-- **RAM (D4).** Canonical HRF evaluated analytically on the true time axis (peak
+- **RAM.** Canonical HRF evaluated analytically on the true time axis (peak
   about 5 s instead of about 252 s); goal and feedback events are nuisance
   regressors of the magnitude GLM; FIR/xcorr latencies without clipping to 0 and
   undefined at the search edge; G is a cross-validated ridge-CCA held-out
@@ -528,33 +531,33 @@ decision rules are unchanged. Each change has a regression test.
   chance-corrected; feedback values stay aligned with their events; strict
   goal/feedback contract (undefined instead of proxies); undefined on
   rank-deficient designs and non-finite input; EEG uses its own preset.
-- **SRPI (D5).** Pre-event window strictly before onset; separability is the
+- **SRPI.** Pre-event window strictly before onset; separability is the
   cross-validated shrinkage-LDA AUC, `[2(AUC - 0.5)]_+`, instead of an in-sample
   distance that saturated; `min_events_per_class` must be at least 3.
-- **IIM (D6).** Default TPM estimator `node_shrinkage` (state-by-node,
+- **IIM.** Default TPM estimator `node_shrinkage` (state-by-node,
   James-Stein shrinkage) instead of the joint Laplace estimate, which inflated
   Ψ for noise (about 17-fold); the MIP search evaluates both mechanism/purview
   pairings; checkpoint and cache signatures include every result-changing
   parameter and `IIM_ALGORITHM_VERSION = "iim-v4-2026.09"`; node selection and
   bin/node budget are explicit and logged.
-- **PDI/NAS (D7).** Undefined inputs return NaN with a reason instead of 0.0.
-- **Statistics (D8).** Fast DeLong with the covariance term; two-sided, seeded
+- **PDI/NAS.** Undefined inputs return NaN with a reason instead of 0.0.
+- **Statistics.** Fast DeLong with the covariance term; two-sided, seeded
   permutation tests with within-subject swaps; subject-level bootstrap; Holm
   correction across families; all statistics written to `<out>/stats/`;
   discriminability contrast in model comparison; motion FD weighted per run.
-- **Preprocessing (D10).** No silent TR fallback (error unless `--assume-tr`);
+- **Preprocessing.** No silent TR fallback (error unless `--assume-tr`);
   ds003171 `task-audio` (sub-10JR) and `light` sessions handled explicitly;
   EEG excludes EOG/EMG/ECG/misc channels and writes rest baselines for PDI; the
   AAL atlas is AAL-116 (`aal90` accepted as a legacy key); atlas root from
   `IMPACT_ATLAS_DIR` or the repository; fMRIPrep derivatives at
   `<bids-root>/derivatives/fmriprep`.
-- **Dashboard (D11).** Loopback bind by default, Host/Origin checks, CSRF token,
+- **Dashboard.** Loopback bind by default, Host/Origin checks, CSRF token,
   escaped output, validated dataset IDs, no argv flag injection; mixed-source CI
   is labelled exploratory with an `UNDETERMINED` (`BEARER_MISMATCH`) verdict.
 - **Synthetic smoke-test generator** (2.2.0): honest reporting (smoke gate
   separate from known-answer observations), planted structure recorded, relative
-  paths, `--validate-only` on relocated archives; the smoke gate follows D1 (a
-  NaN value with a recorded reason passes).
+  paths, `--validate-only` on relocated archives; the smoke gate follows the
+  three-valued rule (a NaN value with a recorded reason passes).
 - With `--null-surrogates K > 0` the metric columns hold calibrated values
   (excess over the null mean, floored at 0) and CI uses them.
 - Hardware: the accelerator `eigh` is used only after a NumPy parity check,

@@ -125,12 +125,12 @@ def entry_criteria(
     anchor_summary, null_rates, slopes, protocol, contrasts=None, off_rates=None
 ) -> pd.DataFrame:
     """
-    Development entry criteria per principle (spec v2, V2-5, operationalised
-    here): (0) a valid reference anchor; (a) false-PRESENT rate <= alpha +
-    0.02 on every development statistical null class; (b) recovery of the
-    own knob: (b1) Spearman rho of ``c`` with the dose > 0 at p < alpha
-    (sweeps) and (b2) off-dose specificity: PRESENT rate <= alpha + 0.02 on
-    the systems without the mechanism (:func:`off_dose_rates`); (c)
+    Development entry criteria per principle (preregistration section 4,
+    operationalised here): (0) a valid reference anchor; (a) false-PRESENT
+    rate <= alpha + 0.02 on every development statistical null class; (b)
+    recovery of the own knob: (b1) Spearman rho of ``c`` with the dose > 0
+    at p < alpha (sweeps) and (b2) off-dose specificity: PRESENT rate <=
+    alpha + 0.02 on the systems without the mechanism (:func:`off_dose_rates`); (c)
     acceptable cross-talk: in the paired witness contrasts the own switch
     changes ``c`` more (median absolute change) than any other switch,
     declared structural dependencies excluded. ``validated`` = all of them.

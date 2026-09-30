@@ -623,7 +623,7 @@ def test_preregistration_errata_is_documentation_only():
 
 
 # ---------------------------------------------------------------------------
-# Review follow-ups
+# Walltime syntax, invalid sizes, malformed timings, build commands, errata
 # ---------------------------------------------------------------------------
 
 

@@ -33,7 +33,7 @@ section 4.
 ## Cutoffs and alpha (all protocols)
 
 `(z, delta) = (0.25, 0.10)` for every principle and `alpha = 0.05`
-(one-sided), unchanged from the initial defaults of spec V2-2 because the
+(one-sided), unchanged from their initial defaults because the
 development runs met the preregistered conditions for keeping them: no
 false PRESENT of an anchored principle on the development null systems and
 no false ABSENT anywhere (see the preregistration for the rates). `z` is the
@@ -118,7 +118,7 @@ preregistered stance above and was undone (see the
   declared channel is ABSENT (strong-Kleene OR), so under this protocol RAM
   can be PRESENT (through `default`) but never ABSENT: an unresponsive
   behavioural record cannot exclude consciousness while perturbational and
-  endogenous responsiveness are unmeasured (spec V2-3). This stance was
+  endogenous responsiveness are unmeasured. This stance was
   confirmed at the freeze: behavioural non-response does not establish the
   absence of responsiveness and adaptation (covert responsiveness,
   dreaming, paralysis), so a necessity-only rule must not exclude on it.

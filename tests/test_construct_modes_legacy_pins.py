@@ -1,10 +1,11 @@
 """
-Legacy defaults of RAM/PDI/NAS/SRPI pinned to the pre-B1 code.
+Legacy defaults of RAM/PDI/NAS/SRPI pinned to the code before the construct
+revisions.
 
-The construct revisions (stream B1) add opt-in modes and keywords; every
+The construct revisions add opt-in modes and keywords; every
 default must keep the old behaviour. Comparing ``mode='legacy'`` with the
 default inside the same code base cannot detect a changed default, so these
-values were produced by the code at commit 0d0e441 (before the B1 change) on
+values were produced by the code at commit 0d0e441 (before those revisions) on
 the inputs below and are pinned here.
 """
 

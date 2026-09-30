@@ -1,5 +1,5 @@
 """
-Accelerator eigh fallback/parity (spec D9) and the hardware self-test.
+Accelerator eigh fallback/parity and the hardware self-test.
 
 CuPy documents cupy.linalg.eigh as unsupported on ROCm and HPE warns about
 wrong rocBLAS results on ROCm 6.4.0/6.4.1, so the device eigh path must be

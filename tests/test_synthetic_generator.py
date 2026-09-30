@@ -547,7 +547,7 @@ def test_validate_only_on_relocated_copy_is_nondestructive(
             "readiness_reasons_recorded",
         ):
             assert row["checks"][name], (row["session"], name)
-        # Spec D1: every value is finite or NaN with a recorded reason. The
+        # Every value is finite or NaN with a recorded reason. The
         # 24 s EEG runs hold 3 trials, so RAM is undefined (<6 goal pairs) and
         # CI with it; that is a valid, explained outcome, not a failure.
         for metric in gen.KNOWN_ANSWER_METRICS:
@@ -650,7 +650,7 @@ def _revalidate_1010(gen, synth: Path, out: Path) -> tuple[int, dict]:
 def test_smoke_gate_fails_when_an_undefined_value_has_no_reason(
     gen, generated, tmp_path, monkeypatch
 ):
-    """NaN is valid only with a recorded reason (spec D1)."""
+    """NaN is valid only with a recorded reason."""
     real = gen.compute_synergy_ci
 
     def reasonless(*args, **kwargs):
@@ -769,7 +769,7 @@ def test_undefined_reason_sources_and_ci_status_known_answers(gen):
     ok_defined = {**comps, "CI": 0.7, "CI_defined": True, "CI_missing": nan}
     assert gen._ci_status_consistent(ok_defined)
     assert not gen._ci_status_consistent({**ok_defined, "CI_defined": False})
-    # D1: an undefined component never enters a finite CI (e.g. as 0).
+    # An undefined component never enters a finite CI (e.g. as 0).
     assert not gen._ci_status_consistent({**ok_defined, "SRPI": nan})
     assert not gen._ci_status_consistent({**ok_defined, "IIM_defined": False})
     undefined = {

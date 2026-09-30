@@ -1,5 +1,5 @@
 """
-Exact IIM on known TPMs (stream I2): compute_IIM_from_tpm, directional cuts,
+Exact IIM on known TPMs: compute_IIM_from_tpm, directional cuts,
 the per-unit TPM estimator and bearer-restricted subsystems.
 
 Known-answer systems are parallel-update kinetic Ising networks
