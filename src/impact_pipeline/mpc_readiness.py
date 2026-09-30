@@ -31,6 +31,10 @@ from impact_pipeline.event_parsing import (
 # Reason of NAS_reason when NAS mode='capacity' has no declared hub; the same
 # detail code as the evidence layer (UNDEFINED:NAS:NO_DECLARED_WORKSPACE).
 NAS_NO_DECLARED_WORKSPACE = "NO_DECLARED_WORKSPACE"
+# Reason of NAS_reason when the declared hub does not fit the recording (an
+# index outside its node count, or a mask of another length): compute_NAS
+# refuses such a hub (ValueError), so the run cannot define NAS.
+NAS_INVALID_WORKSPACE = "INVALID_WORKSPACE"
 # The empirical default protocol of run_pipeline.py in a source checkout (the
 # command-line default here as well).
 DEFAULT_EMPIRICAL_PROTOCOL = (
@@ -172,11 +176,13 @@ def _nas_setup(protocol, nas_params) -> Dict[str, object]:
     NAS mode and hub under the run's protocol and ``nas_params``, decided as
     ``compute_synergy_ci`` decides them: NAS ``mode='capacity'`` without a
     declared hub (``workspace_nodes``) is UNDEFINED in every run
-    (``NO_DECLARED_WORKSPACE``), so no run is NAS-ready.
+    (``NO_DECLARED_WORKSPACE``), so no run is NAS-ready. ``nas_hub`` is the
+    declared hub under NAS capacity (else None), checked per recording.
     """
     if protocol is None and not nas_params:
         return {"protocol_hash": None, "nas_mode": "legacy",
-                "nas_hub_declared": None, "nas_hub_missing": False}
+                "nas_hub_declared": None, "nas_hub_missing": False,
+                "nas_hub": None}
     from impact_pipeline import evidence
     from impact_pipeline.synergy_ci import nas_hub_missing
 
@@ -185,6 +191,7 @@ def _nas_setup(protocol, nas_params) -> Dict[str, object]:
             **(proto.estimator_options("NAS") if proto is not None else {})}
     mode = str(opts.get("mode") or "legacy")
     missing = bool(nas_hub_missing(proto, nas_params))
+    hub = opts.get("workspace_nodes") if mode == "capacity" else None
     return {
         "protocol_hash": None if proto is None else proto.hash,
         "nas_mode": mode,
@@ -192,11 +199,28 @@ def _nas_setup(protocol, nas_params) -> Dict[str, object]:
             None if mode != "capacity" else opts.get("workspace_nodes") is not None
         ),
         "nas_hub_missing": missing,
+        "nas_hub": hub,
     }
 
 
+def _nas_hub_fits(hub, n_regions: int) -> bool:
+    """
+    Whether the declared hub is a valid node set of a recording with
+    ``n_regions`` nodes, by the rule ``compute_NAS`` applies to
+    ``workspace_nodes`` (distinct integer indices in range, or a boolean
+    mask of that length).
+    """
+    from impact_pipeline.mpc_metrics import _resolve_node_indices
+
+    try:
+        _resolve_node_indices(hub, int(n_regions), "workspace_nodes")
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _assess_nas(
-    n_regions: int, n_time: int, hub_missing: bool = False
+    n_regions: int, n_time: int, hub_missing: bool = False, hub=None
 ) -> Tuple[bool, str]:
     if hub_missing:
         return False, NAS_NO_DECLARED_WORKSPACE
@@ -204,6 +228,8 @@ def _assess_nas(
         return False, "insufficient_regions"
     if n_time < 4:
         return False, "insufficient_timepoints"
+    if hub is not None and not _nas_hub_fits(hub, n_regions):
+        return False, NAS_INVALID_WORKSPACE
     return True, "ok"
 
 
@@ -346,7 +372,9 @@ def check_mpc_readiness(
     are those of the run being planned; they decide the NAS mode. Under NAS
     ``mode='capacity'`` without a declared hub no run is NAS-ready
     (``NAS_reason`` ``NO_DECLARED_WORKSPACE``), as the evidence layer records
-    NAS as UNDEFINED. Without either, NAS is checked in its legacy mode.
+    NAS as UNDEFINED; a recording whose node count the declared hub does not
+    fit is not NAS-ready either (``INVALID_WORKSPACE``), as ``compute_NAS``
+    refuses that hub. Without either, NAS is checked in its legacy mode.
     """
     if not bool(require_explicit_srpi):
         raise ValueError("Neutral SRPI mode is disabled; explicit SRPI evidence is required.")
@@ -530,7 +558,9 @@ def check_mpc_readiness(
                     pdi_reason = "missing_state_rest_baseline"
                 pdi_mode = f"anchor_runs={len(pdi_anchor_runs)};task_runs={len(pdi_task_runs)}"
                 nas_ok, nas_reason = _assess_nas(
-                    n_regions, n_time, hub_missing=bool(nas_setup["nas_hub_missing"])
+                    n_regions, n_time,
+                    hub_missing=bool(nas_setup["nas_hub_missing"]),
+                    hub=nas_setup["nas_hub"],
                 )
                 iim_ok, iim_reason, iim_nodes, iim_bins_used = _assess_iim(
                     n_regions=n_regions,
@@ -679,7 +709,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "MPC protocol of the planned run; it decides the NAS mode (NAS "
             "capacity without a declared hub is never ready: "
-            "NO_DECLARED_WORKSPACE). Default: protocols/mpc_default_v1.json, "
+            "NO_DECLARED_WORKSPACE; a hub that does not fit a recording's "
+            "node count: INVALID_WORKSPACE). Default: protocols/mpc_default_v1.json, "
             "the default of empirical runs; 'none' checks the flag-built "
             "legacy NAS mode (as for dummy data)."
         ),

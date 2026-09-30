@@ -124,7 +124,10 @@ decision rules are unchanged. Each change has a regression test.
   definedness audit (now `definedness-audit/1.1.0`) takes `--protocol`
   (default v1): NAS capacity is NOT_DEFINABLE with the reason
   `NO_DECLARED_WORKSPACE` unless the protocol declares `workspace_nodes`,
-  and its summary records the protocol's source and hash. Tests:
+  and its summary records the protocol's source and hash. A declared hub
+  that does not fit a recording's node count (an index outside it, or a
+  mask of another length) is not NAS-ready either (`NAS_reason`
+  `INVALID_WORKSPACE`), as `compute_NAS` refuses it. Tests:
   `tests/test_mpc_readiness.py`, `tests/test_definedness_audit.py`.
 
 #### Changed

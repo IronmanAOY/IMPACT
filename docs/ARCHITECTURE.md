@@ -39,7 +39,7 @@ calls the public estimators and the evidence layer like any other user.
 | `impact_pipeline.synergy_ci` | `compute_synergy_ci` (per-run loop over the preprocessed tree), `assemble_ci`, `assemble_mpc_degree`, CI reference resolution, IIM worker planning |
 | `impact_pipeline.run_synergy_ci` | `run_s_ci` (step 2 driver: events, RAM presets, subject means, S by theta), `load_onsets`, `RAM_PARAM_PRESETS` |
 | `impact_pipeline.event_parsing` | the single source for `events.tsv` parsing: label patterns, session-exact file resolution, event bundles, SRPI-agency contract |
-| `impact_pipeline.mpc_readiness` | per-run readiness report (which metrics can be defined, and why not), using `event_parsing`; NAS against the run's protocol (capacity without a declared hub: `NO_DECLARED_WORKSPACE`, the rule of `synergy_ci.nas_hub_missing`) |
+| `impact_pipeline.mpc_readiness` | per-run readiness report (which metrics can be defined, and why not), using `event_parsing`; NAS against the run's protocol (capacity without a declared hub: `NO_DECLARED_WORKSPACE`, the rule of `synergy_ci.nas_hub_missing`; a declared hub that does not fit the recording's node count: `INVALID_WORKSPACE`) |
 | `impact_pipeline.preprocessing`, `preprocessing_eeg` | fMRI atlas time series from fMRIPrep derivatives; EEG channel time series from BrainVision; rest baselines |
 | `impact_pipeline.dataset_catalog` | dataset metadata, task/state grammar, explicit per-subject task aliases |
 | `impact_pipeline.analysis_bootstrap`, `model_comparison`, `baseline_metrics`, `motion_model`, `atlas_robustness`, `replication` | steps 3-8: paired statistics (bootstrap, permutation, DeLong, Holm), baseline comparators, motion covariates, robustness atlases, Melbourne replication |

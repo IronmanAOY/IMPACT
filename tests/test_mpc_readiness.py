@@ -133,6 +133,44 @@ def test_nas_capacity_with_a_declared_hub_is_ready(tmp_path):
     assert summary["settings"]["nas_hub_declared"] is None
 
 
+def test_nas_capacity_with_a_hub_that_does_not_fit_is_not_ready(tmp_path):
+    # The layout's recordings have 6 nodes; compute_NAS refuses a hub outside
+    # them, so the run could not define NAS and readiness must not say ready.
+    from impact_pipeline.mpc_metrics import compute_NAS
+
+    prep, bids, ses = _all_ready_layout(tmp_path)
+    ts = np.random.default_rng(0).standard_normal((6, 80))
+    for protocol, nas_params in (
+        (str(HUB_EXAMPLE), None),  # a Schaefer-400 hub on 6 nodes
+        (_v1_with_hub([0, 6]), None),
+        (None, {"mode": "capacity", "workspace_nodes": [10]}),
+        (None, {"mode": "capacity", "workspace_nodes": [True, False]}),
+    ):
+        df, summary = _check(prep, bids, ses, protocol=protocol,
+                             nas_params=nas_params)
+        row = df.iloc[0]
+        assert not bool(row["NAS_ready"]), (protocol, nas_params)
+        assert row["NAS_reason"] == "INVALID_WORKSPACE"
+        assert row["NAS_reason"] == mpc_readiness.NAS_INVALID_WORKSPACE
+        assert not bool(row["CI_ready"])
+        assert bool(row["IIM_ready"]) and bool(row["PDI_ready"])
+        assert summary["metrics"]["NAS"]["ready"] == 0
+        assert summary["settings"]["nas_hub_declared"] is True
+        hub = (nas_params or {}).get("workspace_nodes")
+        if hub is None:
+            hub = E.resolve_protocol(protocol).estimator_options("NAS")[
+                "workspace_nodes"]
+        with pytest.raises(ValueError, match="workspace_nodes"):
+            compute_NAS(ts, tr=0.5, mode="capacity", workspace_nodes=hub)
+    # a hub inside the node count is ready (the boundary index included)
+    df, _ = _check(prep, bids, ses, protocol=_v1_with_hub([0, 5]))
+    assert bool(df.iloc[0]["NAS_ready"]) and df.iloc[0]["NAS_reason"] == "ok"
+    # legacy NAS drops declared nodes outside the recording and stays defined
+    df, summary = _check(prep, bids, ses, nas_params={"workspace_nodes": [99]})
+    assert summary["settings"]["nas_mode"] == "legacy"
+    assert bool(df.iloc[0]["NAS_ready"])
+
+
 def test_readiness_nas_rule_is_the_evidence_layer_rule():
     assert nas_hub_missing(V1) is True
     assert nas_hub_missing(HUB_EXAMPLE) is False
