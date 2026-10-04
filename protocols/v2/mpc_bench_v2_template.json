@@ -1,0 +1,151 @@
+{
+  "alpha": 0.05,
+  "anchors": null,
+  "bearer_nodes": {},
+  "channels": {
+    "IIM": [
+      "default"
+    ],
+    "NAS": [
+      "default"
+    ],
+    "PDI": [
+      "default"
+    ],
+    "RAM": [
+      "default"
+    ],
+    "SRPI": [
+      "default"
+    ]
+  },
+  "concordance_route": [],
+  "cutoffs": {
+    "IIM": [
+      0.25,
+      0.1
+    ],
+    "NAS": [
+      0.25,
+      0.1
+    ],
+    "PDI": [
+      0.25,
+      0.1
+    ],
+    "RAM": [
+      0.25,
+      0.1
+    ],
+    "SRPI": [
+      0.25,
+      0.1
+    ]
+  },
+  "declared_necessity_set": [
+    "RAM",
+    "PDI",
+    "NAS",
+    "IIM",
+    "SRPI"
+  ],
+  "directions": {
+    "NAS": [
+      "receive",
+      "return"
+    ]
+  },
+  "estimator_versions": {
+    "IIM": "iim-v5-2026.10",
+    "NAS": "nas-v3-2026.10",
+    "PDI": "pdi-v3-2026.10",
+    "RAM": "ram-v3-2026.10",
+    "SRPI": "srpi-v2-2026.09"
+  },
+  "estimators": {
+    "IIM": {
+      "cut_mode": "directional",
+      "report_cut_modes": [
+        "bidirectional"
+      ],
+      "tpm_estimator": "node_shrinkage"
+    },
+    "NAS": {
+      "block_representation": "block_mean",
+      "coupling_timescale_sec": 0.1,
+      "mode": "conditional_capacity"
+    },
+    "PDI": {
+      "mode": "repertoire",
+      "pdi_bearer": "non_workspace"
+    },
+    "RAM": {
+      "facets_not_applicable": {
+        "F": "no_graded_feedback_referent",
+        "G": "no_goal_contingency_referent",
+        "speed": "speed_not_in_construct"
+      },
+      "update": "pe_readout"
+    },
+    "SRPI": {
+      "mode": "agency"
+    }
+  },
+  "name": "mpc-bench-v2-template",
+  "necessity_set": [
+    "RAM",
+    "PDI",
+    "NAS",
+    "IIM",
+    "SRPI"
+  ],
+  "null_families": {
+    "IIM": "circular_shift",
+    "NAS": "block_circular_shift",
+    "PDI": "circular_shift",
+    "RAM": "trial_circular_shift",
+    "SRPI": "yoked_label_permutation"
+  },
+  "precision": null,
+  "rank_gates": {
+    "IIM": 0.05
+  },
+  "reference": {
+    "kind": "pending",
+    "note": "each family protocol takes its anchors from the development reference block (seeds 900-939)"
+  },
+  "schema": "impact-mpc-protocol/3",
+  "se_methods": {
+    "IIM": [
+      "circular_block_bootstrap_10pct_B50",
+      "jackknife_contiguous_10"
+    ],
+    "NAS": [
+      "jackknife_contiguous_10",
+      "jackknife_contiguous_20",
+      "jackknife_interleaved_10",
+      "jackknife_interleaved_20"
+    ],
+    "PDI": [
+      "concordant",
+      "jackknife_contiguous_10"
+    ],
+    "RAM": [
+      "jackknife_trials_10",
+      "shift_null_sd"
+    ],
+    "SRPI": [
+      "jackknife_pairs_10"
+    ]
+  },
+  "shared_inputs_declaration": null,
+  "source_rule": "single_source",
+  "status_rule": {
+    "absent_test": "tost",
+    "alpha": 0.05,
+    "alpha_absent": 0.01,
+    "null_violation": true,
+    "present_reachability_flag": true,
+    "version": "tost-v2"
+  }
+}
