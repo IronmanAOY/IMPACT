@@ -48,6 +48,16 @@ stream draws the same numbers whatever the knob values. Two systems with the
 same seed and different knobs therefore share their structural and noise
 realisation (common random numbers), so a knob contrast is paired.
 
+Twins (MPC-Bench v2 generator option ``replicate``): ``replicate = 0``, the
+default, is the run described above, bit for bit. A twin ``replicate = r >=
+1`` of a family-A or family-C run keeps the structural streams of
+``SeedSequence(seed)`` (network, patterns and, in family C, the oscillator
+frequencies) and draws the task-schedule, process-noise and rest streams from
+``SeedSequence([seed, r])`` (``1 <= r <= 30``, the v2 seed policy of
+:mod:`impact_pipeline.v2.seeds`): the same network in a new session. A twin
+carries ``meta['replicate']`` and the v2 generator version
+(``mpc-bench-generators/2.0.0``); ``GENERATOR_VERSION`` is unchanged.
+
 States of family-B networks use the big-endian convention of
 ``mpc_metrics._iim_*`` kernels: node 0 is the most significant digit of the
 state index.
@@ -118,6 +128,18 @@ MODULE_ROLES = {
 }
 _N_PATTERN_BANK = 32
 FEEDBACK_MODES = ("contingent", "scrambled")
+
+# MPC-Bench v2 additions: every generator option or configuration field
+# added for v2, with the value that reproduces generator 1.1.0 bit for bit
+# (its default). A configuration field added here must also leave
+# ``AgentConfig().to_dict()`` of a v1 configuration unchanged.
+V2_OPTION_DEFAULTS = {"replicate": 0}
+# Positions of the task-schedule, process-noise and rest streams in the
+# eight-stream split of a family-A/C run (:func:`_modular_streams`). A twin
+# draws these from ``SeedSequence([seed, r])`` and keeps the other four
+# (structure, oscillator frequencies, the unused null stream and the rest
+# run's copy of the frequencies).
+TWIN_STREAM_INDEX = {"task": 1, "noise": 2, "rest_task": 4, "rest_noise": 5}
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +414,38 @@ def _streams(seed: int, n: int = 6) -> List[np.random.Generator]:
         raise ValueError("seed must be >= 0")
     children = np.random.SeedSequence(int(seed)).spawn(n)
     return [np.random.default_rng(c) for c in children]
+
+
+def _replicate_index(replicate) -> int:
+    """The replicate index: 0 (the run itself) or a twin index >= 1."""
+    if isinstance(replicate, (bool, np.bool_)) or not isinstance(
+        replicate, (int, np.integer)
+    ):
+        raise ValueError(f"replicate must be an integer, got {replicate!r}")
+    if int(replicate) < 0:
+        raise ValueError(f"replicate must be >= 0, got {replicate!r}")
+    return int(replicate)
+
+
+def _modular_streams(seed: int, replicate: int = 0) -> List[np.random.Generator]:
+    """
+    The eight streams of a family-A/C run: structure, task schedule, process
+    noise, oscillator frequencies, rest schedule, rest noise, null, rest copy
+    of the frequencies. ``replicate = 0``: the streams of ``SeedSequence(seed)``
+    (:func:`_streams`). Twin ``replicate = r >= 1``: the streams at
+    ``TWIN_STREAM_INDEX`` are the children at the same positions of
+    ``SeedSequence([seed, r])``; the others stay.
+    """
+    streams = _streams(seed, 8)
+    r = _replicate_index(replicate)
+    if r == 0:
+        return streams
+    from impact_pipeline.v2.seeds import twin_seed_sequence
+
+    twin = [np.random.default_rng(c) for c in twin_seed_sequence(seed, r).spawn(8)]
+    for idx in TWIN_STREAM_INDEX.values():
+        streams[idx] = twin[idx]
+    return streams
 
 
 def _samples(sec: float, dt: float) -> int:
@@ -1304,9 +1358,11 @@ def _simulate_modular(
     config: Optional[AgentConfig],
     seed: int,
     extra_meta: Optional[dict] = None,
+    replicate: int = 0,
 ) -> BenchSystem:
     knobs = knobs if knobs is not None else NOMINAL_KNOBS
     cfg = config if config is not None else AgentConfig()
+    replicate = _replicate_index(replicate)
     (
         struct_rng,
         task_rng,
@@ -1316,7 +1372,14 @@ def _simulate_modular(
         rest_noise_rng,
         _null_rng,
         rest_sl_rng,
-    ) = _streams(seed, 8)
+    ) = _modular_streams(seed, replicate)
+    if replicate:
+        from impact_pipeline.v2 import GENERATOR_VERSION_V2
+
+        extra_meta = dict(extra_meta or {})
+        extra_meta.update(
+            {"generator_version": GENERATOR_VERSION_V2, "replicate": replicate}
+        )
     net = builder(knobs, cfg, struct_rng)
     sched = _task_schedule(cfg, task_rng)
     # The structural stream is shared: family C draws its frequencies from a
@@ -1351,15 +1414,20 @@ def simulate_family_a(
     knobs: Optional[Knobs] = None,
     config: Optional[AgentConfig] = None,
     seed: int = 0,
+    replicate: int = 0,
 ) -> BenchSystem:
-    """Family A: modular stochastic rate-network agent (see module docstring)."""
-    return _simulate_modular("A", "rate", build_family_a_network, knobs, config, seed)
+    """Family A: modular stochastic rate-network agent (see module docstring;
+    ``replicate >= 1`` is a twin of the same network)."""
+    return _simulate_modular(
+        "A", "rate", build_family_a_network, knobs, config, seed, replicate=replicate
+    )
 
 
 def simulate_family_c(
     knobs: Optional[Knobs] = None,
     config: Optional[AgentConfig] = None,
     seed: int = 0,
+    replicate: int = 0,
 ) -> BenchSystem:
     """
     Family C (held out; design 2): Stuart-Landau oscillators on the family-A
@@ -1395,9 +1463,18 @@ def simulate_family_c(
     0.3 W z against a 4x additive input drive) failed the manipulation checks:
     the NAS and IIM switches changed the recorded signal by 3-4 % and ignition
     occurred in < 1 % of samples.
+
+    ``replicate >= 1`` is a twin of the same network (same oscillator
+    frequencies; module docstring).
     """
     return _simulate_modular(
-        "C", "stuart_landau", build_family_a_network, knobs, config, seed
+        "C",
+        "stuart_landau",
+        build_family_a_network,
+        knobs,
+        config,
+        seed,
+        replicate=replicate,
     )
 
 
@@ -1855,6 +1932,7 @@ def make_system(
     config: Optional[AgentConfig] = None,
     seed: int = 0,
     template_family: str = "A",
+    replicate: int = 0,
     **kwargs,
 ) -> BenchSystem:
     """
@@ -1866,12 +1944,18 @@ def make_system(
     config) and ``whole_brain`` / ``whole_brain_eeg`` / ``whole_brain_bold``
     (source, EEG-like and BOLD-like observations; ``whole_brain_config=`` a
     :class:`~impact_pipeline.bench.whole_brain.WholeBrainConfig` or dict,
-    other keywords go to the forward model).
+    other keywords go to the forward model). ``replicate >= 1`` (a twin) is
+    defined for ``family_a`` and ``family_c`` only.
     """
     if generator == "family_a":
-        return simulate_family_a(knobs, config, seed)
+        return simulate_family_a(knobs, config, seed, replicate=replicate)
     if generator == "family_c":
-        return simulate_family_c(knobs, config, seed)
+        return simulate_family_c(knobs, config, seed, replicate=replicate)
+    if _replicate_index(replicate):
+        raise ValueError(
+            f"replicate (twins) is defined for family_a and family_c only, "
+            f"not for {generator!r}"
+        )
     if generator == "patchwork":
         from impact_pipeline.bench.patchwork import simulate_patchwork
 
