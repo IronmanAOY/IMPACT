@@ -638,19 +638,23 @@ ESTIMATOR_FORMS: Mapping[str, EstimatorForm] = {
         EstimatorForm(PRIMARY_FORM, PRINCIPLES, {},
                       description="the family protocol's estimators"),
         EstimatorForm("nas_secondary", ("NAS",),
-                      {"NAS": {"block_representation": "secondary"}},
+                      {"NAS": {"block_representation": "all_units"}},
                       description="NAS on all nodes (|B| <= 8) or 8 leading PCs "
                                   "per block; preregistered secondary"),
         EstimatorForm("iim_bidirectional", ("IIM",),
                       {"IIM": {"cut_mode": "bidirectional", "report_cut_modes": []}},
                       description="IIM with bidirectional cuts (reported "
                                   "secondary with its own anchor)"),
+        # the tau_c sensitivity varies the lags and filtered input copies;
+        # the resolvability gate keeps the substrate's tau_c
         EstimatorForm("nas_tau_0.05", ("NAS",),
-                      {"NAS": {"coupling_timescale_sec": 0.05}},
-                      description="NAS at tau_c = 0.05 s (reported sensitivity)"),
+                      {"NAS": {"lag_timescale_sec": 0.05}},
+                      description="NAS with lags and input copies at 0.05 s "
+                                  "(tau_c sensitivity, reported)"),
         EstimatorForm("nas_tau_0.2", ("NAS",),
-                      {"NAS": {"coupling_timescale_sec": 0.2}},
-                      description="NAS at tau_c = 0.2 s (reported sensitivity)"),
+                      {"NAS": {"lag_timescale_sec": 0.2}},
+                      description="NAS with lags and input copies at 0.2 s "
+                                  "(tau_c sensitivity, reported)"),
         EstimatorForm("pdi_misdeclared_access", ("PDI",),
                       {"PDI": {"access_module": "S"}}, held_out=True,
                       description="PDI content bearer with module S declared as "

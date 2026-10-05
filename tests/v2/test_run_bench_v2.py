@@ -399,7 +399,7 @@ def test_twin_sessions_share_the_network_and_differ_in_the_schedule():
 def test_dispatch_by_estimator_version():
     kinds = {v: RB.scorer_for(v, p).kind for p, v in VERSIONS.items()}
     assert kinds == {"ram-v3-2026.10": "ram_v3", "pdi-v3-2026.10": "pdi_v3",
-                     "nas-v3-2026.10": "module", "iim-v5-2026.10": "module",
+                     "nas-v3-2026.10": "nas_v3", "iim-v5-2026.10": "iim_v5",
                      "srpi-v2-2026.09": "v1_in_memory"}
     for p, v in (("NAS", "nas-v2-2026.09"), ("IIM", "iim-v4-2026.09"),
                  ("PDI", "pdi-v2-2026.09"), ("RAM", "ram-v2-2026.09")):
@@ -571,16 +571,16 @@ def test_an_estimator_module_not_merged_yet_is_refused_or_recorded():
     assert not scoring(rec, "R").components["RAM"].is_estimator_error
 
 
-def test_a_tau_c_form_keeps_the_generator_time_scale_available(monkeypatch):
-    # the NAS tau_c sensitivity changes the basis and lags, while the
-    # system's own coupling time scale (family A: AgentConfig.tau = 0.1 s)
-    # stays available to the estimator's sampling-resolution gate
+def test_a_tau_c_form_varies_the_lags_and_keeps_the_gate_time_scale(monkeypatch):
+    # the NAS tau_c sensitivity changes the lags and the filtered input
+    # copies (lag_timescale_sec), while tau_c of the resolvability gate stays
+    # the substrate's (family A: AgentConfig.tau = 0.1 s)
     name = "impact_pipeline_test_fake_nas_tau"
     seen = []
     mod = types.ModuleType(name)
 
-    def compute_nas_v3(ts, tau_c, system_tau_c, lag_plan, basis):
-        seen.append((tau_c, system_tau_c, lag_plan.resolved,
+    def compute_nas_v3(ts, tau_c, system_tau_c, lag_timescale, lag_plan, basis):
+        seen.append((tau_c, system_tau_c, lag_timescale, lag_plan.resolved,
                      lag_plan.nas_lags, basis.taus))
         member = {"estimate": 0.5, "null_mean": 0.0, "null_sd": 0.1, "n_null": 19,
                   "null_family": "block_circular_shift", "se": 0.05, "se_df": 9.0,
@@ -596,10 +596,74 @@ def test_a_tau_c_form_keeps_the_generator_time_scale_available(monkeypatch):
     with RB.scorer_override(scorer):
         rec = RB.run_task(task, protocols_for([task]))
     assert rec.status == REC.TASK_OK
-    (t_r, s_r, ok_r, lags_r, taus_r), (t_f, s_f, ok_f, lags_f, taus_f) = seen
-    assert (t_r, s_r, ok_r, lags_r) == (0.1, 0.1, True, (1, 2))
-    assert (t_f, s_f, ok_f, lags_f) == (0.05, 0.1, False, (1,))
+    (t_r, s_r, l_r, ok_r, lags_r, taus_r), (t_f, s_f, l_f, ok_f, lags_f, taus_f) = seen
+    assert (t_r, s_r, l_r, ok_r, lags_r) == (0.1, 0.1, 0.1, True, (1, 2))
+    assert (t_f, s_f, l_f, lags_f) == (0.1, 0.1, 0.05, (1,))
+    assert not ok_f  # the lag plan's own time scale; the gate reads tau_c
     assert taus_r == (0.1, 0.3, 1.0) and taus_f == (0.05, 0.15, 0.5)
+    assert RB.draft_protocol("A-R+nas_tau_0.05").estimator_options("NAS")[
+        "coupling_timescale_sec"] == 0.1
+
+
+def test_nas_v3_runs_through_the_runner_in_every_nas_form():
+    # the merged estimator on a family-A witness: the primary scoring, the
+    # secondary representation and both tau_c sensitivity forms are defined;
+    # the 0.05 s form changes the lags, not the resolvability gate
+    forms = ("nas_secondary", "nas_tau_0.05", "nas_tau_0.2")
+    task = dataclasses.replace(witness(), scorings=D.make_scorings(
+        {"R": "A-R"}, ("NAS",), forms))
+    rec = RB.run_task(task, protocols_for([task]))
+    assert rec.status == REC.TASK_OK
+    want_lags = {"R": [1, 2], "R+nas_secondary": [1, 2], "R+nas_tau_0.05": [1],
+                 "R+nas_tau_0.2": [1, 2, 3, 4]}
+    for sid, lags in want_lags.items():
+        nas = scoring(rec, sid).components["NAS"]
+        est = nas.details["estimator"]
+        assert not nas.is_estimator_error, nas.details.get("error")
+        assert nas.reason != "SAMPLING_UNRESOLVED" and nas.estimate is not None
+        assert est["lags"] == lags
+        assert est["lag_plan"]["coupling_timescale_sec"] == 0.1
+        assert est["lag_plan"]["resolved"] is True
+        assert sorted(est["blocks"]) == ["C", "M", "S", "V"]
+        assert est["hub_name"] == "W" and est["declaration"] == "R"
+        assert nas.c_R is not None and nas.c_B is not None
+    assert scoring(rec, "R+nas_secondary").components["NAS"].details[
+        "estimator"]["representation"] == "all_units"
+    assert scoring(rec, "R").components["NAS"].details[
+        "estimator"]["representation"] == "block_mean"
+
+
+def test_iim_v5_runs_through_the_runner_at_the_system_lag(monkeypatch):
+    from impact_pipeline.v2 import iim_v5
+
+    task = dataclasses.replace(witness(), scorings=D.make_scorings({"R": "A-R"},
+                                                                   ("IIM",)))
+    d = protocols_for([task])["A-R"].protocol.to_dict()
+    # a small null and bootstrap keep the test short (this is wiring only)
+    d["estimators"]["IIM"].update(n_null=19, bootstrap_replicates=2)
+    protos = {"A-R": RB.ResolvedProtocol("A-R", E.ProtocolV3.from_dict(d),
+                                         "override")}
+    seen = {}
+    real = iim_v5.compute_iim_v5
+
+    def spy(ts, **kw):
+        seen.update(kw, shape=np.shape(ts))
+        return real(ts, **kw)
+
+    monkeypatch.setattr(iim_v5, "compute_iim_v5", spy)
+    rec = RB.run_task(task, protos)
+    iim = scoring(rec, "R").components["IIM"]
+    assert not iim.is_estimator_error, iim.details.get("error")
+    assert iim.estimate is not None and iim.n_null == 19
+    assert seen["lag"] == 2 and seen["shape"][0] == 30
+    assert seen["basis"].declaration_id == "R" and seen["basis"].lags == (0, 1, 2)
+    assert sorted(seen["macro_nodes"]) == ["C", "M", "S", "V"]
+    assert seen["observation_stage"] == "source"
+    assert seen["params"] == {"cut_mode": "directional",
+                              "report_cut_modes": ["bidirectional"], "n_null": 19,
+                              "bootstrap_replicates": 2}
+    assert iim.details["estimator"]["cut_mode"] == "directional"
+    assert iim.details["estimator"]["p_ind"] is not None
 
 
 def test_twin_null_seeds_are_distinct_and_in_the_legacy_seed_range():
@@ -668,6 +732,24 @@ def test_protocol_option_names_map_onto_the_estimators():
         RB.pdi_v3_params({"mode": "labelled"})
     with pytest.raises(ValueError, match="unknown PDI parameters"):
         RB.pdi_v3_params({"pdi_bearer_typo": "full"})
+    from impact_pipeline.v2 import iim_v5, nas_v3
+
+    nas = RB.nas_v3_params(tmpl.estimator_options("NAS"))
+    assert nas == tmpl.estimator_options("NAS")  # the estimator's own names
+    assert nas_v3.NASParams.from_mapping(nas).coupling_timescale_sec == 0.1
+    for form in ("nas_secondary", "nas_tau_0.05", "nas_tau_0.2"):
+        RB.nas_v3_params(RB.draft_protocol(f"A-R+{form}").estimator_options("NAS"))
+    with pytest.raises(ValueError, match="unknown NAS parameters"):
+        RB.nas_v3_params({"lag_timescale": 0.05})
+    iim = RB.iim_v5_params(tmpl.estimator_options("IIM"))
+    assert iim == {"cut_mode": "directional", "report_cut_modes": ["bidirectional"]}
+    assert iim_v5.IIMParams.from_mapping(iim).cut_modes == ("directional",
+                                                            "bidirectional")
+    assert RB.iim_v5_params({"coupling_timescale_sec": 0.1}) == {}
+    with pytest.raises(RB.ProtocolOptionError, match="node_shrinkage"):
+        RB.iim_v5_params({"tpm_estimator": "plug_in"})
+    with pytest.raises(ValueError, match="unknown IIM v5 parameters"):
+        RB.iim_v5_params({"cut": "directional"})
     assert RB.v1_params("SRPI", tmpl.estimator_options("SRPI")) == {}
     assert RB.v1_params("IIM", tmpl.estimator_options("IIM")) == {
         "cut_mode": "directional", "tpm_estimator": "node_shrinkage"}
@@ -685,7 +767,7 @@ def test_drafts_follow_the_template_and_admit_exact_known_tpm_values():
     tmpl = E.ProtocolV3.from_json(RB.TEMPLATE_PATH)
     draft = RB.draft_protocol("A-H+nas_secondary")
     assert draft.shared_inputs_declaration == {"id": "H", "shared_inputs": "partial"}
-    assert draft.estimator_options("NAS")["block_representation"] == "secondary"
+    assert draft.estimator_options("NAS")["block_representation"] == "all_units"
     assert draft.reference["kind"] == "pending"
     assert draft.estimator_versions == tmpl.estimator_versions
     assert E.SE_METHOD_EXACT in draft.se_methods["IIM"]

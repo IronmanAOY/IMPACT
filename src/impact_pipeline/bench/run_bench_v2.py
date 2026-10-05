@@ -45,14 +45,24 @@ Estimator dispatch (:data:`SCORERS`, by estimator version)
   the v1 null size (19 surrogates) and jackknife (10 groups), one principle
   at a time; each principle's block of that function is independent of the
   others, so the component equals the one a v1 run computes.
-* ``nas-v3-2026.10``, ``iim-v5-2026.10`` (and the Tier-B ``srpi-v3-2026.10``):
-  the estimator module, through its hook ``score_bench_v2(context)`` when it
-  defines one, otherwise through its ``compute_<p>_v<n>`` function called
-  with the keyword arguments of :meth:`ScoringContext.candidates` that its
-  signature names, the result mapped like the merged v3 modules'
-  (``component_fields``; per-direction results under ``directions``). A
-  module that is not in the tree yet is reported as unavailable before any
-  task runs.
+* ``nas-v3-2026.10``: :func:`impact_pipeline.v2.nas_v3.compute_nas_v3` on the
+  bearer view, with the hub and periphery blocks the system declares
+  (:func:`~impact_pipeline.v2.nas_v3.declared_blocks`), ``tau_c`` of the
+  protocol checked against the generator constants (the ``tau_c``
+  sensitivity forms vary ``lag_timescale_sec``, the lags and filtered input
+  copies, never the resolvability gate's ``tau_c``), the scoring's declared
+  inputs and the view's observation.
+* ``iim-v5-2026.10``: :func:`impact_pipeline.v2.iim_v5.compute_iim_v5` on the
+  bearer view's macro nodes at the system's transition lag
+  (``iim_lag_samples``, the v1 rule), residualised on the scoring's input
+  basis (families A and C1 declare no binary drivers to stratify on).
+* The Tier-B ``srpi-v3-2026.10``: the estimator module, through its hook
+  ``score_bench_v2(context)`` when it defines one, otherwise through its
+  ``compute_<p>_v<n>`` function called with the keyword arguments of
+  :meth:`ScoringContext.candidates` that its signature names, the result
+  mapped like the merged v3 modules' (``component_fields``; per-direction
+  results under ``directions``). A module that is not in the tree yet is
+  reported as unavailable before any task runs.
 
 Protocols (:func:`resolve_protocols`)
 -------------------------------------
@@ -183,8 +193,14 @@ PROTOCOL_OPTION_NAMES = {
             "update": "mode (ram_v3.MODE)"},
     "PDI": {"pdi_bearer": "bearer (PDIParams.bearer)", "mode": "mode (pdi_v3.MODE)",
             "access_module": "runner: the module declared as the access nodes"},
-    "NAS": {"coupling_timescale_sec": "tau_c of the input basis and lag set"},
-    "IIM": {"coupling_timescale_sec": "tau_c of the input basis and lag set"},
+    "NAS": {"coupling_timescale_sec": "tau_c of the resolvability gate (NASParams; "
+                                      "checked against the generator constants)",
+            "lag_timescale_sec": "lag set and filtered input copies (NASParams; "
+                                 "the tau_c sensitivity forms)"},
+    "IIM": {"coupling_timescale_sec": "runner: tau_c of the input basis and lag set",
+            "lag_timescale_sec": "runner: lag set and filtered copies of the basis",
+            "tpm_estimator": "the estimator's TPM estimator (iim_v5.TPM_ESTIMATOR); "
+                             "not a parameter"},
 }
 DIRECTION_ALIASES = {
     "receive": "receive", "r": "receive", "in": "receive", "te_in": "receive",
@@ -328,6 +344,36 @@ def pdi_v3_params(options: Mapping) -> Tuple[dict, dict]:
     runner = {"access_module": opts.pop("access_module", None)}
     pdi_v3.PDIParams.from_mapping(opts)
     return opts, runner
+
+
+def nas_v3_params(options: Mapping) -> dict:
+    """NAS v3 parameters from protocol options: the protocol's NAS block uses
+    the estimator's own names (:class:`~impact_pipeline.v2.nas_v3.NASParams`),
+    so nothing is renamed; unknown keys are refused."""
+    from impact_pipeline.v2 import nas_v3
+
+    opts = dict(options or {})
+    nas_v3.NASParams.from_mapping(opts)
+    return opts
+
+
+def iim_v5_params(options: Mapping) -> dict:
+    """IIM v5 parameters from protocol options: ``tpm_estimator`` must name
+    the estimator's TPM estimator and is not a parameter;
+    ``coupling_timescale_sec`` and ``lag_timescale_sec`` set the runner's
+    input basis; every other key is an
+    :class:`~impact_pipeline.v2.iim_v5.IIMParams` field."""
+    from impact_pipeline.v2 import iim_v5
+
+    opts = dict(options or {})
+    tpm = opts.pop("tpm_estimator", None)
+    if tpm is not None and tpm != iim_v5.TPM_ESTIMATOR:
+        raise ProtocolOptionError(f"IIM tpm_estimator {tpm!r}; IIM v5 computes "
+                                  f"{iim_v5.TPM_ESTIMATOR!r}")
+    opts.pop("coupling_timescale_sec", None)
+    opts.pop("lag_timescale_sec", None)
+    iim_v5.IIMParams.from_mapping(opts)
+    return opts
 
 
 def v1_params(principle: str, options: Mapping) -> dict:
@@ -731,6 +777,53 @@ class V1InMemoryScorer(Scorer):
         return ScorerOutput(estimator, [m], _sanitize(details))
 
 
+class NasV3Scorer(Scorer):
+    """NAS v3 (module docstring): one item per direction."""
+
+    principle, version, kind = "NAS", "nas-v3-2026.10", "nas_v3"
+    directions = ("receive", "return")
+    uses_declaration = True
+
+    def check_options(self, options):
+        nas_v3_params(options)
+
+    def score(self, ctx):
+        from impact_pipeline.v2 import nas_v3
+
+        p = nas_v3.NASParams.from_mapping(nas_v3_params(ctx.options))
+        # tau_c of the gate: the protocol's, checked against the generator
+        p = p.replace(coupling_timescale_sec=nas_v3.system_coupling_timescale(
+            ctx.system, p))
+        view = ctx.bearer()
+        hub_name, hub, blocks = ctx.nas_blocks(view)
+        res = nas_v3.compute_nas_v3(
+            view["ts"], dt=float(ctx.system.dt), hub=hub, blocks=blocks,
+            inputs=ctx.declared(), params=p, seed=int(ctx.task.seed),
+            null_seed=ctx.null_seed, hub_name=hub_name,
+            observation=ctx.view.observation)
+        return output_from_result(res, nas_v3, self)
+
+
+class IimV5Scorer(Scorer):
+    """IIM v5 (module docstring): the primary cut mode of the protocol."""
+
+    principle, version, kind = "IIM", "iim-v5-2026.10", "iim_v5"
+    uses_declaration = True
+
+    def check_options(self, options):
+        iim_v5_params(options)
+
+    def score(self, ctx):
+        from impact_pipeline.v2 import iim_v5
+
+        view = ctx.bearer()
+        res = iim_v5.compute_iim_v5(
+            view["ts"], lag=ctx.iim_lag(), params=iim_v5_params(ctx.options),
+            macro_nodes=view["macro_nodes"], basis=ctx.basis("IIM"),
+            null_seed=ctx.null_seed, observation_stage=ctx.view.observation_stage)
+        return output_from_result(res, iim_v5, self)
+
+
 class ModuleScorer(Scorer):
     """An estimator module of the v2 round (contract in the module
     docstring)."""
@@ -796,11 +889,8 @@ for _s in (
     V1InMemoryScorer("IIM", "iim-v4-2026.09"),
     V1InMemoryScorer("PDI", "pdi-v2-2026.09"),
     V1InMemoryScorer("RAM", "ram-v2-2026.09"),
-    ModuleScorer("NAS", "nas-v3-2026.10", "impact_pipeline.v2.nas_v3",
-                 "compute_nas_v3", uses_declaration=True,
-                 directions=("receive", "return"), basis_estimator="NAS"),
-    ModuleScorer("IIM", "iim-v5-2026.10", "impact_pipeline.v2.iim_v5",
-                 "compute_iim_v5", uses_declaration=True, basis_estimator="IIM"),
+    NasV3Scorer(),
+    IimV5Scorer(),
     ModuleScorer("SRPI", "srpi-v3-2026.10", "impact_pipeline.v2.srpi_v3",
                  "compute_srpi_v3", uses_declaration=False),
 ):
@@ -955,12 +1045,21 @@ class ScoringContext:
 
     def tau_c(self) -> float:
         """The coupling time scale of this scoring: the protocol option
-        ``coupling_timescale_sec`` (the family value, or a sensitivity value
-        of an estimator form), else the generator constant."""
+        ``coupling_timescale_sec`` (the family value), else the generator
+        constant."""
         val = self.options.get("coupling_timescale_sec")
         if val is not None:
             return float(val)
         return self.system_tau_c()
+
+    def lag_timescale(self) -> float:
+        """The time scale of the lags and filtered input copies: the protocol
+        option ``lag_timescale_sec`` (the ``tau_c`` sensitivity forms), else
+        :meth:`tau_c`. The resolvability gate always uses ``tau_c``."""
+        val = self.options.get("lag_timescale_sec")
+        if val is not None:
+            return float(val)
+        return self.tau_c()
 
     def coupling_timescale(self):
         """The generator constant's coupling time scale of the observed
@@ -974,14 +1073,22 @@ class ScoringContext:
         return self.coupling_timescale().tau_c_sec
 
     def lag_plan(self):
+        """The lags and filtered copies at :meth:`lag_timescale` (its
+        ``resolved`` refers to that time scale; the estimators' gate uses
+        :meth:`tau_c`)."""
         from impact_pipeline.v2 import declared_inputs as DI
 
-        return DI.lag_plan(tau_c=self.tau_c(), dt=self.system.dt)
+        return DI.lag_plan(tau_c=self.lag_timescale(), dt=self.system.dt)
+
+    def iim_lag(self) -> int:
+        """The IIM transition lag in samples: the system's declared
+        ``iim_lag_samples`` (default 2), as the v1 path reads it."""
+        return int((self.system.meta or {}).get("iim_lag_samples", 2))
 
     def basis(self, estimator: str = "NAS"):
         from impact_pipeline.v2 import declared_inputs as DI
 
-        tau = self.tau_c()
+        tau = self.lag_timescale()
         key = ("basis", self.view.name, self.scoring.declaration_id, estimator,
                round(tau, 12))
         if key not in self.used_bases:
@@ -1012,6 +1119,22 @@ class ScoringContext:
             if local:
                 out[str(name)] = local
         return out
+
+    def nas_blocks(self, view: Optional[dict] = None):
+        """``(hub_name, hub rows, periphery blocks)`` of NAS v3: the system's
+        declared blocks (:func:`impact_pipeline.v2.nas_v3.declared_blocks`,
+        with the bearer's workspace as the hub) as rows of the bearer view."""
+        from impact_pipeline.v2 import nas_v3
+
+        view = view or self.bearer("NAS")
+        nodes = list(view["nodes"])
+        pos = {g: k for k, g in enumerate(nodes)}
+        meta = dict(self.system.meta or {})
+        meta["workspace_nodes"] = [nodes[i] for i in (view["workspace_nodes"] or [])]
+        hub_name, hub, blocks = nas_v3.declared_blocks(meta)
+        local = {k: [pos[i] for i in v if i in pos] for k, v in blocks.items()}
+        return (hub_name, [pos[i] for i in hub if i in pos],
+                {k: v for k, v in local.items() if v})
 
     def module_nodes(self, module: str, view: Optional[dict] = None) -> List[int]:
         view = view or self.bearer()
@@ -1060,6 +1183,7 @@ class ScoringContext:
             "declared_inputs": declared, "inputs": declared,
             "declaration": declared, "basis": basis, "input_basis": basis,
             "tau_c": self.tau_c, "lag_plan": self.lag_plan,
+            "lag_timescale": self.lag_timescale, "lag": self.iim_lag,
             # the generator constant, apart from a form's sensitivity tau_c
             # (for an estimator that judges sampling resolution on the
             # system's own time scale)
@@ -2184,7 +2308,9 @@ __all__ = [
     "EstimatorUnavailableError",
     "FAMILY_PROTOCOLS",
     "Member",
+    "IimV5Scorer",
     "ModuleScorer",
+    "NasV3Scorer",
     "NOT_APPLICABLE",
     "PROTOCOL_OPTION_NAMES",
     "RAM_FACET_NAMES",
@@ -2205,8 +2331,10 @@ __all__ = [
     "call_kwargs",
     "check_plan",
     "draft_protocol",
+    "iim_v5_params",
     "load_design_module",
     "main",
+    "nas_v3_params",
     "null_seed",
     "output_from_result",
     "pdi_v3_params",
