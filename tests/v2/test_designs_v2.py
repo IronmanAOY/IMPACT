@@ -80,6 +80,46 @@ def test_a_missing_module_is_not_merged_yet(monkeypatch):
         D.get_design("F_eeg64")
 
 
+def test_merged_modules_without_runner_designs_are_reported_not_skipped(capsys):
+    # family B runs through its own validation script; the forward arms are
+    # merged but define no designs for this runner yet
+    assert D.RUN_ELSEWHERE["family_b"] == "scripts/v2/iim_validation_v2.py"
+    with pytest.raises(D.DesignNotRunnableError,
+                       match="family_b.*runs? through scripts/v2/iim_validation_v2"):
+        D.load_module("family_b")
+    with pytest.raises(D.DesignNotRunnableError, match="runner adapter is not written"):
+        D.load_module("forward")
+    unrunnable = D.unrunnable_modules()
+    assert {"family_b", "forward"} <= set(unrunnable)
+    assert not {"family_b", "forward"} & set(D.available_modules())
+    assert not {"family_b", "forward"} & set(D.missing_modules())
+    with pytest.raises(D.DesignError, match="no designs for this runner: .*forward"):
+        D.get_design("F_eeg64")
+    # the plan scripts read a non-zero status instead of an empty list
+    assert RB.main(["designs", "--module", "forward"]) == 3
+    assert "runner adapter is not written" in capsys.readouterr().err
+    assert RB.main(["designs", "--module", "family_b"]) == 3
+    assert RB.main(["designs"]) == 0
+    out = capsys.readouterr().out
+    assert "family_b: design module 'family_b'" in out
+    assert "anchors: A_anchors" in out
+
+
+def test_a_module_with_malformed_designs_is_still_an_error(monkeypatch):
+    import types
+
+    fake = types.ModuleType(f"{D.PACKAGE}.forward")
+    fake.DESIGNS = ["not a tuple of Design"]
+    real = D.importlib.import_module
+    monkeypatch.setattr(D.importlib, "import_module",
+                        lambda name, *a, **k: fake if name == fake.__name__
+                        else real(name, *a, **k))
+    monkeypatch.delitem(D._MODULE_CACHE, "forward", raising=False)
+    with pytest.raises(D.DesignError, match="must define DESIGNS as a tuple") as exc:
+        D.load_module("forward")
+    assert not isinstance(exc.value, D.DesignNotRunnableError)
+
+
 def test_design_names_are_unique_and_designs_know_their_module():
     ds = D.designs(OWN_MODULES)
     for name, d in ds.items():

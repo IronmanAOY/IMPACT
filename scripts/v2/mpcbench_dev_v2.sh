@@ -12,8 +12,10 @@
 #                 (seeds 320-383)
 #   smoke         held-out conditions on seeds 980-984; the runner keeps
 #                 status lines only (smoke.jsonl) and discards the outputs
-#   modules       the designs of the other v2 modules that are merged
-#                 (family B, forward arms, null-calibration generator)
+#   modules       the other v2 modules that are merged: family B through
+#                 its validation script (development mirrors 400-439), the
+#                 forward arms and the null-calibration generator through
+#                 the runner when they define designs for it
 #
 # Every run step resumes: completed task ids are skipped, failed tasks and a
 # line cut by an interruption are run again. A step that ends with task
@@ -36,20 +38,23 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 FAILED=""
 has() { [[ " $STEPS " == *" $1 "* ]]; }
-run() {  # run <designs> <out-subdir>
+outcome() {  # outcome <exit status> <step>
   # exit 1 (task errors or plan differences) is recorded and the next step
   # runs; any other failure (a refused run) stops the script
+  if [[ $1 -eq 1 ]]; then
+    echo "step $2: task errors or plan differences (see its manifest)"
+    FAILED="$FAILED $2"
+  elif [[ $1 -ne 0 ]]; then
+    echo "step $2: run refused (exit $1)"
+    exit "$1"
+  fi
+}
+run() {  # run <designs> <out-subdir>
   local rc=0
   # shellcheck disable=SC2086
   "$PY" scripts/run_bench_v2.py run "$1" --split development \
       --workers "$WORKERS" --out "$OUT/$2" $EXTRA || rc=$?
-  if [[ $rc -eq 1 ]]; then
-    echo "step $2: task errors or plan differences (see its manifest)"
-    FAILED="$FAILED $2"
-  elif [[ $rc -ne 0 ]]; then
-    echo "step $2: run refused (exit $rc)"
-    exit "$rc"
-  fi
+  outcome "$rc" "$2"
 }
 
 if has manipulation; then
@@ -73,9 +78,18 @@ if has smoke; then
   run A_heldout smoke
 fi
 if has modules; then
-  for MOD in family_b forward null_calibration; do
-    NAMES="$("$PY" scripts/run_bench_v2.py designs --module "$MOD")"
-    if [[ -n "$NAMES" ]]; then
+  rc=0
+  "$PY" scripts/v2/iim_validation_v2.py --split development --workers "$WORKERS" \
+      --out "$OUT/modules/family_b" || rc=$?
+  outcome "$rc" modules/family_b
+  for MOD in forward null_calibration; do
+    rc=0
+    NAMES="$("$PY" scripts/run_bench_v2.py designs --module "$MOD")" || rc=$?
+    if [[ $rc -ne 0 ]]; then
+      # merged, but no designs for the runner yet: reported, not skipped quietly
+      echo "design module $MOD: no designs for the runner (exit $rc); skipped"
+      FAILED="$FAILED modules/$MOD"
+    elif [[ -n "$NAMES" ]]; then
       run "$NAMES" "modules/$MOD"
     else
       echo "design module $MOD is not merged yet; skipped"

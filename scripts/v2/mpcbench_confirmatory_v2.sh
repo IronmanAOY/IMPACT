@@ -33,24 +33,33 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 FAILED=""
 has() { [[ " $STEPS " == *" $1 "* ]]; }
-run() {  # run <designs> <out-subdir>
+outcome() {  # outcome <exit status> <step>
   # exit 1 (task errors or plan differences) is recorded and the next step
   # runs; any other failure (the guard or the plan check refused the run)
   # stops the plan
+  if [[ $1 -eq 1 ]]; then
+    echo "step $2: task errors or plan differences (see its manifest)"
+    FAILED="$FAILED $2"
+  elif [[ $1 -ne 0 ]]; then
+    echo "step $2: run refused (exit $1); the confirmatory plan stops here"
+    exit "$1"
+  fi
+}
+run() {  # run <designs> <out-subdir>
   local rc=0
   "$PY" scripts/run_bench_v2.py run "$1" --split confirmatory --confirmatory \
       --freeze-tag "$TAG" --no-drafts --workers "$WORKERS" --out "$OUT/$2" || rc=$?
-  if [[ $rc -eq 1 ]]; then
-    echo "step $2: task errors or plan differences (see its manifest)"
-    FAILED="$FAILED $2"
-  elif [[ $rc -ne 0 ]]; then
-    echo "step $2: run refused (exit $rc); the confirmatory plan stops here"
-    exit "$rc"
-  fi
+  outcome "$rc" "$2"
 }
 run_module() {  # run_module <design module>
-  local NAMES
-  NAMES="$("$PY" scripts/run_bench_v2.py designs --module "$1")"
+  # a module that is merged but defines no designs for the runner stops the
+  # plan (exit 3), so that no arm of the frozen plan is skipped silently
+  local NAMES rc=0
+  NAMES="$("$PY" scripts/run_bench_v2.py designs --module "$1")" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "design module $1: no designs for the runner (exit $rc); the confirmatory plan stops here"
+    exit "$rc"
+  fi
   if [[ -n "$NAMES" ]]; then
     run "$NAMES" "$1"
   else
@@ -82,7 +91,12 @@ if has forward; then
   run_module forward
 fi
 if has family_b; then
-  run_module family_b
+  # family B has its own task model and runs through its validation script,
+  # behind the same confirmatory guard
+  rc=0
+  "$PY" scripts/v2/iim_validation_v2.py --split confirmatory --freeze-tag "$TAG" \
+      --workers "$WORKERS" --out "$OUT/family_b" || rc=$?
+  outcome "$rc" family_b
 fi
 if has twins; then
   run A_twins,C1_twins,RAM160_twins twins

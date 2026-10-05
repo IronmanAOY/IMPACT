@@ -19,7 +19,11 @@ including the modules that other parts of the work add (family B, the
 forward-model arms, the null-calibration generator and the Tier-B arms).
 :func:`load_module` imports one; a module that is not in the tree yet raises
 :class:`DesignNotAvailableError` ("not merged yet") instead of an
-``ImportError`` from deep inside the runner.
+``ImportError`` from deep inside the runner. A module that is in the tree
+but defines no ``DESIGNS`` raises :class:`DesignNotRunnableError`: family B
+has its own task model and runs through its validation script
+(:data:`RUN_ELSEWHERE`), and a module whose runner adapter is not written
+yet is reported as such, so that a run plan never skips it silently.
 
 Module contract. A design module defines
 
@@ -92,6 +96,11 @@ DESIGN_MODULES: Mapping[str, str] = {
                    "RAM-PE and SRPI arms, IIM comparator and long arm",
 }
 TIER_B_MODULES = ("srpi_only", "patchwork_v2", "tier_b_arms")
+# Pre-declared modules whose tasks another script runs (their own task model
+# and records): {module: the script}. They define no DESIGNS for this runner.
+RUN_ELSEWHERE: Mapping[str, str] = {
+    "family_b": "scripts/v2/iim_validation_v2.py",
+}
 PACKAGE = __name__
 
 # The default view: the simulated (source) recording itself.
@@ -109,6 +118,12 @@ class DesignError(ValueError):
 
 class DesignNotAvailableError(ImportError):
     """A pre-declared design module that is not in the tree yet."""
+
+
+class DesignNotRunnableError(DesignError):
+    """A pre-declared design module in the tree that defines no designs for
+    this runner: another script runs it (:data:`RUN_ELSEWHERE`), or its
+    runner adapter is not written yet."""
 
 
 # --------------------------------------------------------------------------
@@ -434,7 +449,14 @@ def load_module(name: str):
                 f"design module {name!r} ({DESIGN_MODULES[name]}) is not merged "
                 "yet") from None
         raise
-    designs = getattr(mod, "DESIGNS", None)
+    if not hasattr(mod, "DESIGNS"):
+        where = RUN_ELSEWHERE.get(name)
+        why = (f"its tasks run through {where}" if where is not None else
+               "its runner adapter is not written yet")
+        raise DesignNotRunnableError(
+            f"design module {name!r} ({DESIGN_MODULES[name]}) is in the tree but "
+            f"defines no designs for this runner: {why}")
+    designs = getattr(mod, "DESIGNS")
     if not isinstance(designs, tuple) or not all(isinstance(d, Design)
                                                  for d in designs):
         raise DesignError(f"design module {name!r} must define DESIGNS as a tuple "
@@ -443,20 +465,39 @@ def load_module(name: str):
     return mod
 
 
-def available_modules() -> Tuple[str, ...]:
-    """The pre-declared design modules present in the tree."""
-    out = []
+def _module_states() -> Dict[str, Optional[str]]:
+    """``{module: None}`` for the runnable modules, else the reason
+    (``not merged yet`` or the :class:`DesignNotRunnableError` message)."""
+    out: Dict[str, Optional[str]] = {}
     for name in DESIGN_MODULES:
         try:
             load_module(name)
         except DesignNotAvailableError:
+            out[name] = "not merged yet"
             continue
-        out.append(name)
-    return tuple(out)
+        except DesignNotRunnableError as exc:
+            out[name] = str(exc)
+            continue
+        out[name] = None
+    return out
+
+
+def available_modules() -> Tuple[str, ...]:
+    """The pre-declared design modules present in the tree whose designs this
+    runner runs."""
+    return tuple(n for n, why in _module_states().items() if why is None)
 
 
 def missing_modules() -> Tuple[str, ...]:
-    return tuple(n for n in DESIGN_MODULES if n not in available_modules())
+    """The pre-declared design modules that are not merged yet."""
+    return tuple(n for n, why in _module_states().items() if why == "not merged yet")
+
+
+def unrunnable_modules() -> Dict[str, str]:
+    """``{module: reason}`` of the merged modules that define no designs for
+    this runner (:class:`DesignNotRunnableError`)."""
+    return {n: why for n, why in _module_states().items()
+            if why is not None and why != "not merged yet"}
 
 
 def designs(modules: Optional[Iterable[str]] = None) -> Dict[str, Design]:
@@ -474,11 +515,15 @@ def designs(modules: Optional[Iterable[str]] = None) -> Dict[str, Design]:
 
 def get_design(name: str) -> Design:
     """A design by name, searched in every available module; the error names
-    the modules that are not merged yet."""
+    the modules that are not merged yet and those this runner does not run."""
     found = designs().get(name)
     if found is None:
         missing = missing_modules()
-        hint = (f" (not merged yet: {', '.join(missing)})" if missing else "")
+        elsewhere = sorted(unrunnable_modules())
+        hint = "".join([
+            f" (not merged yet: {', '.join(missing)})" if missing else "",
+            f" (no designs for this runner: {', '.join(elsewhere)})" if elsewhere
+            else ""])
         raise DesignError(f"unknown design {name!r}{hint}")
     return found
 
@@ -685,9 +730,11 @@ __all__ = [
     "Design",
     "DesignError",
     "DesignNotAvailableError",
+    "DesignNotRunnableError",
     "ESTIMATOR_FORMS",
     "EstimatorForm",
     "PRIMARY_FORM",
+    "RUN_ELSEWHERE",
     "SOURCE",
     "SOURCE_VIEW",
     "SPLITS",
@@ -708,4 +755,5 @@ __all__ = [
     "seeds_of",
     "split_protocol_key",
     "task_id",
+    "unrunnable_modules",
 ]

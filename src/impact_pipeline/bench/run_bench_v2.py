@@ -2023,7 +2023,8 @@ def build_parser() -> argparse.ArgumentParser:
     dz = sub.add_parser("designs", help="list the design modules and designs")
     dz.add_argument("--module", default=None,
                     help="print the comma-separated designs of one module (empty "
-                         "when it is not merged yet)")
+                         "when it is not merged yet; exit status 3 when it is "
+                         "merged but defines no designs for this runner)")
     mp = sub.add_parser("manipulation",
                         help="prerequisite M: switch and realisation checks (oracle "
                              "only, no estimator)")
@@ -2126,6 +2127,10 @@ def _main(args) -> int:
             print(",".join(d.name for d in D.load_module(args.module).DESIGNS))
         except D.DesignNotAvailableError:
             print("")
+        except D.DesignNotRunnableError as exc:
+            # merged, but not run here: a plan step must not skip it silently
+            print(f"run_bench_v2: {exc}", file=sys.stderr)
+            return 3
         return 0
     if args.command == "designs":
         for m, desc in D.DESIGN_MODULES.items():
@@ -2135,6 +2140,8 @@ def _main(args) -> int:
                 print(f"{m}: {names}")
             except D.DesignNotAvailableError:
                 print(f"{m}: not merged yet ({desc})")
+            except D.DesignNotRunnableError as exc:
+                print(f"{m}: {exc}")
         return 0
     if args.command == "plan":
         rows = D.plan_table(args.split, _parse_list(args.designs))
