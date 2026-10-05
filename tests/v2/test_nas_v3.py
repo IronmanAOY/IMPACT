@@ -215,6 +215,18 @@ def test_v3_reproduces_the_frozen_v1_statistic_on_the_v1_geometry(family_a):
     assert d["null_shifts"] == r["details"]["null_shifts"]
 
 
+def test_the_audit_reads_the_v1_identity_from_the_module():
+    from scripts.v2 import integrity_audit as IA
+
+    rep = N.v1_geometry_identity()
+    assert rep["seed"] == SEED_A and rep["max_abs_diff"] <= IA.NAS_IDENTITY_TOL
+    assert set(rep["differences"]) >= set(V1_KEYS)
+    assert rep["limiting_direction"]["v1"] == rep["limiting_direction"]["v3"]
+    assert IA.nas_identity(None)["max_abs_diff"] == rep["max_abs_diff"]
+    check = IA.ia8_identities([], None)
+    assert check["status"] == IA.PASS and check["details"]["nas_identity_checked"]
+
+
 @pytest.mark.parametrize("lags,comps", [((1, 2), 5), ((1, 3, 9), 2), ((2,), 1)])
 def test_v3_reproduces_v1_on_synthetic_geometries(lags, comps):
     ts, _u, hub, blocks = varx(3, n_time=2500, gain=1.0, loop=0.3)

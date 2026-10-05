@@ -1485,6 +1485,53 @@ def nas_v3_system(system, declaration_id: str = "R", *, params=None,
         override_observation_gate=override_observation_gate)
 
 
+# the development system of the v1 identity check (family A, seed 5) and the
+# statistics it compares
+V1_IDENTITY_SEED = 5
+V1_IDENTITY_KEYS = ("te_in", "te_out", "te_in_null_mean", "te_out_null_mean",
+                    "te_in_null_sd", "te_out_null_sd", "te_in_excess",
+                    "te_out_excess")
+
+
+def v1_geometry_identity(seed: int = V1_IDENTITY_SEED) -> dict:
+    """
+    The identity the integrity audit checks: the frozen v1
+    ``compute_NAS(mode='capacity')`` statistic and :func:`pooled_statistic` on
+    the v1 geometry (the workspace against every other node, lags {1, 2},
+    five components, 19 hub shifts with the v1 null seed) of a family-A run
+    at a development seed. Returns ``max_abs_diff`` over both directions'
+    statistics, null moments and excesses, the limiting direction's excess
+    and raw value and the null mean, with the differences per quantity.
+    """
+    from impact_pipeline.bench import generators as G
+
+    s = G.simulate_family_a(seed=int(seed))
+    hub = [int(i) for i in s.meta["workspace_nodes"]]
+    periphery = [i for i in range(s.n_nodes) if i not in set(hub)]
+    seed_null = null_seed_for(seed)
+    v1 = mm.compute_NAS(s.ts, tr=float(s.dt), workspace_nodes=hub, mode="capacity",
+                        null_surrogates=N_NULL, null_seed=seed_null,
+                        transfer_lags=(1, 2), transfer_components=V1_COMPONENTS,
+                        return_details=True)
+    v3 = pooled_statistic(s.ts, hub, periphery, (1, 2), n_components=V1_COMPONENTS,
+                          null_seed=seed_null)
+    tr = v1["transfer"]
+    diffs = {k: abs(float(tr[k]) - float(v3[k])) for k in V1_IDENTITY_KEYS}
+    diffs["value"] = abs(float(v1["value"]) - float(v3["value"]))
+    diffs["raw"] = abs(float(v1["raw"]) - float(v3["raw"]))
+    diffs["null_mean"] = abs(float(v1["NAS_null_mean"]) - float(v3["null_mean"]))
+    same_direction = v1["limiting_direction"] == v3["limiting_direction"]
+    return {
+        "max_abs_diff": (max(diffs.values()) if same_direction else float("inf")),
+        "differences": diffs,
+        "limiting_direction": {"v1": v1["limiting_direction"],
+                               "v3": v3["limiting_direction"]},
+        "system": "family_a",
+        "seed": int(seed),
+        "estimator_version": ESTIMATOR_VERSION,
+    }
+
+
 # --------------------------------------------------------------------------
 # records, evidence and anchors
 # --------------------------------------------------------------------------
@@ -1678,6 +1725,7 @@ __all__ = [
     "observation_rank",
     "observation_stage",
     "pooled_statistic",
+    "v1_geometry_identity",
     "psd_solve",
     "residual_covariance",
     "system_coupling_timescale",
