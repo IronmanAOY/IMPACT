@@ -710,10 +710,18 @@ def test_c1_declares_srpi_ram_and_pdi_not_applicable():
 # protocols and their option names
 # --------------------------------------------------------------------------
 def test_protocol_option_names_map_onto_the_estimators():
+    from impact_pipeline.v2 import hypothesis_engine as HE
     from impact_pipeline.v2 import pdi_v3, ram_v3
 
     tmpl = E.ProtocolV3.from_json(RB.TEMPLATE_PATH)
     ram = tmpl.estimator_options("RAM")
+    # one map for the runner, the evaluator and the integrity audit
+    assert RB.RAM_FACET_NAMES is HE.RAM_FACET_NAMES
+    assert RB.PDI_OPTION_NAMES is HE.PDI_OPTION_NAMES
+    assert RB.translate_facets(ram["facets_not_applicable"]) == (
+        HE.ram_facets_for_estimator(ram["facets_not_applicable"]))
+    assert RB.pdi_v3_params(tmpl.estimator_options("PDI"))[0] == (
+        HE.pdi_params_for_estimator(tmpl.estimator_options("PDI")))
     assert set(RB.RAM_FACET_NAMES) == set(ram["facets_not_applicable"])
     assert set(RB.RAM_FACET_NAMES.values()) == set(ram_v3.FACETS_NOT_APPLICABLE)
     assert RB.translate_facets(ram["facets_not_applicable"]) == (

@@ -121,6 +121,7 @@ import numpy as np
 
 from impact_pipeline.bench import designs_v2 as D
 from impact_pipeline.v2 import GENERATOR_VERSION_V2
+from impact_pipeline.v2 import hypothesis_engine as _names
 from impact_pipeline.v2 import provenance as PV
 from impact_pipeline.v2 import reasons as R
 from impact_pipeline.v2 import records as REC
@@ -183,10 +184,14 @@ FAMILY_PROTOCOLS = {
     "C1-R": ("C1", "R"), "C1-H": ("C1", "H"),
 }
 
-# Protocol option names that differ from the estimators' parameter names.
-# This table is the one place that maps them (the evaluator reads it too).
-RAM_FACET_NAMES = {"G": "goal_alignment", "F": "feedback_magnitude",
-                   "speed": "speed"}
+# Protocol option names that differ from the estimators' parameter names
+# (RAM-PE facets F, G, speed; the PDI option pdi_bearer). The renaming tables
+# live in one place, impact_pipeline.v2.hypothesis_engine, which the
+# evaluator and the integrity audit read as well; the runner translates
+# through them. PROTOCOL_OPTION_NAMES documents every option an estimator
+# of this runner reads.
+RAM_FACET_NAMES = _names.RAM_FACET_NAMES
+PDI_OPTION_NAMES = _names.PDI_OPTION_NAMES
 PROTOCOL_OPTION_NAMES = {
     "RAM": {"facets_not_applicable": "facets (G, F, speed -> goal_alignment, "
                                      "feedback_magnitude, speed)",
@@ -291,16 +296,13 @@ def null_seed(seed: int, replicate: int = 0) -> int:
 # --------------------------------------------------------------------------
 def translate_facets(facets: Mapping) -> dict:
     """Protocol facet keys (``G``, ``F``, ``speed``) -> RAM-PE v3 facet names
-    (``goal_alignment``, ``feedback_magnitude``, ``speed``)."""
-    out = {}
-    for k, v in dict(facets or {}).items():
-        name = RAM_FACET_NAMES.get(k, k)
-        if name not in RAM_FACET_NAMES.values():
-            raise ProtocolOptionError(f"unknown RAM facet {k!r}")
-        if name in out:
-            raise ProtocolOptionError(f"RAM facet {name!r} declared twice")
-        out[name] = str(v)
-    return out
+    (``goal_alignment``, ``feedback_magnitude``, ``speed``), through the one
+    map (:func:`impact_pipeline.v2.hypothesis_engine.ram_facets_for_estimator`)."""
+    try:
+        out = _names.ram_facets_for_estimator(facets)
+    except ValueError as exc:
+        raise ProtocolOptionError(str(exc)) from None
+    return {k: str(v) for k, v in out.items()}
 
 
 def ram_v3_params(options: Mapping) -> dict:
@@ -336,11 +338,13 @@ def pdi_v3_params(options: Mapping) -> Tuple[dict, dict]:
     mode = opts.pop("mode", None)
     if mode is not None and mode != pdi_v3.MODE:
         raise ProtocolOptionError(f"PDI mode {mode!r}; PDI v3 computes {pdi_v3.MODE!r}")
-    if "pdi_bearer" in opts:
-        bearer = opts.pop("pdi_bearer")
-        if "bearer" in opts and opts["bearer"] != bearer:
-            raise ProtocolOptionError("PDI bearer declared twice with different values")
-        opts["bearer"] = bearer
+    for proto_name, name in PDI_OPTION_NAMES.items():
+        if proto_name in opts:
+            value = opts.pop(proto_name)
+            if name in opts and opts[name] != value:
+                raise ProtocolOptionError(f"PDI {name} declared twice with different "
+                                          "values")
+            opts[name] = value
     runner = {"access_module": opts.pop("access_module", None)}
     pdi_v3.PDIParams.from_mapping(opts)
     return opts, runner
@@ -2311,6 +2315,7 @@ __all__ = [
     "IimV5Scorer",
     "ModuleScorer",
     "NasV3Scorer",
+    "PDI_OPTION_NAMES",
     "NOT_APPLICABLE",
     "PROTOCOL_OPTION_NAMES",
     "RAM_FACET_NAMES",
