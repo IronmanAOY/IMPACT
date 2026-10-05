@@ -24,40 +24,60 @@
   "tally": "decisive parts per outcome, including parts removed before the freeze with their development outcome as the predicted outcome"
  },
  "vocabulary": {
-  "design.witnesses": "witnesses",
-  "design.sweep": "sweep",
-  "design.factorial": "factorial",
-  "design.adversarial": "adversarial",
-  "design.held_out": "held_out",
-  "design.twins": "twins",
-  "design.anchor_replication": "anchor_replication",
-  "design.ram_only": "ram_only",
-  "design.ram_only_twins": "ram_only_twins",
-  "design.ram_only_anchor_replication": "ram_only_anchor_replication",
+  "design.witnesses": [
+   "A_witnesses",
+   "C1_witnesses"
+  ],
+  "design.sweep": [
+   "A_sweeps",
+   "C1_sweeps"
+  ],
+  "design.factorial": [
+   "A_factorial",
+   "C1_factorial"
+  ],
+  "design.adversarial": "A_adversaries",
+  "design.held_out": "A_heldout",
+  "design.twins": [
+   "A_twins",
+   "C1_twins"
+  ],
+  "design.anchor_replication": [
+   "A_anchors",
+   "C1_anchors"
+  ],
+  "design.ram_only": "RAM160",
+  "design.ram_only_twins": "RAM160_twins",
+  "design.ram_only_anchor_replication": "RAM160_anchors",
   "design.null_calibration": "null_calibration",
   "design.family_b": "family_b",
   "design.whole_brain": "whole_brain",
   "design.forward": "forward_family_a",
   "design.forward_anchor_replication": "forward_anchor_replication",
   "family.A": "A",
-  "family.C1": "C",
+  "family.C1": "C1",
   "family.B": "B",
-  "form.primary": "primary",
+  "form.primary": [
+   "primary",
+   "directional"
+  ],
   "form.nas_secondary": "nas_secondary",
-  "form.iim_bidirectional": "iim_bidirectional",
-  "form.iim_residualise_then_shift": "iim_residualise_then_shift",
-  "form.iim_v1_quadrant": "iim_v1_quadrant",
+  "form.iim_bidirectional": [
+   "iim_bidirectional",
+   "bidirectional"
+  ],
+  "form.iim_v1_quadrant": "iim_v1_quadrants",
   "form.pdi_misdeclared_access": "pdi_misdeclared_access",
   "view.source": "source",
   "view.eeg64": "eeg64",
   "view.eeg64_noref": "eeg64_noref",
-  "view.eeg_low": "eeg_low",
+  "view.eeg_low": "eeglow",
   "view.mne_template": "mne_template",
   "view.bold": "bold",
   "view.sensor_set": [
    "eeg64",
    "eeg64_noref",
-   "eeg_low",
+   "eeglow",
    "mne_template"
   ],
   "substrate.hopf": "hopf",
@@ -83,41 +103,43 @@
   ]
  },
  "fields": {
-  "nas_z_receive": "details.te_in.z",
-  "nas_z_return": "details.te_out.z",
-  "nas_rank1_z_receive": "details.descriptors.rank1.te_in.z",
-  "nas_rank1_z_return": "details.descriptors.rank1.te_out.z",
-  "nas_excess_receive": "details.te_in.excess",
-  "nas_excess_return": "details.te_out.excess",
-  "iim_p_ind": "details.p_ind",
-  "pdi_k_full": "details.full_bearer.n_states",
-  "pdi_k_content": "details.n_states",
-  "pdi_ami_ignition": "details.full_bearer.ami_ignition_gate",
-  "variant": "config.variant",
-  "sweep_knob": "config.sweep_knob",
-  "sweep_level": "config.sweep_level",
-  "cell_id": "config.cell_id",
-  "null_kind": "config.null_kind",
-  "n_time": "config.n_time",
-  "n_nodes": "config.n_nodes",
-  "b_network": "config.network",
-  "b_coupling": "config.coupling",
-  "b_noise": "config.noise",
-  "b_T": "config.T",
-  "b_condition": "config.condition",
-  "b_label_q": "config.label_error_q",
-  "b_occupancy_cell": "config.occupancy_cell",
-  "b_exact": "details.exact_value",
-  "hopf_G": "config.G",
-  "hopf_lesion": "config.lesion",
+  "nas_z_receive": "details.estimator.directions.receive.z",
+  "nas_z_return": "details.estimator.directions.return.z",
+  "nas_rank1_z_receive": "details.estimator.descriptors.pooled_rank1.te_in_z",
+  "nas_rank1_z_return": "details.estimator.descriptors.pooled_rank1.te_out_z",
+  "nas_excess_receive": "details.estimator.directions.receive.excess",
+  "nas_excess_return": "details.estimator.directions.return.excess",
+  "iim_p_ind": "details.estimator.p_ind",
+  "pdi_k_full": "details.estimator.full_bearer.counts.0",
+  "pdi_k_content": "details.estimator.counts.0",
+  "pdi_ami_ignition": "details.estimator.ami_ignition_full_bearer",
+  "variant": "config.params.variant",
+  "sweep_knob": "config.tags.sweep_knob",
+  "sweep_level": "config.tags.sweep_level",
+  "cell_id": "system",
+  "null_kind": "config.tags.null_kind",
+  "n_time": "simulation.n_time",
+  "n_nodes": "simulation.n_nodes",
+  "b_network": "config.cell.system",
+  "b_coupling": "config.cell.params.coupling",
+  "b_noise": "config.cell.params.noise",
+  "b_T": "config.cell.n_time",
+  "b_condition": "config.cell.condition",
+  "b_label_q": "scoring_details.scoring.label_error_q",
+  "b_occupancy_cell": "config.cell.expected.occupancy",
+  "b_exact": "details.exact_target",
+  "b_null_order": "scoring_details.scoring.null_order",
+  "hopf_G": "config.forward.condition_spec.G",
+  "hopf_lesion": "config.forward.condition_spec.lesion",
   "verdict_n_decl": "verdict.verdict_declared",
-  "nas_conditioning_delta": "details.conditioning_delta",
+  "nas_conditioning_delta": "details.estimator.descriptors.conditioning_delta.receive",
+  "nas_conditioning_delta_return": "details.estimator.descriptors.conditioning_delta.return",
   "nas_c_receive": "c_R",
   "nas_c_return": "c_B",
-  "nas_se_c_receive": "details.te_in.se_c",
-  "nas_se_c_return": "details.te_out.se_c",
-  "nas_df_c_receive": "details.te_in.df_c",
-  "nas_df_c_return": "details.te_out.df_c"
+  "nas_se_c_receive": "details.assessment.members.receive.se",
+  "nas_se_c_return": "details.assessment.members.return.se",
+  "nas_df_c_receive": "details.assessment.members.receive.df",
+  "nas_df_c_return": "details.assessment.members.return.df"
  },
  "derived": {
   "nas_significant": {
@@ -186,7 +208,7 @@
    ],
    "development": [
     400,
-    409
+    414
    ]
   },
   "family_b_exact_tracking": {
@@ -195,8 +217,8 @@
     20279
    ],
    "development": [
-    410,
-    414
+    420,
+    424
    ]
   },
   "family_b_feedforward_star": {
@@ -215,8 +237,8 @@
     20419
    ],
    "development": [
-    420,
-    429
+    435,
+    439
    ]
   },
   "family_b_non_monotone": {
@@ -225,8 +247,8 @@
     20459
    ],
    "development": [
-    430,
-    434
+    425,
+    429
    ]
   },
   "family_b_occupancy_gate": {
@@ -235,8 +257,8 @@
     20499
    ],
    "development": [
-    435,
-    439
+    430,
+    434
    ]
   },
   "twin_networks": {
@@ -752,7 +774,8 @@
        "estimator_form": [
         "@form.primary",
         "@form.iim_bidirectional"
-       ]
+       ],
+       "@b_null_order": "shift_then_project"
       },
       "union": [
        {
@@ -802,9 +825,13 @@
        "family": "@family.B",
        "principle": "IIM",
        "seed_block": "family_b_rank_calibration",
-       "estimator_form": "@form.iim_residualise_then_shift"
+       "estimator_form": [
+        "@form.primary",
+        "@form.iim_bidirectional"
+       ],
+       "@b_null_order": "project_then_shift"
       },
-      "cell_label": "{@b_condition}:T{@b_T}",
+      "cell_label": "{@b_condition}:T{@b_T}:{estimator_form}",
       "event": {
        "@iim_p_ind": {
         "le": 0.05
@@ -2402,10 +2429,17 @@
        ],
        "seed_block": "witnesses_20"
       },
-      "value": "@nas_conditioning_delta",
-      "cells": [
-       "system",
-       "declaration_id"
+      "union": [
+       {
+        "label": "receive",
+        "value": "@nas_conditioning_delta",
+        "cell_label": "{system}:{declaration_id}|receive"
+       },
+       {
+        "label": "return",
+        "value": "@nas_conditioning_delta_return",
+        "cell_label": "{system}:{declaration_id}|return"
+       }
       ]
      },
      "role": "reported"
@@ -2642,7 +2676,7 @@
        {
         "label": "xor",
         "where": {
-         "@b_network": "xor"
+         "@b_network": "xor_loop"
         },
         "group": "@b_noise"
        }
@@ -2734,7 +2768,7 @@
        "family": "@family.B",
        "principle": "IIM",
        "seed_block": "family_b_occupancy_gate",
-       "@b_occupancy_cell": "low"
+       "@b_occupancy_cell": "undefined"
       },
       "event": {
        "reason_code": "INSUFFICIENT_OCCUPANCY"
@@ -2756,7 +2790,7 @@
        "family": "@family.B",
        "principle": "IIM",
        "seed_block": "family_b_occupancy_gate",
-       "@b_occupancy_cell": "high"
+       "@b_occupancy_cell": "defined"
       },
       "event": {
        "defined": true
@@ -2807,11 +2841,11 @@
        {
         "label": "v1_quadrant_average_reference",
         "where": {
-         "design": "@design.whole_brain",
+         "design": "@design.family_b",
+         "family": "@family.B",
          "principle": "IIM",
-         "@hopf_G": 0,
-         "view": "@view.eeg64",
-         "estimator_form": "@form.iim_v1_quadrant"
+         "seed_block": "family_b_occupancy_gate",
+         "@b_network": "hopf_eeg_quadrants"
         },
         "event": {
          "reason_code": "MACRO_RANK_DEFICIENT"
@@ -3544,7 +3578,7 @@
         "label": "reflex_arc",
         "where": {
          "design": "@design.ram_only",
-         "system": "adversarial_reflex_arc"
+         "system": "reflex_arc"
         },
         "cell_label": "ram_only:{member}"
        },
@@ -3809,7 +3843,7 @@
        {
         "label": "scrambled",
         "where": {
-         "system": "adversarial_scrambled_feedback"
+         "system": "scrambled_feedback"
         }
        },
        {

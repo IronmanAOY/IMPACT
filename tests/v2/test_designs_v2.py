@@ -287,11 +287,11 @@ def test_held_out_conditions_exist_only_where_they_may(plans):
                 assert S.is_smoke_seed(t.seed), (name, t.task_id)
     smoke = plans[DEV]["A_heldout"]
     assert all(t.smoke and t.has_held_out for t in smoke)
-    assert {t.system for t in smoke} >= {"ADV_NAS_staggered_tau10.tau10",
-                                         "ADV_NAS_staggered_sat.saturating"}
+    assert {(t.system, t.params.get("variant")) for t in smoke} >= {
+        ("ADV_NAS_staggered_tau10", "tau10"), ("ADV_NAS_staggered_sat", "saturating")}
     conf_ho = plans[CONF]["A_heldout"]
-    assert {t.system for t in conf_ho} == {"ADV_NAS_staggered_tau10.tau10",
-                                           "ADV_NAS_staggered_sat.saturating"}
+    assert {(t.system, t.params.get("variant")) for t in conf_ho} == {
+        ("ADV_NAS_staggered_tau10", "tau10"), ("ADV_NAS_staggered_sat", "saturating")}
     assert all(s.principles == ("NAS",) and s.declaration_id == "R"
                and not s.verdict for t in conf_ho for s in t.scorings)
     with pytest.raises(D.DesignError, match="smoke"):
@@ -313,11 +313,15 @@ def test_sweeps_factorial_and_adversaries(plans):
     fac = plans[CONF]["A_factorial"]
     assert len({t.system for t in fac}) == 32
     adv = plans[CONF]["A_adversaries"]
-    assert {t.system for t in adv} == {
-        "adversarial_common_driver", "adversarial_reflex_arc",
-        "adversarial_random_label_self_other", "adversarial_scrambled_feedback",
-        "ADV_NAS_staggered_driver.hierarchical", "ADV_NAS_staggered_driver.uniform",
-        "ADV_NAS_staggered_driver.reversed"}
+    # a variant is a parameter of its catalogue system, not part of its name
+    assert {(t.system, t.params.get("variant")) for t in adv} == {
+        ("adversarial_common_driver", None), ("adversarial_reflex_arc", None),
+        ("adversarial_random_label_self_other", None),
+        ("adversarial_scrambled_feedback", None),
+        ("ADV_NAS_staggered_driver", "hierarchical"),
+        ("ADV_NAS_staggered_driver", "uniform"),
+        ("ADV_NAS_staggered_driver", "reversed")}
+    assert len({t.task_id for t in adv}) == len(adv)
     assert not any(t.has_held_out for t in adv)
 
 

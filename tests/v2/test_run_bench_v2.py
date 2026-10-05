@@ -891,7 +891,7 @@ def test_pdi_oracle_windows_follow_the_estimator_windows_and_the_ignition_check(
 # --------------------------------------------------------------------------
 def test_held_out_conditions_on_development_seeds_only_as_smoke_tests(tmp_path):
     smoke = [t for t in FA.held_out(DEV, seeds=[980])
-             if t.system in ("ADV_NAS_staggered_tau10.tau10", "W_NAS_no_workspace")]
+             if t.system in ("ADV_NAS_staggered_tau10", "W_NAS_no_workspace")]
     assert len(smoke) == 2 and all(t.smoke for t in smoke)
     with stubs():
         man = RB.run_tasks(smoke, tmp_path / "smoke")

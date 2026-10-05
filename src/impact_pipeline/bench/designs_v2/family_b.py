@@ -291,6 +291,22 @@ class Cell:
         return "/".join(toks)
 
     @property
+    def condition(self) -> Optional[str]:
+        """The HCv2-2 null condition of the cell (``independent``,
+        ``stratified``, ``residualised_continuous`` or
+        ``residualised_switching``; None for the other hypotheses), the label
+        the hypotheses select the rank-calibration cells by."""
+        if self.hypothesis != "HCv2-2":
+            return None
+        if self.generator == GEN_AR1_DRIVER:
+            kind = self.param_dict.get("driver")
+            return {"continuous_ar1": "residualised_continuous",
+                    "switching_filtered": "residualised_switching"}.get(kind)
+        if self.generator == GEN_BINARY_MARKOV_DRIVER:
+            return "stratified"
+        return "independent"
+
+    @property
     def cell_id(self) -> str:
         """``<hypothesis>[.<parts>]/<system>[/<param>=<value>...]/T<n>`` (a
         record token; ``T0`` is the generator's own run length)."""
@@ -304,6 +320,7 @@ class Cell:
     def to_dict(self) -> dict:
         return {"cell_id": self.cell_id, "hypothesis": self.hypothesis,
                 "parts": list(self.parts), "block": self.block,
+                "condition": self.condition,
                 "generator": self.generator, "system": self.system,
                 "params": dict(self.params), "n_time": int(self.n_time),
                 "lag": int(self.lag), "n_null": int(self.n_null),

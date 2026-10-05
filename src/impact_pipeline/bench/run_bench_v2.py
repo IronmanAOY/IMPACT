@@ -102,6 +102,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import dataclasses
+import hashlib
 import importlib
 import importlib.util
 import inspect
@@ -727,6 +728,9 @@ class PdiV3Scorer(Scorer):
             details["declared_access_module"] = runner["access_module"]
         if partition:
             details["oracle_windows"] = pdi_oracle_windows(ctx.system, params)
+            details["ami_ignition_full_bearer"] = _ami_ignition(
+                (details.get("full_bearer") or {}).get("partition"),
+                details["oracle_windows"])
         m = Member(estimate=f["estimate"], null_mean=f["null_mean"],
                    null_sd=f["null_sd"], n_null=f["n_null"],
                    null_family=f["null_family"], se=f["se"], se_df=f["se_df"],
@@ -805,7 +809,11 @@ class NasV3Scorer(Scorer):
             inputs=ctx.declared(), params=p, seed=int(ctx.task.seed),
             null_seed=ctx.null_seed, hub_name=hub_name,
             observation=ctx.view.observation)
-        return output_from_result(res, nas_v3, self)
+        out = output_from_result(res, nas_v3, self)
+        # both directions as the estimator reports them (z, excess, null
+        # draws, jackknife replicates), for the evaluator and the audit
+        out.details["directions"] = _sanitize(res.get("directions") or {})
+        return out
 
 
 class IimV5Scorer(Scorer):
@@ -1218,6 +1226,63 @@ def identifiability(declaration_id: str, view: D.ViewSpec) -> Optional[dict]:
             "hub_privileged": "not_tested"}
 
 
+def adjusted_mutual_info(labels_a, labels_b) -> Optional[float]:
+    """Adjusted mutual information of two labellings of the same items
+    (arithmetic-mean normalisation, expected mutual information under the
+    hypergeometric model of fixed marginals; Vinh, Epps and Bailey 2010).
+    1 for identical partitions up to relabelling, about 0 for independent
+    ones; 1 when both have a single label, 0 when only one of them has.
+    None for empty or unequal-length input."""
+    from scipy.special import gammaln
+
+    a, b = np.asarray(labels_a), np.asarray(labels_b)
+    if a.ndim != 1 or a.shape != b.shape or a.size == 0:
+        return None
+    _, ia = np.unique(a, return_inverse=True)
+    _, ib = np.unique(b, return_inverse=True)
+    ka, kb = int(ia.max()) + 1, int(ib.max()) + 1
+    if ka == 1 and kb == 1:
+        return 1.0
+    if ka == 1 or kb == 1:
+        return 0.0
+    n = float(a.size)
+    table = np.zeros((ka, kb))
+    np.add.at(table, (ia, ib), 1.0)
+    ra, cb = table.sum(axis=1), table.sum(axis=0)
+    nz = table > 0
+    expected = np.outer(ra, cb)[nz]
+    mi = float(np.sum(table[nz] / n * np.log(n * table[nz] / expected)))
+    h_a = float(-np.sum(ra / n * np.log(ra / n)))
+    h_b = float(-np.sum(cb / n * np.log(cb / n)))
+    emi = 0.0
+    for x in ra:
+        for y in cb:
+            lo, hi = int(max(1, x + y - n)), int(min(x, y))
+            if lo > hi:
+                continue
+            nij = np.arange(lo, hi + 1, dtype=float)
+            logp = (gammaln(x + 1) + gammaln(y + 1) + gammaln(n - x + 1)
+                    + gammaln(n - y + 1) - gammaln(n + 1) - gammaln(nij + 1)
+                    - gammaln(x - nij + 1) - gammaln(y - nij + 1)
+                    - gammaln(n - x - y + nij + 1))
+            emi += float(np.sum(nij / n * np.log(n * nij / (x * y)) * np.exp(logp)))
+    denom = 0.5 * (h_a + h_b) - emi
+    eps = np.finfo(float).eps
+    denom = min(denom, -eps) if denom < 0 else max(denom, eps)
+    return float((mi - emi) / denom)
+
+
+def _ami_ignition(partition: Optional[Mapping], windows: Mapping) -> Optional[float]:
+    """AMI of a PDI partition's window labels with the oracle ignition state
+    of the same windows (None when either is missing)."""
+    labels = (partition or {}).get("labels")
+    ign = (windows or {}).get("ignition")
+    if not labels or not ign:
+        return None
+    n = min(len(labels), len(ign))
+    return adjusted_mutual_info(labels[:n], ign[:n])
+
+
 def pdi_oracle_windows(system, params: Mapping) -> dict:
     """Oracle labels per PDI window (offset 0, the estimator's windows of
     ``PDIParams.window`` samples): the ignition state (gate above half its
@@ -1607,6 +1672,23 @@ def simulation_block(system, seconds=None) -> dict:
     return out
 
 
+# meta keys that name or version a realised system without configuring it
+SYSTEM_LABEL_META_KEYS = ("witness_id", "system_id", "generator_version", "replicate")
+
+
+def system_config_digest(system) -> Optional[str]:
+    """SHA-256 of the realised configuration of a simulated system: its meta
+    without the naming keys (:data:`SYSTEM_LABEL_META_KEYS`). Two designs
+    that spell one system differently (the catalogue's PC_nominal, the
+    nominal level of a sweep, the all-on factorial cell) share it, so the
+    duplicate detector can tell one configuration under several designs
+    from two configurations that produce the same recording."""
+    meta = {k: v for k, v in dict(getattr(system, "meta", None) or {}).items()
+            if k not in SYSTEM_LABEL_META_KEYS}
+    text = json.dumps(_sanitize(meta), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def run_task(task: D.TaskSpec, protocols: Mapping[str, ResolvedProtocol],
              settings: RunSettings = DEFAULT_SETTINGS, *, registry=None,
              provenance: Optional[Mapping] = None,
@@ -1630,6 +1712,7 @@ def run_task(task: D.TaskSpec, protocols: Mapping[str, ResolvedProtocol],
     t_all = time.perf_counter()
     timing: dict = {}
     simulation, scorings, error, gen_version = None, (), None, None
+    config_digest = None
     try:
         load_design_module(task.design_module)
         builder = SYSTEM_BUILDERS.get(task.builder)
@@ -1640,6 +1723,7 @@ def run_task(task: D.TaskSpec, protocols: Mapping[str, ResolvedProtocol],
         timing["simulate_s"] = t["seconds"]
         gen_version = (source.meta or {}).get("generator_version")
         simulation = simulation_block(source, t["seconds"])
+        config_digest = system_config_digest(source)
         with PV.timed() as t:
             scorings = score_simulation(task, source, protocols, settings, registry)
         timing["score_s"] = t["seconds"]
@@ -1659,6 +1743,7 @@ def run_task(task: D.TaskSpec, protocols: Mapping[str, ResolvedProtocol],
         "held_out": task.held_out,
         "design_module": task.design_module,
         "system_generator_version": gen_version,
+        "system_config_sha256": config_digest,
         "null_seed": null_seed(task.seed, task.replicate),
         "runner_version": RUNNER_VERSION,
         "settings": settings.to_dict(),
@@ -2196,6 +2281,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
 
+# generator family of the manipulation checks -> family label of the records
+MANIPULATION_FAMILY = {"C": "C1"}
+
+
 def run_manipulation(seeds: Sequence[int], out_dir, *, families=("A", "C"),
                      confirmatory: bool = False, freeze_tag: Optional[str] = None,
                      repo_root=None) -> dict:
@@ -2224,7 +2313,12 @@ def run_manipulation(seeds: Sequence[int], out_dir, *, families=("A", "C"),
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     for name in ("switches", "realisation", "summary"):
-        res[name].to_csv(out / f"manipulation_{name}.csv", index=False)
+        table = res[name]
+        if "family" in getattr(table, "columns", ()):
+            # the records name the v1 family C "C1"; usability is looked up
+            # by the record's family, so the checks carry the same label
+            table = table.assign(family=table["family"].replace(MANIPULATION_FAMILY))
+        table.to_csv(out / f"manipulation_{name}.csv", index=False)
     summary = res["summary"]
     passed = (bool(summary["usable"].all()) if "usable" in summary.columns else None)
     manifest = {
@@ -2313,6 +2407,7 @@ __all__ = [
     "FAMILY_PROTOCOLS",
     "Member",
     "IimV5Scorer",
+    "MANIPULATION_FAMILY",
     "ModuleScorer",
     "NasV3Scorer",
     "PDI_OPTION_NAMES",
@@ -2328,7 +2423,9 @@ __all__ = [
     "ScorerOutput",
     "ScoringContext",
     "SYSTEM_BUILDERS",
+    "SYSTEM_LABEL_META_KEYS",
     "VIEWS",
+    "adjusted_mutual_info",
     "build_agent_system",
     "build_catalogue_system",
     "build_tasks",
@@ -2361,6 +2458,7 @@ __all__ = [
     "simulation_block",
     "smoke_done",
     "smoke_summary",
+    "system_config_digest",
     "translate_facets",
     "v1_params",
     "write_components_csv",

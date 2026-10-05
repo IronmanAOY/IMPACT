@@ -2203,7 +2203,15 @@ def _walk(obj, parts):
     return cur
 
 
-def _builtin_derived(row: Mapping, name: str):
+def _cell_id(row: Mapping, fields: "Fields" = None):
+    """The factorial cell id of a row (``b`` and five bits): the file's
+    ``cell_id`` alias when it declares one, else ``config.cell_id``."""
+    if fields is not None and "cell_id" in fields.aliases:
+        return fields.get(row, "@cell_id")
+    return _walk(row, ["config", "cell_id"])
+
+
+def _builtin_derived(row: Mapping, name: str, fields: "Fields" = None):
     if name == "reason_code":
         reason = row.get("reason")
         if reason is None:
@@ -2227,7 +2235,7 @@ def _builtin_derived(row: Mapping, name: str):
             _finite(row.get("estimate")) is not None and code not in DEFINEDNESS_REASONS
         )
     if name == "own_bit" or name.startswith("bit."):
-        cid = _walk(row, ["config", "cell_id"])
+        cid = _cell_id(row, fields)
         if not isinstance(cid, str) or not _BIT_RE.match(cid):
             return None
         p = row.get("principle") if name == "own_bit" else name[4:]
@@ -2262,7 +2270,7 @@ class Fields:
             return self.get(row, self.aliases[name], _depth + 1)
         if path in row:
             return row[path]
-        v = _builtin_derived(row, path)
+        v = _builtin_derived(row, path, self)
         if v is not _MISSING:
             return v
         return _walk(row, path.split("."))

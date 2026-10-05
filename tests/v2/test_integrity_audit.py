@@ -89,7 +89,7 @@ def rec(
     family="A",
     system="PC_nominal",
     seed=100,
-    design="witnesses",
+    design="A_witnesses",
     replicate=0,
     config=None,
     ts=None,
@@ -136,7 +136,8 @@ def clean_records():
     out += [
         rec(
             f"w-C-{s}",
-            family="C",
+            family="C1",
+            design="C1_witnesses",
             seed=s,
             scorings=[
                 sc(
@@ -344,21 +345,21 @@ def test_ia5_detects_planted_duplicates():
     recs = clean_records()
     assert IA.ia5_duplicates(recs)["status"] == PASS
     same = h64("same")
-    cross = [rec("x-A", family="A", ts=same), rec("x-C", family="C", ts=same)]
+    cross = [rec("x-A", family="A", ts=same), rec("x-C", family="C1", ts=same)]
     seeds = [rec("s1", seed=101, ts=h64("s")), rec("s2", seed=102, ts=h64("s"))]
     twins = [
-        rec("t0", replicate=0, ts=h64("t"), design="twins"),
-        rec("t1", replicate=1, ts=h64("t"), design="twins"),
+        rec("t0", replicate=0, ts=h64("t"), design="A_twins"),
+        rec("t1", replicate=1, ts=h64("t"), design="A_twins"),
     ]
     cfg = [
         rec("k1", config={"knobs": {"g_b": 1.0}}, ts=h64("k")),
         rec("k2", config={"knobs": {"g_b": 0.0}}, ts=h64("k")),
     ]
     allowed = [
-        rec("a1", design="witnesses", ts=h64("a"), config={"knobs": {"g_b": 1.0}}),
+        rec("a1", design="A_witnesses", ts=h64("a"), config={"knobs": {"g_b": 1.0}}),
         rec(
             "a2",
-            design="sweep",
+            design="A_sweeps",
             ts=h64("a"),
             config={"knobs": {"g_b": 1.0}, "sweep_knob": "g_b", "sweep_level": 1.0},
         ),
@@ -489,7 +490,7 @@ def test_ia10_twins(spec):
             rec(
                 f"tw-PC-820-r{r}",
                 seed=820,
-                design="twins",
+                design="A_twins",
                 replicate=r,
                 struct=h64("net"),
                 sched=h64(f"s{r}"),
@@ -523,7 +524,7 @@ def test_run_audit_collects_the_excluded_records(spec):
     assert rep["not_run"] == ["IA-6"]
     assert rep["records_sha256"] == IA.records_digest(list(reversed(recs)))
     assert [c["id"] for c in rep["checks"]] == [f"IA-{i}" for i in range(1, 11)]
-    dup = rec("dup", family="C", ts=recs[0]["simulation"]["ts_sha256"], seed=100)
+    dup = rec("dup", family="C1", ts=recs[0]["simulation"]["ts_sha256"], seed=100)
     rep = IA.run_audit(recs + [dup], spec=spec)
     assert not rep["ok"]
     assert rep["excluded_task_ids"] == sorted([recs[0]["task_id"], "dup"])

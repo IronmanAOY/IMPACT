@@ -179,7 +179,9 @@ def catalogue_task(design: str, family: str, catalogue_family: str, system_id: s
     """A task that simulates a catalogue system. ``name`` replaces the
     catalogue id in the task id and the record's system name (for example a
     RAM-only class); ``suffix`` (default: the variant) is appended to the
-    task id."""
+    task id. A variant stays out of the system name (it is in
+    ``params['variant']``), so the variants of one catalogue system share
+    its name, as the hypotheses select them."""
     entry = A2.get_entry(system_id)
     params = {"id": system_id, "family": catalogue_family}
     if variant is not None:
@@ -187,7 +189,7 @@ def catalogue_task(design: str, family: str, catalogue_family: str, system_id: s
     if preset is not None:
         params["preset"] = preset
     base = system_id if name is None else name
-    system = base if variant is None else f"{base}.{variant}"
+    system = base
     tg = {"kind": entry["kind"], "class": entry.get("class")}
     tg.update(tags or {})
     return TaskSpec(

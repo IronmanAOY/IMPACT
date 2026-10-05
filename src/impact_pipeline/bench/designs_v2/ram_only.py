@@ -53,6 +53,9 @@ CLASSES = (
 )
 CLASS_IDS = tuple(c[0] for c in CLASSES)
 SAME_SYSTEM_AS = {"eta_0": "W_RAM_no_plasticity", "eta_0.3": "PC_nominal"}
+# the knob a dose class varies from the nominal agent, recorded as the
+# sweep_knob / sweep_level tags the hypotheses select doses by
+SWEEP_KNOBS = ("eta", "K", "g_b")
 
 SEEDS = {"arm": {CONFIRMATORY: range(20000, 20040), DEVELOPMENT: range(352, 372)}}
 
@@ -82,6 +85,9 @@ def class_task(design: str, cls: str, seed: int, replicate: int = 0,
         tags["bits"] = list(kn.bits())
         if "eta" in what:
             tags["eta"] = float(what["eta"])
+        (knob, level), = what.items()
+        if knob in SWEEP_KNOBS:
+            tags["sweep_knob"], tags["sweep_level"] = knob, float(level)
         return FA.agent_task(design, FAMILY, CATALOGUE_FAMILY, cid, seed,
                              kn.to_dict(), scorings(), replicate=replicate,
                              preset=PRESET, tags=tags, module=module)
@@ -133,6 +139,7 @@ __all__ = [
     "PROTOCOLS",
     "SAME_SYSTEM_AS",
     "SEEDS",
+    "SWEEP_KNOBS",
     "arm",
     "class_task",
     "scorings",

@@ -97,6 +97,18 @@ CONFIG_LABEL_KEYS = (
     "plan",
     "replicate",
 )
+# keys of a v2 runner record's config that label a task (its tags, the
+# design module, run settings and versions) rather than configure its system
+RUNNER_LABEL_KEYS = (
+    "tags",
+    "design_module",
+    "held_out",
+    "null_seed",
+    "runner_version",
+    "settings",
+    "system_generator_version",
+    "system_config_sha256",
+)
 LIST_LIMIT = 50
 
 
@@ -148,8 +160,11 @@ def read_raw_records(paths) -> tuple:
     return recs, bad
 
 
-def _vocab(spec, key, default=None):
-    return (spec.get("vocabulary") or {}).get(key, default)
+def _vocab(spec, key, default=None) -> tuple:
+    """The names of a vocabulary entry: a design, family or form may name
+    several record values (for example a family-A and a family-C1 design)."""
+    v = (spec.get("vocabulary") or {}).get(key, default)
+    return tuple(v) if isinstance(v, (list, tuple)) else (v,)
 
 
 def _fields(spec) -> HE.Fields:
@@ -361,9 +376,9 @@ def ia3_nas_sampling(records, spec) -> dict:
                 )
                 excl.add(rec.get("task_id"))
             continue
-        bench = rec.get("family") in (fam_a, fam_c) and stage == "source"
-        hopf_source = rec.get("design") == hopf and stage == "source"
-        if (bench or hopf_source) and s.get("estimator_form") in (primary, None):
+        bench = rec.get("family") in fam_a + fam_c and stage == "source"
+        hopf_source = rec.get("design") in hopf and stage == "source"
+        if (bench or hopf_source) and s.get("estimator_form") in primary + (None,):
             n_defined += 1
             if code in NAS_UNDEFINED_BY_CONSTRUCTION or (
                 _f(c.get("estimate")) is None and code != R.ESTIMATOR_ERROR
@@ -430,9 +445,9 @@ def ia4_undefined_never_absent(records, spec, registry=None) -> dict:
         if st == R.ABSENT and p == "IIM":
             degenerate = (
                 rec.get("system") == "O_hypersynchronous"
-                or s.get("estimator_form") == quadrant
+                or s.get("estimator_form") in quadrant
                 or (
-                    rec.get("family") == fam_b
+                    rec.get("family") in fam_b
                     and fields.get(row, "@b_network") == "all_to_all"
                     and HE._finite(fields.get(row, "@b_T")) == 1000
                 )
@@ -440,7 +455,7 @@ def ia4_undefined_never_absent(records, spec, registry=None) -> dict:
             if degenerate:
                 fails.append({**where, "kind": "absent_on_degenerate_tpm"})
                 excl.add(tid)
-        if rec.get("family") == fam_c and p in ("SRPI", "RAM", "PDI"):
+        if rec.get("family") in fam_c and p in ("SRPI", "RAM", "PDI"):
             if st != R.UNDEFINED or _code(reason) != R.NOT_APPLICABLE_OBSERVATION_MODEL:
                 fails.append(
                     {
@@ -480,8 +495,22 @@ def ia4_undefined_never_absent(records, spec, registry=None) -> dict:
 # IA-5
 # --------------------------------------------------------------------------
 def _structural_config(cfg) -> str:
-    d = {k: v for k, v in dict(cfg or {}).items() if k not in CONFIG_LABEL_KEYS}
+    """The configuration a task specifies, without its labels."""
+    d = {
+        k: v
+        for k, v in dict(cfg or {}).items()
+        if k not in CONFIG_LABEL_KEYS + RUNNER_LABEL_KEYS
+    }
     return json.dumps(d, sort_keys=True, default=str)
+
+
+def _configuration(rec) -> str:
+    """The configuration identity of a record: the realised configuration the
+    v2 runner records (``config.system_config_sha256``; the catalogue's
+    PC_nominal and a sweep's nominal level are one configuration), else the
+    specified one."""
+    cfg = rec.get("config") or {}
+    return cfg.get("system_config_sha256") or _structural_config(cfg)
 
 
 def ia5_duplicates(records) -> dict:
@@ -500,7 +529,7 @@ def ia5_duplicates(records) -> dict:
         fams = sorted({str(r.get("family")) for r in recs})
         seeds = sorted({r.get("seed") for r in recs}, key=str)
         reps = sorted({r.get("replicate", 0) for r in recs}, key=str)
-        cfgs = {_structural_config(r.get("config")) for r in recs}
+        cfgs = {_configuration(r) for r in recs}
         entry = {"hash_kind": kind, "hash": h, "task_ids": ids, "families": fams}
         if len(fams) > 1:
             fails.append({**entry, "kind": "cross_family"})
@@ -895,10 +924,9 @@ def ia9_srpi(records, delta=0.10) -> dict:
 # IA-10
 # --------------------------------------------------------------------------
 def ia10_twins(records, spec) -> dict:
-    twin_designs = {
-        _vocab(spec, "design.twins", "twins"),
-        _vocab(spec, "design.ram_only_twins", "ram_only_twins"),
-    }
+    twin_designs = set(_vocab(spec, "design.twins", "twins")) | set(
+        _vocab(spec, "design.ram_only_twins", "ram_only_twins")
+    )
     nets = OrderedDict()
     for rec in records:
         key = (

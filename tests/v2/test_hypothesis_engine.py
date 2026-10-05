@@ -1310,6 +1310,151 @@ def comp(p, c, *, se=SE, df=None, details=None, extra_flags=()):
     return d
 
 
+# The synthetic bench is written compactly; runner_format turns each record
+# into the layout the v2 runner and the family-B validation script write,
+# which is what the hypotheses file binds in 'vocabulary' and 'fields'.
+DESIGN_NAMES = {
+    "witnesses": "{f}_witnesses",
+    "sweep": "{f}_sweeps",
+    "factorial": "{f}_factorial",
+    "adversarial": "A_adversaries",
+    "held_out": "A_heldout",
+    "twins": "{f}_twins",
+    "anchor_replication": "{f}_anchors",
+    "ram_only": "RAM160",
+    "ram_only_twins": "RAM160_twins",
+    "ram_only_anchor_replication": "RAM160_anchors",
+}
+FAMILY_NAMES = {"C": "C1"}
+B_FORMS = {"primary": "directional", "iim_bidirectional": "bidirectional"}
+RAM_CLASSES = {
+    "adversarial_reflex_arc": "reflex_arc",
+    "adversarial_scrambled_feedback": "scrambled_feedback",
+}
+
+
+def _runner_details(p, det):
+    """Component details in the runner's layout: the estimator's details
+    under ``estimator``, the status rule's under ``assessment``."""
+    det = dict(det or {})
+    out, est = {}, {}
+    if p == "NAS":
+        dirs, members = {}, {}
+        for old, new in (("te_in", "receive"), ("te_out", "return")):
+            d = det.pop(old, None) or {}
+            sub = {k: d[k] for k in ("z", "excess") if k in d}
+            if sub:
+                dirs[new] = sub
+            m = {k2: d[k1] for k1, k2 in (("se_c", "se"), ("df_c", "df")) if k1 in d}
+            if m:
+                members[new] = m
+        if dirs:
+            est["directions"] = dirs
+        if members:
+            out["assessment"] = {"members": members}
+        r1 = (det.pop("descriptors", None) or {}).get("rank1")
+        if r1:
+            est["descriptors"] = {
+                "pooled_rank1": {
+                    "te_in_z": r1["te_in"]["z"],
+                    "te_out_z": r1["te_out"]["z"],
+                }
+            }
+    if p == "IIM" and "p_ind" in det:
+        est["p_ind"] = det.pop("p_ind")
+    if p == "PDI":
+        if "n_states" in det:
+            est["counts"] = [det.pop("n_states")] * 4
+        fb = det.pop("full_bearer", None)
+        if fb is not None:
+            est["full_bearer"] = (
+                {"counts": [fb["n_states"]] * 4} if "n_states" in fb else {}
+            )
+            if "ami_ignition_gate" in fb:
+                est["ami_ignition_full_bearer"] = fb["ami_ignition_gate"]
+    if "exact_value" in det:
+        out["exact_target"] = det.pop("exact_value")
+    out.update(det)
+    if est:
+        out["estimator"] = est
+    return out
+
+
+def runner_format(rec):
+    """A synthetic record in the layout of the v2 runner (designs, family
+    C1, ``config.params`` / ``config.tags``, component details), of the
+    family-B validation script (``config.cell``, the cut mode as the form,
+    the scoring's null order and label-error rate) and of the forward arms
+    (``config.forward``, view and form names)."""
+    rec = copy.deepcopy(rec)
+    design, cfg = rec["design"], dict(rec.get("config") or {})
+    fam = FAMILY_NAMES.get(rec["family"], rec["family"])
+    rec["family"] = fam
+    if design in DESIGN_NAMES:
+        rec["design"] = DESIGN_NAMES[design].format(f=fam)
+    if design == "family_b":
+        net = {"xor": "xor_loop"}.get(cfg.get("network"), cfg.get("network"))
+        cell = {"system": net, "n_time": cfg.get("T"), "params": {}, "expected": {}}
+        for k in ("coupling", "noise"):
+            if k in cfg:
+                cell["params"][k] = cfg[k]
+        if "condition" in cfg:
+            cell["condition"] = cfg["condition"]
+        if cfg.get("occupancy_cell"):
+            cell["expected"]["occupancy"] = {"low": "undefined", "high": "defined"}[
+                cfg["occupancy_cell"]
+            ]
+        rec["system"] = net
+        rec["config"] = {"cell": cell}
+        for sc in rec["scorings"]:
+            form = sc["estimator_form"]
+            order = (
+                "project_then_shift"
+                if form == "iim_residualise_then_shift"
+                else "shift_then_project"
+            )
+            sc["estimator_form"] = B_FORMS.get(form, "directional")
+            sc["details"] = {
+                **(sc.get("details") or {}),
+                "scoring": {
+                    "null_order": order,
+                    "label_error_q": float(cfg.get("label_error_q") or 0.0),
+                },
+            }
+    elif design == "whole_brain":
+        rec["config"] = {
+            "forward": {
+                "arm": "hopf",
+                "condition_spec": {"G": cfg["G"], "lesion": cfg.get("lesion", "none")},
+            }
+        }
+        for sc in rec["scorings"]:
+            sc["view"] = {"eeg_low": "eeglow"}.get(sc["view"], sc["view"])
+            if sc["estimator_form"] == "iim_v1_quadrant":
+                sc["estimator_form"] = "iim_v1_quadrants"
+    else:
+        labels = ("sweep_knob", "sweep_level", "null_kind")
+        tags = {k: cfg[k] for k in labels if k in cfg}
+        params = {"variant": cfg["variant"]} if "variant" in cfg else {}
+        for k in ("n_time", "n_nodes"):
+            if k in cfg:
+                rec["simulation"][k] = cfg[k]
+        rec["config"] = {"params": params, "tags": tags}
+        if design == "ram_only":
+            rec["system"] = RAM_CLASSES.get(rec["system"], rec["system"])
+    for sc in rec["scorings"]:
+        for p, c in sc["components"].items():
+            c["details"] = _runner_details(p, c.get("details"))
+    return rec
+
+
+def with_estimator(r, **values):
+    """A row whose estimator details carry ``values``."""
+    det = dict(r.get("details") or {})
+    det["estimator"] = {**(det.get("estimator") or {}), **values}
+    return {**r, "details": det}
+
+
 class World:
     """The synthetic bench in which every prediction of the hypotheses file
     holds (records of schema /3 as dicts, plus the auxiliary sources)."""
@@ -2126,6 +2271,12 @@ class World:
                 },
                 scs,
             )
+            tid = f"b-montage-{seed}"
+            scs = [
+                self.scoring("none", "B", [comp("IIM", MRD)], form=f, verdict=False)
+                for f in ("primary", "iim_bidirectional")
+            ]
+            b_task(tid, seed, {"network": "hopf_eeg_quadrants", "T": 0}, scs)
         hidden = {3000: 0.69, 10000: 0.91, 30000: 1.10}
         for T in (3000, 10000, 30000):
             for seed in range(430, 450):
@@ -2264,7 +2415,7 @@ class World:
 
     def manipulation(self):
         rows = []
-        for fam in ("A", "C"):
+        for fam in ("A", "C1"):
             for sw in ("eta", "K", "g_b", "ff_only", "c_int", "e"):
                 rows += [
                     {"family": fam, "switch": sw, "seed": s, "passed": True}
@@ -2272,8 +2423,8 @@ class World:
                 ]
         checks = [
             ("A", "N_modules_disconnected", None, "no_hub_periphery_path"),
-            ("C", "N_modules_disconnected", None, "no_hub_periphery_path"),
-            ("C", "N_uncoupled", None, "no_coupling"),
+            ("C1", "N_modules_disconnected", None, "no_hub_periphery_path"),
+            ("C1", "N_uncoupled", None, "no_coupling"),
             ("A", "W_PDI_no_multistability", None, "no_ignition"),
             ("A", "ADV_NAS_staggered_tau10", "tau10", "driver_reaches_every_module"),
             ("A", "ADV_NAS_staggered_sat", "saturating", "driver_reaches_every_module"),
@@ -2320,7 +2471,7 @@ class World:
             for v, pr, ab in (
                 ("source", "yes", "yes"),
                 ("eeg64", "no", "vacuous"),
-                ("eeg_low", "no", "vacuous"),
+                ("eeglow", "no", "vacuous"),
                 ("mne_template", "no", "vacuous"),
             )
         ]
@@ -2335,7 +2486,7 @@ class World:
             }
             for v, pr, ab in (
                 ("eeg64", "yes", "yes"),
-                ("eeg_low", "yes", "yes"),
+                ("eeglow", "yes", "yes"),
                 ("bold", "no", "no"),
             )
         ]
@@ -2355,6 +2506,7 @@ class World:
             self.ram_only,
         ):
             fn()
+        self.records = [runner_format(r) for r in self.records]
         return self
 
 
@@ -2449,6 +2601,9 @@ def restatus(row, c):
     return out
 
 
+SPEC_FIELDS = HE.Fields(HE.load_spec().get("fields"), HE.load_spec().get("derived"))
+
+
 def perturbed(ctx, source, where, update):
     new = copy.copy(ctx)
     new.__dict__.pop("_design_index", None)
@@ -2456,7 +2611,10 @@ def perturbed(ctx, source, where, update):
     new.usability = dict(ctx.usability)
     rows = []
     for r in ctx.sources[source]:
-        if all(HE.evaluate_predicate({k: v}, r) is True for k, v in where.items()):
+        if all(
+            HE.evaluate_predicate({k: v}, r, SPEC_FIELDS) is True
+            for k, v in where.items()
+        ):
             r = update(dict(r))
         rows.append(r)
     new.sources[source] = rows
@@ -2482,8 +2640,12 @@ PERTURBATIONS = {
     "HCv2-1": ("components", {"system": "N_ar1", "principle": "RAM"}, set_c(1.0), FAL),
     "HCv2-2": (
         "components",
-        {"design": "family_b", "config.condition": "independent", "config.T": 1000},
-        lambda r: {**r, "details": {**r["details"], "p_ind": 0.01}},
+        {
+            "design": "family_b",
+            "config.cell.condition": "independent",
+            "config.cell.n_time": 1000,
+        },
+        lambda r: with_estimator(r, p_ind=0.01),
         FAL,
     ),
     "HCv2-3": (
@@ -2491,7 +2653,7 @@ PERTURBATIONS = {
         {
             "principle": "SRPI",
             "family": ["null", "A"],
-            "design": ["null_calibration", "witnesses"],
+            "design": ["null_calibration", "A_witnesses"],
         },
         lambda r: restatus(r, 2 * r["c"]),
         SUP,
@@ -2499,7 +2661,7 @@ PERTURBATIONS = {
     "HCv2-4": (
         "components",
         {
-            "design": "twins",
+            "design": "A_twins",
             "family": "A",
             "system": "PC_nominal",
             "principle": "NAS",
@@ -2511,7 +2673,7 @@ PERTURBATIONS = {
     "HCv2-5": (
         "components",
         {
-            "design": "witnesses",
+            "design": "A_witnesses",
             "system": "PC_nominal",
             "principle": "NAS",
             "family": "A",
@@ -2524,7 +2686,7 @@ PERTURBATIONS = {
     "HCv2-6": (
         "components",
         {
-            "design": "anchor_replication",
+            "design": "A_anchors",
             "family": "A",
             "system": "W_PDI_single_attractor",
             "principle": "PDI",
@@ -2536,7 +2698,7 @@ PERTURBATIONS = {
     "HCv2-7": (
         "components",
         {
-            "design": "witnesses",
+            "design": ["A_witnesses", "C1_witnesses"],
             "system": "W_NAS_no_workspace",
             "principle": "NAS",
             "declaration_id": "R",
@@ -2553,10 +2715,9 @@ PERTURBATIONS = {
             "family": "A",
             "declaration_id": "R",
         },
-        lambda r: {
-            **r,
-            "details": {**r["details"], "te_in": {"z": 5.0}, "te_out": {"z": 5.0}},
-        },
+        lambda r: with_estimator(
+            r, directions={"receive": {"z": 5.0}, "return": {"z": 5.0}}
+        ),
         FAL,
     ),
     "HCv2-9": (
@@ -2575,19 +2736,29 @@ PERTURBATIONS = {
         "components",
         {
             "design": "family_b",
-            "config.network": "feedforward_star",
-            "config.coupling": 0.4,
-            "estimator_form": "primary",
+            "config.cell.system": "feedforward_star",
+            "config.cell.params.coupling": 0.4,
+            "estimator_form": "directional",
         },
         set_c(1.0),
         FAL,
     ),
-    "HCv2-12": ("components", {"config.occupancy_cell": "low"}, set_c(0.1), FAL),
-    "HCv2-13": ("components", {"config.label_error_q": 0.25}, set_c(0.0), FAL),
+    "HCv2-12": (
+        "components",
+        {"config.cell.expected.occupancy": "undefined"},
+        set_c(0.1),
+        FAL,
+    ),
+    "HCv2-13": (
+        "components",
+        {"scoring_details.scoring.label_error_q": 0.25},
+        set_c(0.0),
+        FAL,
+    ),
     "HCv2-14": (
         "components",
         {
-            "design": "witnesses",
+            "design": ["A_witnesses", "C1_witnesses"],
             "system": "W_IIM_feedforward",
             "principle": "IIM",
             "declaration_id": "H",
@@ -2599,7 +2770,7 @@ PERTURBATIONS = {
         "components",
         {
             "design": "whole_brain",
-            "config.G": G_NOM,
+            "config.forward.condition_spec.G": G_NOM,
             "view": "eeg64",
             "seed": {"max": 504},
         },
@@ -2608,13 +2779,13 @@ PERTURBATIONS = {
     ),
     "HCv2-16": (
         "components",
-        {"design": "ram_only", "system": "W_RAM_no_plasticity"},
+        {"design": "RAM160", "system": "W_RAM_no_plasticity"},
         set_c(1.0),
         FAL,
     ),
     "HCv2-17": (
         "components",
-        {"design": "ram_only", "system": "adversarial_scrambled_feedback"},
+        {"design": "RAM160", "system": "scrambled_feedback"},
         set_c(0.0),
         FAL,
     ),
@@ -2622,7 +2793,7 @@ PERTURBATIONS = {
     "HCv2-19": (
         "components",
         {
-            "design": "witnesses",
+            "design": "A_witnesses",
             "system": "PC_nominal",
             "principle": "PDI",
             "family": "A",
@@ -2637,13 +2808,9 @@ PERTURBATIONS = {
             "principle": "PDI",
             "estimator_form": "primary",
         },
-        lambda r: {
-            **r,
-            "details": {
-                **r["details"],
-                "full_bearer": {"n_states": 3, "ami_ignition_gate": 0.8},
-            },
-        },
+        lambda r: with_estimator(
+            r, full_bearer={"counts": [3] * 4}, ami_ignition_full_bearer=0.8
+        ),
         FAL,
     ),
     "HCv2-21": (
@@ -2661,7 +2828,7 @@ PERTURBATIONS = {
     "HCv2-24": (
         "components",
         {
-            "design": "factorial",
+            "design": "A_factorial",
             "family": "A",
             "declaration_id": "R",
             "principle": "NAS",
@@ -2689,13 +2856,21 @@ def test_hcv2_22_supported_when_the_predicted_failures_do_not_occur(evaluated, s
     new = perturbed(
         ctx,
         "components",
-        {"design": "witnesses", "system": "W_NAS_broadcast_only", "principle": "NAS"},
+        {
+            "design": ["A_witnesses", "C1_witnesses"],
+            "system": "W_NAS_broadcast_only",
+            "principle": "NAS",
+        },
         set_c(0.0),
     )
     new = perturbed(
         new,
         "components",
-        {"design": "witnesses", "system": "W_PDI_single_attractor", "principle": "NAS"},
+        {
+            "design": ["A_witnesses", "C1_witnesses"],
+            "system": "W_PDI_single_attractor",
+            "principle": "NAS",
+        },
         set_c(1.0),
     )
     assert outcome_of(spec, new, "HCv2-22") == SUP
@@ -2709,7 +2884,7 @@ def test_reversion_reports_hcv2_5_both_ways(world, spec):
     ctx = perturbed(
         ctx,
         "components",
-        {"design": "twins", "principle": "NAS"},
+        {"design": ["A_twins", "C1_twins"], "principle": "NAS"},
         lambda r: restatus(r, r["c"] + 0.08 * (r["replicate"] - 3)),
     )
     rep = HE.evaluate(spec, ctx)
@@ -2727,14 +2902,18 @@ def test_evaluator_script_on_development_records(world, tmp_path):
     import scripts.bench_hypotheses_v2 as BH
 
     rec_file = tmp_path / "records.jsonl"
-    keep = [r for r in world.records if r["design"] in ("witnesses", "ram_only")]
+    keep = [
+        r
+        for r in world.records
+        if r["design"] in ("A_witnesses", "C1_witnesses", "RAM160")
+    ]
     rec_file.write_text("".join(json.dumps(r) + "\n" for r in keep), encoding="utf-8")
     man = tmp_path / "switches.json"
     man.write_text(
         json.dumps(
             [
                 {"family": f, "switch": s, "seed": i, "passed": True}
-                for f in ("A", "C")
+                for f in ("A", "C1")
                 for s in ("g_b", "ff_only", "c_int", "K", "eta", "e")
                 for i in range(600, 640)
             ]
@@ -2953,8 +3132,8 @@ def test_prerequisite_m_checks_both_systems_of_a_pair_and_variants():
             "UNDEFINED",
             0.0,
             seed=i,
-            design="adversarial",
-            config={"variant": v},
+            design="A_adversaries",
+            config={"params": {"variant": v}},
         )
         for v in ("hierarchical", "uniform")
         for i in range(20)
@@ -3034,8 +3213,12 @@ def test_nas_interval_calibration_is_judged_per_direction():
                 se_c=0.02,
                 df_c=None,
                 details={
-                    "te_in": {"se_c": 0.02, "df_c": None},
-                    "te_out": {"se_c": 0.02, "df_c": None},
+                    "assessment": {
+                        "members": {
+                            "receive": {"se": 0.02, "df": None},
+                            "return": {"se": 0.02, "df": None},
+                        }
+                    }
                 },
             )
         )
@@ -3174,3 +3357,236 @@ def test_operating_characteristics_of_a_part_with_several_cells(oc):
         n_cells=[rows[0]["resized_n"]] * 8,
     )
     assert again["supported"] >= 0.8 and again["falsified_if_correct"] <= 0.05
+
+
+# ==========================================================================
+# the record names of the file are those the v2 runner and the family-B
+# validation script write
+# ==========================================================================
+# vocabulary values bound to records that no merged producer writes yet: the
+# forward arms (runner adapter not written) and the null-calibration generator
+PENDING_VOCABULARY = {
+    "design.null_calibration",
+    "design.whole_brain",
+    "design.forward",
+    "design.forward_anchor_replication",
+    "substrate.hopf",
+    "substrate.forward_family_a",
+}
+
+
+def _values(v):
+    return list(v) if isinstance(v, list) else [v]
+
+
+def test_vocabulary_names_the_designs_forms_and_views_of_the_producers():
+    from impact_pipeline.bench import designs_v2 as D
+    from impact_pipeline.bench import forward_v2 as F2
+    from impact_pipeline.bench.designs_v2 import family_b as FB
+    from impact_pipeline.bench.designs_v2 import forward as FW
+
+    spec = HE.load_spec()
+    vocab = spec["vocabulary"]
+    runner = D.designs()
+    designs = set(runner) | {FB.DESIGN}
+    families = {d.family for d in runner.values()} | {FB.FAMILY}
+    forms = set(D.ESTIMATOR_FORMS) | set(FB.CUT_MODES) | {FW.IIM_V1_QUADRANTS}
+    views = {v for vs in FW.VIEWS_OF_ARM.values() for v in vs} | {D.SOURCE_VIEW}
+    assert set(views) <= set(F2.VIEWS) | {D.SOURCE_VIEW}
+    for key, val in vocab.items():
+        if key in PENDING_VOCABULARY:
+            continue
+        kind = key.split(".")[0]
+        want = {"design": designs, "family": families, "form": forms,
+                "view": views}.get(kind)
+        if want is not None:
+            assert set(_values(val)) <= want, (key, val)
+    assert vocab["family.C1"] == "C1"
+    # the family-B seed blocks are the blocks the family-B design runs
+    blocks = {
+        "family_b_rank_calibration": "HCv2-2",
+        "family_b_feedforward_star": "HCv2-11",
+        "family_b_exact_tracking": "HCv2-12(a)",
+        "family_b_non_monotone": "HCv2-12(b)",
+        "family_b_occupancy_gate": "HCv2-12(c, d)",
+        "family_b_driver_conditioning": "HCv2-13",
+    }
+    for name, block in blocks.items():
+        for split in ("development", "confirmatory"):
+            assert tuple(spec["seed_blocks"][name][split]) == tuple(
+                FB.SEED_BLOCKS[block][split]
+            ), (name, split)
+
+
+def _runner_record(task, protocols, settings=None):
+    from impact_pipeline.bench import run_bench_v2 as RB
+
+    rec = RB.run_task(task, protocols, settings or RB.DEFAULT_SETTINGS)
+    assert rec.status in (REC.TASK_OK, REC.TASK_OK_WITH_COMPONENT_ERRORS), rec.error
+    return rec.to_dict()
+
+
+def _anchored(keys, estimators=None):
+    """Draft protocols with external anchors (and estimator options)."""
+    from impact_pipeline.bench import run_bench_v2 as RB
+
+    ref = {"kind": "external", "scale": "excess",
+           "values": {"RAM": 1.0, "PDI": 1.0, "IIM": 1.0, "SRPI": 1.0,
+                      "NAS:receive": 1.0, "NAS:return": 1.0}}
+    out = {}
+    for k in keys:
+        d = RB.draft_protocol(k).to_dict()
+        d["reference"] = ref
+        for p, opts in (estimators or {}).items():
+            d["estimators"][p].update(opts)
+        out[k] = RB.ResolvedProtocol(k, E.ProtocolV3.from_dict(d), "override")
+    return out
+
+
+def test_estimator_fields_resolve_on_runner_records():
+    import dataclasses
+
+    from impact_pipeline.bench import designs_v2 as D
+    from impact_pipeline.bench.designs_v2 import family_a as FA
+
+    spec = HE.load_spec()
+    fields = HE.Fields(spec["fields"], spec["derived"])
+    # NAS and PDI (a small PDI null, wiring only) on the witness whose PDI
+    # partitions and oracle windows the runner keeps
+    task = FA.witnesses(
+        D.DEVELOPMENT, seeds=[0], systems=["W_PDI_single_attractor"], forms=()
+    )[0]
+    task = dataclasses.replace(
+        task, scorings=D.make_scorings({"R": "A-R"}, ("NAS", "PDI"))
+    )
+    protos = _anchored(["A-R"], {"PDI": {"n_null": 2, "n_init": 1}})
+    rows = HE.component_rows([_runner_record(task, protos)])
+    nas = next(r for r in rows if r["principle"] == "NAS")
+    pdi = next(r for r in rows if r["principle"] == "PDI")
+    for name in (
+        "nas_z_receive",
+        "nas_z_return",
+        "nas_excess_receive",
+        "nas_excess_return",
+        "nas_rank1_z_receive",
+        "nas_rank1_z_return",
+        "nas_conditioning_delta",
+        "nas_conditioning_delta_return",
+        "nas_c_receive",
+        "nas_c_return",
+        "nas_se_c_receive",
+        "nas_se_c_return",
+        "nas_df_c_receive",
+        "nas_df_c_return",
+    ):
+        assert HE._finite(fields.get(nas, "@" + name)) is not None, name
+    assert fields.get(nas, "@nas_significant") in (True, False)
+    assert fields.get(nas, "@nas_rank1_significant") in (True, False)
+    for name in ("pdi_k_full", "pdi_k_content", "pdi_ami_ignition"):
+        assert HE._finite(fields.get(pdi, "@" + name)) is not None, name
+    # IIM v5's rank p-value (a small null and bootstrap, wiring only)
+    task = dataclasses.replace(task, scorings=D.make_scorings({"R": "A-R"}, ("IIM",)))
+    protos = _anchored(["A-R"], {"IIM": {"n_null": 19, "bootstrap_replicates": 2}})
+    iim = HE.component_rows([_runner_record(task, protos)])[0]
+    assert 0 < HE._finite(fields.get(iim, "@iim_p_ind")) <= 1
+
+
+def test_configuration_fields_resolve_on_runner_records():
+    from impact_pipeline.bench import designs_v2 as D
+    from impact_pipeline.bench import run_bench_v2 as RB
+
+    spec = HE.load_spec()
+    fields = HE.Fields(spec["fields"], spec["derived"])
+    # the simulations only: the configuration fields need no estimator
+    only_ram = RB.RunSettings(principles=("RAM",))
+
+    def record(design, system, variant=None):
+        task = next(
+            t
+            for t in D.get_design(design).tasks(D.DEVELOPMENT)
+            if t.system == system and t.params.get("variant") == variant
+        )
+        keys = {s.protocol_key for s in task.scorings}
+        rec = _runner_record(task, _anchored(keys), only_ram)
+        return {**rec, "details": {}}
+
+    adv = record("A_adversaries", "ADV_NAS_staggered_driver", "hierarchical")
+    assert fields.get(adv, "@variant") == "hierarchical"
+    assert adv["design"] in spec["vocabulary"]["design.adversarial"]
+    sweep = record("A_sweeps", "sweep_K_l03")
+    assert (fields.get(sweep, "@sweep_knob"), fields.get(sweep, "@sweep_level")) == (
+        "K",
+        6.0,
+    )
+    cell = record("A_factorial", "b01011")
+    assert fields.get(cell, "@cell_id") == "b01011"
+    assert [fields.get(cell, f"bit.{p}") for p in HE.PRINCIPLES] == [0, 1, 0, 1, 1]
+    eta0 = record("RAM160", "eta_0")
+    assert (fields.get(eta0, "@sweep_knob"), fields.get(eta0, "@sweep_level")) == (
+        "eta",
+        0.0,
+    )
+    pc = record("RAM160", "PC_nominal")
+    assert fields.get(pc, "@no_sweep") is True
+    assert fields.get(pc, "@n_time") == pc["simulation"]["n_time"] > 0
+    assert fields.get(pc, "@n_nodes") == 30
+    # one configuration under several designs carries one identity
+    digest = "system_config_sha256"
+    assert pc["config"][digest] != eta0["config"][digest]
+
+
+def test_family_b_fields_resolve_on_validation_records():
+    from impact_pipeline.bench.designs_v2 import family_b as FB
+    from scripts.v2 import iim_validation_v2 as IV
+
+    spec = HE.load_spec()
+    fields = HE.Fields(spec["fields"], spec["derived"])
+    by_id = {}
+    for c in FB.cells():
+        by_id.setdefault(c.cell_id, c)
+    want = {
+        "independent": ("HCv2-2", ("i",)),
+        "stratified": ("HCv2-2", ("ii",)),
+    }
+    conds = {c.condition for c in by_id.values() if c.hypothesis == "HCv2-2"}
+    assert conds == {
+        "independent",
+        "stratified",
+        "residualised_continuous",
+        "residualised_switching",
+    }
+    for cond, (hyp, parts) in want.items():
+        assert any(
+            c.condition == cond and c.hypothesis == hyp and c.parts == parts
+            for c in by_id.values()
+        )
+    star = next(c for c in by_id.values() if c.system == "feedforward_star")
+    row = {"config": {"cell": star.to_dict()}}
+    assert fields.get(row, "@b_network") == "feedforward_star"
+    assert fields.get(row, "@b_coupling") == star.param_dict["coupling"]
+    assert fields.get(row, "@b_T") == star.n_time
+    occ = {
+        c.to_dict()["expected"].get("occupancy")
+        for c in by_id.values()
+        if c.hypothesis == "HCv2-12" and "c" in c.parts
+    }
+    assert occ <= {"undefined", "defined"} and occ
+    # one cheap task scored end to end: the scoring and component fields
+    task = next(
+        t
+        for t in FB.tasks(D_SPLIT, hypotheses=("HCv2-2",))
+        if t.cell.condition == "independent" and t.cell.n_time == 1000
+    )
+    rows = HE.component_rows([IV.score_task(task).to_dict()])
+    assert {r["estimator_form"] for r in rows} == set(FB.CUT_MODES)
+    for r in rows:
+        assert fields.get(r, "@b_condition") == "independent"
+        assert fields.get(r, "@b_null_order") == "shift_then_project"
+        assert fields.get(r, "@b_label_q") == 0.0
+        assert HE._finite(fields.get(r, "@b_exact")) is not None
+        vocab = spec["vocabulary"]
+        forms = vocab["form.primary"] + vocab["form.iim_bidirectional"]
+        assert r["estimator_form"] in forms
+
+
+D_SPLIT = S.DEVELOPMENT
