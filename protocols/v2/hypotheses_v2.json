@@ -1,0 +1,5109 @@
+{
+ "schema": "mpc-bench-hypotheses/2",
+ "version": "mpc-bench-hypotheses/2.0.0-draft",
+ "status": "draft",
+ "design": "Draft v2 hypotheses (design sections 4.9 and 5), Tier A. Thresholds labelled C are not changed at calibration; parts labelled R may be resized (seeds) but their thresholds are not moved; nothing changes after the freeze. Every outcome is evaluated by impact_pipeline.v2.hypothesis_engine.",
+ "conventions": {
+  "alpha": 0.05,
+  "alpha_absent": 0.01,
+  "z": 0.25,
+  "delta": 0.1,
+  "false_present_bound": 0.07,
+  "outcomes": [
+   "SUPPORTED",
+   "FALSIFIED",
+   "INDETERMINATE",
+   "NOT_EVALUABLE",
+   "NOT_TESTABLE_BY_DESIGN"
+  ],
+  "combination": "FALSIFIED if any evaluable decisive part is FALSIFIED; SUPPORTED if all are SUPPORTED; else INDETERMINATE; NOT_EVALUABLE and NOT_TESTABLE_BY_DESIGN parts are listed",
+  "clusters": "every re-scoring of one simulation is one cluster in pooled bounds; a cluster counts its share of rows with the event",
+  "three_zone_m": "the Bonferroni count m of a three-zone rule is the number of cells of the part unless the part states m",
+  "tests": "a part stated as a test ('at one-sided p < 0.05') is SUPPORTED when the criterion holds and FALSIFIED otherwise, as in v1",
+  "anchored": "component-level parts use the principles with a valid anchor on the row's protocol; verdict-level parts use N_anch",
+  "tally": "decisive parts per outcome, including parts removed before the freeze with their development outcome as the predicted outcome"
+ },
+ "vocabulary": {
+  "design.witnesses": "witnesses",
+  "design.sweep": "sweep",
+  "design.factorial": "factorial",
+  "design.adversarial": "adversarial",
+  "design.held_out": "held_out",
+  "design.twins": "twins",
+  "design.anchor_replication": "anchor_replication",
+  "design.ram_only": "ram_only",
+  "design.ram_only_twins": "ram_only_twins",
+  "design.ram_only_anchor_replication": "ram_only_anchor_replication",
+  "design.null_calibration": "null_calibration",
+  "design.family_b": "family_b",
+  "design.whole_brain": "whole_brain",
+  "design.forward": "forward_family_a",
+  "design.forward_anchor_replication": "forward_anchor_replication",
+  "family.A": "A",
+  "family.C1": "C",
+  "family.B": "B",
+  "form.primary": "primary",
+  "form.nas_secondary": "nas_secondary",
+  "form.iim_bidirectional": "iim_bidirectional",
+  "form.iim_residualise_then_shift": "iim_residualise_then_shift",
+  "form.iim_v1_quadrant": "iim_v1_quadrant",
+  "form.pdi_misdeclared_access": "pdi_misdeclared_access",
+  "view.source": "source",
+  "view.eeg64": "eeg64",
+  "view.eeg64_noref": "eeg64_noref",
+  "view.eeg_low": "eeg_low",
+  "view.mne_template": "mne_template",
+  "view.bold": "bold",
+  "view.sensor_set": [
+   "eeg64",
+   "eeg64_noref",
+   "eeg_low",
+   "mne_template"
+  ],
+  "substrate.hopf": "hopf",
+  "substrate.forward_family_a": "forward_family_a",
+  "protocol.A-R": "A-R",
+  "protocol.A-H": "A-H",
+  "protocol.C1-R": "C1-R",
+  "protocol.C1-H": "C1-H",
+  "protocol.A-RAM160": "A-RAM160",
+  "protocol.B": "B",
+  "hopf.G_nom": 1.142857,
+  "systems.single_deficits": [
+   "W_RAM_no_plasticity",
+   "W_PDI_single_attractor",
+   "W_NAS_no_workspace",
+   "W_NAS_broadcast_only",
+   "W_IIM_feedforward",
+   "W_SRPI_no_efference"
+  ],
+  "systems.nulls_A": [
+   "N_independent_noise",
+   "N_ar1"
+  ]
+ },
+ "fields": {
+  "nas_z_receive": "details.te_in.z",
+  "nas_z_return": "details.te_out.z",
+  "nas_rank1_z_receive": "details.descriptors.rank1.te_in.z",
+  "nas_rank1_z_return": "details.descriptors.rank1.te_out.z",
+  "nas_excess_receive": "details.te_in.excess",
+  "nas_excess_return": "details.te_out.excess",
+  "iim_p_ind": "details.p_ind",
+  "pdi_k_full": "details.full_bearer.n_states",
+  "pdi_k_content": "details.n_states",
+  "pdi_ami_ignition": "details.full_bearer.ami_ignition_gate",
+  "variant": "config.variant",
+  "sweep_knob": "config.sweep_knob",
+  "sweep_level": "config.sweep_level",
+  "cell_id": "config.cell_id",
+  "null_kind": "config.null_kind",
+  "n_time": "config.n_time",
+  "n_nodes": "config.n_nodes",
+  "b_network": "config.network",
+  "b_coupling": "config.coupling",
+  "b_noise": "config.noise",
+  "b_T": "config.T",
+  "b_condition": "config.condition",
+  "b_label_q": "config.label_error_q",
+  "b_occupancy_cell": "config.occupancy_cell",
+  "b_exact": "details.exact_value",
+  "hopf_G": "config.G",
+  "hopf_lesion": "config.lesion",
+  "verdict_n_decl": "verdict.verdict_declared",
+  "nas_conditioning_delta": "details.conditioning_delta",
+  "nas_c_receive": "c_R",
+  "nas_c_return": "c_B",
+  "nas_se_c_receive": "details.te_in.se_c",
+  "nas_se_c_return": "details.te_out.se_c",
+  "nas_df_c_receive": "details.te_in.df_c",
+  "nas_df_c_return": "details.te_out.df_c"
+ },
+ "derived": {
+  "nas_significant": {
+   "all": [
+    {
+     "@nas_z_receive": {
+      "gt": 1.645
+     }
+    },
+    {
+     "@nas_z_return": {
+      "gt": 1.645
+     }
+    }
+   ]
+  },
+  "nas_rank1_significant": {
+   "all": [
+    {
+     "@nas_rank1_z_receive": {
+      "gt": 1.645
+     }
+    },
+    {
+     "@nas_rank1_z_return": {
+      "gt": 1.645
+     }
+    }
+   ]
+  },
+  "concordant_absent": {
+   "all": [
+    {
+     "status": "ABSENT"
+    },
+    {
+     "flags": {
+      "contains": "ABSENT_BY_CONCORDANCE"
+     }
+    }
+   ]
+  },
+  "unlesioned": {
+   "any": [
+    {
+     "@hopf_lesion": {
+      "exists": false
+     }
+    },
+    {
+     "@hopf_lesion": "none"
+    }
+   ]
+  },
+  "no_sweep": {
+   "@sweep_knob": {
+    "exists": false
+   }
+  }
+ },
+ "seed_blocks": {
+  "family_b_rank_calibration": {
+   "confirmatory": [
+    20000,
+    20199
+   ],
+   "development": [
+    400,
+    409
+   ]
+  },
+  "family_b_exact_tracking": {
+   "confirmatory": [
+    20240,
+    20279
+   ],
+   "development": [
+    410,
+    414
+   ]
+  },
+  "family_b_feedforward_star": {
+   "confirmatory": [
+    20280,
+    20319
+   ],
+   "development": [
+    415,
+    419
+   ]
+  },
+  "family_b_driver_conditioning": {
+   "confirmatory": [
+    20320,
+    20419
+   ],
+   "development": [
+    420,
+    429
+   ]
+  },
+  "family_b_non_monotone": {
+   "confirmatory": [
+    20420,
+    20459
+   ],
+   "development": [
+    430,
+    434
+   ]
+  },
+  "family_b_occupancy_gate": {
+   "confirmatory": [
+    20460,
+    20499
+   ],
+   "development": [
+    435,
+    439
+   ]
+  },
+  "twin_networks": {
+   "confirmatory": [
+    20000,
+    20009
+   ],
+   "development": [
+    820,
+    824
+   ]
+  },
+  "witnesses_20": {
+   "use": "the 20-seed witness, adversary and held-out set (parts whose data the design states as 20 seeds or seeds 20000-20019); the 45-seed extension of PC_nominal and the single deficits is outside it; development: the whole development range (the dry run has no 45-seed extension)",
+   "confirmatory": [
+    20000,
+    20019
+   ],
+   "development": [
+    0,
+    999
+   ]
+  }
+ },
+ "witness_targets": {
+  "W_RAM_no_plasticity": "RAM",
+  "W_PDI_single_attractor": "PDI",
+  "W_PDI_no_multistability": "PDI",
+  "W_NAS_no_workspace": "NAS",
+  "W_NAS_broadcast_only": "NAS",
+  "W_IIM_feedforward": "IIM",
+  "W_SRPI_no_efference": "SRPI"
+ },
+ "own_lesions": {
+  "RAM": "W_RAM_no_plasticity",
+  "PDI": "W_PDI_single_attractor",
+  "NAS": "W_NAS_no_workspace",
+  "IIM": "W_IIM_feedforward",
+  "SRPI": "W_SRPI_no_efference"
+ },
+ "declared_dependencies": {
+  "status": "draft",
+  "note": "witness-principle pairs whose off-target change is a declared structural dependency of the generator (v1: c_int -> NAS, g_b -> IIM); the final list is written at CD-7",
+  "pairs": [
+   [
+    "W_IIM_feedforward",
+    "NAS"
+   ],
+   [
+    "W_NAS_no_workspace",
+    "IIM"
+   ]
+  ]
+ },
+ "mechanism_on": {
+  "status": "pending_cd8",
+  "note": "structural draft (dose >= 0.5 x nominal; a witness's own target off); the development-median condition (median c >= 2 delta at that dose for that principle and protocol) is added at CD-8, which sets the status to final. First matching entry decides; an unmatched row is not 'on'.",
+  "entries": [
+   {
+    "principle": "RAM",
+    "where": {
+     "design": "@design.witnesses",
+     "system": "W_RAM_no_plasticity"
+    },
+    "on": false
+   },
+   {
+    "principle": "PDI",
+    "where": {
+     "design": "@design.witnesses",
+     "system": "W_PDI_single_attractor"
+    },
+    "on": false
+   },
+   {
+    "principle": "PDI",
+    "where": {
+     "design": "@design.witnesses",
+     "system": "W_PDI_no_multistability"
+    },
+    "on": false
+   },
+   {
+    "principle": "NAS",
+    "where": {
+     "design": "@design.witnesses",
+     "system": "W_NAS_no_workspace"
+    },
+    "on": false
+   },
+   {
+    "principle": "NAS",
+    "where": {
+     "design": "@design.witnesses",
+     "system": "W_NAS_broadcast_only"
+    },
+    "on": false
+   },
+   {
+    "principle": "IIM",
+    "where": {
+     "design": "@design.witnesses",
+     "system": "W_IIM_feedforward"
+    },
+    "on": false
+   },
+   {
+    "principle": "SRPI",
+    "where": {
+     "design": "@design.witnesses",
+     "system": "W_SRPI_no_efference"
+    },
+    "on": false
+   },
+   {
+    "where": {
+     "design": "@design.witnesses",
+     "system": [
+      "PC_nominal",
+      "PC_half",
+      "W_RAM_no_plasticity",
+      "W_PDI_single_attractor",
+      "W_NAS_no_workspace",
+      "W_NAS_broadcast_only",
+      "W_IIM_feedforward",
+      "W_SRPI_no_efference"
+     ]
+    },
+    "on": true
+   },
+   {
+    "principle": "RAM",
+    "where": {
+     "design": "@design.sweep",
+     "@sweep_knob": "eta",
+     "@sweep_level": {
+      "lt": 0.15
+     }
+    },
+    "on": false
+   },
+   {
+    "principle": "PDI",
+    "where": {
+     "design": "@design.sweep",
+     "@sweep_knob": "K",
+     "@sweep_level": {
+      "lt": 3
+     }
+    },
+    "on": false
+   },
+   {
+    "principle": "NAS",
+    "where": {
+     "design": "@design.sweep",
+     "@sweep_knob": "g_b",
+     "@sweep_level": {
+      "lt": 0.5
+     }
+    },
+    "on": false
+   },
+   {
+    "principle": "IIM",
+    "where": {
+     "design": "@design.sweep",
+     "@sweep_knob": "c_int",
+     "@sweep_level": {
+      "lt": 0.3
+     }
+    },
+    "on": false
+   },
+   {
+    "principle": "SRPI",
+    "where": {
+     "design": "@design.sweep",
+     "@sweep_knob": "e",
+     "@sweep_level": {
+      "lt": 0.5
+     }
+    },
+    "on": false
+   },
+   {
+    "where": {
+     "design": "@design.sweep"
+    },
+    "on": true
+   },
+   {
+    "where": {
+     "design": "@design.factorial",
+     "own_bit": 1
+    },
+    "on": true
+   },
+   {
+    "where": {
+     "design": "@design.factorial",
+     "own_bit": 0
+    },
+    "on": false
+   }
+  ]
+ },
+ "oracle_checks": {
+  "note": "prerequisite M per row: a part with requires.oracle drops every row of a system whose switch or realisation check is not usable in the row's family (reason ORACLE; a cell that loses every row is listed as NOT_EVALUABLE); a paired row needs the checks of both of its systems. Check ids are those of bench.manipulation_v2: the switch name, or <system>[:<variant>]/<check>.",
+  "systems": {
+   "W_RAM_no_plasticity": [
+    "eta"
+   ],
+   "W_PDI_single_attractor": [
+    "K"
+   ],
+   "W_NAS_no_workspace": [
+    "g_b"
+   ],
+   "W_NAS_broadcast_only": [
+    "ff_only"
+   ],
+   "W_IIM_feedforward": [
+    "c_int"
+   ],
+   "W_SRPI_no_efference": [
+    "e"
+   ],
+   "N_modules_disconnected": [
+    "N_modules_disconnected/no_hub_periphery_path"
+   ],
+   "N_uncoupled": [
+    "N_uncoupled/no_coupling"
+   ],
+   "W_PDI_no_multistability": [
+    "W_PDI_no_multistability/no_ignition"
+   ],
+   "ADV_NAS_staggered_driver": [
+    "ADV_NAS_staggered_driver:{@variant}/driver_reaches_every_module",
+    "ADV_NAS_staggered_driver:{@variant}/stated_time_constants"
+   ],
+   "ADV_NAS_staggered_tau10": [
+    "ADV_NAS_staggered_tau10:tau10/driver_reaches_every_module",
+    "ADV_NAS_staggered_tau10:tau10/stated_time_constants"
+   ],
+   "ADV_NAS_staggered_sat": [
+    "ADV_NAS_staggered_sat:saturating/driver_reaches_every_module",
+    "ADV_NAS_staggered_sat:saturating/stated_time_constants"
+   ]
+  }
+ },
+ "pending_calibration": [
+  {
+   "item": "mechanism-on labels (CD-8)",
+   "affects": [
+    "HCv2-5"
+   ]
+  },
+  {
+   "item": "testability gates pi0 / pi1 (CD-7)",
+   "affects": [
+    "HCv2-11(c)",
+    "HCv2-14(c)",
+    "HCv2-14(d)",
+    "HCv2-22(ii)"
+   ]
+  },
+  {
+   "item": "declared dependencies (CD-7)",
+   "affects": [
+    "HCv2-22(iii)"
+   ]
+  },
+  {
+   "item": "PDI concordance-route admission (CD-5)",
+   "affects": [
+    "HCv2-20(a)",
+    "HCv2-22(ii)"
+   ]
+  },
+  {
+   "item": "expectation for the staggered-driver patterns",
+   "affects": [
+    "HCv2-1",
+    "HCv2-8(b-H)",
+    "HCv2-8(b-H-rank1)",
+    "HCv2-8(b-R)"
+   ]
+  },
+  {
+   "item": "ADV_NAS_staggered_tau10 near the realisation floor",
+   "affects": [
+    "HCv2-0(b)",
+    "HCv2-9(d)"
+   ]
+  },
+  {
+   "item": "no-ignition count of W_PDI_no_multistability",
+   "affects": [
+    "HCv2-18",
+    "HCv2-20(f-no-multistability)"
+   ]
+  },
+  {
+   "item": "k-means seed of PDI v3",
+   "affects": [
+    "HCv2-18",
+    "HCv2-19",
+    "HCv2-20"
+   ]
+  },
+  {
+   "item": "seed counts from the operating characteristics (CD-11)",
+   "affects": [
+    "all"
+   ]
+  },
+  {
+   "item": "paper-2 regime (CD-12)",
+   "affects": [
+    "HCv2-10",
+    "HCv2-15",
+    "HCv2-21"
+   ]
+  }
+ ],
+ "hypotheses": [
+  {
+   "id": "HCv2-0",
+   "title": "Prerequisite M (manipulation and realisation checks)",
+   "tier": "A",
+   "role": "prerequisite",
+   "labels": [],
+   "successor_of": "M",
+   "statement": "A switch or new system is usable in a family iff its check passes in >= 36/40 seeds (seeds 20000-20039). Parts that need an unusable switch or system are NOT_EVALUABLE (reason ORACLE).",
+   "expectation": "v1: 12/12 family x switch cells usable (worst 39/40); new systems at CD-13.",
+   "parts": [
+    {
+     "id": "HCv2-0(a)",
+     "text": "frozen mpc-bench-manipulation/1.0.0 switch checks (eta, K, g_b, ff_only, c_int, e) usable in families A and C1",
+     "rule": "usable_share",
+     "params": {
+      "share": 0.9,
+      "near_band": 0.05
+     },
+     "data": {
+      "source": "manipulation",
+      "where": {
+       "kind": "switch"
+      },
+      "event": {
+       "passed": true
+      },
+      "cells": [
+       "family",
+       "check_id"
+      ],
+      "cluster": [
+       "family",
+       "check_id",
+       "seed"
+      ]
+     }
+    },
+    {
+     "id": "HCv2-0(b)",
+     "text": "realisation checks of the new systems (mpc-bench-manipulation/1.1.0) usable",
+     "rule": "usable_share",
+     "params": {
+      "share": 0.9,
+      "near_band": 0.05
+     },
+     "data": {
+      "source": "manipulation",
+      "where": {
+       "kind": "new_system"
+      },
+      "event": {
+       "passed": true
+      },
+      "cells": [
+       "family",
+       "check_id"
+      ],
+      "cluster": [
+       "family",
+       "check_id",
+       "seed"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "HCv2-1",
+   "title": "Null calibration of PRESENT, including conditioned nulls",
+   "tier": "A",
+   "labels": [],
+   "successor_of": "HC1",
+   "statement": "In every (null cell, anchored principle) pair, P(PRESENT) <= alpha + 0.02 = 0.07.",
+   "expectation": "v1: NAS and IIM 0/1280, SRPI 12/1640. NAS under R (development): disconnected 0/20 PRESENT in A and C; staggered 0/20 per variant.",
+   "notes": "Null-calibration components are judged under the A-R protocol (as v1 judged them under the bench protocol); anchored = a valid anchor on the row's protocol (component level).",
+   "parts": [
+    {
+     "id": "HCv2-1",
+     "text": "H0 cell rule over (i) the null-calibration generator, (ii) the bench null witnesses (R and H scorings one cluster) and (iii) NAS under R on the conditioned nulls",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05
+     },
+     "data": {
+      "union": [
+       {
+        "label": "null_calibration",
+        "where": {
+         "design": "@design.null_calibration"
+        },
+        "cell_label": "null_calibration:{@null_kind}:T{@n_time}:N{@n_nodes}|{principle}"
+       },
+       {
+        "label": "bench_nulls",
+        "where": {
+         "any": [
+          {
+           "design": "@design.witnesses",
+           "estimator_form": "@form.primary",
+           "family": "@family.A",
+           "system": "@systems.nulls_A"
+          },
+          {
+           "design": "@design.witnesses",
+           "estimator_form": "@form.primary",
+           "family": "@family.C1",
+           "system": "N_uncoupled"
+          }
+         ]
+        },
+        "cell_label": "witness:{family}:{system}|{principle}"
+       },
+       {
+        "label": "conditioned_nulls",
+        "where": {
+         "principle": "NAS",
+         "declaration_id": "R",
+         "estimator_form": "@form.primary",
+         "any": [
+          {
+           "design": "@design.witnesses",
+           "system": "N_modules_disconnected",
+           "family": [
+            "@family.A",
+            "@family.C1"
+           ]
+          },
+          {
+           "design": "@design.adversarial",
+           "system": "ADV_NAS_staggered_driver",
+           "family": "@family.A"
+          }
+         ]
+        },
+        "cell_label": "conditioned:{family}:{system}:{@variant}|NAS"
+       }
+      ],
+      "where": {
+       "declaration_id": [
+        "R",
+        "H",
+        "none"
+       ],
+       "estimator_form": "@form.primary"
+      },
+      "principle_filter": "valid_anchor",
+      "event": {
+       "status": "PRESENT"
+      },
+      "pool_by": [
+       "principle"
+      ]
+     },
+     "requires": {
+      "oracle": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "HCv2-2",
+   "title": "IIM independence-null rank calibration, including conditioned nulls",
+   "tier": "A",
+   "labels": [
+    "C"
+   ],
+   "successor_of": "HC2",
+   "statement": "The rank exceedance P(p_ind <= 0.05) is <= 0.07 in every cell, for the unconditioned, stratified and residualised estimators.",
+   "parts": [
+    {
+     "id": "HCv2-2",
+     "text": "H0 cell rule over 18 cells (independent units: 4 T x 2 cuts; stratified irrelevant driver: 3 T x 2 cuts; residualised continuous and switching drivers x 2 cuts); cut-mode pairs share trajectories and are one cluster in the pooled bound",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05,
+      "P": 1
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_rank_calibration",
+       "estimator_form": [
+        "@form.primary",
+        "@form.iim_bidirectional"
+       ]
+      },
+      "union": [
+       {
+        "label": "independent",
+        "where": {
+         "@b_condition": "independent"
+        },
+        "cell_label": "independent:T{@b_T}:{estimator_form}"
+       },
+       {
+        "label": "stratified",
+        "where": {
+         "@b_condition": "stratified"
+        },
+        "cell_label": "stratified:T{@b_T}:{estimator_form}"
+       },
+       {
+        "label": "residualised",
+        "where": {
+         "@b_condition": [
+          "residualised_continuous",
+          "residualised_switching"
+         ]
+        },
+        "cell_label": "{@b_condition}:{estimator_form}"
+       }
+      ],
+      "event": {
+       "@iim_p_ind": {
+        "le": 0.05
+       }
+      },
+      "pool_by": [
+       "principle"
+      ]
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-2(reported)",
+     "text": "residualise-then-shift null order on the same data (predicted anti-conservative)",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_rank_calibration",
+       "estimator_form": "@form.iim_residualise_then_shift"
+      },
+      "cell_label": "{@b_condition}:T{@b_T}",
+      "event": {
+       "@iim_p_ind": {
+        "le": 0.05
+       }
+      }
+     },
+     "role": "reported"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-3",
+   "title": "Interval calibration at the null (HR1, restated)",
+   "tier": "A",
+   "labels": [
+    "C",
+    "R"
+   ],
+   "successor_of": "HC1",
+   "prediction": "FALSIFIED",
+   "statement": "(a) kappa0 = SD(c) / RMS(se_c) has its point in [0.8, 1.25] and its 90 % chi-square interval inside [0.67, 1.5]; (b) both one-sided tail rates P(c - q_P se_c > 0) and P(c + q_P se_c < 0) are <= 0.075 (point).",
+   "expectation": "NAS, IIM, PDI, RAM-PE calibrated; SRPI v1 FALSIFIED on the conservative side (kappa0 about 0.5-0.7).",
+   "parts": [
+    {
+     "id": "HCv2-3",
+     "text": "per anchored principle under A-R (NAS per direction, each with its own SE): kappa0 and both tails; FALSIFIED if some kappa0 interval lies outside [0.8, 1.25] or some tail's cluster-robust lower bound at 0.05/(2P) exceeds 0.10 (P counts NAS's two directions)",
+     "rule": "kappa_null",
+     "params": {
+      "point": [
+       0.8,
+       1.25
+      ],
+      "interval": [
+       0.67,
+       1.5
+      ],
+      "level": 0.9,
+      "tail_max": 0.075,
+      "tail_falsify": 0.1,
+      "q_alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "declaration_id": [
+        "R",
+        "none"
+       ],
+       "estimator_form": "@form.primary",
+       "any": [
+        {
+         "design": "@design.null_calibration"
+        },
+        {
+         "design": "@design.witnesses",
+         "family": "@family.A",
+         "system": "@systems.nulls_A"
+        }
+       ]
+      },
+      "union": [
+       {
+        "label": "principle",
+        "where": {
+         "principle": {
+          "ne": "NAS"
+         }
+        },
+        "cell_label": "{principle}"
+       },
+       {
+        "label": "NAS_receive",
+        "where": {
+         "principle": "NAS"
+        },
+        "value": "@nas_c_receive",
+        "se": "@nas_se_c_receive",
+        "df": "@nas_df_c_receive",
+        "cell_label": "NAS:receive"
+       },
+       {
+        "label": "NAS_return",
+        "where": {
+         "principle": "NAS"
+        },
+        "value": "@nas_c_return",
+        "se": "@nas_se_c_return",
+        "df": "@nas_df_c_return",
+        "cell_label": "NAS:return"
+       }
+      ],
+      "principle_filter": "valid_anchor",
+      "value": "c"
+     },
+     "label": "C",
+     "prediction": "FALSIFIED",
+     "cell_predictions": [
+      {
+       "match": {
+        "principle": "SRPI"
+       },
+       "prediction": "FALSIFIED"
+      },
+      {
+       "match": {
+        "principle": [
+         "NAS",
+         "IIM",
+         "PDI",
+         "RAM"
+        ]
+       },
+       "prediction": "SUPPORTED"
+      }
+     ],
+     "notes": "SRPI v1 predicted FALSIFIED on the conservative side [R]. NAS is calibrated per direction: its component c is the smaller direction, whose spread and tails differ from those of either direction even when each direction's SE is exact."
+    }
+   ]
+  },
+  {
+   "id": "HCv2-4",
+   "title": "SE calibration against white-box twins (all v2 SE methods)",
+   "tier": "A",
+   "role": "se_calibration",
+   "labels": [
+    "C"
+   ],
+   "successor_of": "HC10",
+   "statement": "Per (estimator, SE method, class) with c defined in >= 80 % of sessions: (a) kappa = pooled within-network SD of c / RMS(se_c) has its point in [0.8, 1.25] and its 90 % interval inside [0.67, 1.5]; (b) the q_A tails are each <= 0.02 (point); (c) concordant PDI counts agree across twins (share differing <= 0.05).",
+   "notes": "Reversion rule: an SE method FALSIFIED on the anti-conservative side re-classifies every ABSENT of that estimator in every verdict-level analysis as UNDEFINED(SE_NOT_CALIBRATED); the hypotheses that used those ABSENTs are reported both ways. A conservative failure changes nothing.",
+   "parts": [
+    {
+     "id": "HCv2-4(a,b)",
+     "text": "kappa with its chi-square interval on sum (n_twin - 1) df and the q_A tails, per (estimator, SE method, class); NAS per direction with its own SE and the direction's TOST level alpha_A / 2",
+     "rule": "kappa_twins",
+     "params": {
+      "point": [
+       0.8,
+       1.25
+      ],
+      "interval": [
+       0.67,
+       1.5
+      ],
+      "level": 0.9,
+      "tail_max": 0.02,
+      "tail_falsify": 0.03,
+      "alpha_absent": 0.01,
+      "members": {
+       "NAS": 2
+      },
+      "min_defined": 0.8
+     },
+     "data": {
+      "union": [
+       {
+        "label": "A_twins",
+        "where": {
+         "design": [
+          "@design.twins",
+          "@design.witnesses"
+         ],
+         "family": "@family.A",
+         "system": [
+          "PC_nominal",
+          "PC_half",
+          "W_NAS_no_workspace",
+          "W_IIM_feedforward",
+          "W_PDI_single_attractor"
+         ],
+         "declaration_id": [
+          "R",
+          "H"
+         ],
+         "principle": {
+          "ne": "NAS"
+         }
+        }
+       },
+       {
+        "label": "A_twins_NAS_receive",
+        "where": {
+         "design": [
+          "@design.twins",
+          "@design.witnesses"
+         ],
+         "family": "@family.A",
+         "system": [
+          "PC_nominal",
+          "PC_half",
+          "W_NAS_no_workspace",
+          "W_IIM_feedforward",
+          "W_PDI_single_attractor"
+         ],
+         "declaration_id": [
+          "R",
+          "H"
+         ],
+         "principle": "NAS"
+        },
+        "value": "@nas_c_receive",
+        "se": "@nas_se_c_receive",
+        "df": "@nas_df_c_receive",
+        "cell_label": "{family}:{system}:{@sweep_level}:{declaration_id}|NAS:receive|{estimator_form}|{estimator_version}|{se_method}"
+       },
+       {
+        "label": "A_twins_NAS_return",
+        "where": {
+         "design": [
+          "@design.twins",
+          "@design.witnesses"
+         ],
+         "family": "@family.A",
+         "system": [
+          "PC_nominal",
+          "PC_half",
+          "W_NAS_no_workspace",
+          "W_IIM_feedforward",
+          "W_PDI_single_attractor"
+         ],
+         "declaration_id": [
+          "R",
+          "H"
+         ],
+         "principle": "NAS"
+        },
+        "value": "@nas_c_return",
+        "se": "@nas_se_c_return",
+        "df": "@nas_df_c_return",
+        "cell_label": "{family}:{system}:{@sweep_level}:{declaration_id}|NAS:return|{estimator_form}|{estimator_version}|{se_method}"
+       },
+       {
+        "label": "C1_twins",
+        "where": {
+         "design": [
+          "@design.twins",
+          "@design.witnesses"
+         ],
+         "family": "@family.C1",
+         "system": [
+          "PC_nominal",
+          "W_NAS_no_workspace",
+          "W_IIM_feedforward"
+         ],
+         "declaration_id": [
+          "R",
+          "H"
+         ],
+         "principle": {
+          "ne": "NAS"
+         }
+        }
+       },
+       {
+        "label": "C1_twins_NAS_receive",
+        "where": {
+         "design": [
+          "@design.twins",
+          "@design.witnesses"
+         ],
+         "family": "@family.C1",
+         "system": [
+          "PC_nominal",
+          "W_NAS_no_workspace",
+          "W_IIM_feedforward"
+         ],
+         "declaration_id": [
+          "R",
+          "H"
+         ],
+         "principle": "NAS"
+        },
+        "value": "@nas_c_receive",
+        "se": "@nas_se_c_receive",
+        "df": "@nas_df_c_receive",
+        "cell_label": "{family}:{system}:{@sweep_level}:{declaration_id}|NAS:receive|{estimator_form}|{estimator_version}|{se_method}"
+       },
+       {
+        "label": "C1_twins_NAS_return",
+        "where": {
+         "design": [
+          "@design.twins",
+          "@design.witnesses"
+         ],
+         "family": "@family.C1",
+         "system": [
+          "PC_nominal",
+          "W_NAS_no_workspace",
+          "W_IIM_feedforward"
+         ],
+         "declaration_id": [
+          "R",
+          "H"
+         ],
+         "principle": "NAS"
+        },
+        "value": "@nas_c_return",
+        "se": "@nas_se_c_return",
+        "df": "@nas_df_c_return",
+        "cell_label": "{family}:{system}:{@sweep_level}:{declaration_id}|NAS:return|{estimator_form}|{estimator_version}|{se_method}"
+       },
+       {
+        "label": "RAM_twins",
+        "where": {
+         "design": [
+          "@design.ram_only_twins",
+          "@design.ram_only"
+         ],
+         "principle": "RAM",
+         "@sweep_knob": "eta",
+         "@sweep_level": [
+          0.0,
+          0.1,
+          0.3
+         ]
+        }
+       }
+      ],
+      "where": {
+       "seed_block": "twin_networks",
+       "se_method": {
+        "ne": "concordant"
+       }
+      },
+      "cell_label": "{family}:{system}:{@sweep_level}:{declaration_id}|{principle}|{estimator_form}|{estimator_version}|{se_method}",
+      "network": [
+       "family",
+       "system",
+       "@sweep_level",
+       "seed",
+       "declaration_id",
+       "principle",
+       "estimator_form",
+       "member"
+      ],
+      "value": "c"
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-4(c)",
+     "text": "PDI concordance: among concordant components, the share of twin sessions whose count differs from the concordant count is <= 0.05",
+     "rule": "concordance_twins",
+     "params": {
+      "share_max": 0.05,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": [
+        "@design.twins",
+        "@design.witnesses"
+       ],
+       "family": "@family.A",
+       "principle": "PDI",
+       "declaration_id": "R",
+       "estimator_form": "@form.primary",
+       "seed_block": "twin_networks"
+      },
+      "network": [
+       "family",
+       "system",
+       "seed",
+       "declaration_id"
+      ],
+      "value": "estimate"
+     },
+     "label": "C"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-5",
+   "title": "No false exclusion of mechanism-bearing systems (HR2)",
+   "tier": "A",
+   "labels": [
+    "C"
+   ],
+   "verdict_level_absent": true,
+   "statement": "(a) Per (family, protocol, principle): ABSENT among on-rows <= 0.02 per row. (b) Per (family, protocol): EXCLUDED among runs with every N_anch mechanism on <= 0.02.",
+   "expectation": "0 events (dry run with v2 SEs at CD-10).",
+   "parts": [
+    {
+     "id": "HCv2-5(a)",
+     "text": "false ABSENT among mechanism-on rows; PDI concordance ABSENTs in their own cells; clusters are seeds",
+     "rule": "false_exclusion",
+     "params": {
+      "row_bound": 0.02,
+      "seed_bound": 0.15,
+      "seed_falsify": 0.05,
+      "alpha": 0.05,
+      "bootstrap_b": 2000,
+      "bootstrap_seed": 20261005
+     },
+     "data": {
+      "where": {
+       "design": [
+        "@design.witnesses",
+        "@design.sweep",
+        "@design.factorial"
+       ],
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": [
+        "R",
+        "H"
+       ],
+       "estimator_form": "@form.primary"
+      },
+      "mechanism_on": "own",
+      "event": {
+       "status": "ABSENT"
+      },
+      "cells": [
+       "family",
+       "declaration_id",
+       "principle",
+       "concordant"
+      ],
+      "cluster": [
+       "family",
+       "seed"
+      ]
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-5(b)",
+     "text": "false EXCLUDED among runs with every N_anch mechanism on",
+     "rule": "false_exclusion",
+     "params": {
+      "row_bound": 0.02,
+      "seed_bound": 0.15,
+      "seed_falsify": 0.05,
+      "alpha": 0.05,
+      "bootstrap_b": 2000,
+      "bootstrap_seed": 20261005
+     },
+     "data": {
+      "source": "verdicts",
+      "where": {
+       "design": [
+        "@design.witnesses",
+        "@design.sweep",
+        "@design.factorial"
+       ],
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": [
+        "R",
+        "H"
+       ],
+       "estimator_form": "@form.primary"
+      },
+      "mechanism_on": "all_n_anch",
+      "event": {
+       "verdict_value": "EXCLUDED"
+      },
+      "cells": [
+       "family",
+       "declaration_id"
+      ],
+      "cluster": [
+       "family",
+       "seed"
+      ]
+     },
+     "label": "C"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-6",
+   "title": "Anchor validity, specificity and replication",
+   "tier": "A",
+   "labels": [
+    "R"
+   ],
+   "successor_of": "HR3",
+   "statement": "Every (protocol, principle) pair's development anchor status replicates on the confirmatory replication block (validity: one-sided 95 % t lower bound of the mean excess > 0; specificity: mean paired contrast >= 0.5 x anchor with lower bound > 0). Pairs removed by the gate are included.",
+   "parts": [
+    {
+     "id": "HCv2-6(a)",
+     "text": "family protocols A-R, A-H, C1-R, C1-H and A-RAM160: the observed anchor status on 20900-20919 equals the frozen development status",
+     "rule": "anchor_replicates",
+     "params": {
+      "block_size": 20,
+      "min_finite_share": 0.9,
+      "alpha": 0.05,
+      "ratio": 0.5,
+      "directions": {
+       "NAS": [
+        "@nas_excess_receive",
+        "@nas_excess_return"
+       ]
+      },
+      "predictions": [
+       {
+        "protocol": "@protocol.A-R",
+        "principle": "RAM",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.A-R",
+        "principle": "PDI",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.A-R",
+        "principle": "NAS",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.A-R",
+        "principle": "IIM",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.A-R",
+        "principle": "SRPI",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.A-H",
+        "principle": "NAS",
+        "status": "valid_nonspecific"
+       },
+       {
+        "protocol": "@protocol.A-H",
+        "principle": "IIM",
+        "status": "valid_nonspecific"
+       },
+       {
+        "protocol": "@protocol.A-H",
+        "principle": "RAM",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.A-H",
+        "principle": "PDI",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.A-H",
+        "principle": "SRPI",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.C1-R",
+        "principle": "NAS",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.C1-R",
+        "principle": "IIM",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.C1-H",
+        "principle": "NAS",
+        "status": "valid_specific"
+       },
+       {
+        "protocol": "@protocol.A-RAM160",
+        "principle": "RAM",
+        "status": "valid_specific"
+       }
+      ]
+     },
+     "data": {
+      "where": {
+       "design": [
+        "@design.anchor_replication",
+        "@design.ram_only_anchor_replication"
+       ],
+       "estimator_form": "@form.primary"
+      },
+      "union": [
+       {
+        "label": "pc",
+        "where": {
+         "system": "PC_nominal"
+        }
+       },
+       {
+        "label": "lesion",
+        "where": {
+         "any": [
+          {
+           "principle": "RAM",
+           "system": "W_RAM_no_plasticity"
+          },
+          {
+           "principle": "PDI",
+           "system": "W_PDI_single_attractor"
+          },
+          {
+           "principle": "NAS",
+           "system": "W_NAS_no_workspace"
+          },
+          {
+           "principle": "IIM",
+           "system": "W_IIM_feedforward"
+          },
+          {
+           "principle": "SRPI",
+           "system": "W_SRPI_no_efference"
+          }
+         ]
+        }
+       }
+      ],
+      "cell_label": "{protocol_id}|{principle}",
+      "value": "excess"
+     },
+     "label": "R",
+     "notes": "Predictions are read from the frozen family protocols' anchors blocks (CD-7); the listed draft predictions apply only where no frozen protocol states them. C1-H IIM is held out (HO-4).",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-6(b)",
+     "text": "forward views: the reference condition's anchor validity (FM0) replicates",
+     "rule": "anchor_replicates",
+     "params": {
+      "block_size": 20,
+      "min_finite_share": 0.9,
+      "alpha": 0.05,
+      "validity_only": true
+     },
+     "data": {
+      "where": {
+       "design": "@design.forward_anchor_replication"
+      },
+      "union": [
+       {
+        "label": "pc",
+        "where": {}
+       }
+      ],
+      "cell_label": "{protocol_id}|{principle}",
+      "value": "excess"
+     },
+     "label": "R"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-7",
+   "title": "NAS identification under a complete declaration (families A and C1)",
+   "tier": "A",
+   "labels": [
+    "R",
+    "C"
+   ],
+   "successor_of": "HC3",
+   "expectation": "Block means, v1 rule: A (i) 20/20, median 1.01; (ii) 20/20, 0.90; C (i) 20/20, 0.95; (ii) 20/20; relay c 0.45-0.58.",
+   "parts": [
+    {
+     "id": "HCv2-7(i)",
+     "text": "paired Delta c_NAS(PC - W_NAS_no_workspace) >= 0.5 in >= 80 % of seeds, each family",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "declaration_id": "R",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ]
+      },
+      "pair": {
+       "on": [
+        "family",
+        "seed",
+        "declaration_id",
+        "principle",
+        "estimator_form"
+       ],
+       "a": {
+        "system": "PC_nominal"
+       },
+       "b": {
+        "system": "W_NAS_no_workspace"
+       },
+       "value": "c"
+      },
+      "event": {
+       "delta": {
+        "ge": 0.5
+       }
+      },
+      "cells": [
+       "family"
+      ]
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-7(ii)",
+     "text": "paired Delta c_NAS(PC - W_NAS_broadcast_only) >= 0.5 in >= 80 %",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "declaration_id": "R",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ]
+      },
+      "pair": {
+       "on": [
+        "family",
+        "seed",
+        "declaration_id",
+        "principle",
+        "estimator_form"
+       ],
+       "a": {
+        "system": "PC_nominal"
+       },
+       "b": {
+        "system": "W_NAS_broadcast_only"
+       },
+       "value": "c"
+      },
+      "event": {
+       "delta": {
+        "ge": 0.5
+       }
+      },
+      "cells": [
+       "family"
+      ]
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-7(iii)",
+     "text": "relay: W_IIM_feedforward (c_int = 0) is NAS PRESENT in >= 80 % (NAS does not distinguish a loop from a relay)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "declaration_id": "R",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "system": "W_IIM_feedforward"
+      },
+      "event": {
+       "status": "PRESENT"
+      },
+      "cells": [
+       "family"
+      ]
+     },
+     "label": "C",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-7(iv)",
+     "text": "Spearman rho(c_NAS, g_b) > 0 at one-sided p < 0.05 with a positive OLS slope on the dose rescaled to [0, 1]",
+     "rule": "spearman_ols",
+     "params": {
+      "alpha": 0.05,
+      "require_positive_slope": true
+     },
+     "data": {
+      "where": {
+       "design": "@design.sweep",
+       "declaration_id": "R",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "@sweep_knob": "g_b"
+      },
+      "dose": "@sweep_level",
+      "value": "c",
+      "cells": [
+       "family"
+      ]
+     },
+     "label": "R",
+     "requires": {
+      "usable": [
+       "g_b"
+      ]
+     }
+    },
+    {
+     "id": "HCv2-7(v-A)",
+     "text": "the v1 HC3 off-target criterion, predicted failure in family A: |Delta c_NAS(W_PDI_single_attractor - PC)| < z in < 80 % of seeds (reversed three-zone)",
+     "rule": "reversed_three_zone",
+     "params": {
+      "x": 0.8,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "declaration_id": "R",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "family": "@family.A"
+      },
+      "pair": {
+       "on": [
+        "family",
+        "seed",
+        "declaration_id",
+        "principle",
+        "estimator_form"
+       ],
+       "a": {
+        "system": "W_PDI_single_attractor"
+       },
+       "b": {
+        "system": "PC_nominal"
+       }
+      },
+      "event": {
+       "delta": {
+        "abs_lt": 0.25
+       }
+      },
+      "cells": [
+       "family"
+      ]
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-7(v-C1)",
+     "text": "family C1: |Delta c_NAS| < z for the K, eta and e witnesses in >= 80 % (three-zone)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "declaration_id": "R",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "family": "@family.C1"
+      },
+      "union": [
+       {
+        "label": "W_PDI_single_attractor",
+        "pair": {
+         "on": [
+          "family",
+          "seed",
+          "declaration_id",
+          "principle",
+          "estimator_form"
+         ],
+         "a": {
+          "system": "W_PDI_single_attractor"
+         },
+         "b": {
+          "system": "PC_nominal"
+         }
+        }
+       },
+       {
+        "label": "W_RAM_no_plasticity",
+        "pair": {
+         "on": [
+          "family",
+          "seed",
+          "declaration_id",
+          "principle",
+          "estimator_form"
+         ],
+         "a": {
+          "system": "W_RAM_no_plasticity"
+         },
+         "b": {
+          "system": "PC_nominal"
+         }
+        }
+       },
+       {
+        "label": "W_SRPI_no_efference",
+        "pair": {
+         "on": [
+          "family",
+          "seed",
+          "declaration_id",
+          "principle",
+          "estimator_form"
+         ],
+         "a": {
+          "system": "W_SRPI_no_efference"
+         },
+         "b": {
+          "system": "PC_nominal"
+         }
+        }
+       }
+      ],
+      "event": {
+       "delta": {
+        "abs_lt": 0.25
+       }
+      },
+      "cell_label": "{family}:{member}"
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-7(vi)",
+     "text": "reported: W_NAS_common_input_control (an easy null), ABSENT rates",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "declaration_id": "R",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "system": [
+        "W_NAS_common_input_control",
+        "PC_nominal",
+        "W_NAS_no_workspace",
+        "W_NAS_broadcast_only"
+       ]
+      },
+      "event": {
+       "status": "ABSENT"
+      },
+      "cells": [
+       "family",
+       "system"
+      ]
+     },
+     "role": "reported"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-8",
+   "title": "NAS non-identification under hidden inputs, restored by declaration",
+   "tier": "A",
+   "labels": [
+    "R",
+    "C"
+   ],
+   "statement": "\"Significant\" = both per-direction z > 1.645. '<= 2/20': SUPPORTED iff <= 2/20, FALSIFIED iff >= 5/20 (CP lower bound > 0.10), else INDETERMINATE; other parts three-zone.",
+   "expectation": "(a) H 18/20, R 0/20; (b) H 20/20 each (rank 1 20/20), R 0/20; (c) secondary H 20/20, R 0/20; primary H c 0.09, PRESENT 3/20; (d) 20/20.",
+   "parts": [
+    {
+     "id": "HCv2-8(a-H)",
+     "text": "N_modules_disconnected (A): significant under H in >= 80 %",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "family": "@family.A",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "system": "N_modules_disconnected",
+       "declaration_id": "H",
+       "seed_block": "witnesses_20"
+      },
+      "event": {
+       "@nas_significant": true
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-8(a-R)",
+     "text": "N_modules_disconnected (A): significant under R in <= 2/20",
+     "rule": "count_at_most",
+     "params": {
+      "max_rate": 0.1,
+      "falsify_above": 0.1
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "family": "@family.A",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "system": "N_modules_disconnected",
+       "declaration_id": "R",
+       "seed_block": "witnesses_20"
+      },
+      "event": {
+       "@nas_significant": true
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-8(b-H)",
+     "text": "staggered driver, each variant: primary significant under H in >= 80 %",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.adversarial",
+       "family": "@family.A",
+       "principle": "NAS",
+       "system": "ADV_NAS_staggered_driver",
+       "estimator_form": "@form.primary",
+       "declaration_id": "H",
+       "seed_block": "witnesses_20"
+      },
+      "event": {
+       "@nas_significant": true
+      },
+      "cells": [
+       "@variant"
+      ]
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-8(b-H-rank1)",
+     "text": "staggered driver, each variant: the rank-1 descriptor significant under H in >= 80 %",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.adversarial",
+       "family": "@family.A",
+       "principle": "NAS",
+       "system": "ADV_NAS_staggered_driver",
+       "estimator_form": "@form.primary",
+       "declaration_id": "H",
+       "seed_block": "witnesses_20"
+      },
+      "event": {
+       "@nas_rank1_significant": true
+      },
+      "cells": [
+       "@variant"
+      ]
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-8(b-R)",
+     "text": "staggered driver, each variant: primary significant under R in <= 2/20",
+     "rule": "count_at_most",
+     "params": {
+      "max_rate": 0.1,
+      "falsify_above": 0.1
+     },
+     "data": {
+      "where": {
+       "design": "@design.adversarial",
+       "family": "@family.A",
+       "principle": "NAS",
+       "system": "ADV_NAS_staggered_driver",
+       "estimator_form": "@form.primary",
+       "declaration_id": "R",
+       "seed_block": "witnesses_20"
+      },
+      "event": {
+       "@nas_significant": true
+      },
+      "cells": [
+       "@variant"
+      ]
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-8(c-H-secondary)",
+     "text": "W_NAS_no_workspace (A): secondary PRESENT under H in >= 80 %",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "family": "@family.A",
+       "principle": "NAS",
+       "estimator_form": "@form.nas_secondary",
+       "system": "W_NAS_no_workspace",
+       "declaration_id": "H",
+       "seed_block": "witnesses_20"
+      },
+      "event": {
+       "status": "PRESENT"
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-8(c-R-secondary)",
+     "text": "W_NAS_no_workspace (A): secondary PRESENT under R in <= 2/20",
+     "rule": "count_at_most",
+     "params": {
+      "max_rate": 0.1,
+      "falsify_above": 0.1
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "family": "@family.A",
+       "principle": "NAS",
+       "estimator_form": "@form.nas_secondary",
+       "system": "W_NAS_no_workspace",
+       "declaration_id": "R",
+       "seed_block": "witnesses_20"
+      },
+      "event": {
+       "status": "PRESENT"
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-8(c-H-primary)",
+     "text": "W_NAS_no_workspace (A): primary under H not PRESENT in >= 80 % (blind by geometry: the declared construct limitation)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "family": "@family.A",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "system": "W_NAS_no_workspace",
+       "declaration_id": "H",
+       "seed_block": "witnesses_20"
+      },
+      "event": {
+       "status": {
+        "ne": "PRESENT"
+       }
+      }
+     },
+     "label": "C",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-8(d)",
+     "text": "C1: |c_H - c_R| < z in >= 80 % for W_NAS_no_workspace and N_modules_disconnected",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "family": "@family.C1",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "system": [
+        "W_NAS_no_workspace",
+        "N_modules_disconnected"
+       ],
+       "seed_block": "witnesses_20"
+      },
+      "pair": {
+       "on": [
+        "family",
+        "system",
+        "seed",
+        "principle",
+        "estimator_form"
+       ],
+       "a": {
+        "declaration_id": "H"
+       },
+       "b": {
+        "declaration_id": "R"
+       }
+      },
+      "event": {
+       "delta": {
+        "abs_lt": 0.25
+       }
+      },
+      "cells": [
+       "system"
+      ]
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "HCv2-9",
+   "title": "Declared-input misspecification, NAS and IIM (held out)",
+   "tier": "A",
+   "labels": [
+    "HO",
+    "R"
+   ],
+   "statement": "Part-wise; SUPPORTED iff all decisive parts hold. A failure of (a)-(c) means the declaration is more robust than predicted; a failure of (d)-(e) that the basis covers more than its stated span.",
+   "parts": [
+    {
+     "id": "HCv2-9(a)",
+     "text": "label errors: for each (estimator, system) pair the excess increases over q in {0, 0.1, 0.25} (Jonckheere-Terpstra one-sided p < 0.05/4) and the median at q = 0.25 exceeds the median at q = 0",
+     "rule": "jonckheere_terpstra",
+     "params": {
+      "alpha": 0.0125,
+      "order": [
+       "R",
+       "Q10",
+       "Q25"
+      ],
+      "medians": "last_gt_first"
+     },
+     "data": {
+      "where": {
+       "design": [
+        "@design.witnesses",
+        "@design.held_out"
+       ],
+       "family": "@family.A",
+       "estimator_form": "@form.primary",
+       "all": [
+        {
+         "any": [
+          {
+           "principle": "NAS",
+           "system": [
+            "W_NAS_no_workspace",
+            "N_modules_disconnected"
+           ]
+          },
+          {
+           "principle": "IIM",
+           "system": [
+            "W_IIM_feedforward",
+            "O_inert"
+           ]
+          }
+         ]
+        }
+       ],
+       "declaration_id": [
+        "R",
+        "Q10",
+        "Q25"
+       ],
+       "seed_block": "witnesses_20"
+      },
+      "group": "declaration_id",
+      "value": "c",
+      "cells": [
+       "system",
+       "principle"
+      ]
+     },
+     "label": "HO",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-9(b)",
+     "text": "slow phase undeclared (P): paired Delta c(P - R) > 0, one-sided Wilcoxon signed-rank p < 0.05/4, per pair",
+     "rule": "wilcoxon",
+     "params": {
+      "alpha": 0.0125,
+      "alternative": "greater"
+     },
+     "data": {
+      "where": {
+       "design": [
+        "@design.witnesses",
+        "@design.held_out"
+       ],
+       "family": "@family.A",
+       "estimator_form": "@form.primary",
+       "all": [
+        {
+         "any": [
+          {
+           "principle": "NAS",
+           "system": [
+            "W_NAS_no_workspace",
+            "N_modules_disconnected"
+           ]
+          },
+          {
+           "principle": "IIM",
+           "system": [
+            "W_IIM_feedforward",
+            "O_inert"
+           ]
+          }
+         ]
+        }
+       ],
+       "seed_block": "witnesses_20"
+      },
+      "pair": {
+       "on": [
+        "family",
+        "system",
+        "seed",
+        "principle",
+        "estimator_form"
+       ],
+       "a": {
+        "declaration_id": "P"
+       },
+       "b": {
+        "declaration_id": "R"
+       }
+      },
+      "cells": [
+       "system",
+       "principle"
+      ]
+     },
+     "label": "HO",
+     "notes": "IIM pairs are labelled R (replication of the IIM design's label-error dose)",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-9(c)",
+     "text": "cue-onset jitter (J): paired Delta c(J - R) > 0, one-sided sign test p < 0.05/4, per pair",
+     "rule": "sign_test",
+     "params": {
+      "alpha": 0.0125,
+      "alternative": "greater"
+     },
+     "data": {
+      "where": {
+       "design": [
+        "@design.witnesses",
+        "@design.held_out"
+       ],
+       "family": "@family.A",
+       "estimator_form": "@form.primary",
+       "all": [
+        {
+         "any": [
+          {
+           "principle": "NAS",
+           "system": [
+            "W_NAS_no_workspace",
+            "N_modules_disconnected"
+           ]
+          },
+          {
+           "principle": "IIM",
+           "system": [
+            "W_IIM_feedforward",
+            "O_inert"
+           ]
+          }
+         ]
+        }
+       ],
+       "seed_block": "witnesses_20"
+      },
+      "pair": {
+       "on": [
+        "family",
+        "system",
+        "seed",
+        "principle",
+        "estimator_form"
+       ],
+       "a": {
+        "declaration_id": "J"
+       },
+       "b": {
+        "declaration_id": "R"
+       }
+      },
+      "cells": [
+       "system",
+       "principle"
+      ]
+     },
+     "label": "HO",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-9(d)",
+     "text": "driver outside the basis span (time constants x 10): NAS primary significant under R in >= 50 % of seeds (three-zone at 0.5)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.5
+     },
+     "data": {
+      "where": {
+       "design": [
+        "@design.held_out",
+        "@design.adversarial"
+       ],
+       "family": "@family.A",
+       "system": "ADV_NAS_staggered_tau10",
+       "principle": "NAS",
+       "declaration_id": "R",
+       "estimator_form": "@form.primary",
+       "seed_block": "witnesses_20"
+      },
+      "event": {
+       "@nas_significant": true
+      }
+     },
+     "label": "HO",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-9(e)",
+     "text": "saturating transform: paired NAS excess (saturating minus hierarchical linear) > 0 under R, one-sided sign test p < 0.05",
+     "rule": "sign_test",
+     "params": {
+      "alpha": 0.05,
+      "alternative": "greater"
+     },
+     "data": {
+      "where": {
+       "design": [
+        "@design.held_out",
+        "@design.adversarial"
+       ],
+       "family": "@family.A",
+       "principle": "NAS",
+       "declaration_id": "R",
+       "estimator_form": "@form.primary",
+       "seed_block": "witnesses_20"
+      },
+      "pair": {
+       "on": [
+        "family",
+        "seed",
+        "declaration_id",
+        "principle",
+        "estimator_form"
+       ],
+       "a": {
+        "system": "ADV_NAS_staggered_sat"
+       },
+       "b": {
+        "system": "ADV_NAS_staggered_driver",
+        "@variant": "hierarchical"
+       },
+       "value": "excess"
+      }
+     },
+     "label": "HO",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-9(f)",
+     "text": "reported: PC_nominal under each misspecification",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "where": {
+       "design": [
+        "@design.witnesses",
+        "@design.held_out"
+       ],
+       "family": "@family.A",
+       "system": "PC_nominal",
+       "principle": [
+        "NAS",
+        "IIM"
+       ],
+       "estimator_form": "@form.primary",
+       "declaration_id": [
+        "R",
+        "P",
+        "Q10",
+        "Q25",
+        "J"
+       ],
+       "seed_block": "witnesses_20"
+      },
+      "event": {
+       "status": "PRESENT"
+      },
+      "cells": [
+       "principle",
+       "declaration_id"
+      ]
+     },
+     "role": "reported"
+    },
+    {
+     "id": "HCv2-9(f-conditioning)",
+     "text": "reported: NAS conditioning_delta (value with the declared basis minus without, same seeds) per system and declaration",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "where": {
+       "design": [
+        "@design.witnesses",
+        "@design.held_out",
+        "@design.adversarial"
+       ],
+       "family": "@family.A",
+       "principle": "NAS",
+       "estimator_form": "@form.primary",
+       "declaration_id": [
+        "R",
+        "P",
+        "Q10",
+        "Q25",
+        "J"
+       ],
+       "seed_block": "witnesses_20"
+      },
+      "value": "@nas_conditioning_delta",
+      "cells": [
+       "system",
+       "declaration_id"
+      ]
+     },
+     "role": "reported"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-10",
+   "title": "NAS forward-model admission (Hopf arm, held-out regime)",
+   "tier": "A",
+   "labels": [
+    "R",
+    "C"
+   ],
+   "statement": "The admission procedure yields the predicted NAS rows: source admitted for PRESENT and for ABSENT; every EEG and source-estimate view not admitted for PRESENT (fails FMa), with admitted_for_absent = vacuous. BOLD: IA-3.",
+   "parts": [
+    {
+     "id": "HCv2-10",
+     "text": "decisive cells: source PRESENT admission and each EEG view's PRESENT admission; NOT_EVALUABLE if the source anchor is invalid",
+     "rule": "admission_matches",
+     "params": {
+      "anchor_cell": "@view.source",
+      "anchor_field": "anchor_valid",
+      "predictions": {
+       "@view.source": {
+        "admitted_for_present": "yes"
+       },
+       "@view.eeg64": {
+        "admitted_for_present": "no"
+       },
+       "@view.eeg_low": {
+        "admitted_for_present": "no"
+       },
+       "@view.mne_template": {
+        "admitted_for_present": "no"
+       }
+      }
+     },
+     "data": {
+      "source": "registry",
+      "where": {
+       "principle": "NAS",
+       "substrate": "@substrate.hopf"
+      },
+      "cell_label": "{view}"
+     },
+     "label": "R"
+    },
+    {
+     "id": "HCv2-10(absent)",
+     "text": "reported: the ABSENT flags against their predictions",
+     "rule": "admission_matches",
+     "params": {
+      "predictions": {
+       "@view.source": {
+        "admitted_for_absent": "yes"
+       },
+       "@view.eeg64": {
+        "admitted_for_absent": "vacuous"
+       },
+       "@view.eeg_low": {
+        "admitted_for_absent": "vacuous"
+       },
+       "@view.mne_template": {
+        "admitted_for_absent": "vacuous"
+       }
+      }
+     },
+     "data": {
+      "source": "registry",
+      "where": {
+       "principle": "NAS",
+       "substrate": "@substrate.hopf"
+      },
+      "cell_label": "{view}"
+     },
+     "role": "reported"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-11",
+   "title": "IIM directional construct on family B (H-IIM-4)",
+   "tier": "A",
+   "labels": [
+    "C"
+   ],
+   "expectation": "T = 10000, 10 seeds, v1 rule: IIM-dir ABSENT 10/10, PRESENT 0/10 at 0.2, 0.6, 1.0; IIM-bid c 0.04/0.40/1.09 vs exact 0.04/0.41/1.12.",
+   "parts": [
+    {
+     "id": "HCv2-11(a)",
+     "text": "IIM-dir PRESENT <= 0.07 (H0 cell rule, 12 cells)",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "@b_network": "feedforward_star",
+       "seed_block": "family_b_feedforward_star",
+       "estimator_form": "@form.primary"
+      },
+      "event": {
+       "status": "PRESENT"
+      },
+      "cell_label": "c{@b_coupling}:T{@b_T}"
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-11(b-rho)",
+     "text": "IIM-bid Spearman(c, coupling) > 0 (one-sided p < 0.025) at each T",
+     "rule": "spearman_ols",
+     "params": {
+      "alpha": 0.025,
+      "require_positive_slope": false
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "@b_network": "feedforward_star",
+       "seed_block": "family_b_feedforward_star",
+       "estimator_form": "@form.iim_bidirectional"
+      },
+      "dose": "@b_coupling",
+      "value": "c",
+      "cell_label": "T{@b_T}"
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-11(b-present)",
+     "text": "IIM-bid PRESENT >= 80 % at coupling 1.0, T = 30000 (three-zone)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "@b_network": "feedforward_star",
+       "seed_block": "family_b_feedforward_star",
+       "estimator_form": "@form.iim_bidirectional",
+       "@b_coupling": 1.0,
+       "@b_T": 30000
+      },
+      "event": {
+       "status": "PRESENT"
+      }
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-11(c)",
+     "text": "IIM-dir ABSENT >= 80 % at every coupling >= 0.2 and both T (three-zone at 0.05/10); decisive only if pi0 >= 0.9 at CD-7, else NOT_TESTABLE_BY_DESIGN and replaced by (a)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8,
+      "m": 10
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "@b_network": "feedforward_star",
+       "seed_block": "family_b_feedforward_star",
+       "estimator_form": "@form.primary",
+       "@b_coupling": {
+        "ge": 0.2
+       }
+      },
+      "event": {
+       "status": "ABSENT"
+      },
+      "cell_label": "c{@b_coupling}:T{@b_T}"
+     },
+     "label": "C",
+     "gate": {
+      "kind": "absent",
+      "family": "@protocol.B",
+      "principle": "IIM",
+      "witness": "feedforward_star"
+     },
+     "replaced_by": "HCv2-11(a)"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-12",
+   "title": "IIM family-B ground truth: exact tracking, the non-monotone regime and the occupancy gate",
+   "tier": "A",
+   "labels": [
+    "C",
+    "HO"
+   ],
+   "parts": [
+    {
+     "id": "HCv2-12(a)",
+     "text": "per (system, cut): Spearman(sampled excess, exact value) > 0 at one-sided p < 0.05/4 and level medians non-decreasing in the exact value (decreases < 0.10 of the family-B anchor count as ties)",
+     "rule": "spearman_monotone",
+     "params": {
+      "alpha": 0.0125,
+      "tie_tolerance": 0.1
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_exact_tracking",
+       "@b_T": 30000,
+       "estimator_form": [
+        "@form.primary",
+        "@form.iim_bidirectional"
+       ]
+      },
+      "union": [
+       {
+        "label": "ring",
+        "where": {
+         "@b_network": "ring"
+        },
+        "group": "@b_coupling"
+       },
+       {
+        "label": "xor",
+        "where": {
+         "@b_network": "xor"
+        },
+        "group": "@b_noise"
+       }
+      ],
+      "dose": "@b_exact",
+      "value": "c",
+      "cell_label": "{member}:{estimator_form}"
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-12(a-T10000)",
+     "text": "reported: the same at T = 10000",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_exact_tracking",
+       "@b_T": 10000
+      },
+      "cells": [
+       "@b_network",
+       "estimator_form"
+      ]
+     },
+     "role": "reported"
+    },
+    {
+     "id": "HCv2-12(b)",
+     "text": "non-monotone regime (ring 0.45 -> 0.9 -> 1.5, T = 30000): at each step where the gate defines IIM in >= 50 % of runs, the median paired change has the sign of the exact change (one-sided sign test p < 0.025); a step where the gate fails in > 50 % counts as correctly undefined",
+     "rule": "stepwise_sign",
+     "params": {
+      "alpha": 0.025,
+      "gate_share": 0.5,
+      "steps": [
+       [
+        0.45,
+        0.9
+       ],
+       [
+        0.9,
+        1.5
+       ]
+      ],
+      "pair_on": [
+       "seed"
+      ]
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_non_monotone",
+       "@b_network": "ring",
+       "@b_coupling": [
+        0.45,
+        0.9,
+        1.5
+       ],
+       "@b_T": 30000,
+       "estimator_form": [
+        "@form.primary",
+        "@form.iim_bidirectional"
+       ]
+      },
+      "group": "@b_coupling",
+      "exact": "@b_exact",
+      "value": "c",
+      "cells": [
+       "estimator_form"
+      ]
+     },
+     "label": "HO"
+    },
+    {
+     "id": "HCv2-12(c-low)",
+     "text": "cells with T pi_min <= N_min / 2 are UNDEFINED(INSUFFICIENT_OCCUPANCY) in >= 90 %",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.9
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_occupancy_gate",
+       "@b_occupancy_cell": "low"
+      },
+      "event": {
+       "reason_code": "INSUFFICIENT_OCCUPANCY"
+      },
+      "cell_label": "low:{@b_network}:c{@b_coupling}:T{@b_T}:{estimator_form}"
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-12(c-high)",
+     "text": "cells with T pi_min >= 4 N_min are defined in >= 90 %",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.9
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_occupancy_gate",
+       "@b_occupancy_cell": "high"
+      },
+      "event": {
+       "defined": true
+      },
+      "cell_label": "high:{@b_network}:c{@b_coupling}:T{@b_T}:{estimator_form}"
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-12(d)",
+     "text": "the declared reason is correct (INSUFFICIENT_OCCUPANCY; MACRO_RANK_DEFICIENT for the montage) in >= 90 % (three-zone at 0.05/3)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.9,
+      "m": 3
+     },
+     "data": {
+      "union": [
+       {
+        "label": "O_hypersynchronous",
+        "where": {
+         "design": "@design.witnesses",
+         "estimator_form": "@form.primary",
+         "family": "@family.A",
+         "system": "O_hypersynchronous",
+         "principle": "IIM",
+         "declaration_id": "R"
+        },
+        "event": {
+         "reason_code": "INSUFFICIENT_OCCUPANCY"
+        }
+       },
+       {
+        "label": "all_to_all_0.6_T1000",
+        "where": {
+         "design": "@design.family_b",
+         "family": "@family.B",
+         "principle": "IIM",
+         "seed_block": "family_b_occupancy_gate",
+         "@b_network": "all_to_all",
+         "@b_coupling": 0.6,
+         "@b_T": 1000
+        },
+        "event": {
+         "reason_code": "INSUFFICIENT_OCCUPANCY"
+        }
+       },
+       {
+        "label": "v1_quadrant_average_reference",
+        "where": {
+         "design": "@design.whole_brain",
+         "principle": "IIM",
+         "@hopf_G": 0,
+         "view": "@view.eeg64",
+         "estimator_form": "@form.iim_v1_quadrant"
+        },
+        "event": {
+         "reason_code": "MACRO_RANK_DEFICIENT"
+        }
+       }
+      ],
+      "cell_label": "{member}"
+     },
+     "label": "C"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-13",
+   "title": "IIM driver conditioning on family B (H-IIM-5 a-c)",
+   "tier": "A",
+   "labels": [
+    "C"
+   ],
+   "expectation": "Recorded c -0.03/-0.01/-0.00, exceedance <= 0.05; undeclared c 0.69/0.91/1.10; label errors c 0 -> 0.27 -> 0.67.",
+   "parts": [
+    {
+     "id": "HCv2-13(a)",
+     "text": "recorded and stratified: rank exceedance and PRESENT <= 0.07 (H0 cell rule over 12 T x cut x statistic cells)",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_driver_conditioning",
+       "@b_network": "hidden_driver",
+       "estimator_form": [
+        "@form.primary",
+        "@form.iim_bidirectional"
+       ],
+       "declaration_id": "recorded"
+      },
+      "union": [
+       {
+        "label": "exceedance",
+        "event": {
+         "@iim_p_ind": {
+          "le": 0.05
+         }
+        }
+       },
+       {
+        "label": "present",
+        "event": {
+         "status": "PRESENT"
+        }
+       }
+      ],
+      "cell_label": "{member}:T{@b_T}:{estimator_form}",
+      "pool_by": [
+       "member"
+      ]
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-13(b-present)",
+     "text": "undeclared (the limit): PRESENT >= 80 % at T = 30000 in each cut family (three-zone at 0.05/2)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8,
+      "m": 2
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_driver_conditioning",
+       "@b_network": "hidden_driver",
+       "estimator_form": [
+        "@form.primary",
+        "@form.iim_bidirectional"
+       ],
+       "declaration_id": "hidden",
+       "@b_T": 30000
+      },
+      "event": {
+       "status": "PRESENT"
+      },
+      "cells": [
+       "estimator_form"
+      ]
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-13(b-median)",
+     "text": "undeclared: median c > z at every T",
+     "rule": "median_threshold",
+     "params": {
+      "op": "gt",
+      "x": 0.25
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_driver_conditioning",
+       "@b_network": "hidden_driver",
+       "estimator_form": [
+        "@form.primary",
+        "@form.iim_bidirectional"
+       ],
+       "declaration_id": "hidden"
+      },
+      "value": "c",
+      "cell_label": "T{@b_T}:{estimator_form}"
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-13(c)",
+     "text": "label errors: Jonckheere-Terpstra one-sided p < 0.025 per cut and strictly increasing medians",
+     "rule": "jonckheere_terpstra",
+     "params": {
+      "alpha": 0.025,
+      "order": [
+       "0",
+       "0.1",
+       "0.25"
+      ],
+      "medians": "strictly_increasing"
+     },
+     "data": {
+      "where": {
+       "design": "@design.family_b",
+       "family": "@family.B",
+       "principle": "IIM",
+       "seed_block": "family_b_driver_conditioning",
+       "@b_network": "hidden_driver",
+       "estimator_form": [
+        "@form.primary",
+        "@form.iim_bidirectional"
+       ],
+       "@b_T": 10000
+      },
+      "union": [
+       {
+        "label": "0",
+        "where": {
+         "declaration_id": "recorded"
+        }
+       },
+       {
+        "label": "0.1",
+        "where": {
+         "declaration_id": "label_error",
+         "@b_label_q": 0.1
+        }
+       },
+       {
+        "label": "0.25",
+        "where": {
+         "declaration_id": "label_error",
+         "@b_label_q": 0.25
+        }
+       }
+      ],
+      "group": "member",
+      "value": "c",
+      "cells": [
+       "estimator_form"
+      ]
+     },
+     "label": "C"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-14",
+   "title": "IIM-dir on the agents with recorded drivers, and the hidden-driver limit",
+   "tier": "A",
+   "labels": [
+    "R",
+    "HO",
+    "C"
+   ],
+   "successor_of": "HC3",
+   "expectation": "A, 10 seeds, lags 0-6 and residualise-then-shift (re-established with the common basis and shift-then-project at CD-6): Delta c 1.10 (10/10); acyclic PRESENT 0/10; PC PRESENT 9/10; hidden Delta c -0.01.",
+   "notes": "Family A parts are R; family C1 parts are held out (HO-4).",
+   "parts": [
+    {
+     "id": "HCv2-14(a)",
+     "text": "under R, median paired Delta c(PC - W_IIM_feedforward) >= 0.5 with one-sided 95 % Hodges-Lehmann lower bound > z, each family",
+     "rule": "hodges_lehmann",
+     "params": {
+      "median_op": "ge",
+      "median_x": 0.5,
+      "lower_gt": 0.25,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "principle": "IIM",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": "R"
+      },
+      "pair": {
+       "on": [
+        "family",
+        "seed",
+        "declaration_id",
+        "principle",
+        "estimator_form"
+       ],
+       "a": {
+        "system": "PC_nominal"
+       },
+       "b": {
+        "system": "W_IIM_feedforward"
+       },
+       "value": "c"
+      },
+      "cells": [
+       "family"
+      ]
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-14(b)",
+     "text": "under R, W_IIM_feedforward and O_inert PRESENT <= 0.07 (H0 cell rule, m = 4)",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05,
+      "m": 4
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "principle": "IIM",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": "R",
+       "system": [
+        "W_IIM_feedforward",
+        "O_inert"
+       ]
+      },
+      "event": {
+       "status": "PRESENT"
+      },
+      "cell_label": "{family}:{system}"
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-14(c)",
+     "text": "W_IIM_feedforward ABSENT in >= 80 % under R: predicted NOT_TESTABLE_BY_DESIGN (pi0 = 0 at bench precision), replaced by (b)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "principle": "IIM",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": "R",
+       "system": "W_IIM_feedforward"
+      },
+      "event": {
+       "status": "ABSENT"
+      },
+      "cell_label": "{protocol_id}"
+     },
+     "label": "R",
+     "gate": {
+      "per_cell": true,
+      "kind": "absent",
+      "family": "{protocol_id}",
+      "principle": "IIM",
+      "witness": "W_IIM_feedforward"
+     },
+     "replaced_by": "HCv2-14(b)",
+     "prediction": "NOT_TESTABLE_BY_DESIGN",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-14(d)",
+     "text": "PC PRESENT >= 80 % under R where pi1 >= 0.9, else replaced by (a)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "principle": "IIM",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": "R",
+       "system": "PC_nominal"
+      },
+      "event": {
+       "status": "PRESENT"
+      },
+      "cell_label": "{protocol_id}"
+     },
+     "label": "R",
+     "gate": {
+      "per_cell": true,
+      "kind": "present",
+      "family": "{protocol_id}",
+      "principle": "IIM",
+      "witness": "PC_nominal"
+     },
+     "replaced_by": "HCv2-14(a)"
+    },
+    {
+     "id": "HCv2-14(e)",
+     "text": "the limit, decisive: under H, median Delta c(PC - W_IIM_feedforward) < 0.25",
+     "rule": "median_threshold",
+     "params": {
+      "op": "lt",
+      "x": 0.25
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "principle": "IIM",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": "H"
+      },
+      "pair": {
+       "on": [
+        "family",
+        "seed",
+        "declaration_id",
+        "principle",
+        "estimator_form"
+       ],
+       "a": {
+        "system": "PC_nominal"
+       },
+       "b": {
+        "system": "W_IIM_feedforward"
+       },
+       "value": "c"
+      },
+      "cells": [
+       "family"
+      ]
+     },
+     "label": "C",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-14(f)",
+     "text": "under R, Spearman rho(c_IIM-dir, c_int) > 0 at one-sided p < 0.05",
+     "rule": "spearman_ols",
+     "params": {
+      "alpha": 0.05,
+      "require_positive_slope": false
+     },
+     "data": {
+      "where": {
+       "design": "@design.sweep",
+       "principle": "IIM",
+       "estimator_form": "@form.primary",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": "R",
+       "@sweep_knob": "c_int"
+      },
+      "dose": "@sweep_level",
+      "value": "c",
+      "cells": [
+       "family"
+      ]
+     },
+     "label": "R",
+     "requires": {
+      "usable": [
+       "c_int"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "HCv2-15",
+   "title": "IIM at sensor and BOLD level: specificity, exclusion safety, sensitivity (Hopf arm, held-out regime)",
+   "tier": "A",
+   "labels": [
+    "R",
+    "C",
+    "HO"
+   ],
+   "parts": [
+    {
+     "id": "HCv2-15(a)",
+     "text": "FMa: v2 pipeline PRESENT and rank exceedance at G = 0 with CP upper bound < 0.07 at 0.05/4 in each view (61 sources)",
+     "rule": "demonstration",
+     "params": {
+      "bound": 0.07,
+      "level": 0.0125
+     },
+     "data": {
+      "where": {
+       "design": "@design.whole_brain",
+       "principle": "IIM",
+       "@hopf_G": 0,
+       "view": "@view.sensor_set",
+       "estimator_form": "@form.primary",
+       "all": [
+        {
+         "@unlesioned": true
+        }
+       ]
+      },
+      "union": [
+       {
+        "label": "present",
+        "event": {
+         "status": "PRESENT"
+        }
+       },
+       {
+        "label": "exceedance",
+        "event": {
+         "@iim_p_ind": {
+          "le": 0.05
+         }
+        }
+       }
+      ],
+      "cell_label": "{view}:{member}"
+     },
+     "label": "R"
+    },
+    {
+     "id": "HCv2-15(b)",
+     "text": "v1 quadrant pipeline: PRESENT at G = 0 in >= 80 % without reference (three-zone)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.whole_brain",
+       "principle": "IIM",
+       "@hopf_G": 0,
+       "view": "@view.eeg64_noref",
+       "estimator_form": "@form.iim_v1_quadrant"
+      },
+      "event": {
+       "status": "PRESENT"
+      }
+     },
+     "label": "R"
+    },
+    {
+     "id": "HCv2-15(c)",
+     "text": "FMabs: IIM-dir false ABSENT at G_nom with CP upper bound < 0.02 in every view (150 runs, curtailed)",
+     "rule": "demonstration",
+     "params": {
+      "bound": 0.02,
+      "level": 0.05,
+      "n_planned": 150
+     },
+     "data": {
+      "where": {
+       "design": "@design.whole_brain",
+       "principle": "IIM",
+       "@hopf_G": "@hopf.G_nom",
+       "view": "@view.sensor_set",
+       "estimator_form": "@form.primary",
+       "all": [
+        {
+         "@unlesioned": true
+        }
+       ]
+      },
+      "event": {
+       "status": "ABSENT"
+      },
+      "cells": [
+       "view"
+      ]
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-15(c-pi0)",
+     "text": "reported: ABSENT rate at G = 0 per view",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "where": {
+       "design": "@design.whole_brain",
+       "principle": "IIM",
+       "@hopf_G": 0,
+       "view": "@view.sensor_set",
+       "estimator_form": "@form.primary"
+      },
+      "event": {
+       "status": "ABSENT"
+      },
+      "cells": [
+       "view"
+      ]
+     },
+     "role": "reported"
+    },
+    {
+     "id": "HCv2-15(d-present)",
+     "text": "BOLD: IIM not PRESENT at every G including G = 0 (PRESENT <= 0.07, H0 rule over the 8 levels)",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": "@design.whole_brain",
+       "principle": "IIM",
+       "view": "@view.bold",
+       "estimator_form": "@form.primary",
+       "all": [
+        {
+         "@unlesioned": true
+        }
+       ]
+      },
+      "event": {
+       "status": "PRESENT"
+      },
+      "cell_label": "G{@hopf_G}"
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-15(d-absent)",
+     "text": "BOLD: false ABSENT at G_nom with CP upper bound < 0.02",
+     "rule": "demonstration",
+     "params": {
+      "bound": 0.02,
+      "level": 0.05,
+      "n_planned": 150
+     },
+     "data": {
+      "where": {
+       "design": "@design.whole_brain",
+       "principle": "IIM",
+       "view": "@view.bold",
+       "@hopf_G": "@hopf.G_nom",
+       "estimator_form": "@form.primary",
+       "all": [
+        {
+         "@unlesioned": true
+        }
+       ]
+      },
+      "event": {
+       "status": "ABSENT"
+      }
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-15(e-FMb1)",
+     "text": "reported: FMb1 at sensor level (Spearman of c with G)",
+     "rule": "spearman_ols",
+     "params": {
+      "alpha": 0.05,
+      "require_positive_slope": false
+     },
+     "data": {
+      "where": {
+       "design": "@design.whole_brain",
+       "principle": "IIM",
+       "view": "@view.sensor_set",
+       "estimator_form": "@form.primary",
+       "all": [
+        {
+         "@unlesioned": true
+        }
+       ]
+      },
+      "dose": "@hopf_G",
+      "value": "c",
+      "cells": [
+       "view"
+      ]
+     },
+     "role": "reported",
+     "label": "HO"
+    },
+    {
+     "id": "HCv2-15(e-FMd)",
+     "text": "FMd at sensor level, predicted to fail: the G_nom vs G = 0 contrast has the source's sign and >= half its size in < 80 % of seeds (reversed three-zone)",
+     "rule": "fmd_concordance",
+     "params": {
+      "x": 0.8,
+      "zone": "reversed",
+      "ratio": 0.5,
+      "levels": [
+       0,
+       "@hopf.G_nom"
+      ],
+      "source": "source",
+      "view": "view"
+     },
+     "data": {
+      "where": {
+       "design": "@design.whole_brain",
+       "principle": "IIM",
+       "estimator_form": "@form.primary",
+       "@hopf_G": [
+        0,
+        "@hopf.G_nom"
+       ],
+       "all": [
+        {
+         "@unlesioned": true
+        }
+       ]
+      },
+      "union": [
+       {
+        "label": "source",
+        "where": {
+         "view": "@view.source"
+        }
+       },
+       {
+        "label": "view",
+        "where": {
+         "view": "@view.sensor_set"
+        }
+       }
+      ],
+      "dose": "@hopf_G",
+      "value": "c",
+      "cells": [
+       "view"
+      ]
+     },
+     "label": "HO"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-16",
+   "title": "RAM-PE specificity: no RAM-PE without plasticity (H-RAM-1)",
+   "tier": "A",
+   "labels": [
+    "C"
+   ],
+   "expectation": "0/40 at eta = 0 (development, v2 readout); reflex arc: dry run.",
+   "parts": [
+    {
+     "id": "HCv2-16",
+     "text": "H0 cell rule with a cluster-robust pooled bound over 19 cells: RAM-only arm (W_RAM_no_plasticity, eta = 0, reflex_arc; 40 seeds each) and the 16 factorial cells with eta = 0 (A-R, 10 seeds each)",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05,
+      "m": 19
+     },
+     "data": {
+      "where": {
+       "principle": "RAM",
+       "estimator_form": "@form.primary"
+      },
+      "union": [
+       {
+        "label": "W_RAM_no_plasticity",
+        "where": {
+         "design": "@design.ram_only",
+         "system": "W_RAM_no_plasticity"
+        },
+        "cell_label": "ram_only:{member}"
+       },
+       {
+        "label": "eta_0",
+        "where": {
+         "design": "@design.ram_only",
+         "@sweep_knob": "eta",
+         "@sweep_level": 0
+        },
+        "cell_label": "ram_only:{member}"
+       },
+       {
+        "label": "reflex_arc",
+        "where": {
+         "design": "@design.ram_only",
+         "system": "adversarial_reflex_arc"
+        },
+        "cell_label": "ram_only:{member}"
+       },
+       {
+        "label": "factorial",
+        "where": {
+         "design": "@design.factorial",
+         "family": "@family.A",
+         "declaration_id": "R",
+         "bit.RAM": 0
+        },
+        "cell_label": "factorial:{@cell_id}"
+       }
+      ],
+      "event": {
+       "status": "PRESENT"
+      }
+     },
+     "label": "C",
+     "requires": {
+      "oracle": true,
+      "usable": [
+       "eta"
+      ]
+     }
+    },
+    {
+     "id": "HCv2-16(reported)",
+     "text": "NULL_MODEL_VIOLATED rates",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "where": {
+       "principle": "RAM",
+       "design": [
+        "@design.ram_only",
+        "@design.factorial"
+       ]
+      },
+      "event": {
+       "reason_code": "NULL_MODEL_VIOLATED"
+      },
+      "cells": [
+       "design",
+       "system"
+      ]
+     },
+     "role": "reported"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-17",
+   "title": "RAM-PE sensitivity and its predicted non-selectivity (H-RAM-2 revised)",
+   "tier": "A",
+   "labels": [
+    "R",
+    "C"
+   ],
+   "successor_of": "HC3",
+   "statement": "ABSENT parts: none (unreachable at 79-159 updates).",
+   "expectation": "Paired Delta c mean 1.02 (>= 0.5 in 34/40); excess -0.02/0.13/0.39/0.52 at eta 0/0.1/0.3/0.6.",
+   "parts": [
+    {
+     "id": "HCv2-17(a)",
+     "text": "Spearman rho(c, eta) > 0 at one-sided p < 0.05",
+     "rule": "spearman_ols",
+     "params": {
+      "alpha": 0.05,
+      "require_positive_slope": false
+     },
+     "data": {
+      "where": {
+       "design": "@design.ram_only",
+       "principle": "RAM",
+       "estimator_form": "@form.primary",
+       "@sweep_knob": "eta"
+      },
+      "dose": "@sweep_level",
+      "value": "c"
+     },
+     "label": "R",
+     "requires": {
+      "usable": [
+       "eta"
+      ]
+     }
+    },
+    {
+     "id": "HCv2-17(b)",
+     "text": "paired Delta c(PC - W_RAM_no_plasticity) >= 0.5 in >= 80 % (three-zone)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.ram_only",
+       "principle": "RAM",
+       "estimator_form": "@form.primary"
+      },
+      "pair": {
+       "on": [
+        "seed",
+        "principle"
+       ],
+       "a": {
+        "all": [
+         {
+          "system": "PC_nominal"
+         },
+         {
+          "@no_sweep": true
+         }
+        ]
+       },
+       "b": {
+        "system": "W_RAM_no_plasticity"
+       }
+      },
+      "event": {
+       "delta": {
+        "ge": 0.5
+       }
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-17(c)",
+     "text": "PC PRESENT more often than not: CP lower bound (0.05) > 0.5 (>= 26/40); FALSIFIED if the CP upper bound (0.05) is below 0.5",
+     "rule": "rate_lower_bound",
+     "params": {
+      "x": 0.5,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": "@design.ram_only",
+       "principle": "RAM",
+       "estimator_form": "@form.primary",
+       "all": [
+        {
+         "all": [
+          {
+           "system": "PC_nominal"
+          },
+          {
+           "@no_sweep": true
+          }
+         ]
+        }
+       ]
+      },
+      "event": {
+       "status": "PRESENT"
+      }
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-17(d)",
+     "text": "non-selectivity against SNR changes, decisive: median paired Delta c(K = 1 - PC) > z with one-sided 95 % Hodges-Lehmann lower bound > 0",
+     "rule": "hodges_lehmann",
+     "params": {
+      "median_op": "gt",
+      "median_x": 0.25,
+      "lower_gt": 0.0,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": "@design.ram_only",
+       "principle": "RAM",
+       "estimator_form": "@form.primary"
+      },
+      "pair": {
+       "on": [
+        "seed",
+        "principle"
+       ],
+       "a": {
+        "@sweep_knob": "K",
+        "@sweep_level": 1
+       },
+       "b": {
+        "all": [
+         {
+          "system": "PC_nominal"
+         },
+         {
+          "@no_sweep": true
+         }
+        ]
+       }
+      }
+     },
+     "label": "R",
+     "notes": "Predicted failure of selectivity (development +0.40).",
+     "requires": {
+      "usable": [
+       "K"
+      ]
+     }
+    },
+    {
+     "id": "HCv2-17(d-g_b)",
+     "text": "reported: the g_b = 0 contrast (development +0.16)",
+     "rule": "hodges_lehmann",
+     "params": {
+      "lower_gt": 0.0,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": "@design.ram_only",
+       "principle": "RAM",
+       "estimator_form": "@form.primary"
+      },
+      "pair": {
+       "on": [
+        "seed",
+        "principle"
+       ],
+       "a": {
+        "@sweep_knob": "g_b",
+        "@sweep_level": 0
+       },
+       "b": {
+        "all": [
+         {
+          "system": "PC_nominal"
+         },
+         {
+          "@no_sweep": true
+         }
+        ]
+       }
+      }
+     },
+     "role": "reported"
+    },
+    {
+     "id": "HCv2-17(e)",
+     "text": "construct boundary: the Newcombe 95 % interval of the PRESENT-rate difference (scrambled_feedback minus PC) includes 0; FALSIFIED if it excludes 0",
+     "rule": "newcombe_includes_zero",
+     "params": {
+      "a": "scrambled",
+      "b": "pc",
+      "conf": 0.95
+     },
+     "data": {
+      "where": {
+       "design": "@design.ram_only",
+       "principle": "RAM",
+       "estimator_form": "@form.primary"
+      },
+      "union": [
+       {
+        "label": "scrambled",
+        "where": {
+         "system": "adversarial_scrambled_feedback"
+        }
+       },
+       {
+        "label": "pc",
+        "where": {
+         "all": [
+          {
+           "system": "PC_nominal"
+          },
+          {
+           "@no_sweep": true
+          }
+         ]
+        }
+       }
+      ],
+      "event": {
+       "status": "PRESENT"
+      }
+     },
+     "label": "C"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-18",
+   "title": "PDI: no states without contents (H-PDI-1)",
+   "tier": "A",
+   "labels": [
+    "R"
+   ],
+   "expectation": "No-content systems B <= 0.25 bits (c <= 0.1); surrogates one state 280/280.",
+   "parts": [
+    {
+     "id": "HCv2-18",
+     "text": "H0 cell rule: family-A no-content witnesses (20 seeds each), the 16 factorial cells with K = 1 (10 seeds) and the null-calibration cells (16 x 50)",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "principle": "PDI",
+       "estimator_form": "@form.primary"
+      },
+      "union": [
+       {
+        "label": "witnesses",
+        "where": {
+         "design": "@design.witnesses",
+         "estimator_form": "@form.primary",
+         "family": "@family.A",
+         "system": [
+          "W_PDI_single_attractor",
+          "W_PDI_no_multistability",
+          "O_hypersynchronous",
+          "N_ar1",
+          "N_independent_noise"
+         ],
+         "declaration_id": [
+          "R",
+          "H"
+         ],
+         "seed_block": "witnesses_20"
+        },
+        "cell_label": "witness:{system}"
+       },
+       {
+        "label": "factorial",
+        "where": {
+         "design": "@design.factorial",
+         "family": "@family.A",
+         "declaration_id": [
+          "R",
+          "H"
+         ],
+         "bit.PDI": 0
+        },
+        "cell_label": "factorial:{@cell_id}"
+       },
+       {
+        "label": "null_calibration",
+        "where": {
+         "design": "@design.null_calibration"
+        },
+        "cell_label": "null_calibration:{@null_kind}:T{@n_time}:N{@n_nodes}"
+       }
+      ],
+      "event": {
+       "status": "PRESENT"
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-18(reported)",
+     "text": "reported: B (bits) per class",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "principle": "PDI",
+       "declaration_id": "R",
+       "system": [
+        "W_PDI_single_attractor",
+        "W_PDI_no_multistability",
+        "O_hypersynchronous",
+        "N_ar1",
+        "N_independent_noise"
+       ]
+      },
+      "value": "estimate",
+      "cells": [
+       "system"
+      ]
+     },
+     "role": "reported"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-19",
+   "title": "PDI exclusion validity in the v1 masking window, and repertoire dose-response (H-PDI-2 + H-PDI-3)",
+   "tier": "A",
+   "labels": [
+    "R",
+    "C"
+   ],
+   "successor_of": "HC3",
+   "expectation": "Content bearer B 2.38-2.47 bits at g_b 0-2; B 0.90/1.51/2.45/3.50 at K 2/3/6/12.",
+   "parts": [
+    {
+     "id": "HCv2-19(a)",
+     "text": "PDI ABSENT <= 0.07 in every content-on cell (H0 cell rule)",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "principle": "PDI",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "declaration_id": [
+        "R",
+        "H"
+       ]
+      },
+      "union": [
+       {
+        "label": "PC_nominal",
+        "where": {
+         "design": "@design.witnesses",
+         "estimator_form": "@form.primary",
+         "system": "PC_nominal"
+        },
+        "cell_label": "witness:PC_nominal"
+       },
+       {
+        "label": "g_b_sweep",
+        "where": {
+         "design": "@design.sweep",
+         "@sweep_knob": "g_b"
+        },
+        "cell_label": "sweep:g_b:{@sweep_level}"
+       },
+       {
+        "label": "K_sweep",
+        "where": {
+         "design": "@design.sweep",
+         "@sweep_knob": "K",
+         "@sweep_level": {
+          "ge": 2
+         }
+        },
+        "cell_label": "sweep:K:{@sweep_level}"
+       },
+       {
+        "label": "factorial_K_on",
+        "where": {
+         "design": "@design.factorial",
+         "bit.PDI": 1
+        },
+        "cell_label": "factorial:{@cell_id}"
+       }
+      ],
+      "event": {
+       "status": "ABSENT"
+      }
+     },
+     "label": "R"
+    },
+    {
+     "id": "HCv2-19(b)",
+     "text": "PRESENT >= 80 % on PC_nominal and at each g_b level in [0.67, 1.56] (three-zone)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "principle": "PDI",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "declaration_id": "R"
+      },
+      "union": [
+       {
+        "label": "PC_nominal",
+        "where": {
+         "design": "@design.witnesses",
+         "estimator_form": "@form.primary",
+         "system": "PC_nominal"
+        },
+        "cell_label": "witness:PC_nominal"
+       },
+       {
+        "label": "g_b_window",
+        "where": {
+         "design": "@design.sweep",
+         "@sweep_knob": "g_b",
+         "@sweep_level": {
+          "ge": 0.67,
+          "le": 1.56
+         }
+        },
+        "cell_label": "sweep:g_b:{@sweep_level}"
+       }
+      ],
+      "event": {
+       "status": "PRESENT"
+      }
+     },
+     "label": "R"
+    },
+    {
+     "id": "HCv2-19(c)",
+     "text": "Spearman rho(B, K) > 0 at one-sided p < 0.05",
+     "rule": "spearman_ols",
+     "params": {
+      "alpha": 0.05,
+      "require_positive_slope": false
+     },
+     "data": {
+      "where": {
+       "principle": "PDI",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "declaration_id": "R",
+       "design": "@design.sweep",
+       "@sweep_knob": "K"
+      },
+      "dose": "@sweep_level",
+      "value": "estimate"
+     },
+     "label": "R",
+     "requires": {
+      "usable": [
+       "K"
+      ]
+     }
+    },
+    {
+     "id": "HCv2-19(d)",
+     "text": "B >= log2 5 at K = 6 and B >= log2 10 at K = 12 in >= 80 % (count accuracy with one state of slack)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "principle": "PDI",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "declaration_id": "R",
+       "design": "@design.sweep",
+       "@sweep_knob": "K"
+      },
+      "union": [
+       {
+        "label": "K6",
+        "where": {
+         "@sweep_level": 6
+        },
+        "event": {
+         "estimate": {
+          "ge": 2.321928094887362
+         }
+        }
+       },
+       {
+        "label": "K12",
+        "where": {
+         "@sweep_level": 12
+        },
+        "event": {
+         "estimate": {
+          "ge": 3.321928094887362
+         }
+        }
+       }
+      ],
+      "cell_label": "{member}"
+     },
+     "label": "C",
+     "requires": {
+      "usable": [
+       "K"
+      ]
+     }
+    },
+    {
+     "id": "HCv2-19(e)",
+     "text": "paired Delta c(PC - W_PDI_single_attractor) >= 0.5 in >= 80 %",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "principle": "PDI",
+       "declaration_id": "R"
+      },
+      "pair": {
+       "on": [
+        "family",
+        "seed",
+        "declaration_id",
+        "principle",
+        "estimator_form"
+       ],
+       "a": {
+        "system": "PC_nominal"
+       },
+       "b": {
+        "system": "W_PDI_single_attractor"
+       },
+       "value": "c"
+      },
+      "event": {
+       "delta": {
+        "ge": 0.5
+       }
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "HCv2-20",
+   "title": "PDI construct: ignition, access declaration and the concordance route (H-PDI-4, H-PDI-5 revised)",
+   "tier": "A",
+   "labels": [
+    "R",
+    "HO",
+    "C"
+   ],
+   "expectation": "Content bearer one state 40/40; full bearer two states in 10/20 with AMI 0.79; concordant one state 10/10 (W_PDI_single_attractor), 8/10 (W_PDI_no_multistability), PC 0/10.",
+   "parts": [
+    {
+     "id": "HCv2-20(a)",
+     "text": "content bearer on W_PDI_single_attractor ABSENT in >= 80 % where the concordance route is admitted for family A (CD-5); otherwise not PRESENT in >= 95 %",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "principle": "PDI",
+       "declaration_id": "R",
+       "system": "W_PDI_single_attractor"
+      },
+      "event": {
+       "status": "ABSENT"
+      }
+     },
+     "label": "R",
+     "choose": {
+      "if": {
+       "concordance_admitted": {
+        "principle": "PDI",
+        "substrate": "@family.A",
+        "bearer": "non_workspace",
+        "direction": "absent"
+       }
+      },
+      "then": {
+       "text": "ABSENT in >= 80 % (route admitted)"
+      },
+      "else": {
+       "text": "not PRESENT in >= 95 % (route not admitted)",
+       "params": {
+        "x": 0.95
+       },
+       "data": {
+        "where": {
+         "design": "@design.witnesses",
+         "estimator_form": "@form.primary",
+         "family": "@family.A",
+         "principle": "PDI",
+         "declaration_id": "R",
+         "system": "W_PDI_single_attractor"
+        },
+        "event": {
+         "status": {
+          "ne": "PRESENT"
+         }
+        }
+       }
+      }
+     },
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-20(b)",
+     "text": "full bearer: among seeds with K_hat_full = 2, AMI with the oracle ignition gate >= 0.5 in >= 80 % (>= 10 such seeds, else NOT_EVALUABLE)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8,
+      "min_n": 10
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "principle": "PDI",
+       "declaration_id": "R",
+       "system": "W_PDI_single_attractor",
+       "@pdi_k_full": 2
+      },
+      "event": {
+       "@pdi_ami_ignition": {
+        "ge": 0.5
+       }
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-20(c)",
+     "text": "K_hat_full <= 2 in >= 95 %",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.95
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "principle": "PDI",
+       "declaration_id": "R",
+       "system": "W_PDI_single_attractor"
+      },
+      "event": {
+       "@pdi_k_full": {
+        "le": 2
+       }
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-20(d)",
+     "text": "mis-declared access node (module S declared as the workspace): the content bearer counts >= 2 states on W_PDI_single_attractor in >= 25 % of seeds (three-zone at 0.25)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.25
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "estimator_form": "@form.pdi_misdeclared_access",
+       "family": "@family.A",
+       "principle": "PDI",
+       "declaration_id": "R",
+       "system": "W_PDI_single_attractor"
+      },
+      "event": {
+       "@pdi_k_content": {
+        "ge": 2
+       }
+      }
+     },
+     "label": "HO",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-20(e)",
+     "text": "concordance-route safety: among all content-on rows (>= 365) the concordant-ABSENT rate is < 0.01: SUPPORTED iff the CP upper bound (0.05) is below 0.01, FALSIFIED if the CP lower bound exceeds 0.01",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.01,
+      "alpha": 0.05,
+      "m": 1,
+      "P": 1
+     },
+     "data": {
+      "where": {
+       "principle": "PDI",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "declaration_id": [
+        "R",
+        "H"
+       ]
+      },
+      "union": [
+       {
+        "label": "PC_nominal",
+        "where": {
+         "design": "@design.witnesses",
+         "estimator_form": "@form.primary",
+         "system": "PC_nominal"
+        },
+        "cell_label": "content_on"
+       },
+       {
+        "label": "g_b_sweep",
+        "where": {
+         "design": "@design.sweep",
+         "@sweep_knob": "g_b"
+        },
+        "cell_label": "content_on"
+       },
+       {
+        "label": "K_sweep",
+        "where": {
+         "design": "@design.sweep",
+         "@sweep_knob": "K",
+         "@sweep_level": {
+          "ge": 2
+         }
+        },
+        "cell_label": "content_on"
+       },
+       {
+        "label": "factorial_K_on",
+        "where": {
+         "design": "@design.factorial",
+         "bit.PDI": 1
+        },
+        "cell_label": "content_on"
+       }
+      ],
+      "event": {
+       "@concordant_absent": true
+      },
+      "pool_by": [
+       "principle"
+      ]
+     },
+     "label": "C"
+    },
+    {
+     "id": "HCv2-20(f-single)",
+     "text": "concordant-and-ABSENT share >= 80 % on W_PDI_single_attractor",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "principle": "PDI",
+       "declaration_id": "R",
+       "system": "W_PDI_single_attractor"
+      },
+      "event": {
+       "@concordant_absent": true
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-20(f-no-multistability)",
+     "text": "concordant-and-ABSENT share >= 70 % on W_PDI_no_multistability",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.7
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "principle": "PDI",
+       "declaration_id": "R",
+       "system": "W_PDI_no_multistability"
+      },
+      "event": {
+       "@concordant_absent": true
+      }
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-20(f-PC)",
+     "text": "concordant share <= 20 % on PC_nominal",
+     "rule": "three_zone_at_most",
+     "params": {
+      "x": 0.2
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "estimator_form": "@form.primary",
+       "family": "@family.A",
+       "principle": "PDI",
+       "declaration_id": "R",
+       "system": "PC_nominal"
+      },
+      "event": {
+       "concordant": true
+      }
+     },
+     "label": "R"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-21",
+   "title": "PDI forward-model admission (forward-modelled family A, held-out regime)",
+   "tier": "A",
+   "labels": [
+    "R"
+   ],
+   "statement": "SUPPORTED iff the observed admission pattern equals the prediction for the three views; FALSIFIED otherwise.",
+   "parts": [
+    {
+     "id": "HCv2-21",
+     "text": "EEG-64 and EEG-low admitted for PRESENT (declared non-specific upper bound) and for ABSENT; BOLD (slow contexts) not admitted for ABSENT",
+     "rule": "admission_matches",
+     "params": {
+      "predictions": {
+       "@view.eeg64": {
+        "admitted_for_present": "yes",
+        "admitted_for_absent": "yes"
+       },
+       "@view.eeg_low": {
+        "admitted_for_present": "yes",
+        "admitted_for_absent": "yes"
+       },
+       "@view.bold": {
+        "admitted_for_absent": "no"
+       }
+      }
+     },
+     "data": {
+      "source": "registry",
+      "where": {
+       "principle": "PDI",
+       "substrate": "@substrate.forward_family_a"
+      },
+      "cell_label": "{view}"
+     },
+     "label": "R"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-22",
+   "title": "Single-deficit lesion witnesses, rule side (HC4v2-R, HC8v2-R)",
+   "tier": "A",
+   "labels": [
+    "R"
+   ],
+   "successor_of": "HC4, HC8",
+   "prediction": "FALSIFIED",
+   "statement": "Per (protocol, witness w with target j in N_anch): (i) target not PRESENT in >= 80 %; (ii) target ABSENT in >= 80 %, decisive only where pi0(f, j, w) >= 0.9; (iii) every other anchored principle: paired |c_p(w) - c_p(PC)| < z in >= 80 % (declared dependencies excluded).",
+   "expectation": "A-R: W_NAS_no_workspace (ii) decisive if pi0 >= 0.9 and predicted SUPPORTED; W_NAS_broadcast_only (ii) predicted FALSIFIED where testable; W_IIM_feedforward, W_SRPI_no_efference, W_RAM_no_plasticity (ii) NOT_TESTABLE_BY_DESIGN; W_PDI_single_attractor (ii) through the concordance route if admitted.",
+   "parts": [
+    {
+     "id": "HCv2-22(i)",
+     "text": "target not PRESENT in >= 80 % (three-zone)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": [
+        "R",
+        "H"
+       ],
+       "estimator_form": "@form.primary",
+       "system": "@systems.single_deficits"
+      },
+      "target_filter": "in_n_anch",
+      "exclude": [
+       "non_target"
+      ],
+      "event": {
+       "status": {
+        "ne": "PRESENT"
+       }
+      },
+      "cell_label": "{protocol_id}|{system}"
+     },
+     "label": "R",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-22(ii)",
+     "text": "target ABSENT in >= 80 % (three-zone), decisive only where pi0 >= 0.9 (CD-7), else NOT_TESTABLE_BY_DESIGN with its predicted ABSENT_NOT_REACHABLE rate",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": [
+        "R",
+        "H"
+       ],
+       "estimator_form": "@form.primary",
+       "system": "@systems.single_deficits"
+      },
+      "target_filter": "in_n_anch",
+      "exclude": [
+       "non_target"
+      ],
+      "event": {
+       "status": "ABSENT"
+      },
+      "cell_label": "{protocol_id}|{system}"
+     },
+     "label": "R",
+     "gate": {
+      "per_cell": true,
+      "kind": "absent",
+      "family": "{protocol_id}",
+      "principle": "{target}",
+      "witness": "{system}"
+     },
+     "replaced_by": "HCv2-22(i)",
+     "prediction": "FALSIFIED",
+     "cell_predictions": [
+      {
+       "match": {
+        "system": "W_NAS_broadcast_only"
+       },
+       "prediction": "FALSIFIED"
+      },
+      {
+       "match": {
+        "system": "W_NAS_no_workspace"
+       },
+       "prediction": "SUPPORTED"
+      }
+     ],
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-22(iii)",
+     "text": "every other anchored principle p: paired |c_p(w) - c_p(PC)| < z in >= 80 % (declared dependencies excluded)",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": [
+        "R",
+        "H"
+       ],
+       "estimator_form": "@form.primary"
+      },
+      "principle_filter": "in_n_anch",
+      "union": [
+       {
+        "label": "W_RAM_no_plasticity",
+        "pair": {
+         "on": [
+          "family",
+          "seed",
+          "declaration_id",
+          "principle",
+          "estimator_form"
+         ],
+         "a": {
+          "system": "W_RAM_no_plasticity"
+         },
+         "b": {
+          "system": "PC_nominal"
+         }
+        }
+       },
+       {
+        "label": "W_PDI_single_attractor",
+        "pair": {
+         "on": [
+          "family",
+          "seed",
+          "declaration_id",
+          "principle",
+          "estimator_form"
+         ],
+         "a": {
+          "system": "W_PDI_single_attractor"
+         },
+         "b": {
+          "system": "PC_nominal"
+         }
+        }
+       },
+       {
+        "label": "W_NAS_no_workspace",
+        "pair": {
+         "on": [
+          "family",
+          "seed",
+          "declaration_id",
+          "principle",
+          "estimator_form"
+         ],
+         "a": {
+          "system": "W_NAS_no_workspace"
+         },
+         "b": {
+          "system": "PC_nominal"
+         }
+        }
+       },
+       {
+        "label": "W_NAS_broadcast_only",
+        "pair": {
+         "on": [
+          "family",
+          "seed",
+          "declaration_id",
+          "principle",
+          "estimator_form"
+         ],
+         "a": {
+          "system": "W_NAS_broadcast_only"
+         },
+         "b": {
+          "system": "PC_nominal"
+         }
+        }
+       },
+       {
+        "label": "W_IIM_feedforward",
+        "pair": {
+         "on": [
+          "family",
+          "seed",
+          "declaration_id",
+          "principle",
+          "estimator_form"
+         ],
+         "a": {
+          "system": "W_IIM_feedforward"
+         },
+         "b": {
+          "system": "PC_nominal"
+         }
+        }
+       },
+       {
+        "label": "W_SRPI_no_efference",
+        "pair": {
+         "on": [
+          "family",
+          "seed",
+          "declaration_id",
+          "principle",
+          "estimator_form"
+         ],
+         "a": {
+          "system": "W_SRPI_no_efference"
+         },
+         "b": {
+          "system": "PC_nominal"
+         }
+        }
+       }
+      ],
+      "target_filter": "in_n_anch",
+      "exclude": [
+       "target",
+       "declared_dependencies"
+      ],
+      "event": {
+       "delta": {
+        "abs_lt": 0.25
+       }
+      },
+      "cell_label": "{protocol_id}|{system}|{principle}"
+     },
+     "label": "R",
+     "prediction": "FALSIFIED",
+     "cell_predictions": [
+      {
+       "match": {
+        "system": "W_PDI_single_attractor",
+        "principle": "NAS",
+        "family": "@family.A"
+       },
+       "prediction": "FALSIFIED"
+      }
+     ],
+     "notes": "The family-A cell (W_PDI_single_attractor, NAS) is the v1 HC3 K -> NAS off-target criterion that HCv2-7(v-A) predicts to fail (development 14/20); unless CD-7 declares it a dependency, this part is predicted FALSIFIED through that cell.",
+     "requires": {
+      "oracle": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "HCv2-23",
+   "title": "Verdict specificity (HC5v2)",
+   "tier": "A",
+   "labels": [
+    "C"
+   ],
+   "successor_of": "HC5",
+   "verdict_level_absent": true,
+   "statement": "FALSIFIED if some class's CP lower bound at 0.05/m exceeds 0.07; SUPPORTED if the seed-cluster 'any event' pooled rate (a seed is an event if any of its deficit runs is MPC_CONSISTENT; clusters span families) has CP upper bound (0.05) < 0.07; else INDETERMINATE.",
+   "parts": [
+    {
+     "id": "HCv2-23",
+     "text": "MPC_CONSISTENT among single-deficit runs with the target in N_anch",
+     "rule": "any_event_clusters",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05
+     },
+     "data": {
+      "source": "verdicts",
+      "where": {
+       "design": "@design.witnesses",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": [
+        "R",
+        "H"
+       ],
+       "estimator_form": "@form.primary",
+       "system": "@systems.single_deficits"
+      },
+      "target_filter": "in_n_anch",
+      "event": {
+       "verdict_value": "MPC_CONSISTENT"
+      },
+      "cell_label": "{protocol_id}|{system}",
+      "cluster": [
+       "seed"
+      ]
+     },
+     "label": "C",
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "HCv2-23(N_decl)",
+     "text": "reported: verdicts on N_decl",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "source": "verdicts",
+      "where": {
+       "design": "@design.witnesses",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": [
+        "R",
+        "H"
+       ],
+       "estimator_form": "@form.primary",
+       "system": "@systems.single_deficits"
+      },
+      "event": {
+       "@verdict_n_decl": "MPC_CONSISTENT"
+      },
+      "cell_label": "{protocol_id}|{system}"
+     },
+     "role": "reported"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-24",
+   "title": "No PRESENT without mechanism in the factorial (HC6 successor)",
+   "tier": "A",
+   "labels": [
+    "R"
+   ],
+   "successor_of": "HC6",
+   "parts": [
+    {
+     "id": "HCv2-24(a)",
+     "text": "under R: P(PRESENT | own mechanism off) <= 0.07 in every off-cell (H0 cell rule)",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": "@design.factorial",
+       "family": [
+        "@family.A",
+        "@family.C1"
+       ],
+       "declaration_id": "R",
+       "estimator_form": "@form.primary",
+       "own_bit": 0
+      },
+      "principle_filter": "valid_anchor",
+      "event": {
+       "status": "PRESENT"
+      },
+      "cell_label": "{family}:{@cell_id}|{principle}"
+     },
+     "label": "R"
+    },
+    {
+     "id": "HCv2-24(b)",
+     "text": "under H, decisive predicted failure: NAS is PRESENT above 0.07 in the family-A cells with K on and g_b off (some cell's CP lower bound at 0.05/m > 0.07)",
+     "rule": "h0_cell_exceeds",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05
+     },
+     "data": {
+      "where": {
+       "design": "@design.factorial",
+       "family": "@family.A",
+       "declaration_id": "H",
+       "estimator_form": "@form.primary",
+       "principle": "NAS",
+       "bit.PDI": 1,
+       "bit.NAS": 0
+      },
+      "event": {
+       "status": "PRESENT"
+      },
+      "cell_label": "{@cell_id}"
+     },
+     "label": "R"
+    }
+   ]
+  },
+  {
+   "id": "HCv2-B1",
+   "title": "SRPI v3 in the SRPI-only arm",
+   "tier": "B",
+   "admitted": false,
+   "parts": [],
+   "notes": "Not admitted in this round (Tier A only); listed as not run, and the v1 outcome stands where a v1 predecessor exists."
+  },
+  {
+   "id": "HCv2-B2",
+   "title": "NAS hub identity (HN4 revised)",
+   "tier": "B",
+   "admitted": false,
+   "parts": [],
+   "notes": "Not admitted in this round (Tier A only); listed as not run, and the v1 outcome stands where a v1 predecessor exists."
+  },
+  {
+   "id": "HCv2-B3",
+   "title": "RAM-PE persistence gate and the echo family",
+   "tier": "B",
+   "admitted": false,
+   "parts": [],
+   "notes": "Not admitted in this round (Tier A only); listed as not run, and the v1 outcome stands where a v1 predecessor exists."
+  },
+  {
+   "id": "HCv2-B4",
+   "title": "Single source via joint dependence (HC7v2 part a)",
+   "tier": "B",
+   "admitted": false,
+   "parts": [],
+   "notes": "Not admitted in this round (Tier A only); listed as not run, and the v1 outcome stands where a v1 predecessor exists."
+  },
+  {
+   "id": "HCv2-B5",
+   "title": "Rule audit (HC9v2)",
+   "tier": "B",
+   "admitted": false,
+   "parts": [],
+   "notes": "Not admitted in this round (Tier A only); listed as not run, and the v1 outcome stands where a v1 predecessor exists."
+  },
+  {
+   "id": "HCv2-B6",
+   "title": "Zero-mean workspace broadcast (W_ctx_hub_only)",
+   "tier": "B",
+   "admitted": false,
+   "parts": [],
+   "notes": "Not admitted in this round (Tier A only); listed as not run, and the v1 outcome stands where a v1 predecessor exists."
+  },
+  {
+   "id": "HCv2-B7",
+   "title": "PDI slow-drift continuum",
+   "tier": "B",
+   "admitted": false,
+   "parts": [],
+   "notes": "Not admitted in this round (Tier A only); listed as not run, and the v1 outcome stands where a v1 predecessor exists."
+  },
+  {
+   "id": "HCv2-B8",
+   "title": "Forward arms for RAM-PE and SRPI",
+   "tier": "B",
+   "admitted": false,
+   "parts": [],
+   "notes": "Not admitted in this round (Tier A only); listed as not run, and the v1 outcome stands where a v1 predecessor exists."
+  }
+ ],
+ "integrity_audit": [
+  {
+   "id": "IA-1",
+   "check": "v1 regression gate: v1 reruns and stratified stored records bit for bit; stored c1-c3 records re-judged under the v1 protocols with 0 differences; frozen v1 protocol hashes unchanged; a v1 BOLD task still ends in the v1 band error",
+   "replaces": null,
+   "implemented_by": "scripts/v2/integrity_audit.py"
+  },
+  {
+   "id": "IA-2",
+   "check": "no task loses a component because another raised; component error rate <= 1 % per design; every error is UNDEFINED(ESTIMATOR_ERROR:<type>)",
+   "replaces": "HN0(a)",
+   "implemented_by": "scripts/v2/integrity_audit.py"
+  },
+  {
+   "id": "IA-3",
+   "check": "NAS is UNDEFINED(SAMPLING_UNRESOLVED) on every BOLD task and never ABSENT; NAS is defined on every family-A, C1 and Hopf-source task",
+   "replaces": "HN0(b, c)",
+   "implemented_by": "scripts/v2/integrity_audit.py"
+  },
+  {
+   "id": "IA-4",
+   "check": "every reason maps to UNDEFINED; no ABSENT on degenerate TPMs, on C1 components declared NOT_APPLICABLE (none PRESENT either), under OBSERVATION_MIXED_NOT_ADMITTED or an unadmitted registry direction",
+   "replaces": "H-IIM-7 no-ABSENT clause, HB4",
+   "implemented_by": "scripts/v2/integrity_audit.py"
+  },
+  {
+   "id": "IA-5",
+   "check": "no system is identical across families (sha256(ts), sha256(raw_ts))",
+   "replaces": "HB10",
+   "implemented_by": "scripts/v2/integrity_audit.py"
+  },
+  {
+   "id": "IA-6",
+   "check": "each record's family-protocol hash equals the frozen protocol; the evaluator refuses mismatches",
+   "replaces": "HB10",
+   "implemented_by": "scripts/v2/integrity_audit.py"
+  },
+  {
+   "id": "IA-7",
+   "check": "task counts equal the generated plan; seed policy (development <= 999, confirmatory >= 20000, 10000-19999 unused)",
+   "replaces": "HB10",
+   "implemented_by": "scripts/v2/integrity_audit.py"
+  },
+  {
+   "id": "IA-8",
+   "check": "identities: NAS v3 equals v1 NAS on the v1 geometry to <= 1e-12; the stored statuses equal the status rule; the three status-rule entry points agree",
+   "replaces": null,
+   "implemented_by": "scripts/v2/integrity_audit.py"
+  },
+  {
+   "id": "IA-9",
+   "check": "v1 SRPI under the v2 rule: no SRPI ABSENT with a point estimate outside (-delta, delta); every v1-style sub-null outcome UNDEFINED; the number of SRPI ABSENTs is reported",
+   "replaces": "H-SRPI-2(c)",
+   "implemented_by": "scripts/v2/integrity_audit.py"
+  },
+  {
+   "id": "IA-10",
+   "check": "twins: identical structural hash, different schedule hash; r = 0 equals the witness run bit for bit",
+   "replaces": null,
+   "implemented_by": "scripts/v2/integrity_audit.py"
+  }
+ ],
+ "descriptive": [
+  {
+   "id": "D1",
+   "decision": false,
+   "text": "flip-vs-margin curve of determinate verdicts (R5a)"
+  },
+  {
+   "id": "D2",
+   "decision": false,
+   "text": "anchor attributability per protocol"
+  },
+  {
+   "id": "D3",
+   "decision": false,
+   "text": "potency classes of the adversaries against the v2 estimators under H"
+  },
+  {
+   "id": "D4",
+   "decision": false,
+   "text": "the estimator-visible M-check"
+  },
+  {
+   "id": "D5",
+   "decision": false,
+   "text": "statuses under alpha / |N_anch(f)|"
+  },
+  {
+   "id": "D6",
+   "decision": false,
+   "text": "amplitude-scale re-judging of quadratic statistics"
+  },
+  {
+   "id": "D7",
+   "decision": false,
+   "text": "NAS at tau_c 0.05 and 0.2 s"
+  },
+  {
+   "id": "D8",
+   "decision": false,
+   "text": "EEG leakage null"
+  },
+  {
+   "id": "D9",
+   "decision": false,
+   "text": "the v1 NAS as comparator on every A and C1 task"
+  },
+  {
+   "id": "D11",
+   "decision": false,
+   "text": "coverage and selective risk per protocol"
+  },
+  {
+   "id": "D12",
+   "decision": false,
+   "text": "conditioning_delta"
+  },
+  {
+   "id": "D13",
+   "decision": false,
+   "text": "the all-events exogeneity sensitivity"
+  }
+ ],
+ "notes": "Record names (designs, estimator forms, views, configuration and detail keys) are bound in one place: 'vocabulary' and 'fields'. The runner, the protocol builder and the estimators must produce these names; a renamed key is changed here, never in a rule."
+}
