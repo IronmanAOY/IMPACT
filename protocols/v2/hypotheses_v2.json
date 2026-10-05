@@ -4074,8 +4074,8 @@
          "design": "@design.sweep",
          "@sweep_knob": "g_b",
          "@sweep_level": {
-          "ge": 0.67,
-          "le": 1.56
+          "ge": 0.666,
+          "le": 1.556
          }
         },
         "cell_label": "sweep:g_b:{@sweep_level}"

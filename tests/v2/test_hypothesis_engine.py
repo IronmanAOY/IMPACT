@@ -3590,3 +3590,25 @@ def test_family_b_fields_resolve_on_validation_records():
 
 
 D_SPLIT = S.DEVELOPMENT
+
+
+def test_the_pdi_masking_window_holds_the_v1_window_levels():
+    # v1 counted 0 bits at g_b 0.67-1.56: the sweep levels 2/3 to 14/9
+    from impact_pipeline.bench import designs_v2 as D
+
+    spec = HE.load_spec()
+    part = next(
+        p
+        for h in spec["hypotheses"]
+        for p in h.get("parts") or ()
+        if p["id"] == "HCv2-19(b)"
+    )
+    window = next(m for m in part["data"]["union"] if m["label"] == "g_b_window")
+    cond = window["where"]["@sweep_level"]
+    levels = sorted(
+        t.tags["sweep_level"]
+        for t in D.get_design("A_sweeps").tasks(D.CONFIRMATORY)
+        if t.tags["sweep_knob"] == "g_b" and t.seed == S.CONFIRMATORY_SEED_MIN
+    )
+    inside = [v for v in levels if HE.evaluate_predicate({"x": cond}, {"x": v})]
+    assert inside == pytest.approx([2 / 3, 8 / 9, 10 / 9, 4 / 3, 14 / 9], abs=1e-6)
