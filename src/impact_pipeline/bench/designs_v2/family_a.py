@@ -13,8 +13,8 @@ the held-out declarations P, Q10, Q25 and J are judged by ``A-P``,
 design              systems                                     confirmatory   dev
 ==================  ==========================================  =============  ======
 A_witnesses         the 16 family-A witnesses of the catalogue  20000-20019;   320-331
-                    (PW_patchwork in system and principle        PC_nominal and
-                    bearer modes); PC_nominal and the six v1     the six
+                    (PW_patchwork in the principle-bearer        PC_nominal and
+                    mode); PC_nominal and the six v1             the six
                     single deficits on 25 more seeds             deficits to
                                                                  20044
 A_sweeps            g_b (10 levels 0-2), c_int (10 levels       20000-20009    332-335
@@ -38,6 +38,13 @@ W_PDI_single_attractor (20000-20044) the PDI content bearer is also scored
 with module S declared as the access node. On the development split the
 held-out conditions exist only as the smoke tasks of ``A_heldout`` (seeds
 980-984, outputs discarded unread by the runner).
+
+Patchwork. PW_patchwork is recorded in the principle-bearer mode (design
+3.2 and 3.3: every principle on its own module, IIM on the IIM module's
+three sub-groups), the data of the Tier-B single-source test. Its
+system-bearer grain, one macro node per module, gives IIM five macro nodes,
+about thirty times the cost of a four-node run for every statistic of the
+null and the bootstrap, and no Tier-A hypothesis reads it.
 
 Forms. The primary scoring of every task of the joint bench (witnesses,
 sweeps, factorial, adversaries) carries all five principles and the
@@ -92,7 +99,15 @@ HELD_OUT_RESCORED = ("PC_nominal", "W_NAS_no_workspace", "N_modules_disconnected
 HELD_OUT_RESCORED_PRINCIPLES = ("NAS", "IIM")
 MISDECLARED_ACCESS_SYSTEM = "W_PDI_single_attractor"
 HELD_OUT_SYSTEM_PRINCIPLES = ("NAS",)
+# systems recorded in the principle-bearer mode only (module docstring)
 PRINCIPLE_BEARER_SYSTEMS = ("PW_patchwork",)
+
+
+def bearer_modes(system_id: str) -> tuple:
+    """The bearer modes a witness is scored in: the principle-bearer mode
+    for the patchwork, the system bearer for every other system."""
+    return ("principle",) if system_id in PRINCIPLE_BEARER_SYSTEMS else ("system",)
+
 
 SEEDS = {
     "witnesses": {CONFIRMATORY: range(20000, 20020), DEVELOPMENT: range(320, 332)},
@@ -235,8 +250,7 @@ def witnesses(split: str, *, seeds: Optional[Sequence[int]] = None,
     out = []
     for sid in ids:
         sys_seeds = base_seeds + (ext_seeds if sid in EXTENDED_SYSTEMS else ())
-        modes = (("system", "principle") if sid in PRINCIPLE_BEARER_SYSTEMS
-                 else ("system",))
+        modes = bearer_modes(sid)
         tags = {"pdi_partition": True} if sid in PDI_PARTITION_SYSTEMS else None
         for seed in sys_seeds:
             sc = make_scorings(PROTOCOLS, PRINCIPLES, forms, bearer_modes=modes,
@@ -477,11 +491,13 @@ __all__ = [
     "JOINT_BENCH_METHODS",
     "K_LEVELS",
     "PDI_PARTITION_SYSTEMS",
+    "PRINCIPLE_BEARER_SYSTEMS",
     "PROTOCOLS",
     "SEEDS",
     "SWEEP_KNOBS",
     "adversaries",
     "agent_task",
+    "bearer_modes",
     "catalogue_systems",
     "catalogue_task",
     "factorial",

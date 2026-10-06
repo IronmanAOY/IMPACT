@@ -14,8 +14,11 @@ the tally.
 =====  ===============================================================
 IA-1   the v1 regression gate (``scripts/v2/regression_gate.py``): its
        report, or a run of it
-IA-2   no scoring loses a component because another component raised;
-       the component error rate is <= 1 % per design; every error is
+IA-2   no scoring loses a component because another component raised
+       (a scoring carries every principle it declares, as far as the run's
+       settings score it; records without the declaration are compared
+       with the other scorings of their kind); the component error rate
+       is <= 1 % per design; every error is
        ``UNDEFINED(ESTIMATOR_ERROR:<type>)``
 IA-3   NAS is ``UNDEFINED(SAMPLING_UNRESOLVED)`` on every BOLD scoring and
        never ABSENT there; NAS is defined (never undefined by the sampling
@@ -26,7 +29,8 @@ IA-4   every reason of the vocabulary maps to UNDEFINED; no component
        trapped all-to-all at T = 1000, the v1 quadrant montage); SRPI,
        RAM and PDI on C1 are ``UNDEFINED(NOT_APPLICABLE_OBSERVATION_MODEL)``
        (never PRESENT or ABSENT); no ABSENT under a registry direction that
-       is not admitted
+       is not admitted (the forward arms' admission runs, which are judged
+       without a registry because they decide it, are counted apart)
 IA-5   no simulation is duplicated across families, seeds or twin
        replicates, or under a different configuration (``sha256(ts)``,
        ``sha256(raw_ts)``); duplicates of one configuration under two
@@ -35,7 +39,10 @@ IA-6   each record's family-protocol hash equals the frozen protocol; the
        RAM-PE facet and PDI bearer declarations of the records equal the
        protocol's (through the one name map of the evaluator)
 IA-7   every record follows the schema; task ids equal the generated plan
-       (no missing, unexpected or duplicated task); the seed policy
+       (no missing, unexpected or duplicated task; a task the run skipped by
+       a design's curtailment rule, listed in its manifest, and a smoke task
+       of a development plan, whose outputs the runner discards, are
+       expected to be missing and are reported); the seed policy
        (development 0-999, confirmatory >= 20000, never 10000-19999, one
        split per run)
 IA-8   identities: NAS v3 equals the frozen v1 NAS on the v1 geometry to
@@ -128,12 +135,20 @@ def _check(cid, status, summary, failures=(), excluded=(), **details) -> dict:
 # --------------------------------------------------------------------------
 # input
 # --------------------------------------------------------------------------
+# JSON-lines files of a run directory that hold no task records: the v2
+# runner's status lines of smoke tasks (their outputs are discarded)
+NON_RECORD_FILES = ("smoke.jsonl",)
+
+
 def _paths(items) -> List[Path]:
+    """The record files of the given files and directories (a directory
+    contributes its ``*.jsonl`` files except :data:`NON_RECORD_FILES`)."""
     out = []
     for it in items or ():
         p = Path(it)
         if p.is_dir():
-            out.extend(sorted(p.rglob("*.jsonl")))
+            out.extend(f for f in sorted(p.rglob("*.jsonl"))
+                       if f.name not in NON_RECORD_FILES)
         elif p.exists():
             out.append(p)
     return out
@@ -264,7 +279,26 @@ def _scoring_kind(rec, s) -> tuple:
     )
 
 
+def _declared_principles(rec, s) -> Optional[set]:
+    """The principles a scoring declares (the runner writes them to the
+    scoring's ``details['principles']``), restricted to those the run's
+    settings score (``config['settings']['principles']``); None for a
+    record that does not declare them."""
+    declared = (s.get("details") or {}).get("principles")
+    if not isinstance(declared, (list, tuple)):
+        return None
+    out = {str(p) for p in declared}
+    wanted = ((rec.get("config") or {}).get("settings") or {}).get("principles")
+    if isinstance(wanted, (list, tuple)):
+        out &= {str(p) for p in wanted}
+    return out
+
+
 def ia2_component_isolation(records, max_rate=MAX_COMPONENT_ERROR_RATE) -> dict:
+    # a scoring is compared with what it declares; a record without the
+    # declaration with the other scorings of its kind (a held-out re-scoring
+    # declares NAS and IIM, a null kind its applicable principles, a lesion
+    # run of the Hopf arm NAS alone)
     expected = {}
     for rec, s, p, c in _components(records):
         expected.setdefault(_scoring_kind(rec, s), set()).add(p)
@@ -304,7 +338,9 @@ def ia2_component_isolation(records, max_rate=MAX_COMPONENT_ERROR_RATE) -> dict:
                             }
                         )
                         excl.add(rec.get("task_id"))
-            missing = sorted(expected.get(key, set()) - set(comps))
+            declared = _declared_principles(rec, s)
+            want = declared if declared is not None else expected.get(key, set())
+            missing = sorted(want - set(comps))
             if missing and has_error:
                 fails.append(
                     {
@@ -422,8 +458,17 @@ def ia4_undefined_never_absent(records, spec, registry=None) -> dict:
     fam_c = _vocab(spec, "family.C1", "C")
     quadrant = _vocab(spec, "form.iim_v1_quadrant", "iim_v1_quadrant")
     fam_b = _vocab(spec, "family.B", "B")
+    # the forward arms' records are the admission runs: they are judged
+    # without a registry (their scoring is the registry's test)
+    admission = set(
+        _vocab(spec, "design.whole_brain", "whole_brain")
+        + _vocab(spec, "design.forward", "forward_family_a")
+        + _vocab(spec, "design.forward_anchor_replication",
+                 "forward_anchor_replication")
+    )
     reg = HE.registry_rows(registry) if registry is not None else None
     n = 0
+    n_admission = 0
     for rec, s, p, c in _components(records):
         n += 1
         tid = rec.get("task_id")
@@ -466,11 +511,11 @@ def ia4_undefined_never_absent(records, spec, registry=None) -> dict:
                     }
                 )
                 excl.add(tid)
-        if (
-            st in (R.ABSENT, R.PRESENT)
-            and s.get("observation_stage") in ("sensor", "source_estimate", "bold")
-            and reg is not None
-        ):
+        mixed = s.get("observation_stage") in ("sensor", "source_estimate", "bold")
+        if mixed and rec.get("design") in admission:
+            n_admission += 1
+            continue
+        if st in (R.ABSENT, R.PRESENT) and mixed and reg is not None:
             ok = _admitted(reg, p, s.get("view"), st.lower())
             if ok is False or ok is None:
                 fails.append(
@@ -488,6 +533,7 @@ def ia4_undefined_never_absent(records, spec, registry=None) -> dict:
         fails,
         excl,
         registry_checked=reg is not None,
+        n_admission_run_components=n_admission,
     )
 
 
@@ -649,7 +695,12 @@ def ia6_protocol_hashes(records, protocols: Optional[Mapping]) -> dict:
 # IA-7
 # --------------------------------------------------------------------------
 def ia7_plan_and_seeds(
-    records, planned_task_ids=None, split: Optional[str] = None, bad_lines=()
+    records,
+    planned_task_ids=None,
+    split: Optional[str] = None,
+    bad_lines=(),
+    curtailed_task_ids=(),
+    smoke_task_ids=(),
 ) -> dict:
     fails, excl = [], set()
     for b in bad_lines:
@@ -694,11 +745,24 @@ def ia7_plan_and_seeds(
         except S.SeedPolicyError as exc:
             fails.append({"kind": "mixed_or_wrong_split", "error": str(exc)})
     plan = None
+    curtailed = sorted(set(curtailed_task_ids or ()))
+    smoke = sorted(set(smoke_task_ids or ()))
     if planned_task_ids is not None:
         planned = list(planned_task_ids)
         counts = Counter(r.get("task_id") for r in records)
+        stray = sorted(set(curtailed) - set(planned))
+        for t in stray:
+            fails.append({"task_id": t, "kind": "curtailed_outside_plan"})
+        ran = sorted(set(curtailed) & set(counts))
+        for t in ran:
+            fails.append({"task_id": t, "kind": "curtailed_but_recorded"})
+        # a smoke task's outputs are discarded by the runner: a record of
+        # one is a held-out output that must not exist
+        for t in sorted(set(smoke) & set(counts)):
+            fails.append({"task_id": t, "kind": "smoke_output_recorded"})
+            excl.add(t)
         plan = {
-            "missing": sorted(set(planned) - set(counts)),
+            "missing": sorted(set(planned) - set(counts) - set(curtailed) - set(smoke)),
             "unexpected": sorted(set(counts) - set(planned)),
             "duplicated": sorted(t for t, n in counts.items() if n > 1),
             "duplicated_in_plan": sorted(
@@ -714,6 +778,10 @@ def ia7_plan_and_seeds(
     summary = f"{len(records)} records; split {run_split}; " + (
         "plan compared" if plan is not None else "no plan given"
     )
+    if curtailed:
+        summary += f"; {len(curtailed)} tasks curtailed by design"
+    if smoke:
+        summary += f"; {len(smoke)} smoke tasks discarded by design"
     return _check(
         "IA-7",
         status,
@@ -722,6 +790,9 @@ def ia7_plan_and_seeds(
         excl,
         plan_checked=plan is not None,
         split=run_split,
+        curtailed_task_ids=curtailed[:LIST_LIMIT],
+        n_curtailed=len(curtailed),
+        n_smoke=len(smoke),
     )
 
 
@@ -1026,9 +1097,14 @@ def run_audit(
     run_gate=None,
     nas_identity_report=None,
     bad_lines=(),
+    curtailed_task_ids=(),
+    smoke_task_ids=(),
 ) -> dict:
     """Every check on raw record dicts; ``ok`` iff no check FAILED (checks
-    that could not run are NOT_RUN and listed)."""
+    that could not run are NOT_RUN and listed). ``curtailed_task_ids``: the
+    planned tasks the runs skipped by a design's curtailment rule (their
+    manifests list them); ``smoke_task_ids``: the planned smoke tasks of a
+    development plan (seeds 980-984), whose outputs the runner discards."""
     spec = spec if spec is not None else HE.load_spec()
     recs = list(records)
     checks = [
@@ -1038,7 +1114,8 @@ def run_audit(
         ia4_undefined_never_absent(recs, spec, registry),
         ia5_duplicates(recs),
         ia6_protocol_hashes(recs, protocols),
-        ia7_plan_and_seeds(recs, planned_task_ids, split, bad_lines),
+        ia7_plan_and_seeds(recs, planned_task_ids, split, bad_lines,
+                           curtailed_task_ids, smoke_task_ids),
         ia8_identities(recs, nas_identity_report),
         ia9_srpi(recs),
         ia10_twins(recs, spec),
@@ -1059,37 +1136,53 @@ def run_audit(
 
 
 def _load_protocols(items) -> dict:
-    from impact_pipeline import evidence_v2 as E
-
-    out = {}
-    for p in _paths_any(items, "*.json"):
-        pr = E.load_protocol(p)
-        name = getattr(pr, "name", None) or p.stem
-        out[str(name)] = pr
-    return out
+    """``{protocol key: ProtocolV3}`` (``HE.load_protocol_files``): the key
+    every record carries as ``protocol_id``."""
+    return dict(HE.load_protocol_files(items))
 
 
-def _paths_any(items, pattern):
+def _load_curtailed(paths) -> List[str]:
+    """The curtailed task ids of the run manifests (``run_manifest.json``)
+    next to the given plan files or in the given run directories."""
     out = []
-    for it in items or ():
+    for it in paths or ():
         p = Path(it)
-        if p.is_dir():
-            out.extend(sorted(p.glob(pattern)))
-        elif p.exists():
-            out.append(p)
-    return out
+        man = p / "run_manifest.json" if p.is_dir() else p.parent / "run_manifest.json"
+        if man.is_file():
+            out.extend(json.loads(man.read_text(encoding="utf-8")).get(
+                "curtailed_task_ids") or [])
+    return sorted(set(out))
 
 
-def _load_plan(path):
+def _read_plan(path):
     p = Path(path)
     text = p.read_text(encoding="utf-8")
     try:
-        obj = json.loads(text)
+        return json.loads(text)
     except json.JSONDecodeError:
-        obj = [json.loads(ln) for ln in text.splitlines() if ln.strip()]
+        return [json.loads(ln) for ln in text.splitlines() if ln.strip()]
+
+
+def _load_plan(path):
+    obj = _read_plan(path)
     if isinstance(obj, Mapping):
         obj = obj.get("task_ids") or obj.get("tasks") or []
     return [t if isinstance(t, str) else t["task_id"] for t in obj]
+
+
+def _load_smoke(paths) -> List[str]:
+    """The planned smoke tasks (seeds 980-984) of the given plans: the
+    tasks of a plan that carries their seeds (the runner's ``run_plan.json``
+    lists every task with its seed)."""
+    out = []
+    for path in paths or ():
+        obj = _read_plan(path)
+        tasks = obj.get("tasks") if isinstance(obj, Mapping) else obj
+        for t in tasks or ():
+            seed = t.get("seed") if isinstance(t, Mapping) else None
+            if isinstance(seed, int) and S.is_smoke_seed(seed):
+                out.append(t["task_id"])
+    return sorted(set(out))
 
 
 def main(argv=None) -> int:
@@ -1107,7 +1200,13 @@ def main(argv=None) -> int:
         default=(),
         help="frozen family protocol files or directories",
     )
-    ap.add_argument("--plan", default=None, help="the generated plan (task ids)")
+    ap.add_argument(
+        "--plan",
+        nargs="*",
+        default=None,
+        help="the generated plans (task ids; the run plans of several runs are "
+        "joined, and the curtailed tasks of their run manifests are expected)",
+    )
     ap.add_argument("--split", choices=S.SPLITS, default=None)
     ap.add_argument("--registry", default=None, help="registry v3 entries (JSON)")
     ap.add_argument("--gate-report", default=None, help="regression-gate report (JSON)")
@@ -1131,7 +1230,11 @@ def main(argv=None) -> int:
         recs,
         spec=spec,
         protocols=_load_protocols(args.protocols) or None,
-        planned_task_ids=_load_plan(args.plan) if args.plan else None,
+        planned_task_ids=(
+            [t for p in args.plan for t in _load_plan(p)] if args.plan else None
+        ),
+        curtailed_task_ids=_load_curtailed(args.plan) if args.plan else (),
+        smoke_task_ids=_load_smoke(args.plan) if args.plan else (),
         split=args.split,
         registry=registry,
         gate_report=args.gate_report,

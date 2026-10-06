@@ -119,8 +119,10 @@ usable in its family is dropped; a cell that loses every row is listed as
 row is left.
 
 Also here: the one map between the names of the v2 protocol files and the
-names of the v2 estimators (:data:`PROTOCOL_ESTIMATOR_NAMES`), used by the
-evaluator, the integrity audit and the runner.
+names of the v2 estimators (:data:`PROTOCOL_ESTIMATOR_NAMES`), and the one
+convention of protocol keys (a record's ``protocol_id`` is the key, the
+frozen file is ``mpc_bench_v2_<key>.json``; :func:`load_protocol_files`),
+used by the evaluator, the integrity audit and the runner.
 """
 
 from __future__ import annotations
@@ -232,6 +234,97 @@ def pdi_params_for_estimator(protocol_block: Mapping) -> dict:
         if k in PDI_PROTOCOL_ONLY_KEYS:
             continue
         out[PDI_OPTION_NAMES.get(k, k)] = v
+    return out
+
+
+# ==========================================================================
+# protocol keys (one place)
+# ==========================================================================
+# A family protocol is identified by its key, ``<family protocol>`` or
+# ``<family protocol>+<form>`` (``A-R``, ``A-H+nas_secondary``,
+# ``hopf-eeg64``): the v2 runner writes the key as ``protocol_id`` into every
+# scoring and component, its frozen file is ``mpc_bench_v2_<key>.json``, and
+# a protocol named after the convention is named ``mpc-bench-v2-<key>`` (a
+# development draft ``mpc-bench-v2-<key>-draft``). The runner, the evaluator
+# and the integrity audit read protocol files only through
+# :func:`load_protocol_files`, so a record's ``protocol_id`` is the key its
+# protocol is looked up by.
+PROTOCOL_FILE_PREFIX = "mpc_bench_v2_"
+PROTOCOL_FILE_SUFFIX = ".json"
+PROTOCOL_FILE_GLOB = f"{PROTOCOL_FILE_PREFIX}*{PROTOCOL_FILE_SUFFIX}"
+_PROTOCOL_NAME_RE = re.compile(r"^mpc-bench-v2-(?P<key>.+?)(?P<draft>-draft)?$")
+
+
+def protocol_file_name(key: str) -> str:
+    """The file name of a protocol key (``mpc_bench_v2_A-R.json``)."""
+    key = str(key)
+    if not key or "/" in key or key.strip() != key:
+        raise ValueError(f"not a protocol key: {key!r}")
+    return f"{PROTOCOL_FILE_PREFIX}{key}{PROTOCOL_FILE_SUFFIX}"
+
+
+def protocol_key_of_file(path) -> str:
+    """The protocol key of a protocol file named by the convention;
+    ``ValueError`` for any other file name."""
+    name = Path(path).name
+    pre, suf = PROTOCOL_FILE_PREFIX, PROTOCOL_FILE_SUFFIX
+    if not (name.startswith(pre) and name.endswith(suf)
+            and len(name) > len(pre) + len(suf)):
+        raise ValueError(f"{name}: a family protocol file is named "
+                         f"{PROTOCOL_FILE_PREFIX}<key>{PROTOCOL_FILE_SUFFIX}")
+    return name[len(PROTOCOL_FILE_PREFIX): -len(PROTOCOL_FILE_SUFFIX)]
+
+
+def protocol_key_of_name(name) -> Optional[str]:
+    """The key in a protocol name that follows the convention
+    (``mpc-bench-v2-<key>`` or ``mpc-bench-v2-<key>-draft``), else None."""
+    m = _PROTOCOL_NAME_RE.match(str(name or ""))
+    return None if m is None else m.group("key")
+
+
+def protocol_key(proto, path=None) -> str:
+    """The key of a protocol: from its file name when it has a file, else
+    from its name; a name that follows the convention must agree with the
+    file. ``ValueError`` when neither gives a key."""
+    name = proto.get("name") if isinstance(proto, Mapping) else getattr(
+        proto, "name", None)
+    by_name = protocol_key_of_name(name)
+    if path is not None:
+        key = protocol_key_of_file(path)
+        if by_name is not None and by_name != key:
+            raise ValueError(f"{Path(path).name}: the protocol is named {name!r}, "
+                             f"the file names the key {key!r}")
+        return key
+    if by_name is None:
+        raise ValueError(f"protocol {name!r} does not carry a key "
+                         "(mpc-bench-v2-<key>)")
+    return by_name
+
+
+def load_protocol_files(items) -> "OrderedDict[str, Any]":
+    """``{key: ProtocolV3}`` of protocol files and directories (a directory
+    contributes its ``mpc_bench_v2_*.json`` files, so registries and anchor
+    tables next to them are not read as protocols). A file outside the
+    naming convention and a key given twice are refused."""
+    from impact_pipeline import evidence_v2 as E
+
+    paths = []
+    for it in items or ():
+        p = Path(it)
+        if p.is_dir():
+            paths.extend(sorted(p.glob(PROTOCOL_FILE_GLOB)))
+        elif p.is_file():
+            paths.append(p)
+        else:
+            raise FileNotFoundError(p)
+    out: "OrderedDict[str, Any]" = OrderedDict()
+    for p in paths:
+        protocol_key_of_file(p)  # a file outside the convention is refused first
+        pr = E.load_protocol(p)
+        key = protocol_key(pr, p)
+        if key in out:
+            raise ValueError(f"protocol key {key!r} given twice")
+        out[key] = pr
     return out
 
 
@@ -2512,8 +2605,10 @@ def build_context(
 ) -> Context:
     """A context from ``/3`` records (rows of ``components`` and
     ``verdicts``) and auxiliary sources (mappings name -> list of rows).
-    ``protocols``: ``{protocol_id: ProtocolV3 or mapping}`` or a list of
-    them (keyed by their name). The split is the records' split (one split
+    ``protocols``: ``{protocol key: ProtocolV3 or mapping}`` or a list of
+    them (keyed by the key in their name, :func:`protocol_key`); rows find
+    their protocol by their ``protocol_id``, the key the runner writes. The
+    split is the records' split (one split
     per evaluation; mixing is refused) unless given; the seeds of the
     auxiliary sources (for example the manipulation checks) must belong to
     the same split, so a confirmatory evaluation never reads development
@@ -2542,7 +2637,7 @@ def build_context(
         )
         for key, pr in items:
             info = _protocol_info(pr)
-            protos[str(key if key is not None else info["name"])] = info
+            protos[str(key if key is not None else protocol_key(pr))] = info
     return Context(
         srcs,
         protos,
@@ -3910,6 +4005,13 @@ __all__ = [
     "ols_slope_unit",
     "parts_table",
     "pdi_params_for_estimator",
+    "PROTOCOL_FILE_GLOB",
+    "PROTOCOL_FILE_PREFIX",
+    "load_protocol_files",
+    "protocol_file_name",
+    "protocol_key",
+    "protocol_key_of_file",
+    "protocol_key_of_name",
     "pooled_within_sd",
     "prepare",
     "ram_facets_for_estimator",

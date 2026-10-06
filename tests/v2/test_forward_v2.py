@@ -685,6 +685,40 @@ def test_family_a_realisation_and_the_slow_context_preset():
     assert real.views["bold"].dt == 2.0
 
 
+def test_the_family_a_source_is_the_bench_system():
+    """A forward family-A run simulates the joint bench's own system: the
+    same recording and the same configuration digest as the catalogue
+    witness or the sweep agent of that seed, so the duplicate detector
+    lists a shared seed as one configuration under two designs."""
+    from impact_pipeline.bench import adversarial_v2 as A2
+    from impact_pipeline.bench import run_bench_v2 as RB
+    from impact_pipeline.v2 import provenance as PV
+
+    ref = D.build_tasks(D.REFERENCE_DEVELOPMENT, arms=[D.ARM_A_EEG])[0]
+    assert (ref.condition, ref.seed) == ("PC_nominal", 900)
+    src = D._family_a_source(ref)
+    bench = A2.build_system("PC_nominal", 900, "A")
+    assert PV.array_sha256(src.ts) == PV.array_sha256(bench.ts)
+    assert RB.system_config_digest(src) == RB.system_config_digest(bench)
+    k2 = [t for t in D.build_tasks(D.DRY_RUN, arms=[D.ARM_A_EEG])
+          if t.condition == "PC_nominal_K2"][0]
+    agent = RB.build_agent_system(types_task(k2.seed, {"K": 2}))
+    src = D._family_a_source(k2)
+    assert PV.array_sha256(src.ts) == PV.array_sha256(agent.ts)
+    assert RB.system_config_digest(src) == RB.system_config_digest(agent)
+
+
+def types_task(seed, knobs):
+    """A stand-in runner task of the family-A agent at ``knobs``."""
+    import types
+
+    from impact_pipeline.bench.generators import NOMINAL_KNOBS
+
+    kn = NOMINAL_KNOBS.replace(**knobs).to_dict()
+    return types.SimpleNamespace(seed=seed, replicate=0,
+                                 params={"family": "A", "knobs": kn})
+
+
 # --------------------------------------------------------------------------
 # scorings and admission designs
 # --------------------------------------------------------------------------
@@ -692,14 +726,17 @@ def test_scoring_plan():
     hopf = D.scoring_plan(D.build_tasks(D.DRY_RUN, arms=[D.ARM_HOPF])[0])
     by = {s["scoring_id"]: s for s in hopf}
     assert by["eeg64:primary"]["options"]["NAS"]["observation_gate"] == "admission_run"
-    # the v2 pipeline (rank condition, ZCA) on every mixed IIM view (HCv2-15)
+    # the v2 pipeline (rank condition, ZCA) on every mixed IIM view (HCv2-15),
+    # the primary cut only
     assert by["mne_template:primary"]["options"]["IIM"] == {
-        "preprocess": "zca", "observation_gate": "admission_run"}
+        "preprocess": "zca", "observation_gate": "admission_run",
+        "report_cut_modes": []}
     for v in ("eeg64", "eeg64_noref", "eeglow"):
         assert by[f"{v}:primary"]["options"]["IIM"]["preprocess"] == "zca"
         assert by[f"{v}:primary"]["options"]["IIM"]["macro_nodes"] == (
             "rank_safe_clusters")
-    assert by["source:primary"]["options"] == {} and by["bold:primary"]["options"] == {}
+    for v in ("source", "bold"):
+        assert by[f"{v}:primary"]["options"] == {"IIM": {"report_cut_modes": []}}
     assert by["eeg64_noref:primary"]["principles"] == ["IIM"]
     assert set(by["eeg64_noref:primary"]["options"]) == {"IIM"}
     comps = [s for s in hopf if s["estimator_form"] == D.IIM_V1_QUADRANTS]
@@ -755,6 +792,178 @@ def test_admission_designs():
         for c in d.null_conditions:
             assert D.condition(d.arm, c).n_confirmatory >= need
     assert {d.n_planned_on for d in D.admission_designs(D.DRY_RUN)} == {16, 22}
+
+
+def test_a_run_carries_what_some_criterion_reads():
+    hopf = D.build_tasks(D.CONFIRMATORY, arms=[D.ARM_HOPF])
+    by_cond = {}
+    for t in hopf:
+        by_cond.setdefault(t.condition, t)
+    # the v1 quadrant comparator only at G = 0 (HCv2-12(d), HCv2-15(b))
+    for cond, t in by_cond.items():
+        forms = {(s["view"], s["estimator_form"]) for s in D.scoring_plan(t)}
+        comp = {f for f in forms if f[1] == D.IIM_V1_QUADRANTS}
+        assert comp == ({("eeg64", D.IIM_V1_QUADRANTS),
+                         ("eeg64_noref", D.IIM_V1_QUADRANTS)}
+                        if cond == "hopf_G0" else set()), cond
+    # only NAS has a lesion criterion (FMb2): the lesion runs score NAS alone
+    for cond in ("hopf_lesion_hub", "hopf_lesion_random_matched_hub"):
+        plan = D.scoring_plan(by_cond[cond])
+        assert {p for s in plan for p in s["principles"]} == {"NAS"}
+        assert [s["view"] for s in plan] == ["source", "eeg64", "eeglow",
+                                             "mne_template", "bold"]
+        assert all(set(s["options"]) <= {"NAS"} for s in plan)
+    # the family-A source view (no admission view) only where FMd reads it:
+    # PC_nominal and K = 1 on the seeds they share
+    for arm in (D.ARM_A_EEG, D.ARM_A_BOLD):
+        plan = D.build_tasks(D.CONFIRMATORY, arms=[arm])
+        src = sorted((t.condition, t.seed) for t in plan
+                     if any(s["view"] == "source" for s in D.scoring_plan(t)))
+        want = sorted((c, s) for c in ("PC_nominal", "PC_nominal_K1")
+                      for s in range(20000, 20020))
+        assert src == want, arm
+        # every forward view on every run
+        for t in plan:
+            views = {s["view"] for s in D.scoring_plan(t)}
+            assert views >= set(D.VIEWS_OF_ARM[arm]) - {"source"}
+    # the anchor runs keep every view (their anchors are computed there)
+    for t in D.build_tasks(D.REFERENCE_DEVELOPMENT, arms=[D.ARM_A_EEG])[:3]:
+        assert {s["view"] for s in D.scoring_plan(t)} == {"source", "eeg64", "eeglow"}
+    # IIM on the family-A arms is descriptive: value and null, no SE; every
+    # forward protocol scores the primary cut only
+    for key, spec in D.protocol_options().items():
+        iim = spec["estimators"]["IIM"]
+        assert iim["report_cut_modes"] == [], key
+        if key.startswith("fwdA"):
+            assert iim["se_method"] is None, key
+        else:
+            assert "se_method" not in iim, key
+
+
+def test_runner_tasks_of_the_forward_arms():
+    from impact_pipeline.bench import designs_v2 as DV
+
+    assert {d.name for d in D.DESIGNS} == {
+        "whole_brain", "forward_family_a", "forward_family_a_bold",
+        D.ANCHOR_REPLICATION_DESIGN}
+    for d in D.DESIGNS:
+        assert d.expected_tasks[DV.CONFIRMATORY] == D.DOCUMENT_TASKS[d.name]
+        assert len(d.tasks(DV.CONFIRMATORY)) == D.DOCUMENT_TASKS[d.name]
+    for arm in D.ARMS:
+        name = D.RECORD_DESIGN_OF_ARM[arm]
+        dev = DV.get_design(name).tasks(DV.DEVELOPMENT)
+        plan = D.build_tasks(D.DRY_RUN, arms=[arm])
+        assert [t.task_id for t in dev] == [t.task_id for t in plan]
+        for t in dev:
+            ft = D.forward_task_of(t)
+            assert (t.design, t.family, t.system, t.seed) == (
+                name, ft.family, ft.condition, ft.seed)
+            assert not t.has_held_out and t.tags["regime"] == "development"
+            assert [s.scoring_id for s in t.scorings] == [
+                s["scoring_id"] for s in D.scoring_plan(ft)]
+            for s in t.scorings:
+                assert s.protocol_key == D.protocol_key_of(arm, s.view,
+                                                           s.estimator_form)
+                assert not s.verdict
+        dev_regime = DV.get_design(name).tasks(DV.DEVELOPMENT, purpose=D.DEV_REGIME)
+        assert {t.seed for t in dev_regime} <= set(range(804, 820))
+        smoke = DV.get_design(name).tasks(DV.DEVELOPMENT, purpose=D.SMOKE)
+        assert all(t.smoke and t.has_held_out for t in smoke)
+        conf = DV.get_design(name).tasks(DV.CONFIRMATORY)
+        assert all(t.has_held_out for t in conf)  # the held-out regime
+    rep = DV.get_design(D.ANCHOR_REPLICATION_DESIGN)
+    conf = rep.tasks(DV.CONFIRMATORY)
+    assert {t.seed for t in conf} == set(range(20900, 20920))
+    assert {(t.tags["arm"], t.system) for t in conf} == {
+        (D.ARM_HOPF, D.g_nom_label()), (D.ARM_A_EEG, "PC_nominal"),
+        (D.ARM_A_BOLD, "PC_nominal")}
+    assert {t.tags["regime"] for t in conf} == {"held_out"}
+    dev = rep.tasks(DV.DEVELOPMENT)
+    assert {t.seed for t in dev} == set(range(900, 940))
+    assert {t.tags["regime"] for t in dev} == {"development"} and not any(
+        t.has_held_out for t in dev)
+    # the held-out regime on the reference block is a held-out condition
+    assert all(t.has_held_out for t in rep.tasks(DV.DEVELOPMENT, purpose=D.REFERENCE))
+    with pytest.raises(D.ForwardDesignError, match="purpose"):
+        rep.tasks(DV.DEVELOPMENT, purpose=D.DRY_RUN)
+    with pytest.raises(D.ForwardDesignError, match="purpose"):
+        DV.get_design("whole_brain").tasks(DV.DEVELOPMENT, purpose=D.REFERENCE)
+    with pytest.raises(D.ForwardDesignError, match="no task"):
+        DV.get_design("whole_brain").tasks(DV.DEVELOPMENT, seeds=[320])
+    with pytest.raises(D.ForwardDesignError, match="unknown conditions"):
+        DV.get_design("whole_brain").tasks(DV.DEVELOPMENT, systems=["PC_nominal"])
+    with pytest.raises(D.ForwardDesignError, match="not a dry_run seed"):
+        D.forward_task(D.ARM_A_EEG, "PC_nominal_K1", 390, D.DRY_RUN)
+    with pytest.raises(D.ForwardDesignError, match="replication block"):
+        D.check_regime_policy([D.ForwardTask(**{
+            **conf[0].params, "task_id": "x", "seed": 20950, "regime": "held_out",
+            "views": D.VIEWS_OF_ARM[D.ARM_HOPF], "dose": None,
+            "curtail_group": None})])
+
+
+def _bold_record(ft, absent=False, error=False):
+    """A minimal record of a BOLD-arm run: PDI on the BOLD view."""
+    from impact_pipeline.v2 import records as REC
+
+    comp = REC.ComponentRecord(
+        principle="PDI", status="ABSENT" if absent else "PRESENT", reason=None,
+        estimator_version="pdi-v3-2026.10", declaration_id="R",
+        observation_stage="bold", protocol_id="fwdA_bold-bold", protocol_hash="a" * 64,
+        c=0.0 if absent else 1.0)
+    sc = REC.ScoringRecord(scoring_id="bold:primary", declaration_id="R",
+                           observation_stage="bold", view="bold",
+                           estimator_form="primary", protocol_id="fwdA_bold-bold",
+                           protocol_hash="a" * 64, components={"PDI": comp})
+    return REC.TaskRecord(
+        task_id=ft.task_id, design="forward_family_a_bold", family="A",
+        system=ft.condition, seed=ft.seed,
+        generator_version="mpc-bench-generators/2.0.0",
+        status="error" if error else "ok", error="boom" if error else None,
+        scorings=() if error else (sc,),
+        simulation=None if error else {"ts_sha256": "b" * 64, "n_nodes": 30,
+                                       "n_time": 100, "dt": 2.0})
+
+
+def test_the_runner_curtailment_follows_the_seed_order():
+    from impact_pipeline.bench import designs_v2 as DV
+
+    tasks = DV.get_design("forward_family_a_bold").tasks(DV.DEVELOPMENT)
+    ctl = D.RUNNER_CURTAILMENT(tasks)
+    assert ctl is not None
+    order = D.curtailment_order(D.build_tasks(D.DRY_RUN, arms=[D.ARM_A_BOLD]))
+    (on,) = order.values()
+    gated = [t.task_id for t in on if D.curtailable(t)]
+    assert ctl.gated_ids() == gated and len(gated) == 13
+    fts = {t.task_id: t for t in on}
+    # undecided while a run before it has no record
+    assert ctl.decision(gated[0]) is None
+    assert ctl.decision(on[0].task_id) is False  # not gated
+    # records arrive out of order; the decision waits for the seed order
+    later = [t for t in on if t.seed >= 386]
+    for t in reversed(later):
+        ctl.feed(t.task_id, _bold_record(t))
+    assert ctl.decision(gated[0]) is None
+    early = [t for t in on if t.seed < 386]
+    for t in early:  # a false ABSENT at K = 2, seed 385
+        ctl.feed(t.task_id, _bold_record(
+            t, absent=(t.condition, t.seed) == ("PC_nominal_K2", 385)))
+    assert [ctl.decision(g) for g in gated] == [True] * 13
+    summ = ctl.summary()
+    (grp,) = summ["groups"]
+    assert grp["stopped"] and grp["skipped"] == gated
+    assert grp["views"] == [{"principle": "PDI", "view": "bold", "events": 1,
+                             "max_events": 0,
+                             "stop_after": fts[next(t for t in fts if fts[t].seed == 385
+                                                    and fts[t].condition ==
+                                                    "PC_nominal_K2")].task_id}]
+    # no event: every gated run is kept; an errored run is no event
+    ctl = D.RUNNER_CURTAILMENT(tasks)
+    for t in on:
+        ctl.feed(t.task_id, _bold_record(t, error=(t.seed == 384)))
+    assert [ctl.decision(g) for g in gated] == [False] * 13
+    # a plan without gated runs needs no controller
+    assert D.RUNNER_CURTAILMENT(DV.get_design("whole_brain").tasks(
+        DV.DEVELOPMENT)) is None
 
 
 def test_no_new_dependencies():

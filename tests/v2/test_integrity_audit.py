@@ -253,6 +253,31 @@ def test_ia2_detects_a_lost_component_and_the_error_rate():
     assert IA.ia2_component_isolation([ho] + recs[1:])["status"] == PASS
 
 
+def test_ia2_compares_a_scoring_with_the_principles_it_declares():
+    """A scoring that declares fewer principles than others of its kind (a
+    Hopf lesion run scores NAS alone; a null kind its applicable
+    principles) loses nothing; one that declares a principle and lacks it
+    does; principles the run's settings leave out are not expected."""
+    recs = clean_records()
+    hopf = [r for r in recs if r["design"] == "whole_brain"]
+    assert hopf
+    lesion = copy.deepcopy(hopf[0])
+    lesion["task_id"] = "h-lesion"
+    src = lesion["scorings"][0]
+    del src["components"]["IIM"]
+    # without the declaration the scoring is compared with its kind
+    c = IA.ia2_component_isolation(recs + [lesion])
+    assert kinds(c) == ["missing_components"]
+    src["details"] = {"principles": ["NAS"]}
+    assert IA.ia2_component_isolation(recs + [lesion])["status"] == PASS
+    src["details"] = {"principles": ["NAS", "IIM"]}
+    c = IA.ia2_component_isolation(recs + [lesion])
+    assert kinds(c) == ["missing_components"] and "h-lesion" in ids(c)
+    lesion["config"] = {**(lesion.get("config") or {}),
+                        "settings": {"principles": ["NAS"]}}
+    assert IA.ia2_component_isolation(recs + [lesion])["status"] == PASS
+
+
 def test_ia3_nas_sampling_gate(spec):
     recs = clean_records()
     assert IA.ia3_nas_sampling(recs, spec)["status"] == PASS
@@ -335,10 +360,22 @@ def test_ia4_degenerate_tpms_not_applicable_and_registry(spec):
             "admitted_for_absent": "no",
         }
     ]
-    c = IA.ia4_undefined_never_absent([eeg], spec, registry=reg)
+    # the forward arms' records are the admission runs: judged without a
+    # registry (they decide it), so the registry direction is not checked
+    # on them, whatever their status
+    for design in ("whole_brain", "forward_family_a", "forward_family_a_bold",
+                   "forward_anchor_replication"):
+        adm = {**copy.deepcopy(eeg), "design": design}
+        c = IA.ia4_undefined_never_absent([adm], spec, registry=reg)
+        assert c["status"] == PASS, design
+        assert c["details"]["n_admission_run_components"] == 1
+    # a sensor component of any other record is judged under the registry
+    other = {**copy.deepcopy(eeg), "design": "paper2_like_sensor_data"}
+    c = IA.ia4_undefined_never_absent([other], spec, registry=reg)
     assert kinds(c) == ["ABSENT_without_admitted_direction"]
+    assert c["details"]["n_admission_run_components"] == 0
     reg[0]["admitted_for_absent"] = "yes"
-    assert IA.ia4_undefined_never_absent([eeg], spec, registry=reg)["status"] == PASS
+    assert IA.ia4_undefined_never_absent([other], spec, registry=reg)["status"] == PASS
 
 
 def test_ia5_detects_planted_duplicates():
@@ -545,3 +582,124 @@ def test_audit_command_line(tmp_path):
     plan.write_text(json.dumps([r["task_id"] for r in recs]))
     assert IA.main(["--records", str(f), "--plan", str(plan), "--out", str(out)]) == 0
     assert IA.main(["--records", str(tmp_path / "none")]) == 2
+
+
+def test_ia7_expects_the_tasks_a_run_curtailed(tmp_path):
+    recs = clean_records()
+    plan = [r["task_id"] for r in recs] + ["cut-1", "cut-2"]
+    c = IA.ia7_plan_and_seeds(recs, plan)
+    assert c["status"] == FAIL
+    assert sorted(f["task_id"] for f in c["failures"]) == ["cut-1", "cut-2"]
+    c = IA.ia7_plan_and_seeds(recs, plan, curtailed_task_ids=["cut-2", "cut-1"])
+    assert c["status"] == PASS and c["details"]["n_curtailed"] == 2
+    assert "2 tasks curtailed by design" in c["summary"]
+    # a curtailed task must be planned and must not have run
+    c = IA.ia7_plan_and_seeds(recs, plan, curtailed_task_ids=["cut-1", "cut-2",
+                                                              "stray"])
+    assert kinds(c) == ["curtailed_outside_plan"]
+    c = IA.ia7_plan_and_seeds(recs, plan,
+                              curtailed_task_ids=["cut-1", "cut-2",
+                                                  recs[0]["task_id"]])
+    assert kinds(c) == ["curtailed_but_recorded"]
+    # the command line joins the plans of several runs and reads the
+    # curtailed tasks from their manifests
+    runs = []
+    for k, (rs, cut) in enumerate(((recs[:4], ["cut-1"]), (recs[4:], ["cut-2"]))):
+        d = tmp_path / f"run{k}"
+        d.mkdir()
+        (d / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rs))
+        (d / "run_plan.json").write_text(json.dumps(
+            {"task_ids": [r["task_id"] for r in rs] + cut}))
+        (d / "run_manifest.json").write_text(json.dumps({"curtailed_task_ids": cut}))
+        runs.append(d)
+    out = tmp_path / "audit.json"
+    rc = IA.main(["--records", *map(str, runs), "--out", str(out),
+                  "--plan", *(str(d / "run_plan.json") for d in runs)])
+    assert rc == 0
+    ia7 = next(c for c in json.loads(out.read_text())["checks"] if c["id"] == "IA-7")
+    assert ia7["status"] == PASS and ia7["details"]["n_curtailed"] == 2
+
+
+def test_ia7_expects_the_smoke_tasks_of_a_development_plan(tmp_path):
+    """Smoke tasks (seeds 980-984) are planned, but the runner discards their
+    outputs: they are expected to be missing, a record of one fails, and the
+    runner's smoke status lines in a run directory are not read as
+    records."""
+    recs = clean_records()
+    plan = [r["task_id"] for r in recs] + ["A_heldout-x-s00980"]
+    c = IA.ia7_plan_and_seeds(recs, plan, smoke_task_ids=["A_heldout-x-s00980"])
+    assert c["status"] == PASS and c["details"]["n_smoke"] == 1
+    assert "1 smoke tasks discarded by design" in c["summary"]
+    leaked = copy.deepcopy(recs[0])
+    c = IA.ia7_plan_and_seeds(recs, [r["task_id"] for r in recs],
+                              smoke_task_ids=[leaked["task_id"]])
+    assert kinds(c) == ["smoke_output_recorded"]
+    assert leaked["task_id"] in c["excluded_task_ids"]
+    # the command line: the plan's smoke tasks come from its seeds, and the
+    # smoke status file of the run directory is no record file
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    (run / "smoke.jsonl").write_text(json.dumps(
+        {"task_id": "A_heldout-x-s00980", "status": "ok", "discarded": True}) + "\n")
+    tasks = [{"task_id": r["task_id"], "seed": r["seed"]} for r in recs]
+    tasks.append({"task_id": "A_heldout-x-s00980", "seed": 980})
+    (run / "run_plan.json").write_text(json.dumps(
+        {"task_ids": [t["task_id"] for t in tasks], "tasks": tasks}))
+    assert IA._paths([run]) == [run / "results.jsonl"]
+    # the evaluator reads the run directory the same way
+    from scripts import bench_hypotheses_v2 as BH
+
+    got, bad, files = BH.read_records([run])
+    assert files == [run / "results.jsonl"] and not bad and len(got) == len(recs)
+    with pytest.raises(FileNotFoundError):
+        BH.read_records([tmp_path / "missing"])
+    out = tmp_path / "audit.json"
+    rc = IA.main(["--records", str(run), "--plan", str(run / "run_plan.json"),
+                  "--out", str(out)])
+    assert rc == 0
+    ia7 = next(c for c in json.loads(out.read_text())["checks"] if c["id"] == "IA-7")
+    assert ia7["status"] == PASS and ia7["details"]["n_smoke"] == 1
+
+
+def test_runner_records_find_their_frozen_protocols_by_key(tmp_path, monkeypatch):
+    """The runner writes the protocol key as protocol_id; the evaluator and
+    the audit load the frozen files mpc_bench_v2_<key>.json by that key, so
+    IA-6 compares every record with its own frozen protocol."""
+    import dataclasses
+
+    from impact_pipeline import evidence_v2 as E
+    from impact_pipeline.bench import designs_v2 as D
+    from impact_pipeline.bench import run_bench_v2 as RB
+    from impact_pipeline.bench.designs_v2 import ram_only as RO
+    from scripts import bench_hypotheses_v2 as BH
+
+    gen = tmp_path / "generated"
+    gen.mkdir()
+    for key in ("A-RAM160",):
+        d = RB.draft_protocol(key).to_dict()
+        d["name"] = f"mpc-bench-v2-{key}"
+        RB.protocol_path(key, gen).write_text(json.dumps(d))
+    # an anchor table beside the protocols is not a protocol
+    (gen / "forward_anchors.json").write_text(json.dumps({"anchors": []}))
+    task = RO.arm(D.DEVELOPMENT, seeds=[352], systems=["PC_nominal"])[0]
+    task = dataclasses.replace(task, scorings=task.scorings)
+    man = RB.run_tasks([task], tmp_path / "run", protocol_dir=gen)
+    assert man["protocols"]["A-RAM160"]["source"] == "generated"
+    recs, bad = IA.read_raw_records([tmp_path / "run" / RB.RESULTS_JSONL])
+    assert not bad
+    assert {c["protocol_id"] for r in recs for s in r["scorings"]
+            for c in s["components"].values()} == {"A-RAM160"}
+    frozen = IA._load_protocols([gen])
+    assert list(frozen) == ["A-RAM160"]
+    assert IA.ia6_protocol_hashes(recs, frozen)["status"] == PASS
+    assert list(BH.load_protocols([gen])) == ["A-RAM160"]
+    ctx = HE.build_context(recs, protocols=frozen)
+    row = ctx.sources["components"][0]
+    assert ctx.protocols[row["protocol_id"]]["hash"] == frozen["A-RAM160"].hash
+    # a protocol loaded under another key is a hash mismatch, never a match
+    wrong = {"RAM160": frozen["A-RAM160"]}
+    assert IA.ia6_protocol_hashes(recs, wrong)["status"] == FAIL
+    with pytest.raises(BH.EvaluationRefused, match="mpc_bench_v2_<key>"):
+        BH.load_protocols([gen / "forward_anchors.json"])
+    assert isinstance(frozen["A-RAM160"], E.ProtocolV3)

@@ -20,7 +20,7 @@ from impact_pipeline.bench.designs_v2 import ram_only as RO
 from impact_pipeline.bench.designs_v2 import twins as TW
 from impact_pipeline.v2 import seeds as S
 
-OWN_MODULES = ("family_a", "family_c1", "ram_only", "twins", "anchors")
+OWN_MODULES = ("family_a", "family_c1", "ram_only", "twins", "anchors", "forward")
 CONF, DEV = D.CONFIRMATORY, D.DEVELOPMENT
 P5 = ("RAM", "PDI", "NAS", "IIM", "SRPI")
 
@@ -32,6 +32,10 @@ DOCUMENT_COUNTS = {
         "A_anchors": 140, "RAM160": 440, "RAM160_twins": 210,
         "C1_witnesses": 13 * 20 + 4 * 25, "C1_sweeps": 200, "C1_factorial": 320,
         "C1_twins": 180, "C1_anchors": 80, "RAM160_anchors": 2 * 20,
+        # the forward arms (3.2; the BOLD arm's 271 before curtailment) and
+        # the forward views' anchor replication (3 arms x 20)
+        "whole_brain": 371, "forward_family_a": 332, "forward_family_a_bold": 271,
+        "forward_anchor_replication": 3 * 20,
     },
     DEV: {
         "A_witnesses": 16 * 12, "A_sweeps": 26 * 4, "A_factorial": 32 * 4,
@@ -80,29 +84,46 @@ def test_a_missing_module_is_not_merged_yet(monkeypatch):
         D.get_design("F_eeg64")
 
 
-def test_merged_modules_without_runner_designs_are_reported_not_skipped(capsys):
-    # family B runs through its own validation script; the forward arms are
-    # merged but define no designs for this runner yet
+def test_merged_modules_without_runner_designs_are_reported_not_skipped(
+        capsys, monkeypatch):
+    # family B runs through its own validation script; a merged module whose
+    # runner adapter is not written yet is reported as such (a stand-in for
+    # a Tier-B module here), and the forward arms run through the runner
+    import types
+
     assert D.RUN_ELSEWHERE["family_b"] == "scripts/v2/iim_validation_v2.py"
     with pytest.raises(D.DesignNotRunnableError,
                        match="family_b.*runs? through scripts/v2/iim_validation_v2"):
         D.load_module("family_b")
+    fake = types.ModuleType(f"{D.PACKAGE}.tier_b_arms")
+    real = D.importlib.import_module
+    monkeypatch.setattr(D.importlib, "import_module",
+                        lambda name, *a, **k: fake if name == fake.__name__
+                        else real(name, *a, **k))
+    monkeypatch.delitem(D._MODULE_CACHE, "tier_b_arms", raising=False)
     with pytest.raises(D.DesignNotRunnableError, match="runner adapter is not written"):
-        D.load_module("forward")
+        D.load_module("tier_b_arms")
     unrunnable = D.unrunnable_modules()
-    assert {"family_b", "forward"} <= set(unrunnable)
-    assert not {"family_b", "forward"} & set(D.available_modules())
-    assert not {"family_b", "forward"} & set(D.missing_modules())
-    with pytest.raises(D.DesignError, match="no designs for this runner: .*forward"):
-        D.get_design("F_eeg64")
+    assert {"family_b", "tier_b_arms"} <= set(unrunnable)
+    assert "forward" in D.available_modules()
+    assert not {"family_b", "tier_b_arms"} & set(D.available_modules())
+    assert not {"family_b", "tier_b_arms"} & set(D.missing_modules())
+    with pytest.raises(D.DesignError,
+                       match="no designs for this runner: .*tier_b_arms"):
+        D.get_design("Z_tier_b")
     # the plan scripts read a non-zero status instead of an empty list
-    assert RB.main(["designs", "--module", "forward"]) == 3
+    assert RB.main(["designs", "--module", "tier_b_arms"]) == 3
     assert "runner adapter is not written" in capsys.readouterr().err
     assert RB.main(["designs", "--module", "family_b"]) == 3
+    assert RB.main(["designs", "--module", "forward"]) == 0
+    assert capsys.readouterr().out.split() == [
+        "whole_brain,forward_family_a,forward_family_a_bold,"
+        "forward_anchor_replication"]
     assert RB.main(["designs"]) == 0
     out = capsys.readouterr().out
     assert "family_b: design module 'family_b'" in out
     assert "anchors: A_anchors" in out
+    assert "forward: whole_brain, forward_family_a" in out
 
 
 def test_a_module_with_malformed_designs_is_still_an_error(monkeypatch):
@@ -244,6 +265,25 @@ def test_family_a_witnesses_extended_seeds_and_order(plans):
         and A2.get_entry(sid).get("origin") == "v1"}
 
 
+@pytest.mark.parametrize("family", ["A", "C"])
+def test_the_patchwork_iim_grain_is_the_iim_modules_three_subgroups(family):
+    """The patchwork's declared IIM grain in the principle-bearer mode, the
+    only mode it is recorded in: the IIM module's three sub-groups. Its
+    system grain (one macro node per module, five nodes, about 28 times a
+    four-node IIM call) is never scored."""
+    from impact_pipeline.bench import export as X
+
+    pw = A2.build_system("PW_patchwork", 320, family)
+    iim = X.bearer_view(pw, "IIM", "principle")
+    assert iim["bearer_id"] == "principle:IIM"
+    assert len(iim["macro_nodes"]) == 3
+    assert sorted(i for v in iim["macro_nodes"].values() for i in v) == list(
+        range(len(iim["nodes"])))
+    assert len(X.bearer_view(pw, "IIM", "system")["macro_nodes"]) == 5
+    for p in ("NAS", "PDI", "RAM", "SRPI"):
+        assert X.bearer_view(pw, p, "principle")["bearer_id"] == f"principle:{p}"
+
+
 def test_family_a_scorings_declarations_forms_and_protocols(plans):
     t = next(t for t in plans[DEV]["A_witnesses"] if t.system == "PC_nominal")
     ids = [s.scoring_id for s in t.scorings]
@@ -260,9 +300,19 @@ def test_family_a_scorings_declarations_forms_and_protocols(plans):
         base, form = D.split_protocol_key(s.protocol_key)
         assert form == s.estimator_form
         assert RB.FAMILY_PROTOCOLS[base] == ("A", s.declaration_id)
-    pw = next(t for t in plans[DEV]["A_witnesses"] if t.system == "PW_patchwork")
-    assert {s.bearer_mode for s in pw.scorings} == {"system", "principle"}
-    assert "R@principle" in {s.scoring_id for s in pw.scorings}
+    # the patchwork is recorded in the principle-bearer mode only (design 3.2):
+    # its system grain would give IIM five macro nodes, which no Tier-A
+    # hypothesis reads
+    for name in ("A_witnesses", "C1_witnesses"):
+        for split in (DEV, CONF):
+            pws = [t for t in plans[split][name] if t.system == "PW_patchwork"]
+            assert pws, (name, split)
+            for pw in pws:
+                assert {s.bearer_mode for s in pw.scorings} == {"principle"}
+                ids = {s.scoring_id for s in pw.scorings}
+                assert {"R@principle", "H@principle"} <= ids and "R" not in ids
+    assert FA.bearer_modes("PW_patchwork") == ("principle",)
+    assert FA.bearer_modes("PC_nominal") == ("system",)
 
 
 def test_held_out_conditions_exist_only_where_they_may(plans):

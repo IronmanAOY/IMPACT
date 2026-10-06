@@ -1553,6 +1553,9 @@ class World:
                 ),
             },
             "A-RAM160": {"anchors": anchors({"RAM": vs})},
+            # the null-calibration classification protocol: A-R's anchors
+            # with the declaration none
+            "A-none": {"anchors": anchors(a_r)},
             "B": {
                 "precision": prec([("B", "IIM", "feedforward_star", "absent", 0.95)])
             },
@@ -1579,6 +1582,7 @@ class World:
         *,
         config=None,
         replicate=0,
+        simulation=None,
     ):
         sc = []
         for s in scorings:
@@ -1641,6 +1645,7 @@ class World:
                     "n_time": 1000,
                     "dt": 0.05,
                     "seconds": 1.0,
+                    **dict(simulation or {}),
                 },
                 "timing": {},
                 "provenance": {},
@@ -2102,18 +2107,26 @@ class World:
                     for seed in range(200, 210):
                         tid = f"nc-{kind}-{n_time}-{n_nodes}-{seed}"
                         comps = [self.comp_for(p, "NOISE", (tid,)) for p in P5]
+                        # as the null-calibration design writes them: the
+                        # classification protocol A-none (A-R with the
+                        # declaration none), the kind in the task tags and
+                        # the grid in the simulation block
                         self.task(
                             tid,
                             "null_calibration",
                             "null",
                             kind,
                             seed,
-                            [self.scoring("none", "A-R", comps, verdict=False)],
+                            [self.scoring("none", "A-none", comps, verdict=False)],
                             config={
-                                "null_kind": kind,
-                                "n_time": n_time,
-                                "n_nodes": n_nodes,
+                                "tags": {
+                                    "null_kind": kind,
+                                    "n_time": n_time,
+                                    "n_nodes": n_nodes,
+                                    "cell": f"{kind}:T{n_time}:N{n_nodes}",
+                                }
                             },
+                            simulation={"n_time": n_time, "n_nodes": n_nodes},
                         )
 
     def family_b(self):
@@ -2462,34 +2475,41 @@ class World:
         out = [
             {
                 "principle": "NAS",
-                "substrate": "hopf",
+                "arm": "hopf",
+                "substrate": sub,
                 "view": v,
                 "admitted_for_present": pr,
                 "admitted_for_absent": ab,
                 "anchor_valid": True,
             }
-            for v, pr, ab in (
-                ("source", "yes", "yes"),
-                ("eeg64", "no", "vacuous"),
-                ("eeglow", "no", "vacuous"),
-                ("mne_template", "no", "vacuous"),
+            for v, sub, pr, ab in (
+                ("source", "stuart_landau", "yes", "yes"),
+                ("eeg64", "eeg_like_forward", "no", "vacuous"),
+                ("eeglow", "eeg_like_forward", "no", "vacuous"),
+                ("mne_template", "eeg_like_forward", "no", "vacuous"),
             )
         ]
         out += [
             {
                 "principle": "PDI",
-                "substrate": "forward_family_a",
+                "arm": arm,
+                "substrate": sub,
                 "view": v,
                 "admitted_for_present": pr,
                 "admitted_for_absent": ab,
                 "anchor_valid": True,
             }
-            for v, pr, ab in (
-                ("eeg64", "yes", "yes"),
-                ("eeglow", "yes", "yes"),
-                ("bold", "no", "no"),
+            for v, arm, sub, pr, ab in (
+                ("eeg64", "forward_a_eeg", "eeg_like_forward", "yes", "yes"),
+                ("eeglow", "forward_a_eeg", "eeg_like_forward", "yes", "yes"),
+                ("bold", "forward_a_bold", "bold_like_forward", "no", "no"),
             )
         ]
+        # an entry of another arm with the same principle and view is not
+        # read by the forward family-A or Hopf parts
+        out.append({"principle": "PDI", "arm": "hopf", "substrate": "bold_like_forward",
+                    "view": "bold", "admitted_for_present": "yes",
+                    "admitted_for_absent": "yes", "anchor_valid": True})
         return HE.registry_rows({"entries": out})
 
     def build(self):
@@ -3208,6 +3228,7 @@ def test_nas_interval_calibration_is_judged_per_direction():
                 design="null_calibration",
                 decl="none",
                 family="null",
+                protocol="A-none",
                 c_R=cr,
                 c_B=cb,
                 se_c=0.02,
@@ -3223,7 +3244,7 @@ def test_nas_interval_calibration_is_judged_per_direction():
             )
         )
     proto = {
-        "A-R": {
+        "A-none": {
             "necessity_set": ["NAS"],
             "anchors": {"principles": {"NAS": {"status": "valid_specific"}}},
         }
@@ -3363,16 +3384,10 @@ def test_operating_characteristics_of_a_part_with_several_cells(oc):
 # the record names of the file are those the v2 runner and the family-B
 # validation script write
 # ==========================================================================
-# vocabulary values bound to records that no merged producer writes yet: the
-# forward arms (runner adapter not written) and the null-calibration generator
-PENDING_VOCABULARY = {
-    "design.null_calibration",
-    "design.whole_brain",
-    "design.forward",
-    "design.forward_anchor_replication",
-    "substrate.hopf",
-    "substrate.forward_family_a",
-}
+# vocabulary values bound to records that no merged producer writes yet
+# (none: the forward arms and the null-calibration generator run through the
+# v2 runner)
+PENDING_VOCABULARY: set = set()
 
 
 def _values(v):
@@ -3384,10 +3399,12 @@ def test_vocabulary_names_the_designs_forms_and_views_of_the_producers():
     from impact_pipeline.bench import forward_v2 as F2
     from impact_pipeline.bench.designs_v2 import family_b as FB
     from impact_pipeline.bench.designs_v2 import forward as FW
+    from impact_pipeline.bench.designs_v2 import null_calibration as NCV
 
     spec = HE.load_spec()
     vocab = spec["vocabulary"]
     runner = D.designs()
+    assert NCV.DESIGN in runner and vocab["design.null_calibration"] == NCV.DESIGN
     designs = set(runner) | {FB.DESIGN}
     families = {d.family for d in runner.values()} | {FB.FAMILY}
     forms = set(D.ESTIMATOR_FORMS) | set(FB.CUT_MODES) | {FW.IIM_V1_QUADRANTS}
@@ -3398,10 +3415,28 @@ def test_vocabulary_names_the_designs_forms_and_views_of_the_producers():
             continue
         kind = key.split(".")[0]
         want = {"design": designs, "family": families, "form": forms,
-                "view": views}.get(kind)
+                "view": views, "arm": set(FW.ARMS)}.get(kind)
         if want is not None:
             assert set(_values(val)) <= want, (key, val)
     assert vocab["family.C1"] == "C1"
+    # the forward arms: one table of record designs (the forward design
+    # module), which the registry builder reads and the hypotheses select by
+    assert vocab["design.whole_brain"] == FW.RECORD_DESIGN_OF_ARM[FW.ARM_HOPF]
+    assert _values(vocab["design.forward"]) == [
+        FW.RECORD_DESIGN_OF_ARM[FW.ARM_A_EEG], FW.RECORD_DESIGN_OF_ARM[FW.ARM_A_BOLD]]
+    assert vocab["design.forward_anchor_replication"] == FW.ANCHOR_REPLICATION_DESIGN
+    assert {vocab["design.whole_brain"], *_values(vocab["design.forward"])} == set(
+        FW.ADMISSION_RECORD_DESIGNS)
+    assert vocab["arm.hopf"] == FW.ARM_HOPF
+    assert _values(vocab["arm.forward_family_a"]) == [FW.ARM_A_EEG, FW.ARM_A_BOLD]
+    assert not any(k.startswith("substrate.") for k in vocab)
+    # the registry parts select the entries of their arms
+    for hid, principle, arm in (("HCv2-10", "NAS", "@arm.hopf"),
+                                ("HCv2-21", "PDI", "@arm.forward_family_a")):
+        h = next(h for h in spec["hypotheses"] if h["id"] == hid)
+        for part in h["parts"]:
+            assert part["data"]["source"] == "registry"
+            assert part["data"]["where"] == {"principle": principle, "arm": arm}
     # the family-B seed blocks are the blocks the family-B design runs
     blocks = {
         "family_b_rank_calibration": "HCv2-2",
@@ -3612,3 +3647,102 @@ def test_the_pdi_masking_window_holds_the_v1_window_levels():
     )
     inside = [v for v in levels if HE.evaluate_predicate({"x": cond}, {"x": v})]
     assert inside == pytest.approx([2 / 3, 8 / 9, 10 / 9, 4 / 3, 14 / 9], abs=1e-6)
+
+
+def test_the_montage_member_of_hcv2_12d_is_the_forward_comparator(evaluated, spec):
+    # design HCv2-12 (d): "the v1 quadrant montage under the average reference
+    # on Hopf G = 0 sources", the comparator of the Hopf arm's EEG-64 view
+    # (HCv2-15 (b) reads the same comparator without a reference)
+    ctx, _rep = evaluated
+    part = next(
+        p
+        for h in spec["hypotheses"]
+        for p in h.get("parts") or ()
+        if p["id"] == "HCv2-12(d)"
+    )
+    label = "v1_quadrant_average_reference"
+    member = next(m for m in part["data"]["union"] if m["label"] == label)
+    assert member["where"] == {
+        "design": "@design.whole_brain",
+        "principle": "IIM",
+        "@hopf_G": 0,
+        "view": "@view.eeg64",
+        "estimator_form": "@form.iim_v1_quadrant",
+    }
+
+    def cell(c):
+        out = HE.evaluate_part(part, spec, c)
+        return next(x for x in out["cells"] if x["cell"] == member["label"])
+
+    base = cell(ctx)
+    assert (base["n"], base["k"], base["outcome"]) == (61, 61, SUP)  # G = 0 seeds
+    # the family-B montage cell does not enter it ...
+    other = perturbed(
+        ctx,
+        "components",
+        {"design": "family_b", "config.cell.system": "hopf_eeg_quadrants"},
+        lambda r: {**r, "reason": R.INSUFFICIENT_OCCUPANCY},
+    )
+    assert cell(other)["k"] == 61
+    # ... the forward comparator does
+    moved = perturbed(
+        ctx,
+        "components",
+        {"design": "whole_brain", "view": "eeg64",
+         "estimator_form": "iim_v1_quadrants"},
+        lambda r: {**r, "reason": R.INSUFFICIENT_OCCUPANCY},
+    )
+    assert cell(moved)["k"] == 0
+
+
+def test_one_protocol_key_convention(tmp_path):
+    """A record names its protocol by the key (``A-R``, ``hopf-eeg64``,
+    ``A-R+nas_secondary``); the frozen file is mpc_bench_v2_<key>.json and a
+    protocol named by the convention is mpc-bench-v2-<key>; every loader keys
+    the protocols by that key."""
+    for key in ("A-R", "A-H+nas_secondary", "hopf-eeg64+iim_v1_quadrants"):
+        name = HE.protocol_file_name(key)
+        assert name == f"mpc_bench_v2_{key}.json"
+        assert HE.protocol_key_of_file(tmp_path / name) == key
+        assert HE.protocol_key_of_name(f"mpc-bench-v2-{key}") == key
+        assert HE.protocol_key_of_name(f"mpc-bench-v2-{key}-draft") == key
+    assert HE.protocol_key_of_name("my protocol") is None
+    with pytest.raises(ValueError):
+        HE.protocol_key_of_file(tmp_path / "anchors.json")
+    with pytest.raises(ValueError):
+        HE.protocol_file_name("")
+    proto = E.ProtocolV3()
+    for key, name in (("A-R", "mpc-bench-v2-A-R"), ("C1-H", "mpc-bench-v2-C1-H-draft"),
+                      ("hopf-eeg64", None)):
+        d = proto.to_dict()
+        d["name"] = name
+        (tmp_path / HE.protocol_file_name(key)).write_text(json.dumps(d))
+    # a registry or an anchor table beside them is not read as a protocol
+    (tmp_path / "applicability_registry_v3.json").write_text("{}")
+    got = HE.load_protocol_files([tmp_path])
+    assert list(got) == ["A-R", "C1-H", "hopf-eeg64"]
+    assert HE.protocol_key(got["A-R"]) == "A-R"
+    with pytest.raises(ValueError, match="does not carry a key"):
+        HE.protocol_key(got["hopf-eeg64"])
+    # a name that contradicts its file is refused, as is a file outside the
+    # convention or a key given twice
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    d = proto.to_dict()
+    d["name"] = "mpc-bench-v2-A-H"
+    (bad / HE.protocol_file_name("A-R")).write_text(json.dumps(d))
+    with pytest.raises(ValueError, match="names the key 'A-R'"):
+        HE.load_protocol_files([bad])
+    with pytest.raises(ValueError, match="mpc_bench_v2_<key>"):
+        HE.load_protocol_files([tmp_path / "applicability_registry_v3.json"])
+    with pytest.raises(ValueError, match="given twice"):
+        HE.load_protocol_files([tmp_path, tmp_path / HE.protocol_file_name("A-R")])
+    # the context keys a list of protocols by the key in their names, so a
+    # row's protocol_id finds its protocol
+    named = []
+    for key in ("A-R", "C1-H"):
+        d = proto.to_dict()
+        d["name"] = f"mpc-bench-v2-{key}"
+        named.append(E.ProtocolV3.from_dict(d))
+    ctx = HE.build_context(sources={"components": []}, protocols=named)
+    assert set(ctx.protocols) == {"A-R", "C1-H"}

@@ -31,14 +31,19 @@ Module contract. A design module defines
   counts the design document states per split, the ADEMP statement);
 * optionally ``SYSTEM_BUILDERS``: ``{name: builder(task) -> system}`` for
   systems that the runner's built-in builders (``catalogue`` and ``agent``)
-  do not cover, ``VIEWS``: ``{name: ViewSpec}`` for observation views
-  other than the source view, and ``PROTOCOL_DRAFTS``: ``{protocol key:
-  () -> protocol dict}`` for development drafts of protocols that are not
-  family-A or family-C1 protocols (generated protocol files take
-  precedence).
+  do not cover (a builder may return a :class:`MultiViewSystem` when one
+  simulation is observed through several views at once), ``VIEWS``:
+  ``{name: ViewSpec}`` for observation views other than the source view,
+  ``PROTOCOL_DRAFTS``: ``{protocol key: () -> protocol dict}`` for
+  development drafts of protocols that are not family-A or family-C1
+  protocols (generated protocol files take precedence), ``RECORD_CONFIG``:
+  ``{config key: (task) -> mapping}`` for blocks the module's records carry
+  in ``config`` beside the runner's own keys, and ``RUNNER_CURTAILMENT``:
+  ``(tasks) -> controller or None`` for designs whose runs stop early by a
+  preregistered rule (the controller's contract is in the runner).
 
-The runner registers the builders, views and drafts of a module when it
-loads the module (in every worker process, through
+The runner registers the builders, views, drafts and record blocks of a
+module when it loads the module (in every worker process, through
 :attr:`TaskSpec.design_module`).
 
 Estimator forms (:data:`ESTIMATOR_FORMS`) are the reported variants of a
@@ -188,6 +193,26 @@ class ViewSpec:
 
 SOURCE = ViewSpec(SOURCE_VIEW, "source", "direct",
                   description="the simulated recording itself")
+
+
+@dataclass(frozen=True)
+class MultiViewSystem:
+    """
+    What a system builder returns when one simulation is observed through
+    several views at once (the forward-model arms draw one lead field and
+    one sensor noise for every EEG view of a task): ``source`` is the
+    simulated system whose hashes and configuration the record carries, and
+    ``views`` maps a view name to the observed system of that view. The
+    runner scores a view of the mapping on its observed system and never
+    applies the view's transform to ``source``.
+    """
+
+    source: object
+    views: Mapping = field(default_factory=dict)
+
+    def __post_init__(self):
+        for name in self.views:
+            _token(name, "view name", _NAME)
 
 
 # --------------------------------------------------------------------------
@@ -660,6 +685,13 @@ ESTIMATOR_FORMS: Mapping[str, EstimatorForm] = {
                       description="PDI content bearer with module S declared as "
                                   "the access (workspace) nodes: the cost of a "
                                   "wrong access declaration (held out)"),
+        # the v1 sensor pipeline of the forward arms: IIM on the v1 electrode
+        # quadrants without orthogonalisation (HCv2-12(d), HCv2-15(b))
+        EstimatorForm("iim_v1_quadrants", ("IIM",),
+                      {"IIM": {"preprocess": "none", "macro_nodes": "v1_quadrants"}},
+                      description="IIM on the v1 electrode quadrants without "
+                                  "orthogonalisation: the comparator of the "
+                                  "forward arms' sensor views"),
     )
 }
 
@@ -737,6 +769,7 @@ __all__ = [
     "DesignNotRunnableError",
     "ESTIMATOR_FORMS",
     "EstimatorForm",
+    "MultiViewSystem",
     "PRIMARY_FORM",
     "RUN_ELSEWHERE",
     "SOURCE",

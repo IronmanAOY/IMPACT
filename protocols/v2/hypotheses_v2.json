@@ -52,7 +52,10 @@
   "design.null_calibration": "null_calibration",
   "design.family_b": "family_b",
   "design.whole_brain": "whole_brain",
-  "design.forward": "forward_family_a",
+  "design.forward": [
+   "forward_family_a",
+   "forward_family_a_bold"
+  ],
   "design.forward_anchor_replication": "forward_anchor_replication",
   "family.A": "A",
   "family.C1": "C1",
@@ -80,8 +83,11 @@
    "eeglow",
    "mne_template"
   ],
-  "substrate.hopf": "hopf",
-  "substrate.forward_family_a": "forward_family_a",
+  "arm.hopf": "hopf",
+  "arm.forward_family_a": [
+   "forward_a_eeg",
+   "forward_a_bold"
+  ],
   "protocol.A-R": "A-R",
   "protocol.A-H": "A-H",
   "protocol.C1-R": "C1-R",
@@ -2482,7 +2488,7 @@
       "source": "registry",
       "where": {
        "principle": "NAS",
-       "substrate": "@substrate.hopf"
+       "arm": "@arm.hopf"
       },
       "cell_label": "{view}"
      },
@@ -2512,7 +2518,7 @@
       "source": "registry",
       "where": {
        "principle": "NAS",
-       "substrate": "@substrate.hopf"
+       "arm": "@arm.hopf"
       },
       "cell_label": "{view}"
      },
@@ -2841,11 +2847,11 @@
        {
         "label": "v1_quadrant_average_reference",
         "where": {
-         "design": "@design.family_b",
-         "family": "@family.B",
+         "design": "@design.whole_brain",
          "principle": "IIM",
-         "seed_block": "family_b_occupancy_gate",
-         "@b_network": "hopf_eeg_quadrants"
+         "@hopf_G": 0,
+         "view": "@view.eeg64",
+         "estimator_form": "@form.iim_v1_quadrant"
         },
         "event": {
          "reason_code": "MACRO_RANK_DEFICIENT"
@@ -4533,7 +4539,7 @@
       "source": "registry",
       "where": {
        "principle": "PDI",
-       "substrate": "@substrate.forward_family_a"
+       "arm": "@arm.forward_family_a"
       },
       "cell_label": "{view}"
      },

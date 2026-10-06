@@ -603,7 +603,8 @@ def _record(task, statuses, regimes):
                 "duration_s": regimes[view]["regime"]["duration_s"]
                 + 0.05 * (task.seed % 5)}}))
     return REC.TaskRecord(
-        task_id=task.task_id, design=task.design, family=task.family,
+        task_id=task.task_id, design=D.record_design(task.arm, task.purpose),
+        family=task.family,
         system=task.system, seed=task.seed,
         generator_version="mpc-bench-generators/2.0.0",
         status="ok", config=task.to_config(),
@@ -712,3 +713,32 @@ def test_builder_refusals(tmp_path, eeg_details):
     rc = B.main(["--results", str(tmp_path / "missing"), "--anchors", "{}",
                  "--run-id", "x", "--out", str(tmp_path / "o.json")])
     assert rc == 1
+
+
+def test_the_builder_reads_the_arms_by_their_record_designs(tmp_path, eeg_details):
+    """One table names the records of each arm (the forward design module's
+    RECORD_DESIGN_OF_ARM): the builder reads exactly those designs, ignores
+    the anchor replication and every other design, and refuses a record
+    filed under another arm's design."""
+    assert dict(D.RECORD_DESIGN_OF_ARM) == {
+        D.ARM_HOPF: "whole_brain", D.ARM_A_EEG: "forward_family_a",
+        D.ARM_A_BOLD: "forward_family_a_bold"}
+    assert D.ADMISSION_RECORD_DESIGNS == frozenset(D.RECORD_DESIGN_OF_ARM.values())
+    assert D.ANCHOR_REPLICATION_DESIGN not in D.ADMISSION_RECORD_DESIGNS
+    for purpose in D.ARM_PURPOSES:
+        assert D.record_design(D.ARM_A_EEG, purpose) == "forward_family_a"
+    for purpose in D.ANCHOR_PURPOSES:
+        assert D.record_design(D.ARM_HOPF, purpose) == D.ANCHOR_REPLICATION_DESIGN
+    tasks = D.build_tasks(D.DRY_RUN, arms=[D.ARM_A_EEG])[:3]
+    recs = [_record(t, _statuses, eeg_details) for t in tasks]
+    other = [REC.TaskRecord.from_dict({**recs[0].to_dict(), "design": d,
+                                       "task_id": f"{d}-x"})
+             for d in ("forward", D.ANCHOR_REPLICATION_DESIGN, "A_witnesses")]
+    res = tmp_path / "r.jsonl"
+    REC.write_jsonl(recs + other, res)
+    got, _ = B.read_records([res])
+    assert [r.task_id for r in got] == [r.task_id for r in recs]
+    filed = REC.TaskRecord.from_dict({**recs[0].to_dict(),
+                                      "design": "forward_family_a_bold"})
+    with pytest.raises(B.BuildError, match="the arm forward_a_eeg records"):
+        B.admission_runs([filed], D.DRY_RUN)

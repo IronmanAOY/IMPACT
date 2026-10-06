@@ -45,7 +45,11 @@ development mirrors are disjoint sub-blocks of 400-439):
   = 1000, the hypersynchronous system on the family-A layout and the v1
   electrode-quadrant montage under the average reference on Hopf ``G = 0``
   sources (expected reasons ``INSUFFICIENT_OCCUPANCY``,
-  ``INSUFFICIENT_OCCUPANCY``, ``MACRO_RANK_DEFICIENT``).
+  ``INSUFFICIENT_OCCUPANCY``, ``MACRO_RANK_DEFICIENT``). The hypothesis
+  reads its hypersynchrony member from the family-A witnesses and its
+  montage member from the Hopf arm's v1 quadrant comparator (the forward
+  design); the family-B cells of those two generators are reported
+  cross-checks that no hypothesis reads.
 * **HCv2-13** (20320-20419, n = 100; development 435-439). Hidden driver
   (weight 1.0, persistence 0.9), ``T`` {3000, 10000, 30000}, scored with the
   driver recorded (stratified) and hidden; at ``T`` = 10000 also with label

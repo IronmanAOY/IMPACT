@@ -14,6 +14,7 @@ import pytest
 
 from impact_pipeline import evidence_v2 as EV
 from impact_pipeline.bench.designs_v2 import family_b as FB
+from impact_pipeline.v2 import hypothesis_engine as HE
 from impact_pipeline.v2 import iim_v5 as IIM
 from impact_pipeline.v2 import provenance as PV
 from impact_pipeline.v2 import reasons as R
@@ -319,6 +320,8 @@ def test_run_end_to_end_and_resume(tmp_path):
         assert REC.loads(REC.dumps(rec)).to_dict() == rec.to_dict()
         assert rec.config["cluster_id"] == t.task_id
         assert rec.config["trajectory_seed"] == t.trajectory_seed
+        # the cost of the task: its wall and CPU seconds
+        assert rec.timing["cpu_s"] >= 0 and rec.timing["total_s"] > 0
         # one scoring per declaration and cut mode, in one cluster
         assert sorted(s.scoring_id for s in rec.scorings) == sorted(
             f"{sc.key}/{cut}" for sc in t.cell.scorings for cut in FB.CUT_MODES)
@@ -329,6 +332,13 @@ def test_run_end_to_end_and_resume(tmp_path):
             proto = V.protocol_for(t.cell.scorings[0], s.estimator_form,
                                    {"null_family": comp.null_family})
             assert comp.protocol_hash == proto.hash
+            # the record names its protocol by the key the evaluator and the
+            # audit look protocols up by
+            assert comp.protocol_id == s.protocol_id == HE.protocol_key(proto)
+            assert comp.protocol_id == proto.name[len("mpc-bench-v2-"):]
+    meta = json.loads((out / V.SUMMARY_JSON).read_text())
+    for key, entry in meta["protocols"].items():
+        assert HE.protocol_key_of_name(entry["name"]) == key
     for t in gate_tasks():
         for s in recs[t.task_id].scorings:
             comp = s.components["IIM"]

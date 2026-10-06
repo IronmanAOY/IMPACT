@@ -659,6 +659,7 @@ def test_iim_v5_runs_through_the_runner_at_the_system_lag(monkeypatch):
     assert seen["basis"].declaration_id == "R" and seen["basis"].lags == (0, 1, 2)
     assert sorted(seen["macro_nodes"]) == ["C", "M", "S", "V"]
     assert seen["observation_stage"] == "source"
+    # the protocol's cut modes: the primary and the reported bidirectional cut
     assert seen["params"] == {"cut_mode": "directional",
                               "report_cut_modes": ["bidirectional"], "n_null": 19,
                               "bootstrap_replicates": 2}
@@ -902,6 +903,7 @@ def test_held_out_conditions_on_development_seeds_only_as_smoke_tests(tmp_path):
     rows = [json.loads(x) for x in lines]
     assert {r["task_id"] for r in rows} == {t.task_id for t in smoke}
     assert all(r["discarded"] and r["status"] == "ok" for r in rows)
+    assert all(r["cpu_s"] >= 0 for r in rows)  # the cost, not an output
     text = "\n".join(lines)
     assert "estimate" not in text and '"c"' not in text
     res = tmp_path / "smoke" / RB.RESULTS_JSONL
@@ -1106,3 +1108,487 @@ def test_the_manipulation_runner_reports_completeness_apart_from_pass_fail(tmp_p
     with pytest.raises(ValueError, match="development run uses seeds"):
         RB.run_manipulation([20000], tmp_path / "refused")
     assert not (tmp_path / "refused").exists()
+
+
+# --------------------------------------------------------------------------
+# the bidirectional form reads the cut the primary run already computed
+# --------------------------------------------------------------------------
+def test_the_bidirectional_form_reads_the_primary_run(monkeypatch):
+    from impact_pipeline.v2 import iim_v5
+
+    task = dataclasses.replace(witness(), scorings=D.make_scorings(
+        {"R": "A-R"}, ("IIM",), ("iim_bidirectional",)))
+    small = {"n_null": 19, "bootstrap_replicates": 3}
+    protos = {}
+    for key in ("A-R", "A-R+iim_bidirectional"):
+        d = RB.draft_protocol(key).to_dict()
+        d["reference"] = REF
+        d["estimators"]["IIM"].update(small)
+        protos[key] = RB.ResolvedProtocol(key, E.ProtocolV3.from_dict(d), "override")
+    calls = []
+    real = iim_v5.compute_iim_v5
+
+    def spy(ts, **kw):
+        calls.append(kw["params"])
+        return real(ts, **kw)
+
+    monkeypatch.setattr(iim_v5, "compute_iim_v5", spy)
+    rec = RB.run_task(task, protos)
+    assert rec.status == REC.TASK_OK
+    # one run: the primary scoring's protocol reports the bidirectional cut
+    assert len(calls) == 1
+    assert (calls[0]["cut_mode"], calls[0]["report_cut_modes"]) == (
+        "directional", ["bidirectional"])
+    form = scoring(rec, "R+iim_bidirectional").components["IIM"]
+    prim = scoring(rec, "R").components["IIM"]
+    assert form.details["estimator"]["cut_modes_computed_in_scoring"] == "R"
+    assert "cut_modes_computed_in_scoring" not in prim.details["estimator"]
+    assert form.details["estimator_id"] == "compute_IIM:bidirectional@iim-v5-2026.10"
+    # the values equal those of a run that computes the bidirectional cut alone
+    alone = dataclasses.replace(task, scorings=D.make_scorings(
+        {"R": "A-R"}, ("IIM",), ("iim_bidirectional",), primary=False))
+    again = scoring(RB.run_task(alone, protos), "R+iim_bidirectional").components["IIM"]
+    assert len(calls) == 2
+    assert calls[-1]["cut_mode"] == "bidirectional"
+    assert calls[-1]["report_cut_modes"] == []
+    for f in ("estimate", "null_mean", "null_sd", "n_null", "se", "se_df", "se_method",
+              "status", "reason", "c"):
+        assert getattr(form, f) == getattr(again, f), f
+    assert form.details["p_ind"] == again.details["p_ind"]
+    # the primary record is the one a task without the form writes
+    single = dataclasses.replace(task, scorings=D.make_scorings({"R": "A-R"},
+                                                                ("IIM",)))
+    own = scoring(RB.run_task(single, protos), "R").components["IIM"]
+    assert len(calls) == 3 and calls[-1] == calls[0]
+    assert strip_timing(own) == strip_timing(prim)
+    # another declaration, view or setting is computed anew
+    d = protos["A-R+iim_bidirectional"].protocol.to_dict()
+    d["estimators"]["IIM"]["n_null"] = 20
+    protos2 = dict(protos, **{"A-R+iim_bidirectional": RB.ResolvedProtocol(
+        "A-R+iim_bidirectional", E.ProtocolV3.from_dict(d), "override")})
+    RB.run_task(task, protos2)
+    assert len(calls) == 5
+
+
+def test_a_cut_dependent_undefined_run_is_not_read_by_another_scoring(monkeypatch):
+    """Too few finite null draws counts the draws of every computed cut mode:
+    when the primary run (both cuts) is undefined for that reason, the
+    bidirectional form is computed on its own cut and holds what its own run
+    gives (no second run with both cuts)."""
+    from impact_pipeline.v2 import iim_v5
+    from impact_pipeline.v2 import reasons as R
+
+    task = dataclasses.replace(witness(), scorings=D.make_scorings(
+        {"R": "A-R"}, ("IIM",), ("iim_bidirectional",)))
+    small = {"n_null": 19, "bootstrap_replicates": 3}
+    protos = {}
+    for key in ("A-R", "A-R+iim_bidirectional"):
+        d = RB.draft_protocol(key).to_dict()
+        d["reference"] = REF
+        d["estimators"]["IIM"].update(small)
+        protos[key] = RB.ResolvedProtocol(key, E.ProtocolV3.from_dict(d), "override")
+    calls = []
+    real = iim_v5.compute_iim_v5
+
+    def both_cuts_undefined(ts, **kw):
+        calls.append(kw["params"])
+        res = real(ts, **kw)
+        if iim_v5.IIMParams.from_mapping(kw["params"]).report_cut_modes:
+            return iim_v5._result(res["details"], res["cut_mode"], {},
+                                  reason=R.NO_NULL_CALIBRATION)
+        return res
+
+    monkeypatch.setattr(iim_v5, "compute_iim_v5", both_cuts_undefined)
+    rec = RB.run_task(task, protos)
+    prim = scoring(rec, "R").components["IIM"]
+    form = scoring(rec, "R+iim_bidirectional").components["IIM"]
+    assert prim.reason == R.NO_NULL_CALIBRATION
+    assert form.reason != R.NO_NULL_CALIBRATION
+    assert "cut_modes_computed_in_scoring" not in form.details["estimator"]
+    assert [(c["cut_mode"], list(c["report_cut_modes"])) for c in calls] == [
+        ("directional", ["bidirectional"]), ("bidirectional", [])]
+    alone = dataclasses.replace(task, scorings=D.make_scorings(
+        {"R": "A-R"}, ("IIM",), ("iim_bidirectional",), primary=False))
+    again = scoring(RB.run_task(alone, protos), "R+iim_bidirectional").components["IIM"]
+    assert strip_timing(form) == strip_timing(again)
+
+
+def test_a_grain_beyond_the_declared_cap_is_refused_before_any_statistic(
+        monkeypatch):
+    """The patchwork's system grain (one macro node per module, five nodes)
+    is never recorded (the principle-bearer grain is); a scoring that asks
+    for it anyway is refused as an estimator error of IIM alone, before any
+    statistic, instead of running for most of an hour."""
+    from impact_pipeline.v2 import iim_v5
+
+    assert RB.DEFAULT_SETTINGS.iim_max_macro_nodes == RB.IIM_MAX_MACRO_NODES == 4
+    assert RB.DEFAULT_SETTINGS.to_dict()["iim_max_macro_nodes"] == 4
+    with pytest.raises(ValueError, match="iim_max_macro_nodes"):
+        RB.RunSettings(iim_max_macro_nodes=0)
+    calls = []
+    monkeypatch.setattr(iim_v5, "compute_iim_v5",
+                        lambda ts, **kw: calls.append(kw) or {})
+    pw = witness("PW_patchwork", seed=320)
+    assert {s.bearer_mode for s in pw.scorings} == {"principle"}
+    system_mode = dataclasses.replace(pw, scorings=D.make_scorings(
+        {"R": "A-R"}, ("NAS", "IIM"), verdict=False))
+    assert {s.bearer_mode for s in system_mode.scorings} == {"system"}
+    protos = protocols_for([system_mode])
+    with stubs(IIM=RB.IimV5Scorer()):
+        rec = RB.run_task(system_mode, protos)
+    assert rec.status == REC.TASK_OK_WITH_COMPONENT_ERRORS
+    comps = scoring(rec, "R").components
+    assert comps["IIM"].reason == "ESTIMATOR_ERROR:MacroGrainTooLargeError"
+    assert "5 macro nodes" in comps["IIM"].details["error"]
+    assert not comps["NAS"].is_estimator_error
+    assert calls == []
+    # no cap: the grain is computed (here by the stand-in)
+    with stubs(IIM=RB.IimV5Scorer()):
+        RB.run_task(system_mode, protos, RB.RunSettings(iim_max_macro_nodes=None))
+    assert calls and all(len(kw["macro_nodes"]) == 5 for kw in calls)
+
+
+def test_the_runner_computes_the_iim_cut_modes_the_scorings_read():
+    # R and H: the primary scorings report the bidirectional cut that their
+    # form scorings read; the held-out declaration P has no form, but its
+    # protocol reports the cut, so its run computes it as it always did
+    task = dataclasses.replace(witness(), scorings=(
+        D.make_scorings(FA.PROTOCOLS, ("IIM",), ("iim_bidirectional",))
+        + D.make_scorings({"P": "A-P"}, ("IIM",), held_out=True, verdict=False)))
+    protos = protocols_for([task])
+    assert "bidirectional" in protos["A-P"].protocol.estimator_options("IIM")[
+        "report_cut_modes"]
+    read = RB.iim_cut_modes_read(task, protos)
+    assert {k[2]: v for k, v in read.items()} == {
+        "R": {"directional", "bidirectional"}, "H": {"directional", "bidirectional"},
+        "P": {"directional", "bidirectional"}}
+    assert {k[0] for k in read} == {"source"}
+    # a protocol that reports no cut computes its primary cut alone
+    d = protos["A-P"].protocol.to_dict()
+    d["estimators"]["IIM"]["report_cut_modes"] = []
+    quiet = dict(protos, **{"A-P": RB.ResolvedProtocol(
+        "A-P", E.ProtocolV3.from_dict(d), "override")})
+    read = RB.iim_cut_modes_read(task, quiet)
+    assert {k[2]: v for k, v in read.items()}["P"] == {"directional"}
+    nas_only = RB.RunSettings(principles=("NAS",))
+    assert RB.iim_cut_modes_read(task, protos, nas_only) == {}
+    # the groups are the inputs up to the cut modes
+    a = RB.iim_input_group("v", "system", "R", {"cut_mode": "directional",
+                                                "report_cut_modes": ["bidirectional"],
+                                                "preprocess": "zca"})
+    b = RB.iim_input_group("v", "system", "R", {"preprocess": "zca",
+                                                "cut_mode": "bidirectional"})
+    assert a == b
+    assert a != RB.iim_input_group("v", "system", "R", {"preprocess": "none"})
+
+
+# --------------------------------------------------------------------------
+# the forward arms through the runner
+# --------------------------------------------------------------------------
+@pytest.fixture
+def short_hopf(monkeypatch):
+    """A shorter stand-in for the Hopf runs that keeps the arm's 60:600 split
+    (as the forward-layer tests do)."""
+    from impact_pipeline.bench import whole_brain as wb
+    from impact_pipeline.bench.designs_v2 import forward as FW
+
+    real = wb.simulate_whole_brain
+
+    def short(cfg, seed):
+        return real(cfg.replace(duration_sec=cfg.duration_sec / 100.0,
+                                transient_sec=0.5), seed)
+
+    monkeypatch.setattr(wb, "simulate_whole_brain", short)
+    monkeypatch.setattr(FW, "HOPF_SOURCE_DURATION_S", 0.6)
+    RB.load_design_module("forward")
+    return FW
+
+
+def test_the_hopf_arm_runs_through_the_runner(short_hopf):
+    FW = short_hopf
+    (task,) = D.get_design("whole_brain").tasks(DEV, seeds=[384], systems=["hopf_G0"])
+    ft = FW.forward_task_of(task)
+    assert task.task_id == ft.task_id and task.design == "whole_brain"
+    assert task.family == "whole_brain" and task.builder == "forward"
+    assert all(not s.verdict for s in task.scorings)
+    with stubs() as st:
+        rec = RB.run_task(task, protocols_for([task]))
+    assert rec.status == REC.TASK_OK, rec.error
+    # config['forward'] is the forward task's record contract
+    fwd = rec.config["forward"]
+    assert fwd == json.loads(json.dumps(ft.to_config()["forward"]))
+    assert (fwd["arm"], fwd["condition"], fwd["purpose"], fwd["regime"]) == (
+        "hopf", "hopf_G0", "dry_run", "development")
+    assert fwd["condition_spec"]["G"] == 0.0
+    plan = FW.scoring_plan(ft)
+    assert [s.scoring_id for s in rec.scorings] == [p["scoring_id"] for p in plan]
+    by = {s.scoring_id: s for s in rec.scorings}
+    for p in plan:
+        s = by[p["scoring_id"]]
+        assert s.view == p["view"] and s.estimator_form == p["estimator_form"]
+        assert s.protocol_id == FW.protocol_key_of("hopf", p["view"],
+                                                   p["estimator_form"])
+        assert s.observation_stage == p["observation_stage"]
+        # the regime keys the registry builder reads
+        assert s.details["view"] == p["view"]
+        assert s.details["regime_name"] == "development"
+        assert s.details["regime"]["observation_stage"] == p["observation_stage"]
+        for c in s.components.values():
+            assert c.declaration_id == "none"
+            assert c.observation_stage == p["observation_stage"]
+    assert by["eeg64:primary"].details["substrate"] == "eeg_like_forward"
+    assert by["eeg64:primary"].details["regime"]["leadfield_seed"] == 20260928
+    assert by["bold:primary"].details["substrate"] == "bold_like_forward"
+    assert by["source:primary"].components["NAS"].identifiability["observation"] == (
+        "direct")
+    assert by["eeg64:primary"].components["NAS"].identifiability["observation"] == (
+        "sensor_mixing")
+    # every view is scored on its own observed system, from one simulation
+    seen = {(c[0], c[1]) for c in st["NAS"].calls}
+    assert ("eeglow:primary", "eeglow") in seen and ("bold:primary", "bold") in seen
+    assert by["eeglow:primary"].details["view_ts_sha256"] != by[
+        "eeg64:primary"].details["view_ts_sha256"]
+    assert rec.timing["cpu_s"] > 0
+    REC.loads(REC.dumps(rec))
+
+
+def test_forward_runner_options_reach_the_estimators(short_hopf, monkeypatch):
+    from impact_pipeline.v2 import iim_v5, nas_v3
+
+    # (the fixture shortens the Hopf runs and registers the forward module)
+    (task,) = D.get_design("whole_brain").tasks(DEV, seeds=[384], systems=["hopf_G0"])
+    seen = {"IIM": [], "NAS": []}
+    real_iim, real_nas = iim_v5.compute_iim_v5, nas_v3.compute_nas_v3
+
+    def iim_spy(ts, **kw):
+        seen["IIM"].append((np.shape(ts), kw))
+        # wiring only: no null draws, no bootstrap
+        return real_iim(ts, **dict(kw, params=dict(kw["params"], n_null=0,
+                                                   se_method=None)))
+
+    def nas_spy(ts, **kw):
+        seen["NAS"].append(kw)
+        return real_nas(ts, **kw)
+
+    monkeypatch.setattr(iim_v5, "compute_iim_v5", iim_spy)
+    monkeypatch.setattr(nas_v3, "compute_nas_v3", nas_spy)
+    rec = RB.run_task(task, protocols_for([task]))
+    assert rec.status in (REC.TASK_OK, REC.TASK_OK_WITH_COMPONENT_ERRORS), rec.error
+    errors = [(s.scoring_id, p, c.details.get("error")) for s in rec.scorings
+              for p, c in s.components.items() if c.is_estimator_error]
+    assert errors == []
+    from impact_pipeline.bench import forward_v2 as F2
+
+    by_kind = {}
+    for shape, kw in seen["IIM"]:
+        pre = kw["params"].get("preprocess", "none")
+        by_kind.setdefault((kw["observation_stage"], pre), []).append((shape, kw))
+    # the v2 sensor pipeline on EEG-64 (both references) and EEG-low:
+    # rank-safe clusters, ZCA, scored as the admission run
+    v2 = by_kind[("sensor", "zca")]
+    assert sorted(s[0] for s, _kw in v2) == [32, 64, 64]
+    for shape, kw in v2:
+        assert kw["observation_admitted"] is True
+        assert sorted(kw["macro_nodes"]) == ["L_ant", "L_post", "R_ant", "R_post"]
+        k = F2.cluster_size(shape[0])  # 8 of 64, 4 of 32
+        assert all(len(v) == k for v in kw["macro_nodes"].values())
+    # the v1 comparator (G = 0 only): the v1 quadrants, no orthogonalisation
+    v1 = by_kind[("sensor", "none")]
+    assert len(v1) == 2
+    for shape, kw in v1:
+        assert kw["observation_admitted"] is True
+        assert sum(len(v) for v in kw["macro_nodes"].values()) > shape[0] // 2
+    # the source estimate: ZCA on the source model's grain; the source and
+    # BOLD views: their own grain, no gate to pass
+    ((_s, kw),) = by_kind[("source_estimate", "zca")]
+    assert kw["observation_admitted"] is True
+    for stage in ("source", "bold"):
+        ((_s, kw),) = by_kind[(stage, "none")]
+        assert kw["observation_admitted"] is False
+    for _s, kw in seen["IIM"]:
+        assert "observation_gate" not in kw["params"]
+        assert "macro_nodes" not in kw["params"]
+    gates = {kw["observation"]: kw["override_observation_gate"] for kw in seen["NAS"]}
+    assert gates == {"direct": False, "sensor_mixing": True, "source_estimate": True,
+                     "hemodynamic": False}
+    comp = next(s for s in rec.scorings
+                if s.scoring_id == "eeg64:iim_v1_quadrants").components["IIM"]
+    assert comp.reason == "MACRO_RANK_DEFICIENT"  # partitions under the average ref
+    assert comp.details["estimator"]["macro_nodes"] == "v1_quadrants"
+
+
+def test_the_command_line_selects_a_purpose_of_the_forward_arms(capsys):
+    # the anchor conditions at the held-out regime on a smoke seed: listed
+    # (a run discards their outputs); a design without purposes refuses one
+    assert RB.main(["list", "whole_brain,forward_family_a,forward_family_a_bold",
+                    "--split", "development", "--purpose", "smoke",
+                    "--seeds", "980"]) == 0
+    assert capsys.readouterr().out.split() == [
+        "forward-hopf-hopf_G1.14286-held_out-s00980",
+        "forward-forward_a_eeg-PC_nominal-held_out-s00980",
+        "forward-forward_a_bold-PC_nominal-held_out-s00980"]
+    tasks = RB.build_tasks(["forward_family_a"], DEV, purpose="smoke", seeds=[980])
+    assert all(t.smoke and t.has_held_out for t in tasks)
+    assert RB.main(["list", "A_witnesses", "--split", "development", "--purpose",
+                    "smoke"]) == 2
+    assert "declares no purposes" in capsys.readouterr().err
+
+
+def test_a_draft_key_is_declared_once(monkeypatch):
+    """A design module's drafts are registered with the module (through the
+    plan's protocol keys); a key the runner drafts itself, or one another
+    module already declared, is refused."""
+    real = D.load_module
+    mods = {
+        "z_family": types.SimpleNamespace(PROTOCOL_DRAFTS={"A-R+x": lambda: {}}),
+        "z_other": types.SimpleNamespace(PROTOCOL_DRAFTS={"z-1": lambda: {}}),
+        "z_twice": types.SimpleNamespace(PROTOCOL_DRAFTS={"z-1": lambda: {}}),
+    }
+    monkeypatch.setattr(D, "load_module", lambda name: mods.get(name) or real(name))
+    monkeypatch.setattr(RB, "PROTOCOL_DRAFTS", {})
+    monkeypatch.setattr(RB, "_LOADED_MODULES", set())
+    with pytest.raises(RB.RunPolicyError, match=r"A-R\+x.*already declared"):
+        RB.load_design_module("z_family")
+    task = types.SimpleNamespace(design_module="z_other", scorings=witness().scorings)
+    assert RB.protocol_keys([task]) == ["A-H", "A-R"]  # the module registered
+    assert set(RB.PROTOCOL_DRAFTS) == {"z-1"}
+    RB.load_design_module("z_other")  # idempotent
+    with pytest.raises(RB.RunPolicyError, match="z-1"):
+        RB.load_design_module("z_twice")
+
+
+def test_forward_protocol_drafts_and_runner_options():
+    from impact_pipeline.bench.designs_v2 import forward as FW
+
+    RB.load_design_module("forward")
+    assert RB.OBSERVATION_GATE_ADMISSION_RUN == FW.ADMISSION_RUN
+    keys = set(FW.protocol_options())
+    assert set(FW.PROTOCOL_DRAFTS) == keys
+    assert {"hopf-source", "hopf-eeg64", "hopf-eeg64+iim_v1_quadrants", "hopf-bold",
+            "fwdA-eeg64", "fwdA_bold-bold"} <= keys
+    tasks = [t for name in ("whole_brain", "forward_family_a", "forward_family_a_bold",
+                            "forward_anchor_replication")
+             for t in D.get_design(name).tasks(DEV)]
+    assert set(RB.protocol_keys(tasks)) == keys
+    protos = RB.resolve_protocols(RB.protocol_keys(tasks))
+    assert RB.check_plan(tasks, protos)["n_tasks"] == len(tasks)
+    p = protos["hopf-eeg64"].protocol
+    assert p.shared_inputs_declaration == {"id": "none", "shared_inputs": "none"}
+    assert p.name == "mpc-bench-v2-hopf-eeg64-draft"
+    assert p.estimator_options("IIM")["macro_nodes"] == "rank_safe_clusters"
+    assert RB.iim_v5_params(p.estimator_options("IIM")) == {
+        "cut_mode": "directional", "report_cut_modes": [], "preprocess": "zca"}
+    assert RB.split_runner_options("IIM", p.estimator_options("IIM"))[1] == {
+        "observation_gate": "admission_run", "macro_nodes": "rank_safe_clusters"}
+    assert RB.nas_v3_params(p.estimator_options("NAS")) == {
+        "block_representation": "block_mean", "coupling_timescale_sec": 0.1,
+        "mode": "conditional_capacity"}
+    q = protos["hopf-eeg64+iim_v1_quadrants"].protocol.estimator_options("IIM")
+    assert (q["preprocess"], q["macro_nodes"]) == ("none", "v1_quadrants")
+    fa = protos["fwdA-eeg64"].protocol
+    assert fa.shared_inputs_declaration["id"] == "R"
+    assert fa.estimator_options("PDI")["pdi_bearer"] == "full"
+    assert fa.estimator_options("IIM")["se_method"] is None  # descriptive
+    with pytest.raises(RB.ProtocolOptionError, match="observation_gate"):
+        RB.split_runner_options("NAS", {"observation_gate": "always"})
+    with pytest.raises(RB.ProtocolOptionError, match="macro_nodes"):
+        RB.iim_v5_params({"macro_nodes": "quadrants"})
+
+
+# --------------------------------------------------------------------------
+# curtailed sampling: deterministic under parallel workers
+# --------------------------------------------------------------------------
+class _BoldEvent(Stub):
+    """PDI on the BOLD arm: PRESENT everywhere, one false ABSENT on the BOLD
+    view of one run; random delays scramble the completion order."""
+
+    def __init__(self, event):
+        super().__init__("PDI")
+        self.event = event
+
+    def score(self, ctx):
+        import random
+        import time
+
+        time.sleep(random.uniform(0.0, 0.05))
+        out = super().score(ctx)
+        if (ctx.view.name, ctx.task.system, ctx.task.seed) == self.event:
+            for m in out.members:
+                m.estimate, m.se = 0.0, 0.001
+        return out
+
+
+def _bold_on_runs():
+    tasks = D.get_design("forward_family_a_bold").tasks(DEV)
+    return [t for t in tasks if t.system in ("PC_nominal", "PC_nominal_K2",
+                                             "PC_nominal_K3")]
+
+
+@pytest.mark.parametrize("event, n_cut", [
+    (("bold", "PC_nominal_K2", 385), 13),   # before every curtailable run
+    (("bold", "PC_nominal", 390), 9),       # at a curtailable run: it is kept
+])
+def test_curtailment_keeps_the_same_records_serial_and_parallel(
+        tmp_path, monkeypatch, event, n_cut):
+    import concurrent.futures
+
+    RB.load_design_module("forward")
+    tasks = _bold_on_runs()
+    assert len(tasks) == 22
+    gated = {t.task_id for t in tasks if t.tags["curtailable"]}
+    assert {t.seed for t in tasks if t.task_id in gated} == set(range(387, 400))
+    protos = {k: v.protocol for k, v in protocols_for(tasks).items()}
+    monkeypatch.setattr(RB, "_make_pool",
+                        lambda n: concurrent.futures.ThreadPoolExecutor(max_workers=n))
+    out = {}
+    for workers in (1, 4):
+        with stubs(PDI=_BoldEvent(event)):
+            man = RB.run_tasks(tasks, tmp_path / f"w{workers}", n_workers=workers,
+                               protocol_overrides=protos)
+        kept = {r.task_id for r in REC.read_jsonl(tmp_path / f"w{workers}"
+                                                  / RB.RESULTS_JSONL)}
+        out[workers] = (kept, man)
+    (k1, m1), (k4, m4) = out[1], out[4]
+    assert k1 == k4 and m1["curtailed_task_ids"] == m4["curtailed_task_ids"]
+    assert len(m1["curtailed_task_ids"]) == n_cut
+    assert set(m1["curtailed_task_ids"]) <= gated
+    assert m1["plan_differences"]["ok"] and m4["plan_differences"]["ok"]
+    cut_seeds = sorted(int(t[-5:]) for t in m1["curtailed_task_ids"])
+    assert cut_seeds == list(range(400 - n_cut, 400))
+    (grp,) = m1["curtailment"][0]["groups"]
+    assert grp["stopped"] and grp["views"][0]["events"] == 1
+    assert grp["views"][0]["stop_after"].endswith(f"s{event[2]:05d}")
+    # a resumed run keeps the decision and runs nothing new
+    with stubs(PDI=_BoldEvent(event)):
+        again = RB.run_tasks(tasks, tmp_path / "w1", protocol_overrides=protos)
+    assert again["n_run"] == 0 and again["curtailed_task_ids"] == m1[
+        "curtailed_task_ids"]
+    # without an event nothing is curtailed
+    with stubs(PDI=_BoldEvent(("bold", "none", 0))):
+        man = RB.run_tasks(tasks, tmp_path / "none", n_workers=4,
+                           protocol_overrides=protos)
+    assert man["curtailed_task_ids"] == [] and man["n_run"] == 22
+
+
+def test_a_plan_with_curtailed_sampling_is_not_sharded(tmp_path, capsys):
+    """A gated run's decision reads the records of the runs before it in the
+    rule's order; a shard would hold only some of them, so a plan with
+    curtailment runs as one shard (other plans shard as before)."""
+    RB.load_design_module("forward")
+    bold = D.get_design("forward_family_a_bold").tasks(DEV)
+    assert RB.curtailment_controllers(bold)
+    assert RB.shard(bold, 0, 1) == bold
+    with pytest.raises(RB.RunPolicyError, match="curtailed sampling runs as one shard"):
+        RB.shard(bold, 0, 2)
+    out = tmp_path / "sharded"
+    assert RB.main(["run", "forward_family_a_bold", "--split", "development",
+                    "--n-shards", "2", "--shard-index", "0", "--out", str(out)]) == 2
+    assert "one shard" in capsys.readouterr().err
+    assert not out.exists()
+    # a plan without gated runs (the Hopf arm, a family-A design) shards
+    hopf = D.get_design("whole_brain").tasks(DEV)
+    assert not RB.curtailment_controllers(hopf)
+    halves = RB.shard(hopf, 0, 2) + RB.shard(hopf, 1, 2)
+    assert sorted(t.task_id for t in halves) == sorted(t.task_id for t in hopf)
+    wit = FA.witnesses(DEV, seeds=[320])
+    assert len(RB.shard(wit, 1, 3)) == len(wit[1::3])

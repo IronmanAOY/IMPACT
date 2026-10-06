@@ -88,8 +88,7 @@ def witnesses(split: str, *, seeds: Optional[Sequence[int]] = None,
     ext = () if seeds is not None else FA.seeds_of(SEEDS["witnesses_extended"], split)
     out = []
     for sid in ids:
-        modes = (("system", "principle") if sid in FA.PRINCIPLE_BEARER_SYSTEMS
-                 else ("system",))
+        modes = FA.bearer_modes(sid)
         for seed in base + (ext if sid in EXTENDED_SYSTEMS else ()):
             out.append(FA.catalogue_task("C1_witnesses", FAMILY, CATALOGUE_FAMILY, sid,
                                          seed, _scorings(split, forms, modes),

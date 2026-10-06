@@ -56,7 +56,10 @@ that exists, else from the A-R draft (:func:`draft_protocol`; a run with
 another protocol directory needs its own A-none file there for the two to
 share anchors); the protocol builder writes the generated file
 from the generated A-R in the same way (``scripts/v2/null_calibration_v2.py
-protocol``). The scorings report component statuses only (no verdict);
+protocol``). The draft is declared in :data:`PROTOCOL_DRAFTS` only; the
+runner registers it with the module when it collects a plan's protocol keys
+(``run_bench_v2.protocol_keys``), so importing this module changes nothing
+in the runner. The scorings report component statuses only (no verdict);
 v1's descriptive verdict rates are recomputed from them by the summary of
 ``scripts/v2/null_calibration_v2.py``.
 
@@ -464,18 +467,6 @@ DESIGNS = (
            ademp=ADEMP[DESIGN]),
 )
 
-
-def _register_protocol_drafts() -> None:
-    """Make the ``A-none`` draft resolvable as soon as the module is loaded:
-    the runner resolves a plan's protocols before it registers the plan's
-    design modules (it registers the same draft again then)."""
-    from impact_pipeline.bench import run_bench_v2 as RB
-
-    for key, fn in PROTOCOL_DRAFTS.items():
-        RB.PROTOCOL_DRAFTS.setdefault(key, fn)
-
-
-_register_protocol_drafts()
 
 __all__ = [
     "ADEMP",

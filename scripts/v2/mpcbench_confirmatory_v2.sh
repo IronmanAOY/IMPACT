@@ -75,7 +75,7 @@ if has manipulation; then
       || echo "prerequisite M: some check was not computed (see the manifest)"
 fi
 if has anchor_replication; then
-  run A_anchors,C1_anchors,RAM160_anchors anchor_replication
+  run A_anchors,C1_anchors,RAM160_anchors,forward_anchor_replication anchor_replication
 fi
 if has A_witnesses; then
   run A_witnesses A_witnesses
@@ -87,8 +87,10 @@ if has null_calibration; then
   run_module null_calibration
 fi
 if has forward; then
-  # Hopf arm, forward family A (EEG, then BOLD with curtailed sampling)
-  run_module forward
+  # Hopf arm, forward family A (EEG, then BOLD with curtailed sampling: the
+  # runner skips the PC_nominal runs only FMabs reads once an event in seed
+  # order makes the demonstration impossible)
+  run whole_brain,forward_family_a,forward_family_a_bold forward
 fi
 if has family_b; then
   # family B has its own task model and runs through its validation script,

@@ -15,7 +15,10 @@ method where the hypothesis needs a status, ``c`` on the primary exact anchor
 ``details`` the exact target with ``c_exact``, the status under the second
 anchor (all-to-all 0.4), the occupancy summary and the cluster id. A
 component whose estimator raised is ``UNDEFINED(ESTIMATOR_ERROR:<type>)``
-and leaves the other scorings untouched.
+and leaves the other scorings untouched. Every component names its
+family-B protocol by its key (``protocol_id`` ``B-<anchor>-<cut mode>-<null
+family>[-values]``), the one convention of the evaluator and the integrity
+audit (``hypothesis_engine.protocol_key``).
 
 Outputs (``--out``): ``iim_validation_v2.jsonl`` (task records, appended;
 the run resumes and skips completed task ids), ``iim_validation_v2_components.csv``
@@ -62,6 +65,7 @@ for _p in (str(REPO_ROOT), str(REPO_ROOT / "src")):
 from impact_pipeline import evidence_v2 as EV  # noqa: E402
 from impact_pipeline.bench.designs_v2 import family_b as FB  # noqa: E402
 from impact_pipeline.v2 import FREEZE_TAG_V2  # noqa: E402
+from impact_pipeline.v2 import hypothesis_engine as HE  # noqa: E402
 from impact_pipeline.v2 import iim_v5 as IIM  # noqa: E402
 from impact_pipeline.v2 import provenance as PV  # noqa: E402
 from impact_pipeline.v2 import reasons as R  # noqa: E402
@@ -128,7 +132,7 @@ def _component(task: FB.Task, scoring: FB.Scoring, res: dict, cut: str, stage: s
                timing: dict, exact: Optional[dict]) -> REC.ComponentRecord:
     proto = protocol_for(scoring, cut, res)
     ev = IIM.evidence(res, cut, substrate=FB.SUBSTRATE, observation_stage=stage,
-                      view=FB.VIEW, protocol_id=proto.protocol_id,
+                      view=FB.VIEW, protocol_id=HE.protocol_key(proto),
                       bearer_id=task.cluster_id)
     a = EV.assess_item(ev, proto)
     proto2 = protocol_for(scoring, cut, res, anchor=FB.SECOND_ANCHOR)
@@ -159,7 +163,7 @@ def _component(task: FB.Task, scoring: FB.Scoring, res: dict, cut: str, stage: s
         principle=IIM.PRINCIPLE, status=a.status.value, reason=a.reason,
         flags=tuple(a.flags), estimator_version=IIM.ESTIMATOR_VERSION,
         declaration_id=scoring.declaration, observation_stage=stage,
-        protocol_id=proto.protocol_id, protocol_hash=proto.hash,
+        protocol_id=HE.protocol_key(proto), protocol_hash=proto.hash,
         c=_f(a.c), se_c=_f(a.se), df_c=_f(a.df),
         identifiability=_identifiability(scoring, stage),
         seconds=timing.get("seconds"), load_average=timing.get("load_average"),
@@ -171,7 +175,7 @@ def _error_component(task, scoring, cut, stage, exc, timing) -> REC.ComponentRec
     return REC.component_error(
         IIM.PRINCIPLE, exc, estimator_version=IIM.ESTIMATOR_VERSION,
         declaration_id=scoring.declaration, observation_stage=stage,
-        protocol_id=proto.protocol_id, protocol_hash=proto.hash,
+        protocol_id=HE.protocol_key(proto), protocol_hash=proto.hash,
         identifiability=_identifiability(scoring, stage),
         seconds=timing.get("seconds"), load_average=timing.get("load_average"))
 
@@ -180,6 +184,7 @@ def score_task(task: FB.Task, params_override=None) -> REC.TaskRecord:
     """Simulate a task and score it under every declaration of its cell in
     both cut modes (one scoring each)."""
     cell = task.cell
+    t_all, cpu_all = time.perf_counter(), time.process_time()
     with PV.timed() as t_sim:
         sim = FB.simulate(task)
     stage = sim.observation_stage
@@ -231,7 +236,10 @@ def score_task(task: FB.Task, params_override=None) -> REC.TaskRecord:
                 "design_version": FB.DESIGN_VERSION},
         simulation=simulation, scorings=tuple(scorings),
         timing={"simulation_seconds": t_sim["seconds"],
-                "load_average": t_sim["load_average"]})
+                "load_average": t_sim["load_average"],
+                # the task's wall and CPU time (one BLAS thread): its cost
+                "total_s": round(time.perf_counter() - t_all, 4),
+                "cpu_s": round(time.process_time() - cpu_all, 4)})
 
 
 def run_task(task: FB.Task, params_override=None) -> REC.TaskRecord:
@@ -447,7 +455,7 @@ def run(out_dir, *, split: str = S.DEVELOPMENT, hypotheses=None, seeds=None,
                 for with_se in (True, False):
                     p = FB.family_b_protocol(cut, anchor=anchor, null_family=fam,
                                              sampling_se=with_se)
-                    protocols[p.name] = {"protocol_id": p.protocol_id, "hash": p.hash}
+                    protocols[HE.protocol_key(p)] = {"name": p.name, "hash": p.hash}
     meta = {
         "version": VALIDATION_VERSION,
         "design": FB.DESIGN,

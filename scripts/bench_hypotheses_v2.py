@@ -14,7 +14,9 @@ Inputs
                       (``bench.manipulation_v2.prerequisite_m``; CSV or JSON)
 ``--registry``        registry v3 admission entries (JSON)
 ``--protocols``       the frozen family protocols (``impact-mpc-protocol/3``
-                      files or directories): anchors, ``N_anch``, precision
+                      files ``mpc_bench_v2_<key>.json`` or their
+                      directories), looked up by the key the records carry
+                      as ``protocol_id``: anchors, ``N_anch``, precision
                       blocks and concordance routes
 ``--audit``           the integrity-audit report; its ``excluded_task_ids``
                       leave every hypothesis, and the audit outcome is
@@ -99,10 +101,15 @@ def _files(items, patterns=("*.jsonl",)) -> List[Path]:
 
 
 def read_records(paths) -> tuple:
-    """Raw record dicts and the unreadable lines of JSON-lines files."""
+    """Raw record dicts and the unreadable lines of JSON-lines files (a
+    directory contributes its record files, as the integrity audit reads
+    them: not the runner's smoke status lines)."""
     from scripts.v2 import integrity_audit as IA
 
-    files = _files(paths)
+    files = [f for f in IA._paths(paths)]
+    for it in paths or ():
+        if not Path(it).exists():
+            raise FileNotFoundError(it)
     recs, bad = IA.read_raw_records(files)
     return recs, bad, files
 
@@ -129,13 +136,12 @@ def manipulation_source(paths) -> List[dict]:
 
 
 def load_protocols(paths) -> dict:
-    from impact_pipeline import evidence_v2 as E
-
-    out = {}
-    for p in _files(paths, ("*.json",)):
-        pr = E.load_protocol(p)
-        out[str(getattr(pr, "name", None) or p.stem)] = pr
-    return out
+    """``{protocol key: ProtocolV3}``: the key the records name their
+    protocols by (``HE.load_protocol_files``)."""
+    try:
+        return dict(HE.load_protocol_files(paths))
+    except ValueError as exc:
+        raise EvaluationRefused(f"protocols: {exc}") from exc
 
 
 def check_records(recs, *, development: bool, freeze_tag: str, excluded=()) -> str:

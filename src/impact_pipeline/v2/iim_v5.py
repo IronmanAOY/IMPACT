@@ -122,7 +122,10 @@ family, ``p_ind``, ``se``, ``se_df``, ``se_method``, ``defined``, ``reason``,
 surrogate and bootstrap values). :func:`component_fields` maps it onto the
 estimator fields of a ``mpc-bench-result/3`` component and :func:`evidence`
 onto a :class:`~impact_pipeline.evidence_v2.ComponentEvidenceV2`. The status
-is decided by the status rule, never here.
+is decided by the status rule, never here. :func:`select_cut_modes` reads
+the result of a subset of the computed cut modes from a run (every cut mode
+is computed on the same pairs, surrogates and resamples), so a reported
+form need not recompute a cut its primary run already reports.
 """
 
 from __future__ import annotations
@@ -1112,6 +1115,81 @@ def compute_iim_v5(
     return _result(details, p.cut_mode, cuts)
 
 
+# Reasons decided before any cut mode is evaluated: a result undefined for one
+# of them is the result of every set of cut modes on the same inputs.
+_CUT_FREE_REASONS = (R.MACRO_RANK_DEFICIENT, R.INSUFFICIENT_OCCUPANCY,
+                     R.OBSERVATION_MIXED_NOT_ADMITTED, R.NOT_DEFINED)
+
+
+def cut_modes_computed(result: Mapping) -> Tuple[str, ...]:
+    """The cut modes a result of :func:`compute_iim_v5` carries (its primary
+    and reported ones, from the declared settings in its details)."""
+    params = (result.get("details") or {}).get("params")
+    if not isinstance(params, Mapping):
+        return ()
+    return IIMParams.from_mapping(params).cut_modes
+
+
+def select_cut_modes(result: Mapping, params=None) -> dict:
+    """
+    The result :func:`compute_iim_v5` returns with the settings ``params``
+    on the same inputs, read from ``result``, a run whose settings differ
+    from ``params`` only in the cut modes and computed every cut mode
+    ``params`` asks for (primary and reported).
+
+    Every cut mode is computed on the same transition pairs, surrogates and
+    resamples (their draws do not depend on the cut modes), so the values of
+    a cut mode do not depend on the other cut modes of the run: this is the
+    bidirectional form of a scoring whose primary run already reports the
+    bidirectional cut. Raises ``ValueError`` when the settings differ in
+    anything else, when a requested cut mode was not computed, or when the
+    run is undefined for a reason that depends on the cut modes (fewer than
+    19 finite null draws counts the draws of every computed cut mode).
+    """
+    want = IIMParams.from_mapping(params)
+    have_params = (result.get("details") or {}).get("params")
+    if not isinstance(have_params, Mapping):
+        raise ValueError("the result carries no declared settings")
+    have = IIMParams.from_mapping(have_params)
+    others = {k: v for k, v in want.to_dict().items()
+              if k not in ("cut_mode", "report_cut_modes")}
+    if others != {k: v for k, v in have.to_dict().items()
+                  if k not in ("cut_mode", "report_cut_modes")}:
+        raise ValueError("the settings differ in more than the cut modes")
+    missing = [c for c in want.cut_modes if c not in have.cut_modes]
+    if missing:
+        raise ValueError(f"cut modes {missing} were not computed")
+    reason = result.get("reason")
+    if reason is not None and R.parse_reason(reason)[0] not in _CUT_FREE_REASONS:
+        raise ValueError(f"an undefined result ({reason}) depends on its cut modes")
+    keep = want.cut_modes
+    details = dict(result.get("details") or {})
+    details["estimator_id"] = estimator_id(want.cut_mode)
+    details["params"] = want.to_dict()
+    for key in ("null_values",):
+        if isinstance(details.get(key), Mapping):
+            details[key] = {c: details[key][c] for c in keep}
+    for key in ("bootstrap", "jackknife"):
+        block = details.get(key)
+        if isinstance(block, Mapping) and isinstance(block.get("replicates"), Mapping):
+            block = dict(block)
+            block["replicates"] = {c: block["replicates"][c] for c in keep}
+            details[key] = block
+    if isinstance(details.get("strata"), list):
+        rows = []
+        for row in details["strata"]:
+            row = dict(row)
+            for k in ("delta_psi", "mip_cut"):
+                if isinstance(row.get(k), Mapping):
+                    row[k] = {c: row[k][c] for c in keep}
+            rows.append(row)
+        details["strata"] = rows
+    if reason is not None:
+        return _result(details, want.cut_mode, {}, reason=reason)
+    cuts = {c: dict(result["cuts"][c]) for c in keep}
+    return _result(details, want.cut_mode, cuts, exact=bool(result.get("exact")))
+
+
 def compute_iim_v5_system(system, *, basis=None, strata=None, params=None,
                           null_seed: int = 0, se_seed: Optional[int] = None,
                           observation_stage: Optional[str] = None,
@@ -1311,6 +1389,7 @@ __all__ = [
     "compute_iim_v5",
     "compute_iim_v5_system",
     "conditioned_delta_psi",
+    "cut_modes_computed",
     "delta_psi",
     "estimator_id",
     "evidence",
@@ -1328,6 +1407,7 @@ __all__ = [
     "rank_p_value",
     "rank_safe_clusters",
     "residualise",
+    "select_cut_modes",
     "shrinkage_intensity",
     "stratified_pair_rotation",
     "system_cuts",

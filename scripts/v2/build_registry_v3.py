@@ -15,9 +15,13 @@ Inputs
 
 ``--results``
     JSON-lines files (or directories of them) of ``mpc-bench-result/3``
-    task records; only records of the ``forward`` design are read. Each
-    record follows the record contract of the forward design: ``config``
-    from ``ForwardTask.to_config``, scorings named by view with the view's
+    task records, as the v2 runner writes them for the forward arms; only
+    the records of the arms' designs are read (``whole_brain``,
+    ``forward_family_a``, ``forward_family_a_bold``: the one table
+    ``RECORD_DESIGN_OF_ARM`` of the forward design module; the anchor
+    replication records never enter a registry). Each record follows the
+    record contract of the forward design: ``config['forward']`` from
+    ``ForwardTask.to_config``, scorings named by view with the view's
     ``forward_v2.scoring_details`` in ``details``.
 ``--anchors``
     JSON with the anchor validity of every (arm, view, principle) on its
@@ -93,11 +97,13 @@ def result_files(paths: Iterable) -> List[Path]:
 
 
 def read_records(paths: Iterable) -> Tuple[List[REC.TaskRecord], dict]:
-    """The forward-design task records of the files, and their SHA-256s."""
+    """The task records of the forward arms in the files (designs
+    ``D.ADMISSION_RECORD_DESIGNS``), and the files' SHA-256s."""
     recs, digests = [], {}
     for f in result_files(paths):
         digests[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
-        recs.extend(r for r in REC.read_jsonl(f) if r.design == D.DESIGN)
+        recs.extend(r for r in REC.read_jsonl(f)
+                    if r.design in D.ADMISSION_RECORD_DESIGNS)
     ids = [r.task_id for r in recs]
     dup = sorted({i for i in ids if ids.count(i) > 1})
     if dup:
@@ -176,6 +182,10 @@ def admission_runs(records: Sequence[REC.TaskRecord], purpose: str):
         if got != (task.arm, task.condition, task.seed, task.regime):
             raise BuildError(f"{rec.task_id}: arm, condition, seed or regime differ "
                              "from the plan")
+        want = D.record_design(task.arm, purpose)
+        if rec.design != want:
+            raise BuildError(f"{rec.task_id}: design {rec.design!r}, the arm "
+                             f"{task.arm} records {want!r}")
         if rec.status == REC.TASK_ERROR:
             continue
         arm = str(cfg["arm"])

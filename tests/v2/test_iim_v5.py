@@ -776,3 +776,63 @@ def test_component_fields_and_records():
     assert fields["estimate"] is None and fields["details"]["defined"] is False
     with pytest.raises(KeyError):
         IIM.component_fields(fake_result(0.03, 0.0, 0.01, 0.05), "bidirectional")
+
+
+def _same_result(a, b):
+    """Two results of compute_iim_v5 hold the same values (NaN equals NaN)."""
+    import json
+
+    def norm(x):
+        return json.loads(json.dumps(x, sort_keys=True, default=str).replace(
+            "NaN", "null"))
+
+    return norm(a) == norm(b)
+
+
+@pytest.mark.parametrize("basis_decl", [None, "R"])
+def test_a_computed_cut_mode_is_read_from_a_run_that_reports_it(basis_decl):
+    """The values of a cut mode do not depend on the other cut modes of the
+    run (same pairs, surrogates and resamples): select_cut_modes gives the
+    result of a run that computes the requested cut modes alone."""
+    sysm = make_system("family_a", seed=3)
+    basis = None
+    if basis_decl is not None:
+        dec = DI.declare(DI.record_inputs(sysm), basis_decl)
+        basis = DI.input_basis(dec, tau_c=0.1, estimator="IIM")
+    small = {"n_null": 19, "bootstrap_replicates": 3}
+    both = IIM.compute_iim_v5_system(sysm, basis=basis, null_seed=5, params=small)
+    assert IIM.cut_modes_computed(both) == ("directional", "bidirectional")
+    for cut in ("bidirectional", "directional"):
+        want = dict(small, cut_mode=cut, report_cut_modes=())
+        alone = IIM.compute_iim_v5_system(sysm, basis=basis, null_seed=5, params=want)
+        got = IIM.select_cut_modes(both, want)
+        assert _same_result(got, alone), cut
+    # the primary result itself
+    assert _same_result(IIM.select_cut_modes(both, small), both)
+    # nothing else may differ, and an uncomputed cut cannot be read
+    with pytest.raises(ValueError, match="more than the cut modes"):
+        IIM.select_cut_modes(both, dict(small, n_null=20))
+    alone = IIM.compute_iim_v5_system(sysm, basis=basis, null_seed=5,
+                                      params=dict(small, report_cut_modes=()))
+    with pytest.raises(ValueError, match="not computed"):
+        IIM.select_cut_modes(alone, dict(small, cut_mode="bidirectional",
+                                         report_cut_modes=()))
+
+
+def test_reading_a_cut_mode_from_an_undefined_run():
+    flat = np.ones((4, 400))
+    flat[0] += np.arange(400) % 2  # three constant macro nodes
+    res = IIM.compute_iim_v5(flat, lag=1, params=NO_SE)
+    assert res["reason"] == R.INSUFFICIENT_OCCUPANCY
+    got = IIM.select_cut_modes(res, dict(NO_SE, cut_mode="bidirectional"))
+    assert got["reason"] == R.INSUFFICIENT_OCCUPANCY
+    assert got["estimator_id"] == IIM.estimator_id("bidirectional")
+    assert _same_result(got, IIM.compute_iim_v5(
+        flat, lag=1, params=dict(NO_SE, cut_mode="bidirectional")))
+    # too few null draws counts the draws of every computed cut: computed anew
+    few = IIM.compute_iim_v5(np.random.default_rng(1).standard_normal((3, 600)),
+                             lag=1, params={"n_null": 5, "se_method": None})
+    assert few["reason"] == R.NO_NULL_CALIBRATION
+    with pytest.raises(ValueError, match="depends on its cut modes"):
+        IIM.select_cut_modes(few, {"n_null": 5, "se_method": None,
+                                   "cut_mode": "bidirectional"})

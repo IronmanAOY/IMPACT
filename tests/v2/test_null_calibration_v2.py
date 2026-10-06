@@ -419,15 +419,18 @@ def test_classification_protocol_copies_its_base_and_refuses_non_a_r(tmp_path):
 
 
 def test_a_fresh_runner_resolves_the_draft_in_plan_order(repo_root, tmp_path):
-    # run_tasks resolves a plan's protocols before check_plan registers the
-    # plan's design modules, so the module registers its draft on import; a
-    # runner started with src/ only (as the run scripts start it) also finds
-    # the v1 generator
+    # importing the design module (building the plan) registers nothing in
+    # the runner; collecting the plan's protocol keys registers the plan's
+    # design modules, so their drafts resolve in a fresh process. A runner
+    # started with src/ only (as the run scripts start it) also finds the v1
+    # generator
     code = (
         "import sys\n"
         "from impact_pipeline.bench import run_bench_v2 as RB\n"
         "assert 'scripts' not in sys.modules\n"
         "tasks = RB.build_tasks(['null_calibration'], 'development')\n"
+        "assert 'impact_pipeline.bench.designs_v2.null_calibration' in sys.modules\n"
+        "assert 'A-none' not in RB.PROTOCOL_DRAFTS\n"
         "protos = RB.resolve_protocols(RB.protocol_keys(tasks))\n"
         "print(sorted(protos), protos['A-none'].source,\n"
         "      dict(protos['A-none'].protocol.shared_inputs_declaration)['id'])\n"
@@ -444,6 +447,39 @@ def test_a_fresh_runner_resolves_the_draft_in_plan_order(repo_root, tmp_path):
     assert lines[1] == "128"
     v1_script = (repo_root / "scripts/null_calibration.py").resolve()
     assert Path(lines[2]).resolve() == v1_script
+
+
+def test_a_fresh_runner_command_line_runs_the_design(repo_root, tmp_path):
+    # the run command of a fresh process registers the design module before
+    # it resolves the plan's protocols: the A-none draft is found without
+    # any registration at import (one task of the plan, one principle)
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env.update(PYTHONPATH=str(repo_root / "src"), PYTHONDONTWRITEBYTECODE="1",
+               OMP_NUM_THREADS="1")
+    out = tmp_path / "run"
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_bench_v2.py"), "run",
+         NCV.DESIGN, "--split", "development", "--n-shards", "128",
+         "--shard-index", "0", "--principles", "RAM", "--out", str(out)],
+        cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    man = json.loads((out / RB.MANIFEST).read_text())
+    assert man["n_run"] == 1 and man["n_errors"] == 0
+    assert man["protocols"]["A-none"]["source"] == "draft"
+    (rec,) = REC.read_jsonl(out / RB.RESULTS_JSONL)
+    assert rec.design == NCV.DESIGN
+    assert {c.protocol_id for s in rec.scorings for c in s.components.values()} == {
+        NCV.PROTOCOL_KEY}
+
+
+def test_collecting_the_protocol_keys_registers_the_draft(monkeypatch):
+    # (the fresh-process test above shows that the import registers nothing)
+    monkeypatch.setattr(RB, "PROTOCOL_DRAFTS", {})
+    monkeypatch.setattr(RB, "_LOADED_MODULES", set())
+    keys = RB.protocol_keys([_dev_task()])
+    assert keys == [NCV.PROTOCOL_KEY]
+    assert set(RB.PROTOCOL_DRAFTS) == {NCV.PROTOCOL_KEY}
+    assert RB.resolve_protocols(keys)[NCV.PROTOCOL_KEY].source == "draft"
 
 
 def test_the_runner_plan_check_accepts_the_design():

@@ -10,7 +10,11 @@ Task execution (:func:`run_task`)
 ---------------------------------
 1. The system is built once by the task's system builder (``catalogue``:
    a witness or adversary of the v2 catalogue; ``agent``: the family-A or
-   family-C agent at given knobs; design modules may register more).
+   family-C agent at given knobs; design modules may register more, such as
+   ``forward``, which returns one simulation with every view of it at the
+   task's regime, a :class:`~impact_pipeline.bench.designs_v2.MultiViewSystem`).
+   A design module's record blocks (``RECORD_CONFIG``, for example
+   ``config['forward']``) are added to the record's ``config``.
 2. The simulation block records the duplicate-detector hashes
    ``sha256(ts)`` and ``sha256(raw_ts)``, the twin hashes (structural and
    schedule), the shape, ``dt`` and the simulation time.
@@ -55,7 +59,20 @@ Estimator dispatch (:data:`SCORERS`, by estimator version)
 * ``iim-v5-2026.10``: :func:`impact_pipeline.v2.iim_v5.compute_iim_v5` on the
   bearer view's macro nodes at the system's transition lag
   (``iim_lag_samples``, the v1 rule), residualised on the scoring's input
-  basis (families A and C1 declare no binary drivers to stratify on).
+  basis (families A and C1 declare no binary drivers to stratify on). One
+  run per inputs computes every cut mode the simulation's scorings of those
+  inputs record, and each scoring reads its own protocol's cut modes from
+  it (:func:`impact_pipeline.v2.iim_v5.select_cut_modes`): the
+  bidirectional form beside its primary scoring reads the cut the primary
+  already reports instead of computing it again, and every record holds
+  what its own run would hold. A grain with more macro nodes than the
+  run's declared cap (``RunSettings.iim_max_macro_nodes``, 4) is refused
+  as an estimator error of that component before any statistic runs.
+* Runner options (:data:`RUNNER_OPTIONS`, never passed to an estimator):
+  ``observation_gate = admission_run`` scores a mixed observation of a
+  forward-arm admission run (NAS v3 ``override_observation_gate``, IIM v5
+  ``observation_admitted``), and IIM's ``macro_nodes`` picks the view's
+  declared grain, the rank-safe electrode clusters or the v1 quadrants.
 * The Tier-B ``srpi-v3-2026.10``: the estimator module, through its hook
   ``score_bench_v2(context)`` when it defines one, otherwise through its
   ``compute_<p>_v<n>`` function called with the keyword arguments of
@@ -75,8 +92,16 @@ template ``protocols/v2/mpc_bench_v2_template.json`` (the declaration set,
 the form's estimator options, the reference ``pending``, so every component
 is UNDEFINED(INVALID_ANCHORS) and the raw outputs are what the anchors are
 computed from). Drafts admit the SE method ``exact`` for IIM, so that an
-exact known-TPM value is decided on ``c`` rather than refused. Confirmatory
-runs use generated protocols only.
+exact known-TPM value is decided on ``c`` rather than refused. A design
+module declares the drafts of its own protocols (``PROTOCOL_DRAFTS``: the
+forward arms' ``hopf-eeg64``, ``fwdA-eeglow``, ...; the null-calibration
+generator's ``A-none``); :func:`protocol_keys` registers a plan's design
+modules before the keys are resolved, so a fresh process resolves them, and
+a draft key declared twice is refused. Every record names its protocol by
+the key (``protocol_id``), the convention the evaluator and the integrity
+audit load the frozen files by
+(:func:`impact_pipeline.v2.hypothesis_engine.load_protocol_files`).
+Confirmatory runs use generated protocols only.
 
 Run hygiene (design 3.8)
 ------------------------
@@ -91,9 +116,17 @@ with the runner settings and the protocol hashes; the records are appended
 to ``results.jsonl`` one line per task, and a run resumes from partial
 results (a truncated last line and failed tasks are dropped and re-run) only
 under the same plan, settings and protocols. Per-task timing carries the
-load average; the manifest records the environment, the code identity and
-the byte hashes of the protocol files read. Workers are spawned processes
-with one BLAS thread each.
+worker's CPU time (``cpu_s``) and the load average; the manifest records the
+environment, the code identity and the byte hashes of the protocol files
+read. Workers are spawned processes with one BLAS thread each.
+
+Curtailed sampling (:func:`curtailment_controllers`): a design module may
+stop some of its runs early by a preregistered rule (the forward BOLD arm's
+FMabs). Its gated runs are released in the rule's order and kept only when
+the records before them say so, so the kept records, and the curtailed task
+ids the manifest lists, do not depend on the number of workers; a resumed
+run takes the same decisions from the records it finds. Such a plan is
+never split into shards (:func:`shard`).
 """
 
 from __future__ import annotations
@@ -139,7 +172,8 @@ PLAN_JSON = "run_plan.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_PATH = REPO_ROOT / "protocols" / "v2" / "mpc_bench_v2_template.json"
 GENERATED_DIR = REPO_ROOT / "protocols" / "v2" / "generated"
-PROTOCOL_FILE = "mpc_bench_v2_{key}.json"
+# the file-name convention of protocol keys (hypothesis_engine.protocol_file_name)
+PROTOCOL_FILE = _names.PROTOCOL_FILE_PREFIX + "{key}" + _names.PROTOCOL_FILE_SUFFIX
 
 # The v1 in-memory path: null size and jackknife groups of the v1 bench.
 V1_NULL_SURROGATES = 19
@@ -164,6 +198,17 @@ CALIBRATION_PENDING = {
                    "Provisional value 0: the fixed seed of the v1 bench",
     },
 }
+
+# The largest IIM v5 macro grain a run computes (RunSettings.iim_max_macro_nodes):
+# every Tier-A substrate declares at most four macro nodes (the four
+# periphery modules of families A and C1, the four family-B units, the v1
+# grain of four groups of the null-calibration generator, the Hopf model's
+# four cortical macro nodes and the sensor views' four electrode groups), and
+# the patchwork is recorded in its principle-bearer grain (the three
+# sub-groups of its IIM module; designs_v2.family_a). A five-node grain (32
+# macro states, 30 directional bipartitions) costs about 28 times a four-node
+# one for every statistic of the null and the bootstrap.
+IIM_MAX_MACRO_NODES = 4
 
 # Principles declared not applicable on an observation model by the runner,
 # for estimators that do not declare it themselves (the v1 SRPI and the v1
@@ -202,11 +247,38 @@ PROTOCOL_OPTION_NAMES = {
     "NAS": {"coupling_timescale_sec": "tau_c of the resolvability gate (NASParams; "
                                       "checked against the generator constants)",
             "lag_timescale_sec": "lag set and filtered input copies (NASParams; "
-                                 "the tau_c sensitivity forms)"},
+                                 "the tau_c sensitivity forms)",
+            "observation_gate": "runner: 'admission_run' scores a mixed observation "
+                                "without admission (override_observation_gate), "
+                                "because the forward-arm scoring is the admission "
+                                "test"},
     "IIM": {"coupling_timescale_sec": "runner: tau_c of the input basis and lag set",
             "lag_timescale_sec": "runner: lag set and filtered copies of the basis",
             "tpm_estimator": "the estimator's TPM estimator (iim_v5.TPM_ESTIMATOR); "
-                             "not a parameter"},
+                             "not a parameter",
+            "preprocess": "pre-processing (IIMParams.preprocess: none or zca)",
+            "observation_gate": "runner: 'admission_run' scores a mixed observation "
+                                "as admitted (observation_admitted), because the "
+                                "forward-arm scoring is the admission test",
+            "macro_nodes": "runner: the macro grain of the view, 'declared' (the "
+                           "view's iim_macro_nodes), 'rank_safe_clusters' (the "
+                           "declared grain, which must be the rank-safe electrode "
+                           "clusters) or 'v1_quadrants' (the v1 electrode "
+                           "quadrants the forward layer keeps beside them)"},
+}
+# Options the runner reads itself (never passed to the estimator), with their
+# admitted values. OBSERVATION_GATE_ADMISSION_RUN is the forward arms' label
+# (designs_v2.forward.ADMISSION_RUN).
+OBSERVATION_GATE_ADMISSION_RUN = "admission_run"
+MACRO_NODES_DECLARED = "declared"
+MACRO_NODES_RANK_SAFE = "rank_safe_clusters"
+MACRO_NODES_V1_QUADRANTS = "v1_quadrants"
+RANK_SAFE_GRAIN = "electrode_clusters_rank_safe"
+RUNNER_OPTIONS = {
+    "NAS": {"observation_gate": (OBSERVATION_GATE_ADMISSION_RUN,)},
+    "IIM": {"observation_gate": (OBSERVATION_GATE_ADMISSION_RUN,),
+            "macro_nodes": (MACRO_NODES_DECLARED, MACRO_NODES_RANK_SAFE,
+                            MACRO_NODES_V1_QUADRANTS)},
 }
 DIRECTION_ALIASES = {
     "receive": "receive", "r": "receive", "in": "receive", "te_in": "receive",
@@ -233,15 +305,17 @@ class EstimatorUnavailableError(ImportError):
 class RunSettings:
     """Runner settings recorded with every task: the principles scored
     (None: every principle of a scoring), the v1 in-memory null size and
-    jackknife groups, the PDI k-means seed (:data:`CALIBRATION_PENDING`) and
+    jackknife groups, the PDI k-means seed (:data:`CALIBRATION_PENDING`),
     whether an unavailable estimator module may be recorded as an estimator
-    error instead of refusing the run."""
+    error instead of refusing the run, and the cap on the number of IIM v5
+    macro nodes (:data:`IIM_MAX_MACRO_NODES`; None: no cap)."""
 
     principles: Optional[Tuple[str, ...]] = None
     v1_null_surrogates: int = V1_NULL_SURROGATES
     v1_se_groups: int = V1_SE_GROUPS
     pdi_kmeans_seed: Optional[int] = CALIBRATION_PENDING["pdi_kmeans_seed"]["value"]
     allow_unavailable_estimators: bool = False
+    iim_max_macro_nodes: Optional[int] = IIM_MAX_MACRO_NODES
 
     def __post_init__(self):
         if self.principles is not None:
@@ -249,6 +323,8 @@ class RunSettings:
                 self.principles, "settings"))
         if int(self.v1_se_groups) == 1 or int(self.v1_se_groups) < 0:
             raise ValueError("v1_se_groups must be 0 or >= 2")
+        if self.iim_max_macro_nodes is not None and int(self.iim_max_macro_nodes) < 1:
+            raise ValueError("iim_max_macro_nodes must be None or >= 1")
 
     def wants(self, principle: str) -> bool:
         return self.principles is None or principle in self.principles
@@ -351,13 +427,30 @@ def pdi_v3_params(options: Mapping) -> Tuple[dict, dict]:
     return opts, runner
 
 
+def split_runner_options(principle: str, options: Mapping) -> Tuple[dict, dict]:
+    """``(estimator options, runner options)`` of a protocol's estimator
+    block: the keys of :data:`RUNNER_OPTIONS` (checked against their admitted
+    values) are the runner's, every other key the estimator's."""
+    opts = dict(options or {})
+    runner = {}
+    for key, allowed in RUNNER_OPTIONS.get(principle, {}).items():
+        if key in opts:
+            val = opts.pop(key)
+            if val not in allowed:
+                raise ProtocolOptionError(f"{principle} {key}={val!r}; one of "
+                                          f"{allowed}")
+            runner[key] = val
+    return opts, runner
+
+
 def nas_v3_params(options: Mapping) -> dict:
     """NAS v3 parameters from protocol options: the protocol's NAS block uses
     the estimator's own names (:class:`~impact_pipeline.v2.nas_v3.NASParams`),
-    so nothing is renamed; unknown keys are refused."""
+    so nothing is renamed; the runner's options (:data:`RUNNER_OPTIONS`) are
+    left out; unknown keys are refused."""
     from impact_pipeline.v2 import nas_v3
 
-    opts = dict(options or {})
+    opts, _runner = split_runner_options("NAS", options)
     nas_v3.NASParams.from_mapping(opts)
     return opts
 
@@ -366,11 +459,12 @@ def iim_v5_params(options: Mapping) -> dict:
     """IIM v5 parameters from protocol options: ``tpm_estimator`` must name
     the estimator's TPM estimator and is not a parameter;
     ``coupling_timescale_sec`` and ``lag_timescale_sec`` set the runner's
-    input basis; every other key is an
-    :class:`~impact_pipeline.v2.iim_v5.IIMParams` field."""
+    input basis; the runner's options (:data:`RUNNER_OPTIONS`) are left out;
+    every other key is an :class:`~impact_pipeline.v2.iim_v5.IIMParams`
+    field."""
     from impact_pipeline.v2 import iim_v5
 
-    opts = dict(options or {})
+    opts, _runner = split_runner_options("IIM", options)
     tpm = opts.pop("tpm_estimator", None)
     if tpm is not None and tpm != iim_v5.TPM_ESTIMATOR:
         raise ProtocolOptionError(f"IIM tpm_estimator {tpm!r}; IIM v5 computes "
@@ -410,6 +504,12 @@ def v1_params(principle: str, options: Mapping) -> dict:
 VIEWS: Dict[str, D.ViewSpec] = {D.SOURCE_VIEW: D.SOURCE}
 SYSTEM_BUILDERS: Dict[str, Callable] = {}
 PROTOCOL_DRAFTS: Dict[str, Callable] = {}
+# config blocks a design module adds to its records: {module: {key: fn}}
+RECORD_CONFIG: Dict[str, Dict[str, Callable]] = {}
+# keys of a record's config that the runner writes itself
+RUNNER_CONFIG_KEYS = ("builder", "params", "tags", "held_out", "design_module",
+                      "system_generator_version", "system_config_sha256",
+                      "null_seed", "runner_version", "settings")
 _LOADED_MODULES: set = set()
 
 
@@ -437,8 +537,20 @@ def load_design_module(name: Optional[str]) -> None:
         register_system_builder(bname, fn)
     for view in dict(getattr(mod, "VIEWS", {}) or {}).values():
         register_view(view)
-    for key, fn in dict(getattr(mod, "PROTOCOL_DRAFTS", {}) or {}).items():
-        PROTOCOL_DRAFTS[key] = fn
+    drafts = dict(getattr(mod, "PROTOCOL_DRAFTS", {}) or {})
+    taken = sorted(k for k, fn in drafts.items()
+                   if str(k).split("+", 1)[0] in FAMILY_PROTOCOLS
+                   or PROTOCOL_DRAFTS.get(k, fn) is not fn)
+    if taken:
+        raise RunPolicyError(f"design module {name}: protocol drafts {taken} are "
+                             "already declared by the runner or another module")
+    PROTOCOL_DRAFTS.update(drafts)
+    extra = dict(getattr(mod, "RECORD_CONFIG", {}) or {})
+    clash = sorted(set(extra) & set(RUNNER_CONFIG_KEYS))
+    if clash:
+        raise RunPolicyError(f"design module {name}: record config keys {clash} are "
+                             "the runner's")
+    RECORD_CONFIG[name] = extra
     _LOADED_MODULES.add(name)
 
 
@@ -541,26 +653,27 @@ class ResolvedProtocol:
 
 
 def protocol_path(key: str, directory=None) -> Path:
+    """The generated file of a protocol key (one naming rule for the runner,
+    the evaluator and the integrity audit:
+    :func:`impact_pipeline.v2.hypothesis_engine.protocol_file_name`)."""
     d = Path(directory) if directory is not None else GENERATED_DIR
-    return d / PROTOCOL_FILE.format(key=key)
+    return d / _names.protocol_file_name(key)
 
 
-def draft_protocol(key: str):
-    """The draft of a family protocol (or of one of its forms) derived from the
-    template (module docstring)."""
+def draft_payload(key: str, declaration_id: str,
+                  estimator_options: Optional[Mapping] = None) -> dict:
+    """The payload of a development draft derived from the template (module
+    docstring): the protocol ``key`` in its name, the declaration, ``exact``
+    among the IIM SE methods, the reference ``pending`` and the template's
+    estimator blocks updated with ``estimator_options`` (``{principle:
+    options}``). Every draft of the runner and of the design modules is
+    built here."""
     from impact_pipeline import evidence_v2 as E
 
-    base, form = D.split_protocol_key(key)
-    if key in PROTOCOL_DRAFTS:
-        payload = PROTOCOL_DRAFTS[key]()
-        return E.ProtocolV3.from_dict(payload)
-    if base not in FAMILY_PROTOCOLS:
-        raise RunPolicyError(f"no protocol file and no draft rule for {key!r}")
-    _family, decl = FAMILY_PROTOCOLS[base]
     payload = json.loads(TEMPLATE_PATH.read_text(encoding="utf-8"))
     payload["name"] = f"mpc-bench-v2-{key}-draft"
     payload["shared_inputs_declaration"] = {
-        "id": decl, "shared_inputs": E.DECLARATION_LEVELS[decl]}
+        "id": declaration_id, "shared_inputs": E.DECLARATION_LEVELS[declaration_id]}
     methods = dict(payload.get("se_methods") or {})
     methods["IIM"] = sorted(set(methods.get("IIM") or ()) | {E.SE_METHOD_EXACT})
     payload["se_methods"] = methods
@@ -570,10 +683,27 @@ def draft_protocol(key: str):
                 "reference block; every component is UNDEFINED(INVALID_ANCHORS)",
     }
     est = {p: dict(v) for p, v in (payload.get("estimators") or {}).items()}
-    for p, opts in D.ESTIMATOR_FORMS[form].options.items():
-        est.setdefault(p, {}).update(opts)
+    for p, opts in dict(estimator_options or {}).items():
+        est.setdefault(p, {}).update(dict(opts))
     payload["estimators"] = est
-    return E.ProtocolV3.from_dict(payload)
+    return payload
+
+
+def draft_protocol(key: str):
+    """The draft of a family protocol (or of one of its forms) derived from the
+    template (module docstring); a design module's draft rule
+    (``PROTOCOL_DRAFTS``) for the protocols it declares."""
+    from impact_pipeline import evidence_v2 as E
+
+    base, form = D.split_protocol_key(key)
+    if key in PROTOCOL_DRAFTS:
+        payload = PROTOCOL_DRAFTS[key]()
+        return E.ProtocolV3.from_dict(payload)
+    if base not in FAMILY_PROTOCOLS:
+        raise RunPolicyError(f"no protocol file and no draft rule for {key!r}")
+    _family, decl = FAMILY_PROTOCOLS[base]
+    return E.ProtocolV3.from_dict(
+        draft_payload(key, decl, D.ESTIMATOR_FORMS[form].options))
 
 
 def resolve_protocols(keys: Iterable[str], *, directory=None, allow_drafts: bool = True,
@@ -799,16 +929,21 @@ class NasV3Scorer(Scorer):
         from impact_pipeline.v2 import nas_v3
 
         p = nas_v3.NASParams.from_mapping(nas_v3_params(ctx.options))
+        _opts, runner = split_runner_options("NAS", ctx.options)
         # tau_c of the gate: the protocol's, checked against the generator
         p = p.replace(coupling_timescale_sec=nas_v3.system_coupling_timescale(
             ctx.system, p))
         view = ctx.bearer()
         hub_name, hub, blocks = ctx.nas_blocks(view)
+        # a forward-arm admission run scores the mixed observation: its
+        # scoring is the admission test (labelled 'overridden' by NAS v3)
         res = nas_v3.compute_nas_v3(
             view["ts"], dt=float(ctx.system.dt), hub=hub, blocks=blocks,
             inputs=ctx.declared(), params=p, seed=int(ctx.task.seed),
             null_seed=ctx.null_seed, hub_name=hub_name,
-            observation=ctx.view.observation)
+            observation=ctx.view.observation,
+            override_observation_gate=(runner.get("observation_gate")
+                                       == OBSERVATION_GATE_ADMISSION_RUN))
         out = output_from_result(res, nas_v3, self)
         # both directions as the estimator reports them (z, excess, null
         # draws, jackknife replicates), for the evaluator and the audit
@@ -816,8 +951,38 @@ class NasV3Scorer(Scorer):
         return out
 
 
+class MacroGrainTooLargeError(ValueError):
+    """An IIM v5 macro grain with more macro nodes than the run's declared
+    cap (:attr:`RunSettings.iim_max_macro_nodes`)."""
+
+
 class IimV5Scorer(Scorer):
-    """IIM v5 (module docstring): the primary cut mode of the protocol."""
+    """
+    IIM v5 (module docstring): the cut modes of the protocol (the primary
+    and the reported ones), on the view's declared macro grain or the grain
+    the runner option ``macro_nodes`` names (:data:`RUNNER_OPTIONS`); a
+    forward-arm admission run (``observation_gate = admission_run``) scores
+    a mixed observation as admitted.
+
+    Every cut mode of a run is computed on the same transition pairs,
+    surrogates and resamples, so the values of a cut mode do not depend on
+    the other cut modes of the run. The runner therefore computes, in one
+    run per inputs, every cut mode the simulation's scorings of those inputs
+    record (:func:`iim_cut_modes_read`), and each scoring reads its own
+    protocol's cut modes from that run
+    (:func:`impact_pipeline.v2.iim_v5.select_cut_modes`): the bidirectional
+    form (``iim_bidirectional``) reads the cut its primary scoring already
+    reports, its record naming the scoring the run was computed in, and
+    every record holds exactly what its own run would hold.
+
+    A grain with more macro nodes than the declared cap
+    (:attr:`RunSettings.iim_max_macro_nodes`, 4: the grain of every Tier-A
+    substrate) is refused before any statistic is computed
+    (:class:`MacroGrainTooLargeError`, an estimator error of that component):
+    the cost of a transition-level statistic grows with the number of macro
+    states and ordered bipartitions (a five-node grain costs about 28 times
+    a four-node one), so a grain no design declares never runs for hours.
+    """
 
     principle, version, kind = "IIM", "iim-v5-2026.10", "iim_v5"
     uses_declaration = True
@@ -825,15 +990,146 @@ class IimV5Scorer(Scorer):
     def check_options(self, options):
         iim_v5_params(options)
 
+    @staticmethod
+    def macro_nodes(ctx, view: Mapping, choice: str) -> Mapping:
+        """The macro grain (rows of the bearer view) of a ``macro_nodes``
+        choice."""
+        meta = ctx.system.meta or {}
+        if choice == MACRO_NODES_DECLARED:
+            return view["macro_nodes"]
+        if choice == MACRO_NODES_RANK_SAFE:
+            if meta.get("iim_grain") != RANK_SAFE_GRAIN:
+                raise ProtocolOptionError(
+                    f"macro_nodes {choice!r}: the view declares the grain "
+                    f"{meta.get('iim_grain')!r}, not the rank-safe clusters")
+            return view["macro_nodes"]
+        quad = (meta.get("forward_v2") or {}).get("iim_quadrants_v1")
+        if not quad:
+            raise ProtocolOptionError(f"macro_nodes {choice!r}: the view keeps no v1 "
+                                      "electrode quadrants")
+        pos = {g: k for k, g in enumerate(view["nodes"])}
+        return {str(k): [pos[int(i)] for i in v if int(i) in pos]
+                for k, v in quad.items()}
+
     def score(self, ctx):
         from impact_pipeline.v2 import iim_v5
 
+        params = iim_v5_params(ctx.options)
+        _opts, runner = split_runner_options("IIM", ctx.options)
         view = ctx.bearer()
-        res = iim_v5.compute_iim_v5(
-            view["ts"], lag=ctx.iim_lag(), params=iim_v5_params(ctx.options),
-            macro_nodes=view["macro_nodes"], basis=ctx.basis("IIM"),
-            null_seed=ctx.null_seed, observation_stage=ctx.view.observation_stage)
-        return output_from_result(res, iim_v5, self)
+        macro = self.macro_nodes(ctx, view, runner.get("macro_nodes",
+                                                       MACRO_NODES_DECLARED))
+        cap = ctx.settings.iim_max_macro_nodes
+        if cap is not None and len(macro) > int(cap):
+            raise MacroGrainTooLargeError(
+                f"the IIM grain of view {ctx.view.name!r} ({ctx.scoring.bearer_mode} "
+                f"bearer) has {len(macro)} macro nodes; the run's cap is {int(cap)}")
+        admitted = runner.get("observation_gate") == OBSERVATION_GATE_ADMISSION_RUN
+        lag = ctx.iim_lag()
+        basis = ctx.basis("IIM")
+        p = iim_v5.IIMParams.from_mapping(params)
+        read = (ctx._cache.get(IIM_CUT_MODES_READ) or {}).get(
+            iim_input_group(ctx.view.name, ctx.scoring.bearer_mode,
+                            ctx.scoring.declaration_id, ctx.options))
+        run_params = params
+        if read:
+            # the run computes the cut modes of every scoring of these inputs
+            # (this scoring's primary first; ``read`` holds its own as well)
+            extra = [c for c in iim_v5.CUT_MODES
+                     if c != p.cut_mode and (c in read or c in p.report_cut_modes)]
+            run_params = dict(params, report_cut_modes=extra)
+        same_inputs = {k: v for k, v in p.to_dict().items()
+                       if k not in ("cut_mode", "report_cut_modes")}
+        key = ("iim_v5_run", ctx.view.name, ctx.scoring.bearer_mode,
+               ctx.scoring.declaration_id, round(ctx.lag_timescale(), 12),
+               json.dumps(same_inputs, sort_keys=True),
+               json.dumps({k: [int(i) for i in v] for k, v in macro.items()}),
+               int(lag), bool(admitted))
+        res, derived_from, covered = None, None, False
+        for run, where in ctx._cache.get(key, ()):
+            if set(p.cut_modes) <= set(iim_v5.cut_modes_computed(run)):
+                covered = True
+                try:
+                    res = iim_v5.select_cut_modes(run, p)
+                except ValueError:
+                    continue
+                derived_from = where
+                break
+
+        def own_run():
+            return iim_v5.compute_iim_v5(
+                view["ts"], lag=lag, params=p.to_dict(), macro_nodes=macro,
+                basis=basis, null_seed=ctx.null_seed,
+                observation_stage=ctx.view.observation_stage,
+                observation_admitted=admitted)
+
+        if res is None and covered:
+            # a run of these inputs computed this scoring's cut modes but is
+            # undefined for a reason that counts every computed cut mode (too
+            # few finite null draws): its own run decides
+            res = own_run()
+        elif res is None:
+            run = iim_v5.compute_iim_v5(
+                view["ts"], lag=lag, params=run_params, macro_nodes=macro, basis=basis,
+                null_seed=ctx.null_seed, observation_stage=ctx.view.observation_stage,
+                observation_admitted=admitted)
+            ctx._cache.setdefault(key, []).append((run, ctx.scoring.scoring_id))
+            # the record keeps this scoring's own cut modes, whatever else the
+            # run computed for the other scorings of the simulation
+            if tuple(iim_v5.cut_modes_computed(run)) == tuple(p.cut_modes):
+                res = run
+            else:
+                try:
+                    res = iim_v5.select_cut_modes(run, p)
+                except ValueError:
+                    # undefined for a reason that counts every computed cut
+                    # mode: as above
+                    res = own_run()
+        out = output_from_result(res, iim_v5, self)
+        if derived_from is not None:
+            out.details["cut_modes_computed_in_scoring"] = derived_from
+        if runner.get("macro_nodes"):
+            out.details["macro_nodes"] = runner["macro_nodes"]
+        return out
+
+
+IIM_CUT_MODES_READ = "iim_cut_modes_read"
+
+
+def iim_input_group(view: str, bearer_mode: str, declaration_id: str,
+                    options: Mapping) -> tuple:
+    """The inputs of an IIM v5 run up to its cut modes: the view, bearer,
+    declaration and the protocol's IIM options without ``cut_mode`` and
+    ``report_cut_modes``."""
+    rest = {k: v for k, v in dict(options or {}).items()
+            if k not in ("cut_mode", "report_cut_modes")}
+    return (view, bearer_mode, declaration_id, json.dumps(rest, sort_keys=True))
+
+
+def iim_cut_modes_read(task: D.TaskSpec, protocols: Mapping[str, "ResolvedProtocol"],
+                       settings: "RunSettings" = None) -> Dict[tuple, set]:
+    """``{input group: cut modes}``: the cut modes (primary and reported) of
+    the task's IIM v5 scorings per :func:`iim_input_group`, every cut mode a
+    record of the simulation keeps; one run per group computes them all."""
+    from impact_pipeline.v2 import iim_v5
+
+    out: Dict[tuple, set] = {}
+    for spec in task.scorings:
+        if "IIM" not in spec.principles or (settings is not None
+                                            and not settings.wants("IIM")):
+            continue
+        rp = protocols.get(spec.protocol_key)
+        if rp is None or rp.protocol.estimator_version_for("IIM") != (
+                IimV5Scorer.version):
+            continue
+        opts = rp.protocol.estimator_options("IIM")
+        try:
+            cuts = iim_v5.IIMParams.from_mapping(iim_v5_params(opts)).cut_modes
+        except (ValueError, TypeError):
+            continue  # the scorer reports the option error as the component's
+        key = iim_input_group(spec.view, spec.bearer_mode, spec.declaration_id, opts)
+        out.setdefault(key, set()).update(cuts)
+    return out
 
 
 class ModuleScorer(Scorer):
@@ -1164,6 +1460,10 @@ class ScoringContext:
     def identifiability(self) -> Optional[dict]:
         return identifiability(self.scoring.declaration_id, self.view)
 
+    def regime(self) -> dict:
+        """The registry regime keys of this scoring (:func:`view_regime`)."""
+        return view_regime(self.view, self.system)
+
     def reference_excess(self) -> Optional[float]:
         ref = self.protocol.reference_for(self.principle)
         if ref and ref.get("reference_scale") == "excess":
@@ -1207,11 +1507,21 @@ class ScoringContext:
             "observation_stage": lambda: self.view.observation_stage,
             "observation_model": lambda: self.observation_model,
             "view": lambda: self.view.name, "registry": lambda: self.registry,
-            "regime": lambda: dict(self.view.regime),
+            "regime": self.regime,
             "identifiability": self.identifiability,
             "events": lambda: self.system.events, "system": lambda: self.system,
             "meta": lambda: self.system.meta,
         }
+
+
+def view_regime(view: D.ViewSpec, system) -> dict:
+    """The registry regime keys of an observed system: those the forward
+    layer attached to the view's system (``meta['forward_v2']['regime']``,
+    which depend on the task's regime), else the view's static keys."""
+    block = (getattr(system, "meta", None) or {}).get("forward_v2")
+    if isinstance(block, Mapping) and isinstance(block.get("regime"), Mapping):
+        return dict(block["regime"])
+    return dict(view.regime)
 
 
 def identifiability(declaration_id: str, view: D.ViewSpec) -> Optional[dict]:
@@ -1369,7 +1679,7 @@ def _evidence(principle, outcome: _Outcome, ctx: ScoringContext, scorer: Scorer)
         protocol_id=proto.protocol_id, substrate=ctx.system.meta.get("substrate"),
         grain=ctx.system.meta.get("iim_grain") if principle == "IIM" else None,
         observation_stage=ctx.view.observation_stage, view=ctx.view.name,
-        regime=dict(ctx.view.regime) or None,
+        regime=ctx.regime() or None,
     )
     if outcome.output is None:
         reason = (R.estimator_error(outcome.error) if outcome.error is not None
@@ -1481,14 +1791,18 @@ def _observe(view: D.ViewSpec, source, task):
 
 def score_simulation(task: D.TaskSpec, source,
                      protocols: Mapping[str, ResolvedProtocol],
-                     settings: RunSettings = DEFAULT_SETTINGS, registry=None
+                     settings: RunSettings = DEFAULT_SETTINGS, registry=None,
+                     views: Optional[Mapping] = None
                      ) -> Tuple[REC.ScoringRecord, ...]:
-    """Every scoring of one simulated system (module docstring, steps 3-4)."""
+    """Every scoring of one simulated system (module docstring, steps 3-4).
+    ``views`` holds the observed systems a builder returned with the
+    simulation (:class:`~impact_pipeline.bench.designs_v2.MultiViewSystem`);
+    a view outside it is observed through its transform."""
     from impact_pipeline import evidence_v2 as E
 
-    cache: dict = {}
+    cache: dict = {IIM_CUT_MODES_READ: iim_cut_modes_read(task, protocols, settings)}
     outputs: dict = {}
-    systems: dict = {}
+    systems: dict = dict(views or {})
     out = []
     for spec in task.scorings:
         resolved = protocols[spec.protocol_key]
@@ -1525,7 +1839,7 @@ def score_simulation(task: D.TaskSpec, source,
         # fails there is an estimator error of that component alone: it is
         # re-judged as one and the verdict is taken again, so it never costs
         # the other components (an error component always validates).
-        regime = dict(view.regime) or None
+        regime = view_regime(view, system) or None
         for _attempt in range(3):
             try:
                 verdict = E.verdict_v3(evidence, resolved.protocol, registry=registry,
@@ -1562,6 +1876,12 @@ def score_simulation(task: D.TaskSpec, source,
         }
         if system is not source:
             details["view_ts_sha256"] = PV.array_sha256(system.ts)
+        if isinstance((system.meta or {}).get("forward_v2"), Mapping):
+            # the view, its stage and observation, the registry substrate and
+            # the regime keys the registry builder reads
+            from impact_pipeline.bench import forward_v2 as F2
+
+            details.update(F2.scoring_details(system))
         decl_key = ("declared", spec.view, spec.declaration_id)
         if decl_key in cache:
             dec = cache[decl_key]
@@ -1710,27 +2030,39 @@ def run_task(task: D.TaskSpec, protocols: Mapping[str, ResolvedProtocol],
         raise RunPolicyError(f"{task.task_id}: held-out conditions run on development "
                              "seeds only as smoke tests (seeds 980-984)")
     t_all = time.perf_counter()
+    cpu_all = time.process_time()
     timing: dict = {}
     simulation, scorings, error, gen_version = None, (), None, None
     config_digest = None
+    extra_config: dict = {}
     try:
         load_design_module(task.design_module)
         builder = SYSTEM_BUILDERS.get(task.builder)
         if builder is None:
             raise RunPolicyError(f"no system builder {task.builder!r}")
+        for key, fn in RECORD_CONFIG.get(task.design_module, {}).items():
+            extra_config[key] = _sanitize(fn(task))
         with PV.timed() as t:
-            source = builder(task)
+            built = builder(task)
+        views = None
+        if isinstance(built, D.MultiViewSystem):
+            source, views = built.source, dict(built.views)
+        else:
+            source = built
         timing["simulate_s"] = t["seconds"]
         gen_version = (source.meta or {}).get("generator_version")
         simulation = simulation_block(source, t["seconds"])
         config_digest = system_config_digest(source)
         with PV.timed() as t:
-            scorings = score_simulation(task, source, protocols, settings, registry)
+            scorings = score_simulation(task, source, protocols, settings, registry,
+                                        views=views)
         timing["score_s"] = t["seconds"]
     except Exception as exc:  # noqa: BLE001 - recorded, the run continues
         error = f"{type(exc).__name__}: {exc}"
         scorings = ()
     timing["total_s"] = round(time.perf_counter() - t_all, 4)
+    # CPU time of the worker process (one BLAS thread): the cost of the task
+    timing["cpu_s"] = round(time.process_time() - cpu_all, 4)
     timing["load_average"] = PV.load_average()
     timing["components_s"] = {
         f"{s.scoring_id}:{p}": c.seconds for s in scorings
@@ -1748,6 +2080,7 @@ def run_task(task: D.TaskSpec, protocols: Mapping[str, ResolvedProtocol],
         "runner_version": RUNNER_VERSION,
         "settings": settings.to_dict(),
     }
+    config.update(extra_config)
     return REC.TaskRecord(
         task_id=task.task_id, design=task.design, family=task.family,
         system=task.system, seed=task.seed, generator_version=GENERATOR_VERSION_V2,
@@ -1770,6 +2103,7 @@ def smoke_summary(record: REC.TaskRecord) -> dict:
         "n_components": len(comps),
         "n_component_errors": sum(c.is_estimator_error for c in comps),
         "total_s": (record.timing or {}).get("total_s"),
+        "cpu_s": (record.timing or {}).get("cpu_s"),
         "discarded": True,
     }
 
@@ -1778,6 +2112,14 @@ def smoke_summary(record: REC.TaskRecord) -> dict:
 # plan checks
 # --------------------------------------------------------------------------
 def protocol_keys(tasks: Iterable[D.TaskSpec]) -> List[str]:
+    """The protocol keys of a plan, sorted. The plan's design modules are
+    registered first (:func:`load_design_module`), so the keys whose drafts
+    a design module declares (``PROTOCOL_DRAFTS``) resolve in a fresh
+    process: ``resolve_protocols(protocol_keys(tasks))`` needs nothing
+    else."""
+    tasks = list(tasks)
+    for t in tasks:
+        load_design_module(t.design_module)
     return sorted({s.protocol_key for t in tasks for s in t.scorings})
 
 
@@ -1863,10 +2205,17 @@ def check_plan(tasks: Sequence[D.TaskSpec], protocols: Mapping[str, ResolvedProt
 def shard(tasks: Sequence[D.TaskSpec], shard_index: int = 0,
           n_shards: int = 1) -> List[D.TaskSpec]:
     """A deterministic shard: every ``n_shards``-th task id in sorted order,
-    the tasks kept in plan order (one shard is the plan itself)."""
+    the tasks kept in plan order (one shard is the plan itself). A plan with
+    curtailed sampling (:func:`curtailment_controllers`) is not split: a
+    gated run's decision reads the records of the runs before it in the
+    rule's order, which another shard would hold."""
     n_shards, shard_index = int(n_shards), int(shard_index)
     if n_shards < 1 or not 0 <= shard_index < n_shards:
         raise ValueError("need 0 <= shard_index < n_shards")
+    if n_shards > 1 and curtailment_controllers(tasks):
+        raise RunPolicyError("a plan with curtailed sampling runs as one shard: "
+                             "the stopping rule reads the records of the whole "
+                             "plan in its order")
     keep = set(sorted(t.task_id for t in tasks)[shard_index::n_shards])
     return [t for t in tasks if t.task_id in keep]
 
@@ -2032,6 +2381,110 @@ def _execute(task_payload, protocol_payloads, settings_payload, provenance,
     return "record", rec.to_dict()
 
 
+def curtailment_controllers(tasks: Sequence[D.TaskSpec]) -> list:
+    """
+    The curtailment controllers of a plan: one per design module that
+    declares ``RUNNER_CURTAILMENT(tasks)`` (built on that module's tasks).
+    A controller's contract:
+
+    * ``gated_ids()``: the ids of the tasks that may be skipped, in the order
+      the rule evaluates them;
+    * ``feed(task_id, record)``: the record of a task of the plan (tasks the
+      controller does not know are ignored);
+    * ``decision(task_id)`` for a gated task: None while a task before it in
+      the rule's order has no record, else True (skip) or False (run). It
+      depends only on the records of the tasks before it, so the records a
+      run keeps do not depend on the number of workers or the completion
+      order;
+    * ``summary()``: a JSON block for the run manifest.
+    """
+    by_mod: Dict[str, List[D.TaskSpec]] = {}
+    for t in tasks:
+        if t.design_module is not None:
+            by_mod.setdefault(t.design_module, []).append(t)
+    out = []
+    for name, ts in by_mod.items():
+        fn = getattr(D.load_module(name), "RUNNER_CURTAILMENT", None)
+        if callable(fn):
+            c = fn(ts)
+            if c is not None:
+                out.append(c)
+    return out
+
+
+def _make_pool(n_workers: int) -> concurrent.futures.Executor:
+    """The worker pool of a parallel run: ``n_workers`` spawned processes,
+    one BLAS thread each."""
+    return concurrent.futures.ProcessPoolExecutor(
+        max_workers=n_workers, initializer=_worker_init,
+        mp_context=multiprocessing.get_context("spawn"))
+
+
+def _run_parallel(regular, gated, gate_of, by_id, n_workers, emit, curtailed,
+                  args) -> None:
+    """Run a plan on ``n_workers`` spawned processes: every regular task at
+    once; the gated tasks in their rule's order, at most ``n_workers`` of
+    them ahead of their decision. A gated task's record is kept only once
+    its decision says so (records computed ahead of a stop are discarded),
+    so the kept records equal those of a serial run."""
+    payloads, settings_payload, small_prov, confirmatory, registry = args
+    queue = list(gated)
+    buffered: Dict[str, tuple] = {}
+    pending: Dict[concurrent.futures.Future, str] = {}
+    with _single_threaded_children(), _make_pool(n_workers) as ex:
+
+        def submit(t):
+            fut = ex.submit(_execute, t.to_dict(), payloads, settings_payload,
+                            small_prov, confirmatory, registry)
+            pending[fut] = t.task_id
+
+        def top_up():
+            # gated runs computed ahead of their decision, running or waiting
+            # in the buffer: at most n_workers, so a stop wastes little
+            ahead = sum(1 for tid in pending.values() if tid in gate_of) + len(buffered)
+            while queue and ahead < n_workers:
+                tid = queue.pop(0)
+                if gate_of[tid].decision(tid):
+                    curtailed.append(tid)
+                    continue
+                submit(by_id[tid])
+                ahead += 1
+
+        def flush():
+            moved = True
+            while moved:
+                moved = False
+                for tid in [g for g in gated if g in buffered]:
+                    decision = gate_of[tid].decision(tid)
+                    if decision is None:
+                        continue
+                    kind, payload = buffered.pop(tid)
+                    if decision:
+                        curtailed.append(tid)
+                    else:
+                        emit(kind, payload)
+                    moved = True
+
+        for t in regular:
+            submit(t)
+        top_up()
+        while pending:
+            finished, _ = concurrent.futures.wait(
+                list(pending), return_when=concurrent.futures.FIRST_COMPLETED)
+            for fut in finished:
+                tid = pending.pop(fut)
+                if tid in gate_of:
+                    buffered[tid] = fut.result()
+                else:
+                    emit(*fut.result())
+            flush()
+            top_up()
+        flush()
+        if buffered or queue:  # pragma: no cover - every predecessor has run
+            raise RuntimeError("curtailment: gated tasks left without a decision: "
+                               f"{sorted(buffered) + queue}")
+
+
 def run_tasks(tasks: Sequence[D.TaskSpec], out_dir, *, n_workers: int = 1,
               settings: RunSettings = DEFAULT_SETTINGS, resume: bool = True,
               confirmatory: bool = False, freeze_tag: Optional[str] = None,
@@ -2062,6 +2515,9 @@ def run_tasks(tasks: Sequence[D.TaskSpec], out_dir, *, n_workers: int = 1,
     else:
         prov = PV.run_provenance(repo_root or PV.REPO_ROOT, seeds=seeds,
                                  confirmatory=False)
+    # the design modules register their protocol drafts, views and builders
+    for t in tasks:
+        load_design_module(t.design_module)
     protocols = resolve_protocols(protocol_keys(tasks), directory=protocol_dir,
                                   allow_drafts=allow_drafts,
                                   overrides=protocol_overrides)
@@ -2105,6 +2561,21 @@ def run_tasks(tasks: Sequence[D.TaskSpec], out_dir, *, n_workers: int = 1,
     if resume:
         done |= smoke_done(out / SMOKE_JSONL) & smoke_ids
     todo = [t for t in tasks if t.task_id not in done]
+    # early stopping by a design's preregistered rule (curtailed sampling):
+    # the gated tasks run in the controller's order, each only while its
+    # decision (read from the records of the tasks before it) keeps it
+    controllers = curtailment_controllers(tasks)
+    if controllers and done:
+        kept, _ = read_results(jsonl)
+        for tid in [i for i in plan_ids if i in kept]:
+            for c in controllers:
+                c.feed(tid, kept[tid])
+    gate_of = {tid: c for c in controllers for tid in c.gated_ids()}
+    by_id = {t.task_id: t for t in todo}
+    regular = [t for t in todo if t.task_id not in gate_of]
+    gated = [tid for c in controllers for tid in c.gated_ids() if tid in by_id]
+    curtailed: List[str] = [tid for tid in gate_of
+                            if tid not in by_id and gate_of[tid].decision(tid)]
     small_prov = {
         "runner_version": RUNNER_VERSION,
         "git_sha": prov["code"].get("git_sha"),
@@ -2131,6 +2602,8 @@ def run_tasks(tasks: Sequence[D.TaskSpec], out_dir, *, n_workers: int = 1,
                 counts["n_smoke"] += 1
                 return
             rec = REC.TaskRecord.from_dict(payload)
+            for c in controllers:
+                c.feed(rec.task_id, rec)
             fh.write(REC.dumps(rec) + "\n")
             fh.flush()
             counts["n_run"] += 1
@@ -2149,22 +2622,33 @@ def run_tasks(tasks: Sequence[D.TaskSpec], out_dir, *, n_workers: int = 1,
                      (rec.timing or {}).get("total_s", float("nan")))
 
         settings_payload = settings.to_dict()
+
+        def _run(t):
+            return _execute(t.to_dict(), payloads, settings_payload, small_prov,
+                            confirmatory, registry)
+
         if int(n_workers) <= 1:
             with _quiet():
-                for t in todo:
-                    _emit(*_execute(t.to_dict(), payloads, settings_payload,
-                                    small_prov, confirmatory, registry))
+                for t in regular:
+                    _emit(*_run(t))
+                for tid in gated:
+                    decision = gate_of[tid].decision(tid)
+                    if decision is None:  # pragma: no cover - its predecessors ran
+                        raise RuntimeError(f"{tid}: the curtailment rule has no "
+                                           "decision after its earlier runs")
+                    if decision:
+                        curtailed.append(tid)
+                        continue
+                    _emit(*_run(by_id[tid]))
         else:
-            with _single_threaded_children(), concurrent.futures.ProcessPoolExecutor(
-                    max_workers=int(n_workers), initializer=_worker_init,
-                    mp_context=multiprocessing.get_context("spawn")) as ex:
-                futs = [ex.submit(_execute, t.to_dict(), payloads, settings_payload,
-                                  small_prov, confirmatory, registry) for t in todo]
-                for fut in concurrent.futures.as_completed(futs):
-                    _emit(*fut.result())
+            _run_parallel(regular, gated, gate_of, by_id, int(n_workers), _emit,
+                          curtailed, (payloads, settings_payload, small_prov,
+                                      confirmatory, registry))
     latest, _ = read_results(jsonl)
+    curtailed_ids = sorted(set(curtailed))
     diff = REC.plan_differences(latest.values(),
-                                [i for i in plan_ids if i not in smoke_ids])
+                                [i for i in plan_ids if i not in smoke_ids
+                                 and i not in set(curtailed_ids)])
     manifest = {
         "schema": "mpc-bench-run-manifest/3",
         "runner_version": RUNNER_VERSION,
@@ -2182,6 +2666,8 @@ def run_tasks(tasks: Sequence[D.TaskSpec], out_dir, *, n_workers: int = 1,
         "n_skipped_done": len(tasks) - len(todo),
         **counts,
         "plan_differences": diff,
+        "curtailed_task_ids": curtailed_ids,
+        "curtailment": [_sanitize(c.summary()) for c in controllers],
         "duplicate_simulations": REC.duplicate_simulations(latest.values()),
         "wall_s": round(time.time() - t_start, 3),
         "confirmatory": bool(confirmatory),
@@ -2221,7 +2707,13 @@ def _parse_list(text) -> Optional[List[str]]:
 def build_tasks(names: Sequence[str], split: str, **options) -> List[D.TaskSpec]:
     """The plan of several designs (:func:`designs_v2.build_plan`: each
     builder gets the options its signature accepts, ``seeds``, ``systems``,
-    ...; every task carries its design module)."""
+    ...; every task carries its design module). A ``purpose`` is refused
+    for a design whose builder declares none."""
+    if options.get("purpose") is not None:
+        for name in names:
+            build = D.get_design(name).build
+            if "purpose" not in inspect.signature(build).parameters:
+                raise RunPolicyError(f"design {name} declares no purposes")
     return D.build_plan(names, split, **options)
 
 
@@ -2253,6 +2745,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--split", default=S.DEVELOPMENT, choices=S.SPLITS)
         p.add_argument("--seeds", default=None, help="e.g. 320-323 (within the split)")
         p.add_argument("--systems", default=None, help="comma-separated systems")
+        p.add_argument("--purpose", default=None,
+                       help="the purpose of designs that declare purposes (the "
+                            "forward arms: dry_run, dev_regime, smoke, reference, ...)")
         p.add_argument("--n-shards", type=int, default=1)
         p.add_argument("--shard-index", type=int, default=0)
         if name == "run":
@@ -2379,7 +2874,7 @@ def _main(args) -> int:
         return 0 if all(r["matches"] is not False for r in rows) else 1
     tasks = build_tasks(_parse_list(args.designs), args.split,
                         seeds=_parse_ints(args.seeds),
-                        systems=_parse_list(args.systems))
+                        systems=_parse_list(args.systems), purpose=args.purpose)
     tasks = shard(tasks, args.shard_index, args.n_shards)
     if args.command == "list":
         for t in tasks:
@@ -2403,10 +2898,15 @@ def _main(args) -> int:
 __all__ = [
     "CALIBRATION_PENDING",
     "DEFAULT_SETTINGS",
+    "OBSERVATION_GATE_ADMISSION_RUN",
+    "RECORD_CONFIG",
+    "RUNNER_OPTIONS",
     "EstimatorUnavailableError",
     "FAMILY_PROTOCOLS",
+    "IIM_MAX_MACRO_NODES",
     "Member",
     "IimV5Scorer",
+    "MacroGrainTooLargeError",
     "MANIPULATION_FAMILY",
     "ModuleScorer",
     "NasV3Scorer",
@@ -2432,7 +2932,11 @@ __all__ = [
     "calibration_pending",
     "call_kwargs",
     "check_plan",
+    "curtailment_controllers",
+    "draft_payload",
     "draft_protocol",
+    "iim_cut_modes_read",
+    "iim_input_group",
     "iim_v5_params",
     "load_design_module",
     "main",
@@ -2458,8 +2962,10 @@ __all__ = [
     "simulation_block",
     "smoke_done",
     "smoke_summary",
+    "split_runner_options",
     "system_config_digest",
     "translate_facets",
     "v1_params",
+    "view_regime",
     "write_components_csv",
 ]

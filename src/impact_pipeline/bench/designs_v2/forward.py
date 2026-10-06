@@ -33,7 +33,10 @@ Arms (design 3.2, 3.6)
 Purposes and regimes
 --------------------
 ``confirmatory``: seeds from 20000, the held-out regime (lead-field seed
-20261001, width 0.6). ``dry_run`` (seeds 384-399) and ``dev_regime``
+20261001, width 0.6). ``replication``: the anchor conditions on the
+confirmatory replication block 20900-20919 at the held-out regime (the
+forward views' anchor replication, HCv2-6). ``dry_run`` (seeds 384-399) and
+``dev_regime``
 (804-819): the same conditions at about 15 % scale, at the development
 regime. ``reference`` (900-939): the anchor conditions (``G_nom``,
 PC_nominal) at the held-out regime, computed only after the held-out
@@ -42,17 +45,39 @@ development regime. ``smoke`` (980-984): the anchor conditions at the
 held-out regime, outputs discarded unread. No other development task may
 use the held-out regime (:func:`check_regime_policy`).
 
-Record contract (what the registry builder reads)
--------------------------------------------------
-A task record (``mpc-bench-result/3``) of this design stores
-:meth:`ForwardTask.to_config` as ``config`` (``config['forward']`` names the
-arm, condition, dose, purpose and regime); each scoring has ``view`` = the
-view name, ``estimator_form`` from :func:`scoring_plan`, and
-``details`` = :func:`impact_pipeline.bench.forward_v2.scoring_details` of the
-view (its registry regime keys). Components are scored under the view's
-family protocol without a registry (the admission run decides the
-registry); sensor and source-estimate scorings carry the observation-gate
-label ``admission_run`` (NAS N10, IIM C7).
+Record contract (what the registry builder and the hypotheses read)
+-------------------------------------------------------------------
+The v2 runner runs these tasks (:func:`runner_task`; designs
+``whole_brain``, ``forward_family_a``, ``forward_family_a_bold`` and
+``forward_anchor_replication``). A task record (``mpc-bench-result/3``)
+keeps the forward task's id, carries the design of its arm
+(:data:`RECORD_DESIGN_OF_ARM`, the one table of these names: the
+hypotheses select by them and the registry builder reads the arms' designs
+only; the anchor runs are filed under :data:`ANCHOR_REPLICATION_DESIGN`)
+and stores :meth:`ForwardTask.to_config` in ``config['forward']`` (arm,
+condition and its spec, dose, purpose, regime and its parameters); each
+scoring has ``view`` = the view name, ``estimator_form`` from
+:func:`scoring_plan`, the view's family protocol
+(:func:`protocol_key_of`: ``hopf-eeg64``, ``fwdA-eeglow``,
+``fwdA_bold-bold``, ``hopf-eeg64+iim_v1_quadrants``) and ``details`` with
+:func:`impact_pipeline.bench.forward_v2.scoring_details` of the view (its
+registry regime keys). Components are scored under the view's family
+protocol without a registry (the admission run decides the registry);
+sensor and source-estimate scorings carry the observation-gate label
+``admission_run`` (NAS N10, IIM C7), which the runner maps onto NAS v3's
+``override_observation_gate`` and IIM v5's ``observation_admitted``, and
+IIM's ``macro_nodes`` option picks the rank-safe clusters or the v1
+quadrants of a sensor view.
+
+A run carries what some criterion, hypothesis or anchor reads on it
+(:func:`scoring_plan`): the v1 quadrant comparator only at ``G = 0``
+(HCv2-12(d), HCv2-15(b)); on the lesion conditions only NAS (FMb2 is the
+only lesion criterion); the source view of a family-A arm, which is no
+admission view, only on the runs whose source contrast FMd reads; and IIM
+on the family-A arms, which is descriptive (design 3.1), as its value and
+null without the bootstrap SE that only a status needs. Every forward
+protocol scores IIM's primary (directional) cut only (``report_cut_modes``
+empty): no forward scoring reports another cut.
 
 Curtailment (BOLD arm): the on-runs PC_nominal and K in {2, 3} are judged
 for FMabs in seed order (:func:`curtailment_order`); once the demonstration
@@ -92,13 +117,18 @@ ARM_A_BOLD = "forward_a_bold"
 ARMS = (ARM_HOPF, ARM_A_EEG, ARM_A_BOLD)
 
 CONFIRMATORY = "confirmatory"
+REPLICATION = "replication"
 DRY_RUN = "dry_run"
 DEV_REGIME = "dev_regime"
 REFERENCE = "reference"
 REFERENCE_DEVELOPMENT = "reference_development"
 SMOKE = "smoke"
-PURPOSES = (CONFIRMATORY, DRY_RUN, DEV_REGIME, REFERENCE, REFERENCE_DEVELOPMENT, SMOKE)
-HELD_OUT_PURPOSES = (CONFIRMATORY, REFERENCE, SMOKE)
+PURPOSES = (CONFIRMATORY, REPLICATION, DRY_RUN, DEV_REGIME, REFERENCE,
+            REFERENCE_DEVELOPMENT, SMOKE)
+HELD_OUT_PURPOSES = (CONFIRMATORY, REPLICATION, REFERENCE, SMOKE)
+# purposes on confirmatory seeds: the admission runs and the anchor
+# replication blocks
+CONFIRMATORY_PURPOSES = (CONFIRMATORY, REPLICATION)
 # purposes whose records an admission reads (and whose on-runs may be
 # curtailed); reference and smoke runs only anchor or test the plumbing
 ADMISSION_PURPOSES = (CONFIRMATORY, DRY_RUN, DEV_REGIME)
@@ -111,6 +141,8 @@ DEVELOPMENT_SEED_BLOCKS = MappingProxyType({
 })
 DRY_RUN_FRACTION = 0.15
 CONFIRMATORY_SEED_BASE = S.CONFIRMATORY_SEED_MIN
+# the anchor replication block of the forward views (HCv2-6; seed map 3.7)
+REPLICATION_SEEDS = range(20900, 20920)
 
 HOPF_SOURCE_DURATION_S = 60.0
 # v1 run_bench.BOLD_MIN_DURATION_SEC: 300 volumes at TR 2 s
@@ -304,6 +336,8 @@ def _seeds(cond: Condition, purpose: str) -> List[int]:
     if purpose == CONFIRMATORY:
         return list(range(CONFIRMATORY_SEED_BASE, CONFIRMATORY_SEED_BASE
                           + cond.n_confirmatory))
+    if purpose == REPLICATION:
+        return list(REPLICATION_SEEDS) if cond.anchor else []
     block = list(DEVELOPMENT_SEED_BLOCKS[purpose])
     if purpose in (DRY_RUN, DEV_REGIME):
         n = min(len(block), int(math.ceil(DRY_RUN_FRACTION * cond.n_confirmatory)))
@@ -317,22 +351,43 @@ def build_tasks(purpose: str = CONFIRMATORY, arms: Sequence[str] = ARMS,
     plan order (arm, condition, seed)."""
     if purpose not in PURPOSES:
         raise ForwardDesignError(f"purpose must be one of {PURPOSES}")
-    regime = regime_of_purpose(purpose).name
     tasks = []
     for arm in arms:
         if arm not in ARMS:
             raise ForwardDesignError(f"arm must be one of {ARMS}")
         for cond in conditions(arm):
             for seed in _seeds(cond, purpose):
-                tasks.append(ForwardTask(
-                    task_id=f"{DESIGN}-{arm}-{cond.label}-{regime}-s{int(seed):05d}",
-                    arm=arm, condition=cond.label, seed=int(seed), purpose=purpose,
-                    regime=regime, views=VIEWS_OF_ARM[arm], dose=cond.dose,
-                    curtail_group=(cond.curtail_group
-                                   if purpose in ADMISSION_PURPOSES else None),
-                    n_low=int(n_low)))
+                tasks.append(_forward_task(arm, cond, seed, purpose, n_low))
     check_regime_policy(tasks)
     return tasks
+
+
+def _forward_task(arm: str, cond: Condition, seed: int, purpose: str,
+                  n_low: int) -> ForwardTask:
+    regime = regime_of_purpose(purpose).name
+    return ForwardTask(
+        task_id=f"{DESIGN}-{arm}-{cond.label}-{regime}-s{int(seed):05d}",
+        arm=arm, condition=cond.label, seed=int(seed), purpose=purpose,
+        regime=regime, views=VIEWS_OF_ARM[arm], dose=cond.dose,
+        curtail_group=(cond.curtail_group if purpose in ADMISSION_PURPOSES
+                       else None),
+        n_low=int(n_low))
+
+
+def forward_task(arm: str, condition_label: str, seed: int, purpose: str,
+                 n_low: int = F2.N_LOW_DEFAULT) -> ForwardTask:
+    """The forward task of (arm, condition, seed, purpose), as
+    :func:`build_tasks` builds it, checked against the purpose's seeds and
+    the regime policy (the runner rebuilds its tasks from these keys)."""
+    if purpose not in PURPOSES:
+        raise ForwardDesignError(f"purpose must be one of {PURPOSES}")
+    cond = condition(arm, condition_label)
+    if int(seed) not in _seeds(cond, purpose):
+        raise ForwardDesignError(f"seed {seed} is not a {purpose} seed of {arm} "
+                                 f"{condition_label}")
+    t = _forward_task(arm, cond, int(seed), purpose, n_low)
+    check_regime_policy([t])
+    return t
 
 
 def check_regime_policy(tasks: Sequence[ForwardTask]) -> None:
@@ -342,16 +397,20 @@ def check_regime_policy(tasks: Sequence[ForwardTask]) -> None:
     ``confirmatory``); the held-out regime appears on development seeds only
     on the reference block (900-939, anchors after the held-out predictions
     are committed) and the smoke seeds (980-984, outputs discarded); every
-    confirmatory task is at the held-out regime.
+    confirmatory task is at the held-out regime, and the replication runs
+    use the replication block 20900-20919.
     """
     for t in tasks:
         split = S.split_of(t.seed)
         if t.purpose not in PURPOSES:
             raise ForwardDesignError(f"{t.task_id}: unknown purpose {t.purpose!r}")
-        if (t.purpose == CONFIRMATORY) != (split == S.CONFIRMATORY):
+        if (t.purpose in CONFIRMATORY_PURPOSES) != (split == S.CONFIRMATORY):
             raise ForwardDesignError(
                 f"{t.task_id}: purpose {t.purpose} on a {split} seed")
-        if (t.purpose != CONFIRMATORY
+        if t.purpose == REPLICATION and t.seed not in REPLICATION_SEEDS:
+            raise ForwardDesignError(f"{t.task_id}: seed {t.seed} is outside the "
+                                     "replication block")
+        if (t.purpose not in CONFIRMATORY_PURPOSES
                 and t.seed not in DEVELOPMENT_SEED_BLOCKS[t.purpose]):
             raise ForwardDesignError(f"{t.task_id}: seed {t.seed} is outside the "
                                      f"{t.purpose} block")
@@ -480,7 +539,10 @@ def _family_a_source(task: ForwardTask) -> BenchSystem:
                                task.seed)
     else:
         system = A2.build_system(spec["system"], task.seed, "A", preset=preset)
-    system.meta["forward_condition"] = task.condition
+    # the source is the bench's own system, meta included (the condition is
+    # in the record), so the duplicate detector sees one configuration where
+    # a forward run and a joint-bench run share a seed (PC_nominal on the
+    # witness and anchor seeds)
     return system
 
 
@@ -528,6 +590,19 @@ _IIM_SENSOR = {"preprocess": "zca", "macro_nodes": "rank_safe_clusters", **_GATE
 # condition and ZCA) on the source model's declared macro nodes (HCv2-15).
 _IIM_SOURCE_ESTIMATE = {"preprocess": "zca", **_GATE}
 _IIM_V1 = {"preprocess": "none", "macro_nodes": "v1_quadrants", **_GATE}
+# IIM on the family-A arms is descriptive (design 3.1): its value and null,
+# without the bootstrap SE that only a status needs (a status is never read)
+_IIM_DESCRIPTIVE = {"se_method": None}
+# The forward views score the primary (directional) cut only: no admission
+# criterion, hypothesis or form scoring reads a reported cut there, and the
+# reported bidirectional cut costs a third of every IIM statistic
+_IIM_PRIMARY_CUT = {"report_cut_modes": []}
+# Conditions on which the v1 quadrant comparator is read: G = 0 (HCv2-12(d)
+# under the average reference, HCv2-15(b) without a reference).
+COMPARATOR_CONDITIONS = MappingProxyType({ARM_HOPF: ("hopf_G0",)})
+# Principles scored on the lesion conditions of the Hopf arm: only NAS has a
+# lesion criterion (FMb2); IIM's admission reads no lesion run.
+LESION_PRINCIPLES_OF_ARM = MappingProxyType({ARM_HOPF: ("NAS",)})
 
 
 def _scorings(arm: str, view: str) -> List[dict]:
@@ -536,21 +611,22 @@ def _scorings(arm: str, view: str) -> List[dict]:
     out = []
     if arm == ARM_HOPF:
         principles = ("IIM",) if view == "eeg64_noref" else ("NAS", "IIM")
-        opts = {}
+        opts = {"IIM": dict(_IIM_PRIMARY_CUT)}
         if mixed:
             iim = _IIM_SENSOR if stage == "sensor" else _IIM_SOURCE_ESTIMATE
-            opts = {"NAS": dict(_GATE), "IIM": dict(iim)}
+            opts = {"NAS": dict(_GATE), "IIM": dict(iim, **_IIM_PRIMARY_CUT)}
             opts = {p: o for p, o in opts.items() if p in principles}
         out.append({"estimator_form": PRIMARY, "principles": principles,
                     "options": opts, "roles": {p: ROLE_ADMISSION for p in principles}})
         if stage == "sensor" and view in ("eeg64", "eeg64_noref"):
             out.append({"estimator_form": IIM_V1_QUADRANTS, "principles": ("IIM",),
-                        "options": {"IIM": dict(_IIM_V1)},
+                        "options": {"IIM": dict(_IIM_V1, **_IIM_PRIMARY_CUT)},
                         "roles": {"IIM": ROLE_COMPARATOR}})
         return out
-    opts = {}
+    opts = {"IIM": dict(_IIM_DESCRIPTIVE, **_IIM_PRIMARY_CUT)}
     if stage == "sensor":
-        opts = {"PDI": {"pdi_bearer": "full"}, "IIM": dict(_IIM_SENSOR)}
+        opts = {"PDI": {"pdi_bearer": "full"},
+                "IIM": dict(_IIM_SENSOR, **_IIM_DESCRIPTIVE, **_IIM_PRIMARY_CUT)}
     pdi_role = ROLE_SOURCE_CONTRAST if stage == "source" else ROLE_ADMISSION
     out.append({"estimator_form": PRIMARY, "principles": ("PDI", "IIM"),
                 "options": opts,
@@ -558,21 +634,72 @@ def _scorings(arm: str, view: str) -> List[dict]:
     return out
 
 
+@functools.lru_cache(maxsize=None)
+def _source_contrast_runs(arm: str, purpose: str) -> Mapping[str, frozenset]:
+    """``{condition: seeds}`` of a family-A arm's runs whose source view FMd
+    reads: the two concordance conditions on the seeds they share."""
+    out: Dict[str, frozenset] = {}
+    for d in admission_designs(purpose):
+        if d.arm != arm:
+            continue
+        hi, lo = d.concordance
+        common = (frozenset(_seeds(condition(arm, hi), purpose))
+                  & frozenset(_seeds(condition(arm, lo), purpose)))
+        for c in (hi, lo):
+            out[c] = out.get(c, frozenset()) | common
+    return MappingProxyType(out)
+
+
+def reads_view(task: ForwardTask, view: str) -> bool:
+    """Whether some criterion or anchor reads ``view`` on this run: every
+    view of the Hopf arm and every forward view of a family-A arm; the
+    source view of a family-A arm, which is no admission view, only on the
+    runs whose source contrast FMd reads (and on every anchor, reference
+    and smoke run)."""
+    if task.arm == ARM_HOPF or F2.view_spec(view).stage != "source":
+        return True
+    if task.purpose not in ADMISSION_PURPOSES:
+        return True
+    return task.seed in _source_contrast_runs(task.arm, task.purpose).get(
+        task.condition, frozenset())
+
+
 def scoring_plan(task: ForwardTask) -> List[dict]:
     """The scorings of a task: one per (view, estimator form) with its id,
     view, stage, declaration, principles, options (protocol vocabulary) and
-    the role of each principle (admission, descriptive or comparator)."""
+    the role of each principle (admission, descriptive or comparator).
+    A run carries what some criterion, hypothesis or anchor reads on it: the
+    v1 quadrant comparator only on :data:`COMPARATOR_CONDITIONS`, only the
+    principles with a lesion criterion on a lesion condition
+    (:data:`LESION_PRINCIPLES_OF_ARM`) and the source view of a family-A arm
+    only where :func:`reads_view` says so."""
+    cond = condition(task.arm, task.condition)
+    lesion = cond.spec.get("lesion", "none") not in (None, "none")
     out = []
     for view in task.views:
+        if not reads_view(task, view):
+            continue
         stage = F2.view_spec(view).stage
         for s in _scorings(task.arm, view):
+            if (s["estimator_form"] == IIM_V1_QUADRANTS and task.condition
+                    not in COMPARATOR_CONDITIONS.get(task.arm, ())):
+                continue
+            principles = list(s["principles"])
+            if lesion:
+                keep = LESION_PRINCIPLES_OF_ARM.get(task.arm, tuple(principles))
+                principles = [p for p in principles if p in keep]
+                if not principles:
+                    continue
+                s = dict(s, options={p: o for p, o in s["options"].items()
+                                     if p in principles},
+                         roles={p: r for p, r in s["roles"].items() if p in principles})
             out.append({
                 "scoring_id": f"{view}:{s['estimator_form']}",
                 "view": view,
                 "observation_stage": stage,
                 "declaration_id": task.declaration_id,
                 "estimator_form": s["estimator_form"],
-                "principles": list(s["principles"]),
+                "principles": principles,
                 "options": copy.deepcopy(s["options"]),
                 "roles": dict(s["roles"]),
             })
@@ -643,10 +770,454 @@ def admission_designs(purpose: str = CONFIRMATORY) -> Tuple[RV.AdmissionDesign, 
     return tuple(out)
 
 
+# --------------------------------------------------------------------------
+# the v2 runner adapter
+# --------------------------------------------------------------------------
+# The record design of each arm: the names the v2 hypotheses select by
+# (vocabulary design.whole_brain, design.forward and
+# design.forward_anchor_replication of protocols/v2/hypotheses_v2.json) and
+# the names the registry builder reads. They are declared here and nowhere
+# else; the hypotheses file and the registry builder are tested against them.
+RECORD_DESIGN_OF_ARM = MappingProxyType({
+    ARM_HOPF: "whole_brain",
+    ARM_A_EEG: "forward_family_a",
+    ARM_A_BOLD: "forward_family_a_bold",
+})
+ANCHOR_REPLICATION_DESIGN = "forward_anchor_replication"
+# the records an admission reads (the anchor design's never enter a registry)
+ADMISSION_RECORD_DESIGNS = frozenset(RECORD_DESIGN_OF_ARM.values())
+RECORD_DESIGNS = ADMISSION_RECORD_DESIGNS | {ANCHOR_REPLICATION_DESIGN}
+# purposes of the arm designs and of the anchor design
+ARM_PURPOSES = (CONFIRMATORY, DRY_RUN, DEV_REGIME, SMOKE)
+ANCHOR_PURPOSES = (REPLICATION, REFERENCE, REFERENCE_DEVELOPMENT)
+MODULE = "forward"
+BUILDER = "forward"
+# protocol keys: one protocol per (arm, view), and per reported form
+PROTOCOL_PREFIX_OF_ARM = MappingProxyType({
+    ARM_HOPF: "hopf", ARM_A_EEG: "fwdA", ARM_A_BOLD: "fwdA_bold"})
+
+
+def record_design(arm: str, purpose: str) -> str:
+    """The ``design`` of a task record: the anchor design for the anchor
+    purposes, else the arm's design."""
+    if arm not in ARMS:
+        raise ForwardDesignError(f"arm must be one of {ARMS}")
+    if purpose not in PURPOSES:
+        raise ForwardDesignError(f"purpose must be one of {PURPOSES}")
+    return ANCHOR_REPLICATION_DESIGN if purpose in ANCHOR_PURPOSES else (
+        RECORD_DESIGN_OF_ARM[arm])
+
+
+def protocol_key_of(arm: str, view: str, form: str = PRIMARY) -> str:
+    """The family protocol of an arm's view (``hopf-eeg64``) or of one of its
+    forms (``hopf-eeg64+iim_v1_quadrants``)."""
+    base = f"{PROTOCOL_PREFIX_OF_ARM[arm]}-{view}"
+    return base if form == PRIMARY else f"{base}+{form}"
+
+
+def protocol_options() -> Dict[str, dict]:
+    """``{protocol key: {"declaration": id, "estimators": {principle:
+    options}}}`` of every forward protocol: the declaration of the arm and
+    the scoring options of :func:`scoring_plan` (protocol vocabulary)."""
+    out = {}
+    for arm in ARMS:
+        for view in VIEWS_OF_ARM[arm]:
+            for s in _scorings(arm, view):
+                key = protocol_key_of(arm, view, s["estimator_form"])
+                out[key] = {"declaration": DECLARATION_OF_ARM[arm],
+                            "estimators": copy.deepcopy(s["options"])}
+    return out
+
+
+def _draft(key: str):
+    def payload():
+        from impact_pipeline.bench import run_bench_v2 as RB
+
+        spec = protocol_options()[key]
+        return RB.draft_payload(key, spec["declaration"], spec["estimators"])
+    return payload
+
+
+PROTOCOL_DRAFTS = {key: _draft(key) for key in protocol_options()}
+
+
+def runner_task(ft: ForwardTask):
+    """The v2 runner's task of a forward task: the same task id, the record
+    design of its arm and purpose, one scoring per (view, estimator form)
+    of :func:`scoring_plan` under the view's protocol, component statuses
+    only; held out at the held-out regime."""
+    from impact_pipeline.bench import designs_v2 as DV
+
+    held = ft.purpose in HELD_OUT_PURPOSES
+    scorings = []
+    for s in scoring_plan(ft):
+        scorings.append(DV.ScoringSpec(
+            scoring_id=s["scoring_id"], declaration_id=s["declaration_id"],
+            protocol_key=protocol_key_of(ft.arm, s["view"], s["estimator_form"]),
+            view=s["view"], estimator_form=s["estimator_form"],
+            principles=tuple(s["principles"]), held_out=held, verdict=False))
+    cond = condition(ft.arm, ft.condition)
+    return DV.TaskSpec(
+        task_id=ft.task_id, design=record_design(ft.arm, ft.purpose),
+        family=ft.family, system=ft.condition, seed=ft.seed, builder=BUILDER,
+        params={"arm": ft.arm, "condition": ft.condition, "purpose": ft.purpose,
+                "n_low": ft.n_low},
+        scorings=tuple(scorings), held_out=held,
+        tags={"arm": ft.arm, "purpose": ft.purpose, "regime": ft.regime,
+              "dose": ft.dose, "anchor": bool(cond.anchor),
+              "curtail_group": ft.curtail_group, "curtailable": curtailable(ft)},
+        design_module=MODULE)
+
+
+def forward_task_of(task) -> ForwardTask:
+    """The forward task of a runner task (:func:`runner_task`)."""
+    p = task.params
+    ft = forward_task(p["arm"], p["condition"], task.seed, p["purpose"],
+                      p.get("n_low", F2.N_LOW_DEFAULT))
+    if ft.task_id != task.task_id:
+        raise ForwardDesignError(f"{task.task_id}: not the forward task {ft.task_id}")
+    return ft
+
+
+def build_forward_system(task):
+    """The runner's system builder: the task's realisation (one simulation,
+    every view of it at the task's regime) as a
+    :class:`~impact_pipeline.bench.designs_v2.MultiViewSystem`."""
+    from impact_pipeline.bench import designs_v2 as DV
+
+    real = realise(forward_task_of(task))
+    return DV.MultiViewSystem(source=real.source, views=dict(real.views))
+
+
+def _not_a_transform(source, task):
+    raise ForwardDesignError(f"{task.task_id}: the forward views come from the "
+                             "task's realisation, not from a transform")
+
+
+def _runner_views() -> dict:
+    from impact_pipeline.bench import designs_v2 as DV
+
+    out = {}
+    for name in sorted({v for vs in VIEWS_OF_ARM.values() for v in vs}):
+        if name == DV.SOURCE_VIEW:
+            continue
+        spec = F2.view_spec(name)
+        out[name] = DV.ViewSpec(name, spec.stage, F2.OBSERVATION_OF_STAGE[spec.stage],
+                                transform=_not_a_transform,
+                                description=f"forward view {name} (forward_v2)")
+    return out
+
+
+SYSTEM_BUILDERS = {BUILDER: build_forward_system}
+VIEWS = _runner_views()
+RECORD_CONFIG = {"forward": lambda task: forward_task_of(task).to_config()["forward"]}
+
+
+def _select(tasks: List[ForwardTask], seeds, systems, design: str) -> List[ForwardTask]:
+    if seeds is not None:
+        want = {int(s) for s in seeds}
+        S.check_seeds(want)
+        tasks = [t for t in tasks if t.seed in want]
+    if systems is not None:
+        known = {c.label for t in tasks for c in conditions(t.arm)}
+        unknown = sorted(set(systems) - known)
+        if unknown:
+            raise ForwardDesignError(f"{design}: unknown conditions {unknown}")
+        tasks = [t for t in tasks if t.condition in set(systems)]
+    if not tasks:
+        raise ForwardDesignError(f"{design}: no task at the requested seeds and "
+                                 "conditions")
+    return tasks
+
+
+def _arm_design(arm: str):
+    def build(split: str, *, purpose: Optional[str] = None, seeds=None, systems=None,
+              n_low: int = F2.N_LOW_DEFAULT):
+        purpose = purpose or (CONFIRMATORY if split == S.CONFIRMATORY else DRY_RUN)
+        if purpose not in ARM_PURPOSES:
+            raise ForwardDesignError(f"{RECORD_DESIGN_OF_ARM[arm]}: purpose must be "
+                                     f"one of {ARM_PURPOSES}")
+        fts = build_tasks(purpose, arms=[arm], n_low=n_low)
+        if seeds is not None or systems is not None:
+            fts = _select(fts, seeds, systems, RECORD_DESIGN_OF_ARM[arm])
+        return [runner_task(t) for t in fts]
+    return build
+
+
+def anchor_replication(split: str, *, purpose: Optional[str] = None, seeds=None,
+                       systems=None, arms: Sequence[str] = ARMS,
+                       n_low: int = F2.N_LOW_DEFAULT):
+    """``forward_anchor_replication``: the anchor condition of every arm
+    (``G_nom``; PC_nominal) on the replication block 20900-20919 at the
+    held-out regime (confirmatory), or on the reference block 900-939 at the
+    development regime (development; ``purpose='reference'`` gives the
+    held-out regime, a held-out condition before the freeze)."""
+    purpose = purpose or (REPLICATION if split == S.CONFIRMATORY
+                          else REFERENCE_DEVELOPMENT)
+    if purpose not in ANCHOR_PURPOSES:
+        raise ForwardDesignError(f"{ANCHOR_REPLICATION_DESIGN}: purpose must be one "
+                                 f"of {ANCHOR_PURPOSES}")
+    fts = build_tasks(purpose, arms=arms, n_low=n_low)
+    if seeds is not None or systems is not None:
+        fts = _select(fts, seeds, systems, ANCHOR_REPLICATION_DESIGN)
+    return [runner_task(t) for t in fts]
+
+
+_FORWARD_METHODS = (
+    "the view's family protocol (one per arm and view, draft until the "
+    "development anchors are computed) judges each component by tost-v2 "
+    "without a registry: the admission run is the registry's test, so sensor "
+    "and source-estimate scorings carry the observation gate admission_run; "
+    "component statuses only")
+ADEMP = {
+    "whole_brain": {
+        "aims": "admission of NAS and IIM on human-like observations of a "
+                "whole-brain model with known coupling: specificity at G = 0, "
+                "dose, lesion and source concordance, exclusion safety at G_nom "
+                "(registry v3), per view",
+        "data": "the v1 Hopf model (76 regions, 250 Hz): G sweep 0-4 in 8 levels "
+                "(20 seeds; G = 0 61, G_nom 150), hub lesion and size-matched "
+                "random lesion at G_nom (20); one 600-s run per seed observed as "
+                "source, EEG-64 (average and no reference), EEG-low, MNE template "
+                "(first 60 s) and BOLD (whole run)",
+        "estimands": "per view and principle: status and c per condition; the "
+                     "admission flags of each view",
+        "methods": ("NAS v3 and IIM v5 (v2 sensor pipeline: rank-safe clusters "
+                    "and ZCA; the v1 quadrant pipeline as comparator); "
+                    + _FORWARD_METHODS),
+        "performance": "FM0, FMa, FMb1, FMb2 (NAS), FMd and FMabs with "
+                       "curtailment (registry v3): HCv2-10, HCv2-12(d), HCv2-15, "
+                       "IA-3",
+    },
+    "forward_family_a": {
+        "aims": "admission of PDI (full-bearer upper bound) on EEG-like "
+                "observations of family-A agents with known repertoires",
+        "data": "family-A agents through the EEG-like model at 20 Hz without a "
+                "sensor band: PC_nominal 150, N_ar1 61, W_PDI_no_multistability "
+                "61, K in {1, 2, 3} x 20; views source, EEG-64 and EEG-low; "
+                "declaration R",
+        "estimands": "PDI status and c per view and condition (IIM descriptive); "
+                     "the admission flags of each EEG view",
+        "methods": "PDI v3 (content bearer on the source, full bearer on the "
+                   "sensors) and IIM v5; " + _FORWARD_METHODS,
+        "performance": "FM0, FMa at 0.05 / 2, FMb1 over K, FMd (K = 6 vs 1) and "
+                       "FMabs: HCv2-21",
+    },
+    "forward_family_a_bold": {
+        "aims": "admission of PDI on BOLD-like observations of family-A agents "
+                "with slow contexts (predicted not admitted for ABSENT)",
+        "data": "slow-context agents (context dwell 30-60 s) through the "
+                "BOLD-like model (TR 2 s): PC_nominal up to 150 (curtailed), "
+                "W_PDI_no_multistability 61, K in {1, 2, 3} x 20; views source "
+                "and BOLD; declaration R",
+        "estimands": "PDI status and c per view and condition (IIM descriptive); "
+                     "the admission flags of the BOLD view",
+        "methods": "PDI v3 on the content bearer (window 5 TR) and IIM v5; "
+                   + _FORWARD_METHODS + "; the PC_nominal runs only FMabs reads "
+                   "stop in seed order at the first event that makes the FMabs "
+                   "demonstration impossible",
+        "performance": "FM0, FMa at 0.05 / 2, FMb1 over K, FMd and curtailed "
+                       "FMabs: HCv2-21",
+    },
+    ANCHOR_REPLICATION_DESIGN: {
+        "aims": "the anchors of the forward views: validity of each view's "
+                "reference condition, fixed on the development reference block "
+                "and replicated on the confirmatory replication block",
+        "data": "G_nom of the Hopf arm and PC_nominal of both family-A arms: "
+                "900-939 (development regime; the held-out regime only after "
+                "the held-out predictions are committed) and 20900-20919 "
+                "(held-out regime)",
+        "estimands": "per view and principle the mean excess of the reference "
+                     "condition over its null",
+        "methods": "as the arm designs; " + _FORWARD_METHODS,
+        "performance": "anchor validity (one-sided 95 % t lower bound of the "
+                       "mean excess > 0) and its replication: HCv2-6(b)",
+    },
+}
+
+
+def _design(name: str, build, confirmatory_tasks: int, description: str):
+    from impact_pipeline.bench import designs_v2 as DV
+
+    return DV.Design(name, "forward", description, build,
+                     {DV.CONFIRMATORY: confirmatory_tasks}, ademp=ADEMP[name])
+
+
+# Confirmatory task counts of the design document (3.2; the BOLD arm's 271 is
+# the planned maximum before curtailment) and of the replication block.
+DOCUMENT_TASKS = MappingProxyType({
+    "whole_brain": 371, "forward_family_a": 332, "forward_family_a_bold": 271,
+    ANCHOR_REPLICATION_DESIGN: len(ARMS) * len(REPLICATION_SEEDS)})
+
+
+def _designs():
+    return (
+        _design("whole_brain", _arm_design(ARM_HOPF), DOCUMENT_TASKS["whole_brain"],
+                "Hopf arm: G sweep, G_nom lesions, every view (NAS, IIM)"),
+        _design("forward_family_a", _arm_design(ARM_A_EEG),
+                DOCUMENT_TASKS["forward_family_a"],
+                "forward-modelled family A through the EEG-like model (PDI, IIM)"),
+        _design("forward_family_a_bold", _arm_design(ARM_A_BOLD),
+                DOCUMENT_TASKS["forward_family_a_bold"],
+                "forward-modelled family A with slow contexts through the "
+                "BOLD-like model (PDI, IIM; curtailed)"),
+        _design(ANCHOR_REPLICATION_DESIGN, anchor_replication,
+                DOCUMENT_TASKS[ANCHOR_REPLICATION_DESIGN],
+                "reference conditions of the forward views (reference block; "
+                "confirmatory replication block)"),
+    )
+
+
+DESIGNS = _designs()
+
+
+class RunnerCurtailment:
+    """
+    The curtailed sampling of the forward arms in the v2 runner (design 3.6):
+    the on-runs of an arm's curtailment group are evaluated in seed order
+    (:func:`curtailment_order`), and once the false ABSENTs among them make
+    the FMabs demonstration impossible at the planned on-run count, in every
+    admission view of the group, the group's remaining :func:`curtailable`
+    runs are skipped. A demonstration that is impossible before any event
+    (a development dry run plans too few on-runs) stops at its first event,
+    as the confirmatory plan does. The decision for a run depends only on
+    the records of the runs before it in that order, so the kept records do
+    not depend on the number of workers. Controller contract:
+    :func:`impact_pipeline.bench.run_bench_v2.curtailment_controllers`.
+    """
+
+    def __init__(self, tasks: Sequence):
+        crit = RV.DEFAULT_ADMISSION_CRITERIA
+        fts = []
+        for t in tasks:
+            if getattr(t, "builder", None) != BUILDER:
+                continue
+            ft = forward_task_of(t)
+            if ft.curtail_group:
+                fts.append(ft)
+        self._groups: Dict[tuple, dict] = {}
+        self._group_of: Dict[str, tuple] = {}
+        self._events: Dict[str, dict] = {}
+        self._decided: Dict[str, bool] = {}
+        by_purpose: Dict[str, List[ForwardTask]] = {}
+        for ft in fts:
+            by_purpose.setdefault(ft.purpose, []).append(ft)
+        for purpose, group_tasks in sorted(by_purpose.items()):
+            designs = admission_designs(purpose)
+            for g, order in curtailment_order(group_tasks).items():
+                arm = order[0].arm
+                thresholds = {}
+                for d in designs:
+                    if d.arm != arm:
+                        continue
+                    k_max = RV.max_demonstrable_events(
+                        d.n_planned_on, crit["fmabs_bound"], crit["fmabs_level"])
+                    for v in d.views:
+                        thresholds[(d.principle, v)] = max(int(k_max), 0)
+                key = (purpose, g)
+                self._groups[key] = {
+                    "order": [t.task_id for t in order],
+                    "gated": [t.task_id for t in order if curtailable(t)],
+                    "thresholds": thresholds,
+                    "events": {k: 0 for k in thresholds},
+                    "stop_after": {k: None for k in thresholds},
+                    "pos": 0,
+                }
+                for t in order:
+                    self._group_of[t.task_id] = key
+
+    def __bool__(self) -> bool:
+        return any(st["gated"] for st in self._groups.values())
+
+    def gated_ids(self) -> List[str]:
+        return [tid for st in self._groups.values() for tid in st["gated"]]
+
+    @staticmethod
+    def _stopped(st) -> bool:
+        return bool(st["thresholds"]) and all(
+            st["events"][k] > st["thresholds"][k] for k in st["thresholds"])
+
+    def _record_events(self, record, keys) -> dict:
+        out = {}
+        if getattr(record, "status", None) == "error":
+            return out
+        for s in getattr(record, "scorings", ()) or ():
+            if s.estimator_form != PRIMARY:
+                continue
+            for p, v in keys:
+                comp = (s.components or {}).get(p)
+                if s.view == v and comp is not None:
+                    out[(p, v)] = comp.status == "ABSENT"
+        return out
+
+    def feed(self, task_id: str, record) -> None:
+        key = self._group_of.get(task_id)
+        if key is None or task_id in self._events:
+            return
+        st = self._groups[key]
+        self._events[task_id] = self._record_events(record, st["thresholds"])
+        self._advance(st)
+
+    def _advance(self, st) -> None:
+        gated = set(st["gated"])
+        while st["pos"] < len(st["order"]):
+            tid = st["order"][st["pos"]]
+            if tid in gated and tid not in self._decided:
+                self._decided[tid] = self._stopped(st)
+            if self._decided.get(tid):
+                st["pos"] += 1
+                continue
+            if tid not in self._events:
+                break
+            for k, ev in self._events[tid].items():
+                if ev and st["stop_after"][k] is None:
+                    st["events"][k] += 1
+                    if st["events"][k] > st["thresholds"][k]:
+                        st["stop_after"][k] = tid
+            st["pos"] += 1
+
+    def decision(self, task_id: str) -> Optional[bool]:
+        """None while undecided, True to skip, False to run; False for a task
+        that is not gated."""
+        key = self._group_of.get(task_id)
+        if key is None or task_id not in self._groups[key]["gated"]:
+            return False
+        self._advance(self._groups[key])
+        return self._decided.get(task_id)
+
+    def summary(self) -> dict:
+        groups = []
+        for (purpose, g), st in self._groups.items():
+            groups.append({
+                "purpose": purpose, "group": g, "n_runs": len(st["order"]),
+                "n_gated": len(st["gated"]), "evaluated": st["pos"],
+                "views": [{"principle": p, "view": v,
+                           "events": st["events"][(p, v)],
+                           "max_events": st["thresholds"][(p, v)],
+                           "stop_after": st["stop_after"][(p, v)]}
+                          for p, v in st["thresholds"]],
+                "stopped": self._stopped(st),
+                "skipped": [t for t in st["gated"] if self._decided.get(t)],
+            })
+        return {"module": MODULE, "rule": "fmabs_curtailment", "groups": groups}
+
+
+def RUNNER_CURTAILMENT(tasks):  # noqa: N802 - the runner's hook name
+    """The curtailment controller of a plan's forward tasks (None when no
+    task may be skipped)."""
+    ctl = RunnerCurtailment(tasks)
+    return ctl if ctl else None
+
+
 __all__ = [
+    "ADEMP",
     "ADMISSION_PURPOSES",
+    "ADMISSION_RECORD_DESIGNS",
     "ADMISSION_RUN",
+    "ANCHOR_PURPOSES",
+    "ANCHOR_REPLICATION_DESIGN",
     "ARMS",
+    "ARM_PURPOSES",
     "ARM_A_BOLD",
     "ARM_A_EEG",
     "ARM_HOPF",
@@ -676,4 +1247,30 @@ __all__ = [
     "regime_of_purpose",
     "scoring_plan",
     "truncate_whole_brain",
+    "BUILDER",
+    "COMPARATOR_CONDITIONS",
+    "CONFIRMATORY_PURPOSES",
+    "LESION_PRINCIPLES_OF_ARM",
+    "DESIGNS",
+    "DOCUMENT_TASKS",
+    "PROTOCOL_DRAFTS",
+    "PROTOCOL_PREFIX_OF_ARM",
+    "RECORD_CONFIG",
+    "RECORD_DESIGNS",
+    "RECORD_DESIGN_OF_ARM",
+    "REPLICATION",
+    "REPLICATION_SEEDS",
+    "RUNNER_CURTAILMENT",
+    "RunnerCurtailment",
+    "SYSTEM_BUILDERS",
+    "VIEWS",
+    "anchor_replication",
+    "build_forward_system",
+    "forward_task",
+    "forward_task_of",
+    "protocol_key_of",
+    "protocol_options",
+    "reads_view",
+    "record_design",
+    "runner_task",
 ]
