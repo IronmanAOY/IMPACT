@@ -212,7 +212,7 @@ ssh -R localhost:$MY_PROXY_PORT hunter
 # on the Hunter login node, in that SSH session
 export https_proxy=socks5://localhost:<port> http_proxy=socks5://localhost:<port>
 cd "$WS"
-git clone --branch v1.1.0 --depth 1 https://github.com/IronmanAOY/impact-synergy-pipeline.git
+git clone --branch v1.1.0 --depth 1 https://github.com/IronmanAOY/IMPACT.git impact-synergy-pipeline
 ```
 
 Caveats:
@@ -231,7 +231,7 @@ provenance records the exact commit.
 
 ```bash
 # on your machine (the tag must have been pushed by the author)
-git clone --branch v1.1.0 https://github.com/IronmanAOY/impact-synergy-pipeline.git
+git clone --branch v1.1.0 https://github.com/IronmanAOY/IMPACT.git impact-synergy-pipeline
 rsync -a impact-synergy-pipeline/ hunter:<WS path>/impact-synergy-pipeline/
 ```
 

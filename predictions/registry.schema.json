@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/IronmanAOY/impact-synergy-pipeline/predictions/registry.schema.json",
+  "$id": "https://github.com/IronmanAOY/IMPACT/predictions/registry.schema.json",
   "title": "IMPaCT paper-2 executable hypothesis registry",
   "description": "Schema of predictions/registry.yaml. Validated by scripts/run_predictions.py (built-in validator for the keywords used here; jsonschema, when installed, is run as a cross-check).",
   "type": "object",

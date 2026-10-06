@@ -22,7 +22,7 @@ identifiers:
   - type: doi
     value: "10.5281/zenodo.15306741"
     description: "Version 1.0.0 (2025-04-29)"
-repository-code: "https://github.com/IronmanAOY/impact-synergy-pipeline"
+repository-code: "https://github.com/IronmanAOY/IMPACT"
 license: MIT
 keywords:
   - neuroimaging

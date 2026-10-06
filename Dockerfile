@@ -28,7 +28,7 @@ FROM condaforge/miniforge3:26.7.2-0@sha256:eeb947cc87d61d46820b123bd7c26e1cbdc4b
 
 LABEL org.opencontainers.image.title="IMPaCT Synergy Pipeline" \
       org.opencontainers.image.version="1.1.0" \
-      org.opencontainers.image.source="https://github.com/IronmanAOY/impact-synergy-pipeline" \
+      org.opencontainers.image.source="https://github.com/IronmanAOY/IMPACT" \
       org.opencontainers.image.licenses="MIT"
 
 ENV LANG=C.UTF-8 \

@@ -122,7 +122,7 @@ def test_citation_and_license_metadata():
     assert str(cff["date-released"]) == "2026-09-28"
     assert cff["doi"] == "10.5281/zenodo.15306740"
     assert cff["license"] == "MIT"
-    repo = "https://github.com/IronmanAOY/impact-synergy-pipeline"
+    repo = "https://github.com/IronmanAOY/IMPACT"
     assert cff["repository-code"] == repo
     assert cff["authors"][0]["orcid"] == "https://orcid.org/0009-0005-7698-8304"
     license_text = (ROOT / "licenses" / "MIT_LICENSE").read_text()
