@@ -3119,6 +3119,35 @@ def test_prerequisite_m_drops_only_the_rows_of_an_unrealised_system():
     assert {c["cell"]: c["outcome"] for c in out["cells"]} == {"nw": SUP, "ff": SUP}
 
 
+def test_prerequisite_m_is_not_named_when_the_selection_is_empty():
+    # a selection without rows (here: no record of the system) has no input
+    # rows; ORACLE is the reason only when the checks dropped the rows
+    rows = [
+        comp_row(f"nw{i}", "W_NAS_no_workspace", "ABSENT", 0.0, seed=i, principle="NAS")
+        for i in range(20)
+    ]
+    part = {
+        "id": "p-oracle-empty",
+        "rule": "three_zone",
+        "params": {"x": 0.8},
+        "requires": {"oracle": True},
+        "data": {
+            "where": {"system": "W_IIM_feedforward"},
+            "event": {"status": "ABSENT"},
+        },
+    }
+    spec = mini_spec([part])
+    for usable in (False, True):
+        ctx = _oracle_ctx(rows, {("A", "g_b"): usable, ("A", "c_int"): usable})
+        out = HE.evaluate_part(part, spec, ctx)
+        assert out["outcome"] == NE
+        assert out["reason"] == "no input rows"
+    part["data"]["where"] = {"system": "W_NAS_no_workspace"}
+    out = HE.evaluate_part(part, spec, _oracle_ctx(rows, {("A", "g_b"): False}))
+    assert out["outcome"] == NE and out["reason"].startswith("ORACLE")
+    assert "20 rows dropped" in out["notes"][-1]
+
+
 def test_prerequisite_m_checks_both_systems_of_a_pair_and_variants():
     rows = [
         comp_row(f"{s}{i}", s, "PRESENT", c, seed=i, principle="IIM")

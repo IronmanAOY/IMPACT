@@ -3433,8 +3433,10 @@ def _requires(
 ) -> Tuple[Optional[str], list]:
     """Prerequisite M: drop the rows that need a manipulation or realisation
     check that is not usable in their family (reason ORACLE). Returns the
-    blocking reason when no row is left and the cells that lost every row
-    (listed as NOT_EVALUABLE cells, never silently dropped)."""
+    blocking reason when this check dropped every row that was left (a
+    selection that was already empty is reported by the caller as having
+    no input rows) and the cells that lost every row (listed as
+    NOT_EVALUABLE cells, never silently dropped)."""
     req = part.get("requires") or {}
     if not (req.get("usable") or req.get("oracle")):
         return None, []
@@ -3477,7 +3479,7 @@ def _requires(
         if n_kept.get(cell, 0) == 0
     ]
     prep.rows = kept
-    if not kept:
+    if not kept and failing:
         return "ORACLE: a required manipulation check is not usable", oracle_cells
     return None, oracle_cells
 
