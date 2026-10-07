@@ -519,7 +519,7 @@ def test_released_anchors_need_the_release(git_repo, tmp_path):
 def test_the_battery_and_the_family_b_development_cells():
     tasks = DC.battery_tasks()
     assert len(tasks) == len(DC.BATTERY_CLASSES) * len(DC.BATTERY_SEEDS)
-    assert {t.seed for t in tasks} == set(range(870, 900))
+    assert {t.seed for t in tasks} == set(range(850, 900)) | set(range(940, 980))
     assert {t.tags["content"] for t in tasks} == {DC.CONTENT_ON, DC.CONTENT_OFF}
     for t in tasks:
         (s,) = t.scorings
@@ -1088,15 +1088,14 @@ def test_restricted_items_skip_runs_without_tasks(tmp_path, monkeypatch, capsys)
 
 
 def test_the_concordance_battery_run_counts():
-    p = DC.plan(["pdi_concordance", "pdi_concordance_extension"], workers=12)
+    p = DC.plan(["pdi_concordance"], workers=12)
     (base,) = p["items"][0]["runs"]
-    (ext,) = p["items"][1]["runs"]
-    assert (base["content_on_runs"], base["no_content_runs"]) == (150, 120)
-    assert (ext["content_on_runs"], ext["no_content_runs"]) == (200, 160)
-    assert base["content_on_runs"] < DC.CONCORDANCE_MIN_RUNS
-    assert p["items"][1]["optional"] and not p["items"][0]["optional"]
-    tasks = DC.runner_tasks(DC.get_item("pdi_concordance_extension").runs[0])
-    assert {t.seed for t in tasks} == set(range(940, 980))
+    assert (base["content_on_runs"], base["no_content_runs"]) == (450, 360)
+    assert min(base["content_on_runs"], base["no_content_runs"]) >= DC.CONCORDANCE_MIN_RUNS
+    assert not p["items"][0]["optional"]
+    assert "pdi_concordance_extension" not in {i.name for i in DC.ITEMS}
+    tasks = DC.runner_tasks(DC.get_item("pdi_concordance").runs[0])
+    assert {t.seed for t in tasks} == set(range(850, 900)) | set(range(940, 980))
     assert not any(t.smoke or t.has_held_out for t in tasks)
 
 

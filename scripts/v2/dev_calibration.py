@@ -88,9 +88,8 @@ Sequence
    other than the one the runs used: re-run the affected items with
    ``--protocol-dir <the build> --tag decided`` and build again. The
    optional items run only where a decision needs them (the SE fallbacks,
-   the occupancy cells at a raised ``N_min``, the concordance battery on the
-   spare seeds 940-979, the forward anchors at the development regime, the
-   development evaluation of the dry run).
+   the occupancy cells at a raised ``N_min``, the forward anchors at the
+   development regime, the development evaluation of the dry run).
 
 The development evaluation (``dry_run_evaluation``, CD-10) re-judges the
 development records under the generated protocols before the evaluator
@@ -145,7 +144,9 @@ KINDS = (RUNNER, BATTERY, FAMILY_B, MANIPULATION, CONSTANTS, EVALUATE)
 # The seeds of the development blocks (design 3.7; protocols/v2/seed_map_v2.json).
 ORACLE_SEEDS = tuple(range(320, 360))
 ORACLE_FAMILIES = ("A", "C")
-BATTERY_SEEDS = tuple(range(870, 900))
+# The PDI concordance battery runs on 850-899 and 940-979 (90 seeds); see
+# the comment at CONCORDANCE_MIN_RUNS.
+BATTERY_SEEDS = tuple(range(850, 900)) + tuple(range(940, 980))
 BATTERY_DESIGN = "pdi_concordance_battery"
 BATTERY_PROTOCOL = "A-R"
 CONTENT_ON, CONTENT_OFF = "on", "off"
@@ -166,11 +167,13 @@ BATTERY_CLASSES = (
 )
 BATTERY_CLASS_IDS = tuple(c[0] for c in BATTERY_CLASSES)
 # The admission rule of CD-5 needs >= 300 content-on (ABSENT route) and >= 300
-# no-content runs (PRESENT route) per cell; 30 seeds per class give 150 and
-# 120. The optional extension runs the battery on the spare development
-# seeds 940-979 (seed map 3.7), to be run only if CD-5 decides so.
+# no-content runs (PRESENT route) per cell: 0 events in 300 runs is the
+# smallest count whose one-sided 95 % Clopper-Pearson bound is below
+# alpha_A = 0.01. The 30 seeds first planned (870-899) give only 150 and 120
+# runs, so the battery was enlarged to 90 seeds before any battery output
+# existed: 450 content-on and 360 no-content runs, which leaves room for
+# runs without an estimator output.
 CONCORDANCE_MIN_RUNS = 300
-BATTERY_EXTENSION_SEEDS = tuple(range(940, 980))
 N_CONTENT_ON_CLASSES = sum(c[1] == CONTENT_ON for c in BATTERY_CLASSES)
 N_NO_CONTENT_CLASSES = len(BATTERY_CLASSES) - N_CONTENT_ON_CLASSES
 # Family-B cells of the held-out non-monotone regime (design 1.4, HO-5): no
@@ -350,9 +353,10 @@ ITEMS: Tuple[Item, ...] = (
                    estimator_options={"NAS": {"se_method": m}})
                for m in NAS_SE_ALTERNATIVES)),
     Item("pdi_concordance", ("CD-5",),
-         "PDI concordance battery on 870-899: content-on classes K 2, 3, 6 and "
-         "g_b 0.67, 1.56 at K = 6; no-content classes W_PDI_single_attractor, "
-         "W_PDI_no_multistability, O_hypersynchronous, N_ar1 (PDI only)",
+         "PDI concordance battery on 850-899 and 940-979: content-on classes "
+         "K 2, 3, 6 and g_b 0.67, 1.56 at K = 6; no-content classes "
+         "W_PDI_single_attractor, W_PDI_no_multistability, O_hypersynchronous, "
+         "N_ar1 (PDI only)",
          (Run("battery", BATTERY, (BATTERY_DESIGN,), seeds=BATTERY_SEEDS,
               principles=("PDI",)),)),
     Item("dry_run", ("CD-6", "CD-7", "CD-8", "CD-9", "CD-10"),
@@ -390,20 +394,6 @@ ITEMS: Tuple[Item, ...] = (
          "calibration",
          (Run("iim_jackknife_contiguous_10", RUNNER, ("A_twins",), principles=("IIM",),
               estimator_options={"IIM": {"se_method": IIM_SE_FALLBACK}}),),
-         optional=True),
-    Item("pdi_concordance_extension", ("CD-5",),
-         "the PDI concordance battery on the spare development seeds 940-979 (PDI "
-         f"only): the planned battery gives "
-         f"{N_CONTENT_ON_CLASSES * len(BATTERY_SEEDS)} content-on and "
-         f"{N_NO_CONTENT_CLASSES * len(BATTERY_SEEDS)} no-content runs per cell, "
-         f"fewer than the {CONCORDANCE_MIN_RUNS} the admission rule needs; with the "
-         f"extension "
-         f"{N_CONTENT_ON_CLASSES * (len(BATTERY_SEEDS) + len(BATTERY_EXTENSION_SEEDS))}"
-         f" and "
-         f"{N_NO_CONTENT_CLASSES * (len(BATTERY_SEEDS) + len(BATTERY_EXTENSION_SEEDS))}"
-         ": needed only if CD-5 decides to extend the battery",
-         (Run("battery", BATTERY, (BATTERY_DESIGN,), seeds=BATTERY_EXTENSION_SEEDS,
-              principles=("PDI",)),),
          optional=True),
     Item("occupancy_n_min", ("CD-3",),
          "the development occupancy cells of HCv2-12 (c) designated and scored at "

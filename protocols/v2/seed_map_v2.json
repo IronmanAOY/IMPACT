@@ -62,12 +62,12 @@
         "use": "development twin networks (r = 1..6)"
       },
       {
-        "min": 870, "max": 899,
-        "use": "PDI concordance admission batteries (10 classes x 30 seeds)"
+        "min": 850, "max": 899,
+        "use": "PDI concordance admission battery (9 classes; 850-869 added before any battery output)"
       },
       {
         "min": 940, "max": 979,
-        "use": "spare"
+        "use": "PDI concordance admission battery (added before any battery output; formerly spare)"
       },
       {
         "min": 980, "max": 984,

@@ -133,7 +133,7 @@ def seed_map():
 def test_seed_map_matches_the_design(seed_map):
     dev = {(e["min"], e["max"]): e for e in seed_map["development"]["assignments"]}
     assert set(dev) == {(900, 939), (320, 399), (400, 439), (804, 819), (820, 824),
-                        (870, 899), (940, 979), (980, 984)}
+                        (850, 899), (940, 979), (980, 984)}
     assert dev[(980, 984)]["outputs_discarded_unread"] is True
     assert dev[(900, 939)]["reuse_allowed"] is True
     parts = [(p["min"], p["max"]) for p in dev[(320, 399)]["parts"]]
