@@ -177,6 +177,7 @@ import numpy as np
 
 from impact_pipeline import mpc_metrics as mm
 from impact_pipeline.v2 import declared_inputs as DI
+from impact_pipeline.v2 import numerics as NUM
 from impact_pipeline.v2 import reasons as R
 from impact_pipeline.v2 import records as _records
 
@@ -568,7 +569,7 @@ def observation_rank(xz, rtol: float = OBSERVATION_RANK_RTOL) -> int:
     xz = np.asarray(xz, dtype=float)
     if xz.size == 0:
         return 0
-    s = np.linalg.svd(xz, compute_uv=False)
+    s = NUM.svd(xz, compute_uv=False)
     if not s.size or s[0] <= 0:
         return 0
     return int(np.sum(s > float(rtol) * s[0]))
@@ -1029,7 +1030,7 @@ def _zero_lag(S_full, positions, hub, periphery) -> dict:
         return (V[:, good] / np.sqrt(w[good])) @ V[:, good].T
 
     M = inv_sqrt(Shh) @ Shp @ inv_sqrt(Spp)
-    s = np.linalg.svd(M, compute_uv=False)
+    s = NUM.svd(M, compute_uv=False)
     return {"value": float(min(1.0, s[0])) if s.size else None}
 
 

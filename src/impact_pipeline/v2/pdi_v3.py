@@ -89,6 +89,7 @@ from typing import Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 from impact_pipeline import mpc_metrics as mm
+from impact_pipeline.v2 import numerics as NUM
 from impact_pipeline.v2 import reasons as R
 
 PRINCIPLE = "PDI"
@@ -378,7 +379,7 @@ def sphered_scores(x, params: "PDIParams"):
     if pat.shape[0] < 2:
         info["undefined_reason"] = "insufficient_timepoints"
         return None, info
-    _, s, vt = np.linalg.svd(pat, full_matrices=False)
+    _, s, vt = NUM.svd(pat, full_matrices=False)
     if s.size == 0 or not np.isfinite(s).all() or s[0] <= 1e-12:
         info["undefined_reason"] = "no_variance"
         return None, info

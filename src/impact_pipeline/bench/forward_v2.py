@@ -85,6 +85,7 @@ import numpy as np
 
 from impact_pipeline.bench import forward as fwd
 from impact_pipeline.bench.generators import BenchSystem
+from impact_pipeline.v2 import numerics as NUM
 from impact_pipeline.v2.registry_v3 import REGIME_KEYS
 
 FORWARD_V2_VERSION = "mpc-bench-forward/2.0.0"
@@ -377,7 +378,7 @@ def average_reference(x: np.ndarray) -> np.ndarray:
 def montage_rank(x: np.ndarray, rtol: float = 1e-10) -> int:
     """Numerical rank of a channel x time (or channel x source) matrix:
     singular values above ``rtol`` times the largest."""
-    s = np.linalg.svd(np.asarray(x, dtype=float), compute_uv=False)
+    s = NUM.svd(np.asarray(x, dtype=float), compute_uv=False)
     if s.size == 0 or s[0] == 0:
         return 0
     return int(np.sum(s > float(rtol) * s[0]))

@@ -121,6 +121,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from impact_pipeline.v2 import numerics as _numerics
 from impact_pipeline.v2 import records as _records
 from impact_pipeline.v2 import seeds as _seeds
 from impact_pipeline.v2.provenance import array_sha256
@@ -1253,7 +1254,7 @@ class InputBasis:
             return np.zeros((X.shape[0], 0))
         if center:
             X = X - X.mean(axis=0, keepdims=True)
-        U, s, _ = np.linalg.svd(X, full_matrices=False)
+        U, s, _ = _numerics.svd(X, full_matrices=False)
         if not s.size or s[0] <= 0:
             return np.zeros((X.shape[0], 0))
         r = int(np.sum(s > float(rtol) * s[0]))

@@ -78,6 +78,7 @@ from typing import Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 from impact_pipeline import mpc_metrics as mm
+from impact_pipeline.v2 import numerics as NUM
 from impact_pipeline.v2 import reasons as R
 
 PRINCIPLE = "RAM"
@@ -619,10 +620,10 @@ def evoked_descriptors(x, dt, ev: RAMEvents, stim_idx, params: RAMParams) -> dic
     design = np.column_stack(cols + [np.ones(n_time)])
     out = {"evoked_magnitude": float("nan"), "evoked_magnitude_reason": None,
            "fir_latency_sec": float("nan"), "fir_latency_reason": None}
-    if int(np.linalg.matrix_rank(design)) < design.shape[1]:
+    if NUM.matrix_rank(design) < design.shape[1]:
         out["evoked_magnitude_reason"] = "magnitude_design_rank_deficient"
     else:
-        beta, *_ = np.linalg.lstsq(design, x.T, rcond=None)
+        beta, *_ = NUM.lstsq(design, x.T, rcond=None)
         out["evoked_magnitude"] = float(np.mean(np.abs(beta[0])))
     lat, reason = mm._fir_latency_seconds(x, stim_idx, float(dt),
                                           float(params.fir_window_sec))
