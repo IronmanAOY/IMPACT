@@ -1,0 +1,507 @@
+{
+  "blocking": [],
+  "builder_version": "mpc-bench-protocol-builder/1.0.0",
+  "decisions_sha256": "d3d5bd5da0043ab750979853f9c73932032b08a3c3e36dac31f14d8b881f1744",
+  "decisions_status": "final",
+  "downstream": [
+    "protocols/v2/hypotheses_v2.json status: final at the freeze",
+    "registry v3: built from the confirmatory forward arms with forward_anchors.json (scripts/v2/build_registry_v3.py)"
+  ],
+  "files": {
+    "calibration_decisions.json": "c419ce60bef9dea93f235481c07fee51f06c9ab998c69b4fd3e72009938e20fe",
+    "calibration_evidence.json": "d4a5c122b0e4f3bd825beeb4b79dacc82aaa899083e69ca5f960331d810caa6e",
+    "declared_dependencies.json": "ca85de59a4314bef8f85b5fdf7a544644e20bae2ba2f8c441e51a558c1489c6b",
+    "forward_anchors.json": "9eb2e03aa209ddd11ce1a314d38dabe3bb5c84baa42ded7eeba0bf0614bcc275",
+    "mechanism_on.json": "711dfe87a5bf112e89c020398974bb390493988413cfe09e3f91f4340509141d",
+    "mpc_bench_v2_A-H+iim_bidirectional.json": "e2860c43242517bcdeea06a2a7fe91b0629104a8cc116058d5b9170ccd7a238b",
+    "mpc_bench_v2_A-H+nas_secondary.json": "9925d78cd03d1015ab80023bb517414e554a8e05119f43d226e29195352e86a8",
+    "mpc_bench_v2_A-H.json": "7f805b4947bd79453a226fbb9b5e6ed0b938b0b66aaabd052b6608c1513b886f",
+    "mpc_bench_v2_A-J.json": "ccf79db43af57f367322e248411293a1accd841b78967ace7a85cd01b598e16b",
+    "mpc_bench_v2_A-P.json": "20ea75521186f5eaef62dce666da02b66c4a76edab5fc48795204b9b12b106df",
+    "mpc_bench_v2_A-Q10.json": "da9cd5c2070c2fb1e3084ee707be0ce8a08dc92412bc34c6fa3ac53317055edf",
+    "mpc_bench_v2_A-Q25.json": "eac5b7c9b31024adeaf43c484a086c5b63abee1fd0b9ce9c58148ee248f038e3",
+    "mpc_bench_v2_A-R+iim_bidirectional.json": "f49ecd5d6f691f71868f574776f2f34b0ad228a18bb7aa01474f4e15915f6e19",
+    "mpc_bench_v2_A-R+nas_secondary.json": "346e6e75b255ae31702ff7a7e4f4a2c4639ab7189113b50c0e57f3c4d2a26d6e",
+    "mpc_bench_v2_A-R+nas_tau_0.05.json": "18856cabdde0b2ee4cfafd8d96029f6a70383eb90b29adbb3f5dc261d00fe253",
+    "mpc_bench_v2_A-R+nas_tau_0.2.json": "0f349f73492489b70216555fbb35bad9cc491ce1f617c8f95edd2027c881b1db",
+    "mpc_bench_v2_A-R+pdi_misdeclared_access.json": "8a537570c7c7923b08dc058b18cb49817fd947b4942c74f5339db0b0ad51b491",
+    "mpc_bench_v2_A-R.json": "aad23fd128f8e96a03ae3b8c7332d9033b281a80f75e45bf3452ec6d353a967e",
+    "mpc_bench_v2_A-RAM160.json": "1944e0ea0bb0f0e2bd099409de136fff43943e328bbdf3fbd850f64e7446b638",
+    "mpc_bench_v2_A-none.json": "cc6e780db5b93b7af384ee80847d26a3936cca75a660436aa866dc724c566e04",
+    "mpc_bench_v2_B-all_to_all_0.4-bidirectional-circular_shift-values.json": "bd6429fa61d19a2a993dfbf813447529b10397c42c76976845a554db378fb7ab",
+    "mpc_bench_v2_B-all_to_all_0.4-bidirectional-circular_shift.json": "835134c4bdf2add123b00a046898df2bd0213187880b0a98e802c7ee77a6a5b7",
+    "mpc_bench_v2_B-all_to_all_0.4-bidirectional-stratified_pair_rotation-values.json": "0e95945836f03cfe8b7ef112bb35cf0c93ee959050fe809cceb2cf240a23c51b",
+    "mpc_bench_v2_B-all_to_all_0.4-bidirectional-stratified_pair_rotation.json": "74c133ad3a023e29c5cf065562ff5ffe31d1cbc9ec61e00f47da75da33f48687",
+    "mpc_bench_v2_B-all_to_all_0.4-directional-circular_shift-values.json": "fe7d68e898cbbabd8c426144bf3dfd44dddc361e76929576b1f6850dab5f2bad",
+    "mpc_bench_v2_B-all_to_all_0.4-directional-circular_shift.json": "f8258fbb0c2fcf5bd85b8965968a6d4d3c4aac2645e55f065e580a195cc74a68",
+    "mpc_bench_v2_B-all_to_all_0.4-directional-stratified_pair_rotation-values.json": "82c20bb9aac2ee098caddaa45fbd0abfcb3bb84660b24ba4b2d9a817dbac1fe0",
+    "mpc_bench_v2_B-all_to_all_0.4-directional-stratified_pair_rotation.json": "084e2754582caffad2fd39c574a216d77b53fb7f48c81d0bc1e4938d34a2d160",
+    "mpc_bench_v2_B-ring_0.45-bidirectional-circular_shift-values.json": "76b37df4704adb08039cbf0eee6f2d587290a968f638109edfba0723556a0163",
+    "mpc_bench_v2_B-ring_0.45-bidirectional-circular_shift.json": "247d8e4d249d025cfbdc36173c52e00d9fcf5a0489e4cda115487d7d49c28320",
+    "mpc_bench_v2_B-ring_0.45-bidirectional-stratified_pair_rotation-values.json": "dd95e94be6181dc321310be951efa198dba7834a2d8b4bb3b797e9f7ee47ca22",
+    "mpc_bench_v2_B-ring_0.45-bidirectional-stratified_pair_rotation.json": "22f80cb42c1287c10c81c69dc35ef7b78ba40ad3f2020002d2a865527655b700",
+    "mpc_bench_v2_B-ring_0.45-directional-circular_shift-values.json": "d401b1339a49f4da02ed039f6a2c46df33e1af9168af8fc723babd22a04a3c32",
+    "mpc_bench_v2_B-ring_0.45-directional-circular_shift.json": "bf7f7bdf2dbfaf1a6ef8f95d3331113e995a0ea4bf16b8ea5ce14d9e9cf36b10",
+    "mpc_bench_v2_B-ring_0.45-directional-stratified_pair_rotation-values.json": "3b099e54fb0ca4a1a4e37bf50153893eb772b07b2d945da83a3defb3e83a47bf",
+    "mpc_bench_v2_B-ring_0.45-directional-stratified_pair_rotation.json": "4bda7e5a1c27c45583f7bf35511dd9495edb00b1c228716e4c97195be3a6f8c4",
+    "mpc_bench_v2_B.json": "997eafa76692adb6d1326d87072e3c09d033997c92a68ba2cae2fcd9811fc9e3",
+    "mpc_bench_v2_C1-H+iim_bidirectional.json": "b455a0df389164cfc5cd5a704fec3f7f001f552bad6f9bf4b5a90c52c7924813",
+    "mpc_bench_v2_C1-H+nas_secondary.json": "801e8a3d0e9bc637af74cccb80088d338c30d6881375143369fb4b514c48ba35",
+    "mpc_bench_v2_C1-H.json": "d3bea6aecd52658b9a8bf8f51d39360eac6937cfa9b546996cc2edd21a8c0b58",
+    "mpc_bench_v2_C1-R+iim_bidirectional.json": "42b555baffc026579e667471c832f9976f193c5d5a44b7f0f08388ed299274ed",
+    "mpc_bench_v2_C1-R+nas_secondary.json": "21a6ddad7d3d5fc6631cd8a1388a0eda73f4a50adcd39c9c4657d3fcbe1f9d9a",
+    "mpc_bench_v2_C1-R+nas_tau_0.05.json": "166cd9021e3bcc0dc998cd28a27b3efb66211e72809abe2657dfc2abfe0d575c",
+    "mpc_bench_v2_C1-R+nas_tau_0.2.json": "d2de69f700d733b30447ba9df634e66093315d8ea1046662c2ea2b8feec58ab0",
+    "mpc_bench_v2_C1-R.json": "ea26321ebe3ad57a17b883227762c8db999e4888173f7a1b7e8b7c6c13ecf0f0",
+    "mpc_bench_v2_fwdA-eeg64.json": "687a37018f004aec7f0561f641fc261fc48c9b928a1c53b285c875d799852c7d",
+    "mpc_bench_v2_fwdA-eeglow.json": "774aae140a5a4f70e2bfe904322802c77685ccaee9e3577776da2684bcd24b93",
+    "mpc_bench_v2_fwdA-source.json": "0073c8a6856f1ead09168d67785e40f65b81b048b44cb3034eca82d1dfbc8425",
+    "mpc_bench_v2_fwdA_bold-bold.json": "bd568fb9295c18ae06e0219607b55ec864ff24e8de237824831716f1c2fe79f1",
+    "mpc_bench_v2_fwdA_bold-source.json": "561e88d19f69969df88a67f180a8b7e6d3264987400963a84bf3bd8f46174825",
+    "mpc_bench_v2_hopf-bold.json": "fb2ec0a850b2f6e4adfedcb235b278b600f589cef4dbcb37a70e5ca89733e4cd",
+    "mpc_bench_v2_hopf-eeg64+iim_v1_quadrants.json": "0b30e66095b9c62b2f174e1c1e820d93b210b45d8b26f5a4bfe96c0857bab963",
+    "mpc_bench_v2_hopf-eeg64.json": "3fc63442d774887ef810f204aefd9e68e459e557884ff7984e7611793b143709",
+    "mpc_bench_v2_hopf-eeg64_noref+iim_v1_quadrants.json": "f2fd54327c5f2c551d87487d5cc06705f220e1467072452f0cf8f85fee3c3d2c",
+    "mpc_bench_v2_hopf-eeg64_noref.json": "13de361f94a4e15cc6bc842edd7167d2f1c1dcef6f360aff3fb7ab85675e4cc1",
+    "mpc_bench_v2_hopf-eeglow.json": "2ff141f897f765afcb7246a3e73b59d214970497670d1cfc71fc2ab734073a05",
+    "mpc_bench_v2_hopf-mne_template.json": "5ca22d983d01bf21bd49d1fbb8d65fe43de2dcc444883cb909cc1ea1593067a3",
+    "mpc_bench_v2_hopf-source.json": "d68a37911d71ba7477a4625231668d79a7ce70cbafaac1d0d56839a035000177",
+    "testability_table.json": "90d9c999d52b8ae5f9ff26dbddddece3f9fd00c1f1db5547984b064b8a886717"
+  },
+  "freeze_ready": true,
+  "inputs": [
+    {
+      "n_records": 280,
+      "path": "anchors_A/A_anchors/results.jsonl",
+      "sha256": "1fa04dd847ad131c26c428ec7ddaa4f8c470c44c6236819dafdcbebbaf156f90"
+    },
+    {
+      "n_records": 160,
+      "path": "anchors_C1/C1_anchors/results.jsonl",
+      "sha256": "1b096d630c89b5b305cdc5f52b5dbd341aac145450b40298c7282063508cdf7b"
+    },
+    {
+      "n_records": 80,
+      "path": "anchors_RAM160/RAM160_anchors/results.jsonl",
+      "sha256": "100865046efe04c082423c14ff749aad64627f4104a92d238f7e1abc5f9143ed"
+    },
+    {
+      "n_records": 120,
+      "path": "anchors_forward_dev_regime/forward_reference_development/results.jsonl",
+      "sha256": "9a4f58b92884c81900ebd9986e6e941c1bc9f40a90ff9d2fb9c7b65cd1189a2a"
+    },
+    {
+      "n_records": 120,
+      "path": "anchors_forward_held_out/forward_reference/results.jsonl",
+      "sha256": "5af7b35fb0888c3d3bc63452a96c8c975f911b4485cbac0e3288c8b91b269ea6"
+    },
+    {
+      "n_records": 84,
+      "path": "dry_run/A_adversaries/results.jsonl",
+      "sha256": "6a3d838c817dc30a0d7d62a8e3ca88ad7cffd9a4751078d89345c0605869a006"
+    },
+    {
+      "n_records": 12,
+      "path": "dry_run/A_adversary_controls/results.jsonl",
+      "sha256": "c3d4e6e208ff922c6240715667c60969352223d324c4baa9c76562ed81f017ad"
+    },
+    {
+      "n_records": 232,
+      "path": "dry_run/A_sweeps_factorial/results.jsonl",
+      "sha256": "9febe513dc15d10ec11cb5105e43902098dd652f1f16851da6a973e3f9c2b28a"
+    },
+    {
+      "n_records": 192,
+      "path": "dry_run/A_witnesses/results.jsonl",
+      "sha256": "3c9ff2bfbe9317916f7f11b9940b1f7b80f8c3c9173133b0148252dbe6e954be"
+    },
+    {
+      "n_records": 364,
+      "path": "dry_run/C1/results.jsonl",
+      "sha256": "8db107fdee78cb4059b1b79ba7159e4888d50e07109cd52dfda677fd17fb79b9"
+    },
+    {
+      "n_records": 220,
+      "path": "dry_run/RAM160/results.jsonl",
+      "sha256": "0abea9b4ee232288c248aa1fedcd36a928304447bd4f639bb114241a2575ffe8"
+    },
+    {
+      "n_records": 395,
+      "path": "dry_run/family_b/iim_validation_v2.jsonl",
+      "sha256": "5d8c81eee8fa82174abaae5db504d95503f9eaec6f00c0fc75329791d6c0962d"
+    },
+    {
+      "n_records": 130,
+      "path": "dry_run/forward_dev_regime/results.jsonl",
+      "sha256": "a227a60787f5f94cdaa3b6fa30f005802201a21252a2b05c4daa62345990757b"
+    },
+    {
+      "n_records": 130,
+      "path": "dry_run/forward_dry_run/results.jsonl",
+      "sha256": "82324b8baf63375bbd712eae8f8f18da59df50e0fb13a2f4d8f8ae1e99d0451b"
+    },
+    {
+      "n_records": 128,
+      "path": "dry_run/null_calibration/results.jsonl",
+      "sha256": "8f5af3be4be8d3a3f38daf90fff291c64090946f30c6755989e9fd80d9ba7248"
+    },
+    {
+      "n_records": 55,
+      "path": "occupancy_n_min/n_min_100/iim_validation_v2.jsonl",
+      "sha256": "0111ce5a8570ca59b84ea0b9606ae65e4e704ce1eb84bd63ada769a2adf29372"
+    },
+    {
+      "n_records": 55,
+      "path": "occupancy_n_min/n_min_50/iim_validation_v2.jsonl",
+      "sha256": "592c73353677b1786a7424aec7e0836ad9b3d1c336649cfbbf7b4f12bad049d2"
+    },
+    {
+      "n_records": 810,
+      "path": "pdi_concordance/battery/results.jsonl",
+      "sha256": "45e3d4a1030036e9378b9516e1673fbd33ebea0dc5236730a10e9809033b3b1d"
+    },
+    {
+      "n_records": 0,
+      "path": "smoke/A_heldout/results.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "n_records": 0,
+      "path": "smoke/forward_smoke/results.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "n_records": 175,
+      "path": "twins/A_twins/results.jsonl",
+      "sha256": "4e86ea244a1d7a52c17112914361ceab8e89b714bb4705df06dd2e9b16664164"
+    },
+    {
+      "n_records": 105,
+      "path": "twins/C1_twins/results.jsonl",
+      "sha256": "3b5a82a4f70442a93a1ccb6cb0e1416a37165d543bef9cc144806a2b2cc67c88"
+    },
+    {
+      "n_records": 120,
+      "path": "twins/RAM160_twins/results.jsonl",
+      "sha256": "c4f7f5337075e1a6c79380578db92feb97f67a07c1cdba9b943dde195e8b2b2d"
+    },
+    {
+      "n_records": 175,
+      "path": "twins_iim_jackknife/iim_jackknife_contiguous_10/results.jsonl",
+      "sha256": "40acfc104063813145cf86feb59713e7d1dfac59bf724379b9cb4cf8536022c0"
+    },
+    {
+      "n_records": 280,
+      "path": "twins_nas_se/nas_jackknife_contiguous_20/results.jsonl",
+      "sha256": "7bba9d45a808424000f5e67651b3b0a93360f45be745bff0e363a31015ba4836"
+    },
+    {
+      "n_records": 280,
+      "path": "twins_nas_se/nas_jackknife_interleaved_10/results.jsonl",
+      "sha256": "b61e3f90c91cad154c4e9a084ff100a00217c8a6903f0463b77e813dc5fca130"
+    },
+    {
+      "n_records": 280,
+      "path": "twins_nas_se/nas_jackknife_interleaved_20/results.jsonl",
+      "sha256": "ffc9cfb47c01a65ff7473193ac0534332bdc7fbccf84edce440e0ce33c3eb887"
+    },
+    {
+      "n_records": 120,
+      "path": "twins_ram_jackknife/ram_jackknife_trials_10/results.jsonl",
+      "sha256": "51ac3db803ec3c5e27c83adc6d4a297d5ebd867bb892e498d044664bb625286e"
+    }
+  ],
+  "notes": [
+    "protocol hopf-bold: every anchor is invalid on the complete reference block, so each of its components is UNDEFINED and its verdicts are UNDETERMINED",
+    "protocol hopf-eeg64+iim_v1_quadrants: every anchor is invalid on the complete reference block, so each of its components is UNDEFINED and its verdicts are UNDETERMINED"
+  ],
+  "pending_decisions": [],
+  "planned_protocol_keys": [
+    "A-H",
+    "A-H+iim_bidirectional",
+    "A-H+nas_secondary",
+    "A-J",
+    "A-P",
+    "A-Q10",
+    "A-Q25",
+    "A-R",
+    "A-R+iim_bidirectional",
+    "A-R+nas_secondary",
+    "A-R+nas_tau_0.05",
+    "A-R+nas_tau_0.2",
+    "A-R+pdi_misdeclared_access",
+    "A-RAM160",
+    "A-none",
+    "B-all_to_all_0.4-bidirectional-circular_shift",
+    "B-all_to_all_0.4-bidirectional-circular_shift-values",
+    "B-all_to_all_0.4-bidirectional-stratified_pair_rotation",
+    "B-all_to_all_0.4-bidirectional-stratified_pair_rotation-values",
+    "B-all_to_all_0.4-directional-circular_shift",
+    "B-all_to_all_0.4-directional-circular_shift-values",
+    "B-all_to_all_0.4-directional-stratified_pair_rotation",
+    "B-all_to_all_0.4-directional-stratified_pair_rotation-values",
+    "B-ring_0.45-bidirectional-circular_shift",
+    "B-ring_0.45-bidirectional-circular_shift-values",
+    "B-ring_0.45-bidirectional-stratified_pair_rotation",
+    "B-ring_0.45-bidirectional-stratified_pair_rotation-values",
+    "B-ring_0.45-directional-circular_shift",
+    "B-ring_0.45-directional-circular_shift-values",
+    "B-ring_0.45-directional-stratified_pair_rotation",
+    "B-ring_0.45-directional-stratified_pair_rotation-values",
+    "C1-H",
+    "C1-H+iim_bidirectional",
+    "C1-H+nas_secondary",
+    "C1-R",
+    "C1-R+iim_bidirectional",
+    "C1-R+nas_secondary",
+    "C1-R+nas_tau_0.05",
+    "C1-R+nas_tau_0.2",
+    "fwdA-eeg64",
+    "fwdA-eeglow",
+    "fwdA-source",
+    "fwdA_bold-bold",
+    "fwdA_bold-source",
+    "hopf-bold",
+    "hopf-eeg64",
+    "hopf-eeg64+iim_v1_quadrants",
+    "hopf-eeg64_noref",
+    "hopf-eeg64_noref+iim_v1_quadrants",
+    "hopf-eeglow",
+    "hopf-mne_template",
+    "hopf-source"
+  ],
+  "protocols": {
+    "A-H": {
+      "file": "mpc_bench_v2_A-H.json",
+      "hash": "1616cfc357c69cf1e0a968f89cc972a770657bad4b647c97974fb58abae3fc65"
+    },
+    "A-H+iim_bidirectional": {
+      "file": "mpc_bench_v2_A-H+iim_bidirectional.json",
+      "hash": "9256b71e829d04982a0658c5ad108b4207d8c5f2bcd076f58fb9d8ce2207cd1d"
+    },
+    "A-H+nas_secondary": {
+      "file": "mpc_bench_v2_A-H+nas_secondary.json",
+      "hash": "b3d4d2bd8d4e1f79281add5958bd1455bb22eed8ef76a15ac66bab11b7b89073"
+    },
+    "A-J": {
+      "file": "mpc_bench_v2_A-J.json",
+      "hash": "f60d4e9c803c0d4fcef494e89d8e72801837c8b0f5d8fdfefb7557380d95a83e"
+    },
+    "A-P": {
+      "file": "mpc_bench_v2_A-P.json",
+      "hash": "5588c08c4e3792d558a936490fe7c11c16ba30338fdba3f61b64d8f94ae306c0"
+    },
+    "A-Q10": {
+      "file": "mpc_bench_v2_A-Q10.json",
+      "hash": "087653800941b1b82115a9d9d835f28b8dc6a988e61902569c503e2cc243d997"
+    },
+    "A-Q25": {
+      "file": "mpc_bench_v2_A-Q25.json",
+      "hash": "704edbc9cb77047bb621646093834fdccb3587caa8589d928c5f4690ca555b63"
+    },
+    "A-R": {
+      "file": "mpc_bench_v2_A-R.json",
+      "hash": "00f25190fc91593be91d981ff3295c01c254f6322bb2a6bb78472ed9ae5328cc"
+    },
+    "A-R+iim_bidirectional": {
+      "file": "mpc_bench_v2_A-R+iim_bidirectional.json",
+      "hash": "04d9f3206b8157e91078fe4c2646e5aa3f50ad52e93d9e7cfdf8aa98d1d01c25"
+    },
+    "A-R+nas_secondary": {
+      "file": "mpc_bench_v2_A-R+nas_secondary.json",
+      "hash": "5fc8e2d48158619577030b6209ef2f9f37c36154aabf2bcdf58b403c66ab309b"
+    },
+    "A-R+nas_tau_0.05": {
+      "file": "mpc_bench_v2_A-R+nas_tau_0.05.json",
+      "hash": "2fca6d823c057c1746d4599e15d80b3a824fadf4c8b1105323074074cd4dc553"
+    },
+    "A-R+nas_tau_0.2": {
+      "file": "mpc_bench_v2_A-R+nas_tau_0.2.json",
+      "hash": "f4ca8da7185bee9b5db996d43f146392fdfefa5b4589190fc8d484379548f48e"
+    },
+    "A-R+pdi_misdeclared_access": {
+      "file": "mpc_bench_v2_A-R+pdi_misdeclared_access.json",
+      "hash": "b7064c7ba8eec07277eb2d1b505702ef47b546693612fd4707e2188b1463b312"
+    },
+    "A-RAM160": {
+      "file": "mpc_bench_v2_A-RAM160.json",
+      "hash": "d31fbdd61010a8f287553af683829791737706476ed7fd6c583019442a12ee9e"
+    },
+    "A-none": {
+      "file": "mpc_bench_v2_A-none.json",
+      "hash": "e2ccb4293561c407f0ad2921f19560446f9933bb953c22b1331313d013562dc1"
+    },
+    "B": {
+      "file": "mpc_bench_v2_B.json",
+      "hash": "ee3efaaba08018539cbb3a78b485104615d4ee91f664df323aaed021cbaf79fc"
+    },
+    "B-all_to_all_0.4-bidirectional-circular_shift": {
+      "file": "mpc_bench_v2_B-all_to_all_0.4-bidirectional-circular_shift.json",
+      "hash": "7a5ef2679094e0f3d420aa57b4460385ae9a52827de5ebce7f89390972b9786c"
+    },
+    "B-all_to_all_0.4-bidirectional-circular_shift-values": {
+      "file": "mpc_bench_v2_B-all_to_all_0.4-bidirectional-circular_shift-values.json",
+      "hash": "3b11aa9a006186313293cd43e2f811bd762c03fa8a47549b2d1e857181903181"
+    },
+    "B-all_to_all_0.4-bidirectional-stratified_pair_rotation": {
+      "file": "mpc_bench_v2_B-all_to_all_0.4-bidirectional-stratified_pair_rotation.json",
+      "hash": "1c6c98d5c381eacd6f54b69011f0f6283913f8bf421545487904b5fa40c54683"
+    },
+    "B-all_to_all_0.4-bidirectional-stratified_pair_rotation-values": {
+      "file": "mpc_bench_v2_B-all_to_all_0.4-bidirectional-stratified_pair_rotation-values.json",
+      "hash": "d769c1d7a735f180a2e2009b049ca5d3b4e6a03033a780f6a6cfa1ade6bb4b1c"
+    },
+    "B-all_to_all_0.4-directional-circular_shift": {
+      "file": "mpc_bench_v2_B-all_to_all_0.4-directional-circular_shift.json",
+      "hash": "abe60a58086957d19c424b1acdd801fcfafab4b9c0763d6aad185f037a32ee31"
+    },
+    "B-all_to_all_0.4-directional-circular_shift-values": {
+      "file": "mpc_bench_v2_B-all_to_all_0.4-directional-circular_shift-values.json",
+      "hash": "faeb352c514b3970b30c93e34b4d40a313786913274de4cae33e10bf1c11fedf"
+    },
+    "B-all_to_all_0.4-directional-stratified_pair_rotation": {
+      "file": "mpc_bench_v2_B-all_to_all_0.4-directional-stratified_pair_rotation.json",
+      "hash": "e4685fcc31180359ca55e25da9367343e34050a177b3a3d2bdac52e08db3982d"
+    },
+    "B-all_to_all_0.4-directional-stratified_pair_rotation-values": {
+      "file": "mpc_bench_v2_B-all_to_all_0.4-directional-stratified_pair_rotation-values.json",
+      "hash": "66aa30f792bbe5fce1b717e2bb94d6564e23e75ba0500b9df1e558e9de751e3e"
+    },
+    "B-ring_0.45-bidirectional-circular_shift": {
+      "file": "mpc_bench_v2_B-ring_0.45-bidirectional-circular_shift.json",
+      "hash": "8401dee13ee3e6687ae2f4f4ea6854949bcdc83ade8eaba2ab6d2e1d471f4fef"
+    },
+    "B-ring_0.45-bidirectional-circular_shift-values": {
+      "file": "mpc_bench_v2_B-ring_0.45-bidirectional-circular_shift-values.json",
+      "hash": "ad83431dc08cab0e9ae6f5abacc378173e957fa9ebf59413965d2fafeb6bf3fb"
+    },
+    "B-ring_0.45-bidirectional-stratified_pair_rotation": {
+      "file": "mpc_bench_v2_B-ring_0.45-bidirectional-stratified_pair_rotation.json",
+      "hash": "a700774e6a39ee478c9c1361d79dba28f99a85a771e4c41212972902c0f8d359"
+    },
+    "B-ring_0.45-bidirectional-stratified_pair_rotation-values": {
+      "file": "mpc_bench_v2_B-ring_0.45-bidirectional-stratified_pair_rotation-values.json",
+      "hash": "ac686f3240b795b09830529805f26ff0a3f3fd8e5a4f952446590df409265a83"
+    },
+    "B-ring_0.45-directional-circular_shift": {
+      "file": "mpc_bench_v2_B-ring_0.45-directional-circular_shift.json",
+      "hash": "c0998ddb353c72c226a1460b2ae7e2e3b36c582b3f757c2318d1814fb8693e05"
+    },
+    "B-ring_0.45-directional-circular_shift-values": {
+      "file": "mpc_bench_v2_B-ring_0.45-directional-circular_shift-values.json",
+      "hash": "743054dbe5becbec6a7fa1c6eac6425330c827c1e1d4151fae0acc213f2bab76"
+    },
+    "B-ring_0.45-directional-stratified_pair_rotation": {
+      "file": "mpc_bench_v2_B-ring_0.45-directional-stratified_pair_rotation.json",
+      "hash": "522ab31bf6f3ef96efc9b6f8fe1ec071ab130b2ab1bf602624fb9760142cee96"
+    },
+    "B-ring_0.45-directional-stratified_pair_rotation-values": {
+      "file": "mpc_bench_v2_B-ring_0.45-directional-stratified_pair_rotation-values.json",
+      "hash": "7fa02a05eef7d74a00da12cf1b734c08ed66812714c96a38e461ae742797a167"
+    },
+    "C1-H": {
+      "file": "mpc_bench_v2_C1-H.json",
+      "hash": "65bf4edea04ecb2f19e62efb4d804ce259a6b8183b14bd52f2cb30da63f7ec5f"
+    },
+    "C1-H+iim_bidirectional": {
+      "file": "mpc_bench_v2_C1-H+iim_bidirectional.json",
+      "hash": "c538e83e45c06de59e9abf5fec00c999263cd41f5cd4729a485f766e2fad3ddd"
+    },
+    "C1-H+nas_secondary": {
+      "file": "mpc_bench_v2_C1-H+nas_secondary.json",
+      "hash": "5a4f175dd35bae45ecb0652083e2f825f751eed606ae907518d486661feed14e"
+    },
+    "C1-R": {
+      "file": "mpc_bench_v2_C1-R.json",
+      "hash": "c1906594f8558f7f749b97a14c6143aa08ff0db43c0d7fa12bed02a41b452864"
+    },
+    "C1-R+iim_bidirectional": {
+      "file": "mpc_bench_v2_C1-R+iim_bidirectional.json",
+      "hash": "544145150e802547a5aedbca4da0953fa8a1babac12b9249bf95cdb97b308ea3"
+    },
+    "C1-R+nas_secondary": {
+      "file": "mpc_bench_v2_C1-R+nas_secondary.json",
+      "hash": "2f769261ad1db80025ba141d58a62d925b7914a34c9ce494071fb5f57c8bf43a"
+    },
+    "C1-R+nas_tau_0.05": {
+      "file": "mpc_bench_v2_C1-R+nas_tau_0.05.json",
+      "hash": "bb28e5bd0db1787787ab4229b5f7a7187f971bf8a8ee233554f52d64c4e5fffd"
+    },
+    "C1-R+nas_tau_0.2": {
+      "file": "mpc_bench_v2_C1-R+nas_tau_0.2.json",
+      "hash": "9d903459528769d68997efa1bac4818fa2b12aea17cc5823b92de849e99d5a6a"
+    },
+    "fwdA-eeg64": {
+      "file": "mpc_bench_v2_fwdA-eeg64.json",
+      "hash": "46e65134d04cb128820c3f672935d3ccd7259ab551956332ac74a2505ea36cfb"
+    },
+    "fwdA-eeglow": {
+      "file": "mpc_bench_v2_fwdA-eeglow.json",
+      "hash": "0ad74bafa80b2870afc7e3b16d0554695ebe5ea28305ca07d64b47ebc20cd643"
+    },
+    "fwdA-source": {
+      "file": "mpc_bench_v2_fwdA-source.json",
+      "hash": "877f2f690d7d26bcf09c66ef8799a92761437fddbc3eead5ebca146f0ff1a7de"
+    },
+    "fwdA_bold-bold": {
+      "file": "mpc_bench_v2_fwdA_bold-bold.json",
+      "hash": "fa3799494fea5e1ca7e8910397d56eade68cbb17b9949713a73a45760ade54fa"
+    },
+    "fwdA_bold-source": {
+      "file": "mpc_bench_v2_fwdA_bold-source.json",
+      "hash": "4839b24fd4935e133e03165e86de2d2d547bec0c49398da0eff236f97cad67bd"
+    },
+    "hopf-bold": {
+      "file": "mpc_bench_v2_hopf-bold.json",
+      "hash": "d582764c940d267bb22316b105c94fda9e31e5421d79d7c4f047b51eb590a45a"
+    },
+    "hopf-eeg64": {
+      "file": "mpc_bench_v2_hopf-eeg64.json",
+      "hash": "0ad5f858224ad3ac3b609e4d563c2fa838e91a82e5cab49c39d2bd0296f891fb"
+    },
+    "hopf-eeg64+iim_v1_quadrants": {
+      "file": "mpc_bench_v2_hopf-eeg64+iim_v1_quadrants.json",
+      "hash": "126587ee7053515d656ebfe8a4f9bdb384b710677d4be0b93f8ce61b9579c6aa"
+    },
+    "hopf-eeg64_noref": {
+      "file": "mpc_bench_v2_hopf-eeg64_noref.json",
+      "hash": "ef35e2ed6333159805900187a20e91e546f3f33280161699b924f44c42b737a6"
+    },
+    "hopf-eeg64_noref+iim_v1_quadrants": {
+      "file": "mpc_bench_v2_hopf-eeg64_noref+iim_v1_quadrants.json",
+      "hash": "2fd3dbbad86d7e463fa13ed78b4f60143cff32e23d74dc27b8b196f6b2404480"
+    },
+    "hopf-eeglow": {
+      "file": "mpc_bench_v2_hopf-eeglow.json",
+      "hash": "48f40e647ba0303196c041f6b18bec0e5d604435d24f477cc4d840b00d32e911"
+    },
+    "hopf-mne_template": {
+      "file": "mpc_bench_v2_hopf-mne_template.json",
+      "hash": "973c146d725c1ce817c971e50c4b0fd1b36b76d6ccf7e70fb09eb78d88916675"
+    },
+    "hopf-source": {
+      "file": "mpc_bench_v2_hopf-source.json",
+      "hash": "50c4c9793bbf2b4433f32a205cb116a57d326978c677aeb4217a366bf378582c"
+    }
+  },
+  "releases": [
+    {
+      "predictions": [
+        {
+          "clean": true,
+          "commit": "21597febf7613ee845e2d28b390a5ab36a60ced2",
+          "committed_at": "2026-10-08T16:40:40+02:00",
+          "path": "protocols/v2/held_out_predictions_v2.json",
+          "sha256": "a0d291e066406128f5dc67b9e6368f8b33b5df2ee71806008bb2b72951b5f726",
+          "tracked": true
+        }
+      ],
+      "release_id": "5af6e074475de23a"
+    }
+  ],
+  "run_settings": {
+    "iim_max_macro_nodes": 4,
+    "pdi_kmeans_seed": 0
+  },
+  "schema": "mpc-bench-protocol-build/1"
+}

@@ -1,0 +1,2015 @@
+{
+  "flag": "DEVELOPMENT - NOT A RESULT",
+  "min_runs": 40,
+  "rows": [
+    {
+      "family": "A-H",
+      "kind": "present",
+      "n": 64,
+      "principle": "IIM",
+      "row": {
+        "attainable_se_c": 0.6883599826999673,
+        "decisive": false,
+        "df": 15.0260621780946,
+        "family": "A-H",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.375,
+        "pi_analytic": 0.2569314645552824,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.5,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.03125,
+          "PRESENT": 0.375,
+          "PRESENT_NOT_REACHABLE": 0.515625,
+          "UNDEFINED": 0.625
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.03843271626414453,
+        "s_P": 0.4278744311053281,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "circular_block_bootstrap_10pct_B50"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-H",
+      "kind": "absent",
+      "n": 52,
+      "principle": "IIM",
+      "row": {
+        "attainable_se_c": 0.635677276287105,
+        "decisive": false,
+        "df": 26.09101110488423,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 0.4230769230769231,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.4230769230769231,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.5576923076923077,
+          "PRESENT_NOT_REACHABLE": 0.21153846153846154,
+          "UNDEFINED": 0.4423076923076923
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.040354043212930485,
+        "s_P": 0.43977997265132207,
+        "witness": "W_IIM_feedforward"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "circular_block_bootstrap_10pct_B50"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_IIM_feedforward"
+    },
+    {
+      "family": "A-H",
+      "kind": "present",
+      "n": 64,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.0872345490852843,
+        "decisive": true,
+        "df": 13.469010600597343,
+        "family": "A-H",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9999994899731287,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 1.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.03791227430765567,
+        "s_P": 0.42463336056459433,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-H",
+      "kind": "absent",
+      "n": 52,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.03938004243315643,
+        "decisive": false,
+        "df": 9.61504344702591,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 2,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.09767400647827297,
+        "predicted_absent_not_reachable_rate": 0.6923076923076923,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.6923076923076923,
+          "INCONCLUSIVE": 0.2692307692307692,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.038461538461538464,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.9615384615384616
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.03127036589239539,
+        "s_P": 0.412121309115954,
+        "witness": "W_NAS_broadcast_only"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_NAS_broadcast_only"
+    },
+    {
+      "family": "A-H",
+      "kind": "absent",
+      "n": 52,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.02852911197576946,
+        "decisive": false,
+        "df": 11.609903655432843,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 2,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.15384615384615385,
+        "pi_analytic": 0.4427652824473959,
+        "predicted_absent_not_reachable_rate": 0.17307692307692307,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.15384615384615385,
+          "ABSENT_NOT_REACHABLE": 0.17307692307692307,
+          "INCONCLUSIVE": 0.5384615384615384,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.1346153846153846,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.7115384615384616
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.03253810751748363,
+        "s_P": 0.4196296119914493,
+        "witness": "W_NAS_no_workspace"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_NAS_no_workspace"
+    },
+    {
+      "family": "A-H",
+      "kind": "present",
+      "n": 64,
+      "principle": "PDI",
+      "row": {
+        "attainable_se_c": 0.09014495336096373,
+        "decisive": true,
+        "df": 9.042240490087849,
+        "family": "A-H",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9999415038090533,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "PDI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 1.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.03547736977749214,
+        "s_P": 0.40935770664993315,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-H",
+      "kind": "absent",
+      "n": 12,
+      "principle": "PDI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "concordant",
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_witnesses"
+      ],
+      "why": "12 development runs; the gate needs 40",
+      "witness": "W_PDI_no_multistability"
+    },
+    {
+      "family": "A-H",
+      "kind": "absent",
+      "n": 52,
+      "principle": "PDI",
+      "row": {
+        "attainable_se_c": 0.0,
+        "decisive": false,
+        "df": 9.0,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.7884615384615384,
+        "pi_analytic": 0.7884615384615384,
+        "predicted_absent_not_reachable_rate": 0.21153846153846154,
+        "principle": "PDI",
+        "rates": {
+          "ABSENT": 0.7884615384615384,
+          "ABSENT_NOT_REACHABLE": 0.21153846153846154,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.21153846153846154
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.035442920474348306,
+        "s_P": 0.40914009532096435,
+        "witness": "W_PDI_single_attractor"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "concordant",
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_PDI_single_attractor"
+    },
+    {
+      "family": "A-H",
+      "kind": "present",
+      "n": 64,
+      "principle": "RAM",
+      "row": {
+        "attainable_se_c": 0.3794771245031109,
+        "decisive": false,
+        "df": 74.74127225939185,
+        "family": "A-H",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.671875,
+        "pi_analytic": 0.6324978378255119,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "RAM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.328125,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.671875,
+          "PRESENT_NOT_REACHABLE": 0.015625,
+          "UNDEFINED": 0.328125
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.042064860535126994,
+        "s_P": 0.45031590231552027,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "shift_null_sd"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-H",
+      "kind": "absent",
+      "n": 52,
+      "principle": "RAM",
+      "row": {
+        "attainable_se_c": 0.3287289810073967,
+        "decisive": false,
+        "df": 71.3082215299402,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 0.9038461538461539,
+        "principle": "RAM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.9038461538461539,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.09615384615384616,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.0420205738903596,
+        "s_P": 0.45004380888482975,
+        "witness": "W_RAM_no_plasticity"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "shift_null_sd"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_RAM_no_plasticity"
+    },
+    {
+      "family": "A-H",
+      "kind": "present",
+      "n": 64,
+      "principle": "SRPI",
+      "row": {
+        "attainable_se_c": 0.28413116111626446,
+        "decisive": false,
+        "df": 9.622175923698634,
+        "family": "A-H",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.765625,
+        "pi_analytic": 0.7544614403361767,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "SRPI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.234375,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.765625,
+          "PRESENT_NOT_REACHABLE": 0.140625,
+          "UNDEFINED": 0.234375
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.03592061960935995,
+        "s_P": 0.4121536625577616,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_pairs_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-H",
+      "kind": "absent",
+      "n": 52,
+      "principle": "SRPI",
+      "row": {
+        "attainable_se_c": 0.45761019514522894,
+        "decisive": false,
+        "df": 9.040945838184857,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 0.9807692307692307,
+        "principle": "SRPI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.9807692307692307,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.019230769230769232,
+          "PRESENT_NOT_REACHABLE": 0.6538461538461539,
+          "UNDEFINED": 0.9807692307692307
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.03547631855767999,
+        "s_P": 0.4093510669169272,
+        "witness": "W_SRPI_no_efference"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_pairs_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_SRPI_no_efference"
+    },
+    {
+      "family": "A-R",
+      "kind": "present",
+      "n": 64,
+      "principle": "IIM",
+      "row": {
+        "attainable_se_c": 0.20110779084309055,
+        "decisive": true,
+        "df": 10.031511127983409,
+        "family": "A-R",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "decisive",
+        "pi": 0.90625,
+        "pi_analytic": 0.9332780426022647,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.09375,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.90625,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.09375
+        },
+        "replacement": null,
+        "s_A": 0.03620343828359939,
+        "s_P": 0.41393387984020397,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "circular_block_bootstrap_10pct_B50"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-R",
+      "kind": "absent",
+      "n": 52,
+      "principle": "IIM",
+      "row": {
+        "attainable_se_c": 0.03485635165648451,
+        "decisive": false,
+        "df": 9.15938256840629,
+        "family": "A-R",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.23076923076923078,
+        "pi_analytic": 0.28079382839110745,
+        "predicted_absent_not_reachable_rate": 0.4807692307692308,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 0.23076923076923078,
+          "ABSENT_NOT_REACHABLE": 0.4807692307692308,
+          "INCONCLUSIVE": 0.28846153846153844,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.7692307692307693
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.03557129277574618,
+        "s_P": 0.4099507746885239,
+        "witness": "W_IIM_feedforward"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "circular_block_bootstrap_10pct_B50"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_IIM_feedforward"
+    },
+    {
+      "family": "A-R",
+      "kind": "present",
+      "n": 64,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.09804145068017504,
+        "decisive": true,
+        "df": 9.983602286844956,
+        "family": "A-R",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9988977293778191,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 1.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.03617150449538378,
+        "s_P": 0.4137330139008927,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-R",
+      "kind": "absent",
+      "n": 52,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.043911807939926564,
+        "decisive": false,
+        "df": 9.314447658677803,
+        "family": "A-R",
+        "kind": "absent",
+        "members": 2,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.038461538461538464,
+        "pi_analytic": 0.09827603230575158,
+        "predicted_absent_not_reachable_rate": 0.8269230769230769,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.038461538461538464,
+          "ABSENT_NOT_REACHABLE": 0.8269230769230769,
+          "INCONCLUSIVE": 0.1346153846153846,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.9615384615384616
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.031034101045393368,
+        "s_P": 0.4107130784885141,
+        "witness": "W_NAS_broadcast_only"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_NAS_broadcast_only"
+    },
+    {
+      "family": "A-R",
+      "kind": "absent",
+      "n": 52,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.013398635006995181,
+        "decisive": true,
+        "df": 9.714486702724631,
+        "family": "A-R",
+        "kind": "absent",
+        "members": 2,
+        "n": 52,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9188047173175915,
+        "predicted_absent_not_reachable_rate": 0.0,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 1.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.03134543493032016,
+        "s_P": 0.4125681354227595,
+        "witness": "W_NAS_no_workspace"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_NAS_no_workspace"
+    },
+    {
+      "family": "A-R",
+      "kind": "present",
+      "n": 64,
+      "principle": "PDI",
+      "row": {
+        "attainable_se_c": 0.09014495336096373,
+        "decisive": true,
+        "df": 9.042240490087849,
+        "family": "A-R",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9999415038090533,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "PDI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 1.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.03547736977749214,
+        "s_P": 0.40935770664993315,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-R",
+      "kind": "absent",
+      "n": 12,
+      "principle": "PDI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "concordant",
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_witnesses"
+      ],
+      "why": "12 development runs; the gate needs 40",
+      "witness": "W_PDI_no_multistability"
+    },
+    {
+      "family": "A-R",
+      "kind": "absent",
+      "n": 52,
+      "principle": "PDI",
+      "row": {
+        "attainable_se_c": 0.0,
+        "decisive": false,
+        "df": 9.0,
+        "family": "A-R",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.7884615384615384,
+        "pi_analytic": 0.7884615384615384,
+        "predicted_absent_not_reachable_rate": 0.21153846153846154,
+        "principle": "PDI",
+        "rates": {
+          "ABSENT": 0.7884615384615384,
+          "ABSENT_NOT_REACHABLE": 0.21153846153846154,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.21153846153846154
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.035442920474348306,
+        "s_P": 0.40914009532096435,
+        "witness": "W_PDI_single_attractor"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "concordant",
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_PDI_single_attractor"
+    },
+    {
+      "family": "A-R",
+      "kind": "present",
+      "n": 64,
+      "principle": "RAM",
+      "row": {
+        "attainable_se_c": 0.3794771245031109,
+        "decisive": false,
+        "df": 74.74127225939185,
+        "family": "A-R",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.671875,
+        "pi_analytic": 0.6324978378255119,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "RAM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.328125,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.671875,
+          "PRESENT_NOT_REACHABLE": 0.015625,
+          "UNDEFINED": 0.328125
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.042064860535126994,
+        "s_P": 0.45031590231552027,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "shift_null_sd"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-R",
+      "kind": "absent",
+      "n": 52,
+      "principle": "RAM",
+      "row": {
+        "attainable_se_c": 0.3287289810073967,
+        "decisive": false,
+        "df": 71.3082215299402,
+        "family": "A-R",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 0.9038461538461539,
+        "principle": "RAM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.9038461538461539,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.09615384615384616,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.0420205738903596,
+        "s_P": 0.45004380888482975,
+        "witness": "W_RAM_no_plasticity"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "shift_null_sd"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_RAM_no_plasticity"
+    },
+    {
+      "family": "A-R",
+      "kind": "present",
+      "n": 64,
+      "principle": "SRPI",
+      "row": {
+        "attainable_se_c": 0.28413116111626446,
+        "decisive": false,
+        "df": 9.622175923698634,
+        "family": "A-R",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.765625,
+        "pi_analytic": 0.7544614403361767,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "SRPI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.234375,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.765625,
+          "PRESENT_NOT_REACHABLE": 0.140625,
+          "UNDEFINED": 0.234375
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.03592061960935995,
+        "s_P": 0.4121536625577616,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_pairs_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-R",
+      "kind": "absent",
+      "n": 52,
+      "principle": "SRPI",
+      "row": {
+        "attainable_se_c": 0.45761019514522894,
+        "decisive": false,
+        "df": 9.040945838184857,
+        "family": "A-R",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 0.9807692307692307,
+        "principle": "SRPI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.9807692307692307,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.019230769230769232,
+          "PRESENT_NOT_REACHABLE": 0.6538461538461539,
+          "UNDEFINED": 0.9807692307692307
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.03547631855767999,
+        "s_P": 0.4093510669169272,
+        "witness": "W_SRPI_no_efference"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_pairs_10"
+      ],
+      "sources": [
+        "A_anchors",
+        "A_witnesses"
+      ],
+      "witness": "W_SRPI_no_efference"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "present",
+      "n": 0,
+      "principle": "IIM",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "absent",
+      "n": 0,
+      "principle": "IIM",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "W_IIM_feedforward"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "present",
+      "n": 0,
+      "principle": "NAS",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "absent",
+      "n": 0,
+      "principle": "NAS",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "W_NAS_broadcast_only"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "absent",
+      "n": 0,
+      "principle": "NAS",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "W_NAS_no_workspace"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "present",
+      "n": 0,
+      "principle": "PDI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "absent",
+      "n": 0,
+      "principle": "PDI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "W_PDI_no_multistability"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "absent",
+      "n": 0,
+      "principle": "PDI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "W_PDI_single_attractor"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "present",
+      "n": 60,
+      "principle": "RAM",
+      "row": {
+        "attainable_se_c": 0.19392868550604006,
+        "decisive": true,
+        "df": 155.48545874741166,
+        "family": "A-RAM160",
+        "kind": "present",
+        "members": 1,
+        "n": 60,
+        "outcome": "decisive",
+        "pi": 0.9833333333333333,
+        "pi_analytic": 0.9842657076769257,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "RAM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.016666666666666666,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.9833333333333333,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.016666666666666666
+        },
+        "replacement": null,
+        "s_A": 0.04254287820767318,
+        "s_P": 0.453250885099279,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "shift_null_sd"
+      ],
+      "sources": [
+        "RAM160",
+        "RAM160_anchors"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "absent",
+      "n": 60,
+      "principle": "RAM",
+      "row": {
+        "attainable_se_c": 0.17303748160527874,
+        "decisive": false,
+        "df": 151.13737706432562,
+        "family": "A-RAM160",
+        "kind": "absent",
+        "members": 1,
+        "n": 60,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 1.0,
+        "principle": "RAM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 1.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.042530141263441935,
+        "s_P": 0.45317272564673955,
+        "witness": "W_RAM_no_plasticity"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "shift_null_sd"
+      ],
+      "sources": [
+        "RAM160",
+        "RAM160_anchors"
+      ],
+      "witness": "W_RAM_no_plasticity"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "present",
+      "n": 0,
+      "principle": "SRPI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "A-RAM160",
+      "kind": "absent",
+      "n": 0,
+      "principle": "SRPI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "W_SRPI_no_efference"
+    },
+    {
+      "family": "B",
+      "kind": "absent",
+      "n": 50,
+      "principle": "IIM",
+      "row": {
+        "attainable_se_c": 0.007984793442873384,
+        "decisive": true,
+        "df": 9.00294775834028,
+        "family": "B",
+        "kind": "absent",
+        "members": 1,
+        "n": 50,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9997846186415431,
+        "predicted_absent_not_reachable_rate": 0.0,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 1.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.03544533469355173,
+        "s_P": 0.40915534708193285,
+        "witness": "feedforward_star"
+      },
+      "se_df": 9.0,
+      "sources": [
+        "family_b"
+      ],
+      "witness": "feedforward_star"
+    },
+    {
+      "family": "C1-H",
+      "kind": "present",
+      "n": 40,
+      "principle": "IIM",
+      "row": {
+        "attainable_se_c": 0.47235984837145467,
+        "decisive": false,
+        "df": 9.182096283361583,
+        "family": "C1-H",
+        "kind": "present",
+        "members": 1,
+        "n": 40,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.25,
+        "pi_analytic": 0.40194049967132217,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.75,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.25,
+          "PRESENT_NOT_REACHABLE": 0.675,
+          "UNDEFINED": 0.75
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.03558923522518452,
+        "s_P": 0.41006403251271556,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "circular_block_bootstrap_10pct_B50"
+      ],
+      "sources": [
+        "C1_anchors"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "C1-H",
+      "kind": "absent",
+      "n": 40,
+      "principle": "IIM",
+      "row": {
+        "attainable_se_c": 0.2201500998197939,
+        "decisive": false,
+        "df": 9.048200896735342,
+        "family": "C1-H",
+        "kind": "absent",
+        "members": 1,
+        "n": 40,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 1.0,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 1.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.025,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.035482205692666226,
+        "s_P": 0.40938825079763097,
+        "witness": "W_IIM_feedforward"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "circular_block_bootstrap_10pct_B50"
+      ],
+      "sources": [
+        "C1_anchors"
+      ],
+      "witness": "W_IIM_feedforward"
+    },
+    {
+      "family": "C1-H",
+      "kind": "present",
+      "n": 52,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.08781378328876058,
+        "decisive": true,
+        "df": 9.591319759593365,
+        "family": "C1-H",
+        "kind": "present",
+        "members": 1,
+        "n": 52,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9996500882755182,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 1.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.035898348452551285,
+        "s_P": 0.41201335303895725,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "C1-H",
+      "kind": "absent",
+      "n": 52,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.020790678539929754,
+        "decisive": false,
+        "df": 9.146133195974615,
+        "family": "C1-H",
+        "kind": "absent",
+        "members": 2,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.46153846153846156,
+        "pi_analytic": 0.6496971992150946,
+        "predicted_absent_not_reachable_rate": 0.17307692307692307,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.46153846153846156,
+          "ABSENT_NOT_REACHABLE": 0.17307692307692307,
+          "INCONCLUSIVE": 0.36538461538461536,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.5384615384615384
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.030895312266555702,
+        "s_P": 0.4098844514165959,
+        "witness": "W_NAS_broadcast_only"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "W_NAS_broadcast_only"
+    },
+    {
+      "family": "C1-H",
+      "kind": "absent",
+      "n": 52,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.014407727802427672,
+        "decisive": true,
+        "df": 9.277353656299749,
+        "family": "C1-H",
+        "kind": "absent",
+        "members": 2,
+        "n": 52,
+        "outcome": "decisive",
+        "pi": 0.9230769230769231,
+        "pi_analytic": 0.8574856525127369,
+        "predicted_absent_not_reachable_rate": 0.0,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.9230769230769231,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.07692307692307693,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.07692307692307693
+        },
+        "replacement": null,
+        "s_A": 0.031003928460754115,
+        "s_P": 0.410533024039848,
+        "witness": "W_NAS_no_workspace"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "W_NAS_no_workspace"
+    },
+    {
+      "family": "C1-H",
+      "kind": "present",
+      "n": 52,
+      "principle": "PDI",
+      "row": {
+        "attainable_se_c": null,
+        "decisive": false,
+        "df": null,
+        "family": "C1-H",
+        "kind": "present",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": null,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "PDI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.04298583247839933,
+        "s_P": 0.45596762393382706,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "C1-H",
+      "kind": "absent",
+      "n": 0,
+      "principle": "PDI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "W_PDI_no_multistability"
+    },
+    {
+      "family": "C1-H",
+      "kind": "absent",
+      "n": 12,
+      "principle": "PDI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_witnesses"
+      ],
+      "why": "12 development runs; the gate needs 40",
+      "witness": "W_PDI_single_attractor"
+    },
+    {
+      "family": "C1-H",
+      "kind": "present",
+      "n": 52,
+      "principle": "RAM",
+      "row": {
+        "attainable_se_c": null,
+        "decisive": false,
+        "df": null,
+        "family": "C1-H",
+        "kind": "present",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": null,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "RAM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.04298583247839933,
+        "s_P": 0.45596762393382706,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "C1-H",
+      "kind": "absent",
+      "n": 12,
+      "principle": "RAM",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_witnesses"
+      ],
+      "why": "12 development runs; the gate needs 40",
+      "witness": "W_RAM_no_plasticity"
+    },
+    {
+      "family": "C1-H",
+      "kind": "present",
+      "n": 52,
+      "principle": "SRPI",
+      "row": {
+        "attainable_se_c": null,
+        "decisive": false,
+        "df": null,
+        "family": "C1-H",
+        "kind": "present",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": null,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "SRPI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.04298583247839933,
+        "s_P": 0.45596762393382706,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "C1-H",
+      "kind": "absent",
+      "n": 12,
+      "principle": "SRPI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_witnesses"
+      ],
+      "why": "12 development runs; the gate needs 40",
+      "witness": "W_SRPI_no_efference"
+    },
+    {
+      "family": "C1-R",
+      "kind": "present",
+      "n": 40,
+      "principle": "IIM",
+      "row": {
+        "attainable_se_c": 0.5021583133164256,
+        "decisive": false,
+        "df": 9.203433635289844,
+        "family": "C1-R",
+        "kind": "present",
+        "members": 1,
+        "n": 40,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.4,
+        "pi_analytic": 0.4178894183845804,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.6,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.4,
+          "PRESENT_NOT_REACHABLE": 0.55,
+          "UNDEFINED": 0.6
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.035606012145575267,
+        "s_P": 0.4101699221814893,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "circular_block_bootstrap_10pct_B50"
+      ],
+      "sources": [
+        "C1_anchors"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "C1-R",
+      "kind": "absent",
+      "n": 40,
+      "principle": "IIM",
+      "row": {
+        "attainable_se_c": 0.20978877455211145,
+        "decisive": false,
+        "df": 9.07404569025832,
+        "family": "C1-R",
+        "kind": "absent",
+        "members": 1,
+        "n": 40,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 1.0,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 1.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.025,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.03550310333770012,
+        "s_P": 0.4095202322414478,
+        "witness": "W_IIM_feedforward"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "circular_block_bootstrap_10pct_B50"
+      ],
+      "sources": [
+        "C1_anchors"
+      ],
+      "witness": "W_IIM_feedforward"
+    },
+    {
+      "family": "C1-R",
+      "kind": "present",
+      "n": 52,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.08707152451680657,
+        "decisive": true,
+        "df": 9.57880224099211,
+        "family": "C1-R",
+        "kind": "present",
+        "members": 1,
+        "n": 52,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9996564648405647,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 1.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.035889273853637375,
+        "s_P": 0.4119561773741162,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "C1-R",
+      "kind": "absent",
+      "n": 52,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.021081051784440044,
+        "decisive": false,
+        "df": 9.152205518311098,
+        "family": "C1-R",
+        "kind": "absent",
+        "members": 2,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.4423076923076923,
+        "pi_analytic": 0.6410934743895491,
+        "predicted_absent_not_reachable_rate": 0.17307692307692307,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.4423076923076923,
+          "ABSENT_NOT_REACHABLE": 0.17307692307692307,
+          "INCONCLUSIVE": 0.38461538461538464,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.5576923076923077
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.030900404341655252,
+        "s_P": 0.4099148716918361,
+        "witness": "W_NAS_broadcast_only"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "W_NAS_broadcast_only"
+    },
+    {
+      "family": "C1-R",
+      "kind": "absent",
+      "n": 52,
+      "principle": "NAS",
+      "row": {
+        "attainable_se_c": 0.014706562716062556,
+        "decisive": true,
+        "df": 9.28094859191507,
+        "family": "C1-R",
+        "kind": "absent",
+        "members": 2,
+        "n": 52,
+        "outcome": "decisive",
+        "pi": 0.9230769230769231,
+        "pi_analytic": 0.8594528964816803,
+        "predicted_absent_not_reachable_rate": 0.0,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.9230769230769231,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.07692307692307693,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.07692307692307693
+        },
+        "replacement": null,
+        "s_A": 0.03100686272444706,
+        "s_P": 0.41055053636408934,
+        "witness": "W_NAS_no_workspace"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [
+        "jackknife_contiguous_10"
+      ],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "W_NAS_no_workspace"
+    },
+    {
+      "family": "C1-R",
+      "kind": "present",
+      "n": 52,
+      "principle": "PDI",
+      "row": {
+        "attainable_se_c": null,
+        "decisive": false,
+        "df": null,
+        "family": "C1-R",
+        "kind": "present",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": null,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "PDI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.04298583247839933,
+        "s_P": 0.45596762393382706,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "C1-R",
+      "kind": "absent",
+      "n": 0,
+      "principle": "PDI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [],
+      "why": "0 development runs; the gate needs 40",
+      "witness": "W_PDI_no_multistability"
+    },
+    {
+      "family": "C1-R",
+      "kind": "absent",
+      "n": 12,
+      "principle": "PDI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_witnesses"
+      ],
+      "why": "12 development runs; the gate needs 40",
+      "witness": "W_PDI_single_attractor"
+    },
+    {
+      "family": "C1-R",
+      "kind": "present",
+      "n": 52,
+      "principle": "RAM",
+      "row": {
+        "attainable_se_c": null,
+        "decisive": false,
+        "df": null,
+        "family": "C1-R",
+        "kind": "present",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": null,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "RAM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.04298583247839933,
+        "s_P": 0.45596762393382706,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "C1-R",
+      "kind": "absent",
+      "n": 12,
+      "principle": "RAM",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_witnesses"
+      ],
+      "why": "12 development runs; the gate needs 40",
+      "witness": "W_RAM_no_plasticity"
+    },
+    {
+      "family": "C1-R",
+      "kind": "present",
+      "n": 52,
+      "principle": "SRPI",
+      "row": {
+        "attainable_se_c": null,
+        "decisive": false,
+        "df": null,
+        "family": "C1-R",
+        "kind": "present",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": null,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "SRPI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.04298583247839933,
+        "s_P": 0.45596762393382706,
+        "witness": "PC_nominal"
+      },
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_anchors",
+        "C1_witnesses"
+      ],
+      "witness": "PC_nominal"
+    },
+    {
+      "family": "C1-R",
+      "kind": "absent",
+      "n": 12,
+      "principle": "SRPI",
+      "row": null,
+      "se_method_matches_decision": true,
+      "se_methods": [],
+      "sources": [
+        "C1_witnesses"
+      ],
+      "why": "12 development runs; the gate needs 40",
+      "witness": "W_SRPI_no_efference"
+    }
+  ],
+  "schema": "mpc-bench-testability-table/1",
+  "threshold": 0.9
+}

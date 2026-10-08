@@ -1,0 +1,134 @@
+{
+  "alpha": 0.05,
+  "anchors": null,
+  "bearer_nodes": {},
+  "channels": {
+    "IIM": [
+      "default"
+    ]
+  },
+  "concordance_route": [],
+  "cutoffs": {
+    "IIM": [
+      0.25,
+      0.1
+    ],
+    "NAS": [
+      0.25,
+      0.1
+    ],
+    "PDI": [
+      0.25,
+      0.1
+    ],
+    "RAM": [
+      0.25,
+      0.1
+    ],
+    "SRPI": [
+      0.25,
+      0.1
+    ]
+  },
+  "declared_necessity_set": [
+    "RAM",
+    "PDI",
+    "NAS",
+    "IIM",
+    "SRPI"
+  ],
+  "directions": {},
+  "estimator_versions": {
+    "IIM": "iim-v5-2026.10"
+  },
+  "estimators": {
+    "IIM": {
+      "bins": 2,
+      "cut_mode": "directional",
+      "lag_samples": 1,
+      "n_min": 25,
+      "n_null": 19,
+      "null_family": "circular_shift",
+      "null_order": "shift_then_project",
+      "psi_kernel": "xp",
+      "report_cut_modes": [
+        "bidirectional"
+      ],
+      "tpm_estimator": "node_shrinkage"
+    }
+  },
+  "name": "mpc-bench-v2-B",
+  "necessity_set": [
+    "IIM"
+  ],
+  "null_families": {
+    "IIM": "circular_shift"
+  },
+  "precision": {
+    "min_runs": 40,
+    "rows": [
+      {
+        "attainable_se_c": 0.007984793442873384,
+        "decisive": true,
+        "df": 9.00294775834028,
+        "family": "B",
+        "kind": "absent",
+        "members": 1,
+        "n": 50,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9997846186415431,
+        "predicted_absent_not_reachable_rate": 0.0,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 1.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.03544533469355173,
+        "s_P": 0.40915534708193285,
+        "witness": "feedforward_star"
+      }
+    ],
+    "schema": "impact-mpc-precision/1",
+    "threshold": 0.9
+  },
+  "rank_gates": {
+    "IIM": 0.05
+  },
+  "reference": {
+    "kind": "external",
+    "scale": "excess",
+    "se": {
+      "IIM": 0.0
+    },
+    "source": "exact Delta_Psi (directional) of the family-B ring network {'coupling': 0.45}, beta 1, self-coupling 0.6, stationary weights",
+    "values": {
+      "IIM": 0.029085381770639143
+    }
+  },
+  "schema": "impact-mpc-protocol/3",
+  "se_methods": {
+    "IIM": [
+      "circular_block_bootstrap_10pct_B50",
+      "exact",
+      "jackknife_contiguous_10"
+    ]
+  },
+  "shared_inputs_declaration": null,
+  "source_rule": "single_source",
+  "status_rule": {
+    "absent_test": "tost",
+    "alpha": 0.05,
+    "alpha_absent": 0.01,
+    "null_violation": true,
+    "present_reachability_flag": true,
+    "version": "tost-v2"
+  }
+}

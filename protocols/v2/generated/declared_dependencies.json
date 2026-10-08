@@ -1,0 +1,14 @@
+{
+  "pairs": [
+    [
+      "W_IIM_feedforward",
+      "NAS"
+    ],
+    [
+      "W_NAS_no_workspace",
+      "IIM"
+    ]
+  ],
+  "schema": "mpc-bench-declared-dependencies/1",
+  "status": "final"
+}

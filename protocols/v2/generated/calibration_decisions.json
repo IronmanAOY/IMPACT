@@ -1,0 +1,337 @@
+{
+  "decisions": {
+    "declared_dependencies": {
+      "cd": "CD-7",
+      "deviation": null,
+      "meaning": "witness-principle pairs whose off-target change is a declared structural dependency (HCv2-22 (iii))",
+      "note": "CD-7 / HCv2-22 (iii): the structural dependencies of the generator fixed by design_BENCH, as in v1 (c_int -> NAS, g_b -> IIM); equals the hypotheses-file draft. Development may confirm a declared pair but may not add pairs because off-target cells fail. Development (R; share of paired seeds with |c_p(w) - c_p(PC)| < 0.25): (W_IIM_feedforward, NAS) 5/52 A-R, 1/52 A-H, 0/52 C1-R, 0/52 C1-H; (W_NAS_no_workspace, IIM) 0/52 A-R, 3/40 C1-R, 4/40 C1-H. Undeclared cells below 0.8 remain in the test (e.g. A-R RAM on W_PDI_single_attractor 14/52, A-R IIM on W_NAS_broadcast_only 30/52), so HCv2-22 (iii) stays predicted FALSIFIED. The critic raised W_NAS_broadcast_only (ff_only) -> IIM as a candidate; rejected because v1 declared dependencies at knob level and adding it would make the part more likely SUPPORTED. The K -> NAS cell prediction is stale (A-R 44/52 = 0.846, A-H 28/52) and must be split by declaration (follow-up).",
+      "pending": false,
+      "tier": "A",
+      "value": [
+        [
+          "W_IIM_feedforward",
+          "NAS"
+        ],
+        [
+          "W_NAS_no_workspace",
+          "IIM"
+        ]
+      ]
+    },
+    "forward_anchor_regime": {
+      "cd": "design 3.6",
+      "deviation": null,
+      "meaning": "regime of the forward views' anchors: 'held_out' (the frozen choice; needs the release) or 'development' (development builds only)",
+      "note": "Design 3.6 and 7.3 step 2: forward anchors on development seeds 900-939 at the held-out regime (lead-field seed 20261001, width 0.6), computed only after the held-out predictions are committed and released. No release is logged yet; all 11 forward protocols have 0 of 40 reference seeds. The 120 development-regime anchors (20260928, width 0.5) serve development builds only. Decider and critic agree. Order before the freeze: paper-2 regime declared -> final hypotheses file committed -> release -> anchors_forward_held_out run -> rebuild.",
+      "pending": false,
+      "tier": "A",
+      "value": "held_out"
+    },
+    "iim_bootstrap_se_df": {
+      "cd": "CD-3",
+      "code": {
+        "consistent": true,
+        "value": 9.0,
+        "where": "impact_pipeline.v2.iim_v5.BOOTSTRAP_SE_DF (the family-B path)"
+      },
+      "deviation": null,
+      "matches_rule": true,
+      "meaning": "df of the IIM block bootstrap SE (12; 9 if the one-sided 1 % tail exceeds 0.02 on the twins)",
+      "note": "CD-3 / design 2.2 item 5, unchanged by PRE_DATA_COMMITMENTS: se_df = 12, lowered to 9 if a one-sided q_A tail of the block bootstrap exceeds 0.02 on the development twins, judged per (protocol, class) as HCv2-4 states tails and as the builder coded it before any data. Development (R): at df 12, 6/20 classes exceed 0.02, each by one session in 35 (0.029); rule gives 9 (= builder suggestion). At df 9, 4 classes still have one exceedance. Pooled over 692 sessions the rates are 0.0014 below and 0.0072 above at df 12 (both under the nominal 0.01), so the lowered df is the rule's conservative outcome (larger q, fewer ABSENT calls), not evidence of anti-conservative tails; a pooled reading would keep 12 and was not used. Re-judging the 150 stored family-B bootstrap rows at df 9 changes no status. Critic upheld and asked for this candid wording. BLOCKING: the code constant impact_pipeline.v2.iim_v5.BOOTSTRAP_SE_DF is still 12.0 and tests hard-code 12 (DECISION_LOG follow-up 1).",
+      "pending": false,
+      "suggestion": {
+        "classes_with_tail_above": 6,
+        "rule": "12; 9 if a one-sided q_A tail of the bootstrap exceeds 0.02",
+        "value": 9.0
+      },
+      "tier": "A",
+      "value": 9.0
+    },
+    "iim_max_macro_nodes": {
+      "cd": "run setting",
+      "code": {
+        "consistent": true,
+        "value": 4,
+        "where": "impact_pipeline.bench.run_bench_v2.IIM_MAX_MACRO_NODES (the default run setting)"
+      },
+      "deviation": null,
+      "meaning": "the cap on the IIM v5 macro grain of every run (recorded in every record's settings)",
+      "note": "Run setting: the bench declares n = 4 macro nodes (design 2.2, design_IIM section 4), the declared grain of every Tier-A substrate. All 4477 non-smoke development records carry iim_max_macro_nodes = 4; 0 of 6186 IIM components were refused by the cap. Equals run_bench_v2.IIM_MAX_MACRO_NODES. Process dispute: the decider's draft cited an error-string count over held-out smoke.jsonl content; removed. The decision rests on the non-smoke records alone. A refused grain would be UNDEFINED(ESTIMATOR_ERROR), never ABSENT.",
+      "pending": false,
+      "tier": "A",
+      "value": 4
+    },
+    "iim_n_min": {
+      "cd": "CD-3",
+      "code": {
+        "consistent": true,
+        "value": 25,
+        "where": "impact_pipeline.v2.iim_v5.N_MIN_DEFAULT (family-B protocols and occupancy cells)"
+      },
+      "deviation": null,
+      "matches_rule": true,
+      "meaning": "IIM occupancy gate N_min (25; raised to 50 or 100 only if the development occupancy cells fail their 90 % criteria)",
+      "note": "CD-3 (design 7.1): N_min stays 25 unless a development HCv2-12 (c) occupancy cell fails its 90 % criterion. Development (R; seeds 430-434, 5 runs per cell): the 6 cells with T pi_min <= 12.5 were UNDEFINED(INSUFFICIENT_OCCUPANCY) 5/5 and the 4 cells with T pi_min >= 100 were defined 5/5; all cells pass at 25, 50 and 100. Equals the code constant N_MIN_DEFAULT and the suggestion. With n = 5 the 90 % criterion means 5/5. Critic upheld; no dispute.",
+      "pending": false,
+      "suggestion": {
+        "all_pass": true,
+        "rule": "N_min stays 25 unless a development occupancy cell fails its 90 % criterion; then the smallest raised N_min (50, 100) at which every cell passes",
+        "value": 25
+      },
+      "tier": "A",
+      "value": 25
+    },
+    "iim_se_method": {
+      "cd": "CD-3",
+      "deviation": "Differs from the builder's suggestion (jackknife_contiguous_10). The builder switches whenever a bootstrap interval lies entirely outside [0.8, 1.25] in some class (3 PC_half classes) and never checks the fallback. The binding rule (PRE_DATA_COMMITMENTS section 2 / CD-3) switches only if the default fails somewhere AND the fallback is calibrated in every class. The fallback is calibrated in 4/20 classes (default 6/20) and entirely outside in 7 (default 3), so the default is kept. This is the rule's outcome, not a discretionary choice.",
+      "matches_rule": true,
+      "meaning": "IIM v5 SE method (block bootstrap; the contiguous jackknife G = 10 if the bootstrap fails its twin calibration)",
+      "note": "Classes: (A-H, A-R, A-H+iim_bidirectional, A-R+iim_bidirectional) x 5 family-A twin classes = 20; no C1 classes (IIM on C1 held out, HO-4). Development (R), record df 12: bootstrap calibrated 6/20 (kappa median 0.85, range 0.47-1.14), contiguous jackknife G10 4/20 (median 0.78, range 0.40-0.87). At the decided df 9 the bootstrap is calibrated in 8/20. Bootstrap failures are mostly conservative (kappa 0.47-0.72 in the four PC_half classes); the anti-conservative signs are single-session tail exceedances (1/35 = 0.029). Same outcome on the raw scale, at df 9 and on the directional classes alone. Critic upheld the value and removed an incorrect component count from the draft note. Every non-twin development run already used the bootstrap, so nothing is re-run for the method choice; the conditional jackknife re-scoring items of other clusters are therefore not needed.",
+      "pending": false,
+      "suggestion": {
+        "calibrated_classes": 6,
+        "classes": 20,
+        "classes_not_inside": 20,
+        "failing_classes": 3,
+        "fallback": "jackknife_contiguous_10",
+        "fallback_calibrated_classes": 4,
+        "fallback_calibrated_everywhere": false,
+        "fallback_classes": 20,
+        "not_eligible_classes": 0,
+        "rule": "block bootstrap unless it fails to be calibrated in some class and the contiguous jackknife G = 10 is calibrated in every class",
+        "value": "circular_block_bootstrap_10pct_B50"
+      },
+      "tier": "A",
+      "value": "circular_block_bootstrap_10pct_B50"
+    },
+    "mechanism_on": {
+      "cd": "CD-8",
+      "deviation": "C1 IIM under R and H: development IIM on C1 sweep, factorial and witness rows is held out (HO-4), so the median condition cannot be evaluated there; for those rows the label is the dose condition alone (structural entries for C1 IIM placed after the rule entries). Where the C1 reference blocks give a nominal-dose median it is >= 0.20 in every case (PC_nominal 1.01/0.98, W_NAS_broadcast_only 0.50/0.51, W_NAS_no_workspace 0.40/0.41, R/H), so the fallback agrees with the rule. Conservative: it can only add rows that could produce a false ABSENT. Requires a builder change (follow-up).",
+      "matches_rule": true,
+      "meaning": "mechanism-on labels: 'rule' (dose >= 0.5 x nominal and development median c >= 2 delta) or 'structural' (the hypotheses-file draft)",
+      "note": "CD-8 / design 4.7 (iii): on = dose >= 0.5 x nominal AND development median c >= 2 delta = 0.20; first match decides; unmatched rows are not on. Development (R): 1140 entries; dose alone labels 810 on, the rule 512; all 298 changes are on -> off, 258 of them C1 PDI/RAM/SRPI (NOT_APPLICABLE, never ABSENT); 40 substantive (estimator-blind cells such as A-R IIM with g_b off, c about 0.05; C1 NAS with c_int off, c about 0.14). Critic upheld 'rule', corrected the C1 IIM justification (nominal-dose medians exist in the reference blocks) and found that the builder labels only the 8 MECHANISM_WITNESSES: dose-on rows of W_PDI_no_multistability, W_NAS_common_input_control and N_modules_disconnected are silently excluded from HCv2-5 (18 family-A cells would be on). Resolution: the rule applies to every witness system (blocking builder change); dose-on-but-off rows are reported beside HCv2-5 (non-decisive).",
+      "pending": false,
+      "suggestion": {
+        "rule": "design 4.7 (iii)",
+        "value": "rule"
+      },
+      "tier": "A",
+      "value": "rule"
+    },
+    "nas_se_method": {
+      "cd": "CD-2",
+      "deviation": null,
+      "matches_rule": true,
+      "meaning": "NAS v3 SE method (twins 820-824: the calibrated method with the largest df; ties and failure: contiguous G = 10)",
+      "note": "CD-2 rule (PRE_DATA_COMMITMENTS section 2): calibrated in a class = kappa point in [0.8, 1.25], 90 % chi-square interval inside [0.67, 1.5], both one-sided q_A tail rates <= 0.02 (NAS: alpha_A/2 per direction); take the largest-df method calibrated in every class, ties to contiguous; if none, contiguous G = 10 and report the failure. Classes: (A-H, A-R, C1-H, C1-R) x twin class x direction = 32 per method; twins 820-824, r = 0..6. Development (R): calibrated classes contiguous G10 7/32, contiguous G20 11/32, interleaved G10 13/32, interleaved G20 13/32; no method calibrated everywhere, so contiguous G = 10 with the failure reported. All four schemes fail anti-conservatively in the A-H return direction (W_PDI_single_attractor kappa 2.88-3.09, contiguous G10 3.039 [2.516, 3.870], tails below/above 0.171/0.114; PC_nominal 1.88-1.97) and conservatively in most C1 cells (contiguous G10 kappa 0.52-0.91). Same outcome under every reading checked (builder's 'inside [0.8, 1.25]' reading, raw excess scale, A-H/A-R pooled, c_NAS = min(c_R, c_B)). No inflation factor (design 2.1 item 9). Equals the builder's suggestion and the method of every run. Critic upheld; no dispute. Expected consequence: HCv2-4 FALSIFIED for NAS on the anti-conservative side, so its reversion rule is expected to re-classify NAS ABSENTs (handed to CD-10/CD-11).",
+      "pending": false,
+      "suggestion": {
+        "calibrated": [],
+        "calibrated_by_the_interval_inside_reading": [],
+        "calibrated_classes": {
+          "jackknife_contiguous_10": 7,
+          "jackknife_contiguous_20": 11,
+          "jackknife_interleaved_10": 13,
+          "jackknife_interleaved_20": 13
+        },
+        "candidates": [
+          "jackknife_contiguous_10",
+          "jackknife_contiguous_20",
+          "jackknife_interleaved_10",
+          "jackknife_interleaved_20"
+        ],
+        "classes": {
+          "jackknife_contiguous_10": 32,
+          "jackknife_contiguous_20": 32,
+          "jackknife_interleaved_10": 32,
+          "jackknife_interleaved_20": 32
+        },
+        "note": "reported beside the rule: the literal reading of design 2.1 item 9 (interval inside [0.8, 1.25]); at df 30 it holds only for a kappa point in about [0.97, 0.98] (PRE_DATA_COMMITMENTS section 2)",
+        "rule": "the method calibrated in every class (HCv2-4 (a) statement: kappa point in [0.8, 1.25] and its 90 % interval inside [0.67, 1.5]; q_A tails <= 0.02) with the largest df; ties go to the contiguous scheme; none calibrated: contiguous G = 10",
+        "value": "jackknife_contiguous_10"
+      },
+      "tier": "A",
+      "value": "jackknife_contiguous_10"
+    },
+    "null_calibration_ram": {
+      "cd": "open decision",
+      "deviation": null,
+      "meaning": "RAM-PE v3 on the null-calibration cells, where it is UNDEFINED(INSUFFICIENT_UPDATES): 'keep' the rows, 'drop' RAM from those cells, or 'require_defined' rows in HCv2-1 and HCv2-3",
+      "note": "Open decision, decided by what HCv2-1 and HCv2-3 test: a row whose estimator cannot be computed by construction is evidence for neither. Development (R): 128/128 RAM-PE components on the 16 null-calibration cells are UNDEFINED(INSUFFICIENT_UPDATES). Under 'keep' they would pad the HCv2-1 pool (0-event CP bound 0.0055 instead of 0.1087 on the 40 defined clusters). Family-A null witnesses give 48 defined RAM rows with 0 PRESENT and stay in. rule_kappa_null already skips undefined rows, so HCv2-3 is numerically unchanged. 'drop' was not chosen (code change; removes the IA-2/IA-4 records). Critic upheld and refined the CD-11 consequence: 0 events need >= 64 clusters (bound 0.0694); tolerating one event needs 92 (0.06998). Needs the hypotheses-file 'where' change and a resize of the family-A null witnesses (follow-ups); otherwise HCv2-1 can only be INDETERMINATE or FALSIFIED for RAM-PE.",
+      "pending": false,
+      "tier": "A",
+      "value": "require_defined"
+    },
+    "paper2_regime": {
+      "cd": "CD-12",
+      "code": {
+        "consistent": true,
+        "value": {
+          "n_low": 32
+        },
+        "where": "impact_pipeline.bench.forward_v2.N_LOW_DEFAULT (n_low)"
+      },
+      "deviation": "Scope of the rule: the minimum channel count is taken over the paper-2 confirmatory EEG datasets only (mediated and open DREAM subsets, requested Selte et al. 2026 data), because admission licenses confirmatory exclusions and the TR, duration and declaration elements of the same rule refer to the confirmatory data. Fixed before any held-out anchor existed.",
+      "meaning": "paper-2 regime from the BIDS metadata: n_low and reference scheme (TR, duration and declaration of the paper-2 confirmatory data)",
+      "note": "Decided 2026-10-07 by the conservative option: paper 2 registers its confirmatory, admission-dependent EEG analyses at the v2 admission regime (a 64- or 32-channel subset, average reference, 250 Hz, zero-phase 1-40 Hz band, 60-s pre-awakening windows, no declared inputs, no per-window z-scoring unless the admitted estimators are shown to be scale-invariant per channel); other windows and bands, the 20-Hz sensitivity analysis among them, are exploratory in paper 2. The benchmark settings are not changed to fit paper 2. Taken before the held-out release; to be confirmed by the author with the freeze push. Earlier dispute (decider: decided; critic: not decided while the duration was missing) is resolved by declaring the duration. PENDING (decided false): CD-12 needs every element declared and paper 2 has not registered its pre-awakening window length. Declared elements, final and usable for the held-out release: {\"n_low\": 32, \"reference\": \"average\", \"tr_s\": null, \"declaration\": \"none\", \"source\": \"CD-12 fallback: no paper-2 confirmatory EEG dataset publishes BIDS EEG metadata; reference from paper 2 sec. 4 (average reference); no confirmatory fMRI; sleep awakenings without a within-state task\"}. Missing: duration_s. n_low = 32 is both the fallback outcome and the conservative choice (montages below 32 channels get no forward admission). All 380 forward development records used n_low 32. Dispute: the decider marked CD-12 decided; the critic asked for 'not decided' because duration is missing; resolved for the critic. Value stays null so the builder lists it as pending; the provisional value ({n_low: 32, reference: average}) is the same, so development builds do not change. The paper-2 regime must be declared (and the 60-s / 1-40 Hz / 64-or-32 channel admission regime reconciled with paper 2) before the held-out release.",
+      "pending": false,
+      "tier": "A",
+      "value": {
+        "declaration": "none",
+        "duration_s": 60.0,
+        "n_low": 32,
+        "reference": "average",
+        "source": "CD-12: no paper-2 confirmatory EEG dataset publishes BIDS EEG metadata, so n_low is the fallback 32; average reference (paper 2, methods); no confirmatory fMRI (tr_s null); sleep awakenings without a within-state task (no declared inputs); duration 60 s = the v2 admission window",
+        "tr_s": null
+      }
+    },
+    "pdi_concordance": {
+      "cd": "CD-5",
+      "deviation": "Design 2.4 item 4 lists 'the forward views of the cell' among the battery's content-on runs; the implemented battery (A-R, source view only) followed the design's own 7.2 budget and PRE_DATA_COMMITMENTS section 1 (810 runs). No forward cell can reach 300 runs, so no forward cell is admitted, not even provisionally; forward concordant components stay UNDEFINED(NO_SAMPLING_SE), the exclusion-safe outcome. The forward battery is not run afterwards (it could only add exclusions; on BOLD 7/44 development content-on runs were concordant at one state). The builder's suggestion object has value null and 'consistent': false; the decision 'rule' admits exactly the builder's rule cell.",
+      "matches_rule": true,
+      "meaning": "PDI concordance route: 'rule' (the admission rule on the batteries), 'none', or the admitted cells",
+      "note": "CD-5 rule: a (substrate, observation stage, view, bearer) cell is admitted for ABSENT with 0 concordant ABSENTs (|c| < 0.10) among >= 300 content-on runs and for PRESENT with 0 concordant PRESENTs (c > 0.25) among >= 300 no-content runs (0/300 gives a one-sided 95 % CP bound 0.00994 < 0.01). Battery (R): seeds 850-899 and 940-979, 9 classes, 810 runs, 0 errors, k-means seed 0. Content-on 450: concordant ABSENTs 0 (CP 0.0066); the single concordant run was a correct two-state PRESENT (c 0.41). No-content 360: 332 concordant, all at one state with zero excess; concordant PRESENTs 0 (CP 0.0083). Seed-level bound 0/90 = 0.033. Outcome: exactly one cell, synthetic_rate / source / source / non_workspace, both directions. Dispute resolved for the critic: (1) the HCv2-20(a) gate uses substrate 'A' and never matches 'synthetic_rate' (blocking fix); (2) CD-5 also affects HCv2-21, whose EEG/BOLD 'admitted_for_absent' predictions assumed the rejected exact path (correct as a logical error via CD-10); (3) the forward omission is a deviation; (4) BOLD K3 is 1/6; (5) fwdA_bold-source is outside the cell (different regime, 5348-5403 windows vs 2269-2475) and the mis-declared-access form is a different bearer, so the builder must not attach the route to them (blocking fix); (6) testability of HCv2-22(ii) and HCv2-20(a) must be recomputed with the route. 'rule' is kept rather than an explicit cell list because an explicit list drops the battery counts.",
+      "pending": false,
+      "suggestion": {
+        "cells_with_enough_content_on_runs": 1,
+        "cells_with_enough_no_content_runs": 1,
+        "consistent": true,
+        "decided_cells": [
+          {
+            "absent": true,
+            "battery": {
+              "concordant_absent": 0,
+              "concordant_present": 0,
+              "content_on_runs": 456,
+              "no_content_runs": 366
+            },
+            "bearer": "non_workspace",
+            "observation_stage": "source",
+            "present": true,
+            "principle": "PDI",
+            "provisional": false,
+            "substrate": "synthetic_rate",
+            "view": "source"
+          }
+        ],
+        "rule": "0 concordant ABSENTs among >= 300 content-on runs; 0 concordant PRESENTs among >= 300 no-content runs",
+        "rule_cells": [
+          {
+            "absent": true,
+            "battery": {
+              "concordant_absent": 0,
+              "concordant_present": 0,
+              "content_on_runs": 456,
+              "no_content_runs": 366
+            },
+            "bearer": "non_workspace",
+            "observation_stage": "source",
+            "present": true,
+            "principle": "PDI",
+            "provisional": false,
+            "substrate": "synthetic_rate",
+            "view": "source"
+          }
+        ],
+        "value": null
+      },
+      "tier": "A",
+      "value": "rule"
+    },
+    "pdi_kmeans_seed": {
+      "cd": "open decision",
+      "code": {
+        "consistent": true,
+        "value": 0,
+        "where": "impact_pipeline.bench.run_bench_v2.CALIBRATION_PENDING"
+      },
+      "deviation": null,
+      "meaning": "k-means seed of every PDI v3 count (an integer, or null for the task's null seed)",
+      "note": "Open decision, decided by the design principle (reproducible, not tuned on data, frozen estimator = calibrated estimator). 0 was the provisional value set before any development output and never compared with an alternative; all 4620 development PDI outputs (smoke excluded), including the 810 battery runs, used it. Per-k seed (0*1009 + k) mod 2^32 (design_RAM_PDI item 5). Critic upheld; no dispute. Provenance correction: 0 comes from the v2 feasibility work, not 'the fixed seed of the v1 bench' as CALIBRATION_PENDING says (the v1 bench used the task null seed). Limitation: the jackknife SE and the concordance flag do not include k-means initialisation variability.",
+      "pending": false,
+      "tier": "A",
+      "value": 0
+    },
+    "ram_se_method": {
+      "cd": "CD-4",
+      "deviation": null,
+      "matches_rule": true,
+      "meaning": "RAM-PE v3 SE method (shift-null SD; the trial jackknife if the twins' kappa interval lies outside [0.8, 1.25])",
+      "note": "CD-4 (PRE_DATA_COMMITMENTS section 2): keep the shift-null SD unless it fails in some class AND the trial jackknife G = 10 is calibrated in every class. Classes: RAM-only twins eta 0, 0.1, 0.3 plus the family-A twin classes scored with RAM (13). Development (R): shift-null SD calibrated 6/13 (eta 0 kappa 0.92, eta 0.1 0.97 pass; eta 0.3 fails by one below-tail event in 40; PC_half on the joint bench anti-conservative, kappa 1.25 [1.04, 1.59], above-tail 0.057); trial jackknife calibrated 1/3 eta classes (kappa 0.51, 0.60, 0.84). Default kept, failure reported. Equals the suggestion and the method of every run. Critic upheld; no dispute.",
+      "pending": false,
+      "suggestion": {
+        "calibrated_classes": 6,
+        "classes": 13,
+        "classes_not_inside": 11,
+        "failing_classes": 0,
+        "fallback": "jackknife_trials_10",
+        "fallback_calibrated_classes": 1,
+        "fallback_calibrated_everywhere": false,
+        "fallback_classes": 3,
+        "not_eligible_classes": 0,
+        "rule": "shift-null SD unless it fails to be calibrated in some class and the trial jackknife G = 10 is calibrated in every class",
+        "value": "shift_null_sd"
+      },
+      "tier": "A",
+      "value": "shift_null_sd"
+    },
+    "replication_extended": {
+      "cd": "CD-11",
+      "code": {
+        "consistent": true,
+        "value": {
+          "A_anchors": true,
+          "C1_anchors": false,
+          "RAM160_anchors": false,
+          "forward_anchor_replication": {
+            "forward_a_bold": false,
+            "forward_a_eeg": false,
+            "hopf": true
+          }
+        },
+        "where": "impact_pipeline.bench.designs_v2.anchors.CALIBRATION_PENDING (replication_extended; forward_replication_extended per arm)"
+      },
+      "deviation": null,
+      "matches_rule": true,
+      "meaning": "anchor designs (and forward arms) whose replication block extends to 20900-20939",
+      "note": "CD-11 / HCv2-6 / seed map extension rule: extend a design block to 20900-20939 where replication power at 20 seeds is < 0.9; seeds are resized, never thresholds. Development (R): only A-H|IIM (valid_nonspecific) is below 0.9 (0.565 at 20, 0.6045 at 40); A-H|NAS 0.9625 / 0.9935; all other A, C1 and RAM160 pairs 1.0. The whole family-A block is extended (140 extra tasks, about 4.6 CPU-h). The A-H IIM finite rate (36/40) sits on the 0.9 boundary, so no resize reaches the target (exact P(>= 90 % finite) 0.677, 0.629, 0.593, 0.566 at 20, 40, 80, 160 seeds); HCv2-6(a) is labelled INDETERMINATE-capable (design 4.9) with P(SUPPORTED | development) about 0.60. Critic upheld; its proposal of an INDETERMINATE zone in the engine was rejected as a data-motivated rule change. Equals the suggestion. The code constant anchors.CALIBRATION_PENDING must carry the decided value. Forward arms (after the held-out release 5af6e074475de23a, 120 reference tasks, 0 errors): validity-only replication power at 20 seeds below 0.9 for the Hopf IIM views eeg64_noref 0.264, mne_template 0.6985 and eeg64 0.862 (eeg64 IIM is invalid at the reference block); every family-A forward view >= 0.9745. By the CD-11 rule the Hopf arm extends to 20900-20939; neither family-A arm does. At 40 seeds eeg64_noref IIM is still 0.5225: reported, never a threshold change.",
+      "pending": false,
+      "suggestion": {
+        "rule": "extend where the replication power at 20 seeds is below 0.9 (a forward arm where one of its views is)",
+        "value": {
+          "A_anchors": true,
+          "C1_anchors": false,
+          "RAM160_anchors": false,
+          "forward_anchor_replication": {
+            "forward_a_bold": false,
+            "forward_a_eeg": false,
+            "hopf": true
+          }
+        }
+      },
+      "tier": "A",
+      "value": {
+        "A_anchors": true,
+        "C1_anchors": false,
+        "RAM160_anchors": false,
+        "forward_anchor_replication": {
+          "forward_a_bold": false,
+          "forward_a_eeg": false,
+          "hopf": true
+        }
+      }
+    },
+    "srpi_v3_pairs": {
+      "cd": "CD-14",
+      "deviation": null,
+      "meaning": "SRPI v3 pair count n* of the SRPI-only arm (Tier B: only if SRPI v3 is admitted; 60, 90 or 120 by the power rule)",
+      "note": "CD-14 applies only if Tier B1 (SRPI v3, SRPI-only arm) is admitted. Tier B was not run in this round; no SRPI v3 power runs exist. Null is the legitimate value (design 5.3: a Tier-B item not admitted is listed as not run and the v1 outcome stands). Decider and critic agree. If B1 is admitted later, CD-14 runs on unused development seeds before any Tier-B confirmatory run.",
+      "pending": false,
+      "tier": "B",
+      "value": null
+    }
+  },
+  "decisions_sha256": "d3d5bd5da0043ab750979853f9c73932032b08a3c3e36dac31f14d8b881f1744",
+  "decisions_status": "final",
+  "schema": "mpc-bench-calibration-decisions-applied/1"
+}

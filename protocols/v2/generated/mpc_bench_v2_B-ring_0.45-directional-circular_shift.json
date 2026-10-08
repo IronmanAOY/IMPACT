@@ -1,0 +1,100 @@
+{
+  "alpha": 0.05,
+  "anchors": null,
+  "bearer_nodes": {},
+  "channels": {
+    "IIM": [
+      "default"
+    ]
+  },
+  "concordance_route": [],
+  "cutoffs": {
+    "IIM": [
+      0.25,
+      0.1
+    ],
+    "NAS": [
+      0.25,
+      0.1
+    ],
+    "PDI": [
+      0.25,
+      0.1
+    ],
+    "RAM": [
+      0.25,
+      0.1
+    ],
+    "SRPI": [
+      0.25,
+      0.1
+    ]
+  },
+  "declared_necessity_set": [
+    "RAM",
+    "PDI",
+    "NAS",
+    "IIM",
+    "SRPI"
+  ],
+  "directions": {},
+  "estimator_versions": {
+    "IIM": "iim-v5-2026.10"
+  },
+  "estimators": {
+    "IIM": {
+      "bins": 2,
+      "cut_mode": "directional",
+      "lag_samples": 1,
+      "n_min": 25,
+      "n_null": 19,
+      "null_family": "circular_shift",
+      "null_order": "shift_then_project",
+      "psi_kernel": "xp",
+      "report_cut_modes": [
+        "bidirectional"
+      ],
+      "tpm_estimator": "node_shrinkage"
+    }
+  },
+  "name": "mpc-bench-v2-B-ring_0.45-directional-circular_shift",
+  "necessity_set": [
+    "IIM"
+  ],
+  "null_families": {
+    "IIM": "circular_shift"
+  },
+  "precision": null,
+  "rank_gates": {
+    "IIM": 0.05
+  },
+  "reference": {
+    "kind": "external",
+    "scale": "excess",
+    "se": {
+      "IIM": 0.0
+    },
+    "source": "exact Delta_Psi (directional) of the family-B ring network {'coupling': 0.45}, beta 1, self-coupling 0.6, stationary weights",
+    "values": {
+      "IIM": 0.029085381770639143
+    }
+  },
+  "schema": "impact-mpc-protocol/3",
+  "se_methods": {
+    "IIM": [
+      "circular_block_bootstrap_10pct_B50",
+      "exact",
+      "jackknife_contiguous_10"
+    ]
+  },
+  "shared_inputs_declaration": null,
+  "source_rule": "single_source",
+  "status_rule": {
+    "absent_test": "tost",
+    "alpha": 0.05,
+    "alpha_absent": 0.01,
+    "null_violation": true,
+    "present_reachability_flag": true,
+    "version": "tost-v2"
+  }
+}

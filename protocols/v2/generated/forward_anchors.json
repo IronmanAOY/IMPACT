@@ -1,0 +1,418 @@
+{
+  "anchors": [
+    {
+      "arm": "forward_a_bold",
+      "principle": "IIM",
+      "protocol": "fwdA_bold-bold",
+      "regime": "held_out",
+      "valid": false,
+      "validity": {
+        "df": 31.0,
+        "lower": -0.0003627104370122644,
+        "mean": -0.00025443881865123323,
+        "n": 40,
+        "n_finite": 32,
+        "se": 6.385751633990071e-05,
+        "valid": false
+      },
+      "view": "bold"
+    },
+    {
+      "arm": "forward_a_bold",
+      "principle": "PDI",
+      "protocol": "fwdA_bold-bold",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 1.1785882238566412,
+        "mean": 1.3027817143773355,
+        "n": 40,
+        "n_finite": 40,
+        "se": 0.0737107984564213,
+        "valid": true
+      },
+      "view": "bold"
+    },
+    {
+      "arm": "forward_a_bold",
+      "principle": "IIM",
+      "protocol": "fwdA_bold-source",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 0.006326664834757705,
+        "mean": 0.00689392357494274,
+        "n": 40,
+        "n_finite": 40,
+        "se": 0.00033667702304780034,
+        "valid": true
+      },
+      "view": "source"
+    },
+    {
+      "arm": "forward_a_bold",
+      "principle": "PDI",
+      "protocol": "fwdA_bold-source",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 2.041700124371204,
+        "mean": 2.1285295040090926,
+        "n": 40,
+        "n_finite": 40,
+        "se": 0.051534608422315185,
+        "valid": true
+      },
+      "view": "source"
+    },
+    {
+      "arm": "forward_a_eeg",
+      "principle": "IIM",
+      "protocol": "fwdA-eeg64",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 0.00020761832582485195,
+        "mean": 0.00029711630771325624,
+        "n": 40,
+        "n_finite": 40,
+        "se": 5.3118466012784766e-05,
+        "valid": true
+      },
+      "view": "eeg64"
+    },
+    {
+      "arm": "forward_a_eeg",
+      "principle": "PDI",
+      "protocol": "fwdA-eeg64",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 2.3293479543202142,
+        "mean": 2.42286712473751,
+        "n": 40,
+        "n_finite": 40,
+        "se": 0.0555051049257076,
+        "valid": true
+      },
+      "view": "eeg64"
+    },
+    {
+      "arm": "forward_a_eeg",
+      "principle": "IIM",
+      "protocol": "fwdA-eeglow",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 6.93719675612984e-05,
+        "mean": 0.00011315824351118365,
+        "n": 40,
+        "n_finite": 40,
+        "se": 2.5987846449661035e-05,
+        "valid": true
+      },
+      "view": "eeglow"
+    },
+    {
+      "arm": "forward_a_eeg",
+      "principle": "PDI",
+      "protocol": "fwdA-eeglow",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 1.7786825667005517,
+        "mean": 1.9871392889005157,
+        "n": 40,
+        "n_finite": 40,
+        "se": 0.12372235752893497,
+        "valid": true
+      },
+      "view": "eeglow"
+    },
+    {
+      "arm": "forward_a_eeg",
+      "principle": "IIM",
+      "protocol": "fwdA-source",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 0.00619948472752585,
+        "mean": 0.006789227023542783,
+        "n": 40,
+        "n_finite": 40,
+        "se": 0.00035002136859731657,
+        "valid": true
+      },
+      "view": "source"
+    },
+    {
+      "arm": "forward_a_eeg",
+      "principle": "PDI",
+      "protocol": "fwdA-source",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 2.4114301160749982,
+        "mean": 2.4291259806550087,
+        "n": 40,
+        "n_finite": 40,
+        "se": 0.010502775162374094,
+        "valid": true
+      },
+      "view": "source"
+    },
+    {
+      "arm": "hopf",
+      "principle": "IIM",
+      "protocol": "hopf-bold",
+      "regime": "held_out",
+      "valid": false,
+      "validity": {
+        "df": null,
+        "lower": null,
+        "mean": null,
+        "n": 40,
+        "n_finite": 0,
+        "se": null,
+        "valid": false
+      },
+      "view": "bold"
+    },
+    {
+      "arm": "hopf",
+      "principle": "NAS",
+      "protocol": "hopf-bold",
+      "regime": "held_out",
+      "valid": false,
+      "validity": {
+        "receive": {
+          "df": null,
+          "lower": null,
+          "mean": null,
+          "n": 40,
+          "n_finite": 0,
+          "se": null,
+          "valid": false
+        },
+        "return": {
+          "df": null,
+          "lower": null,
+          "mean": null,
+          "n": 40,
+          "n_finite": 0,
+          "se": null,
+          "valid": false
+        }
+      },
+      "view": "bold"
+    },
+    {
+      "arm": "hopf",
+      "principle": "IIM",
+      "protocol": "hopf-eeg64",
+      "regime": "held_out",
+      "valid": false,
+      "validity": {
+        "df": 39.0,
+        "lower": -9.537134505106424e-06,
+        "mean": 1.0916528887166422e-05,
+        "n": 40,
+        "n_finite": 40,
+        "se": 1.2139572321240823e-05,
+        "valid": false
+      },
+      "view": "eeg64"
+    },
+    {
+      "arm": "hopf",
+      "principle": "NAS",
+      "protocol": "hopf-eeg64",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "receive": {
+          "df": 39.0,
+          "lower": 0.024161356897672837,
+          "mean": 0.025230986119254173,
+          "n": 40,
+          "n_finite": 40,
+          "se": 0.0006348418394919257,
+          "valid": true
+        },
+        "return": {
+          "df": 39.0,
+          "lower": 0.0005611102488031105,
+          "mean": 0.0006453719371035468,
+          "n": 40,
+          "n_finite": 40,
+          "se": 5.0010643052796054e-05,
+          "valid": true
+        }
+      },
+      "view": "eeg64"
+    },
+    {
+      "arm": "hopf",
+      "principle": "IIM",
+      "protocol": "hopf-eeg64_noref",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 6.562997514012366e-07,
+        "mean": 2.669332813223646e-05,
+        "n": 40,
+        "n_finite": 40,
+        "se": 1.5453387640023436e-05,
+        "valid": true
+      },
+      "view": "eeg64_noref"
+    },
+    {
+      "arm": "hopf",
+      "principle": "IIM",
+      "protocol": "hopf-eeglow",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 3.153990243435389e-05,
+        "mean": 5.1559136939589367e-05,
+        "n": 40,
+        "n_finite": 40,
+        "se": 1.1881731914293541e-05,
+        "valid": true
+      },
+      "view": "eeglow"
+    },
+    {
+      "arm": "hopf",
+      "principle": "NAS",
+      "protocol": "hopf-eeglow",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "receive": {
+          "df": 39.0,
+          "lower": 0.011878477424887996,
+          "mean": 0.012624167030451699,
+          "n": 40,
+          "n_finite": 40,
+          "se": 0.0004425785602474512,
+          "valid": true
+        },
+        "return": {
+          "df": 39.0,
+          "lower": 0.0008904167576015402,
+          "mean": 0.0010118772813853551,
+          "n": 40,
+          "n_finite": 40,
+          "se": 7.208873952655609e-05,
+          "valid": true
+        }
+      },
+      "view": "eeglow"
+    },
+    {
+      "arm": "hopf",
+      "principle": "IIM",
+      "protocol": "hopf-mne_template",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 1.6621192779858238e-05,
+        "mean": 3.877675946420294e-05,
+        "n": 40,
+        "n_finite": 40,
+        "se": 1.314967880933671e-05,
+        "valid": true
+      },
+      "view": "mne_template"
+    },
+    {
+      "arm": "hopf",
+      "principle": "NAS",
+      "protocol": "hopf-mne_template",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "receive": {
+          "df": 39.0,
+          "lower": 0.009453176754262537,
+          "mean": 0.009624636324631156,
+          "n": 40,
+          "n_finite": 40,
+          "se": 0.00010176396348856916,
+          "valid": true
+        },
+        "return": {
+          "df": 39.0,
+          "lower": 0.013720214637195033,
+          "mean": 0.013977134334821312,
+          "n": 40,
+          "n_finite": 40,
+          "se": 0.0001524858989937143,
+          "valid": true
+        }
+      },
+      "view": "mne_template"
+    },
+    {
+      "arm": "hopf",
+      "principle": "IIM",
+      "protocol": "hopf-source",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "df": 39.0,
+        "lower": 0.00013247018669297015,
+        "mean": 0.0002028017597847725,
+        "n": 40,
+        "n_finite": 40,
+        "se": 4.1742899628294624e-05,
+        "valid": true
+      },
+      "view": "source"
+    },
+    {
+      "arm": "hopf",
+      "principle": "NAS",
+      "protocol": "hopf-source",
+      "regime": "held_out",
+      "valid": true,
+      "validity": {
+        "receive": {
+          "df": 39.0,
+          "lower": 0.002506684509819664,
+          "mean": 0.0025653821743177986,
+          "n": 40,
+          "n_finite": 40,
+          "se": 3.4837991101986897e-05,
+          "valid": true
+        },
+        "return": {
+          "df": 39.0,
+          "lower": 0.0005630105736364196,
+          "mean": 0.0005882349400880397,
+          "n": 40,
+          "n_finite": 40,
+          "se": 1.4971059947755264e-05,
+          "valid": true
+        }
+      },
+      "view": "source"
+    }
+  ],
+  "regime": "held_out",
+  "schema": "mpc-bench-forward-anchors/1"
+}

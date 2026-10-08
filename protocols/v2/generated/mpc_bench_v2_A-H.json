@@ -1,0 +1,673 @@
+{
+  "alpha": 0.05,
+  "anchors": {
+    "fallback": "F1",
+    "necessity_set": [
+      "RAM",
+      "PDI",
+      "NAS",
+      "SRPI"
+    ],
+    "principles": {
+      "IIM": {
+        "specific": false,
+        "specificity": {
+          "anchor": 0.0033694589926607775,
+          "df": 35.0,
+          "lower": -0.0030521616285157484,
+          "mean_contrast": -0.001820144555013744,
+          "n_pairs": 36,
+          "ratio": 0.5,
+          "se": 0.0007291886582482587,
+          "specific": false
+        },
+        "status": "valid_nonspecific",
+        "valid": true,
+        "validity": {
+          "df": 35.0,
+          "lower": 0.0019192187365469928,
+          "mean": 0.0033694589926607775,
+          "n": 40,
+          "n_finite": 36,
+          "se": 0.0008583474768635186,
+          "valid": true
+        }
+      },
+      "NAS": {
+        "members": {
+          "receive": {
+            "specific": true,
+            "specificity": {
+              "anchor": 0.0070505421749145454,
+              "df": 39.0,
+              "lower": 0.003908570821323299,
+              "mean_contrast": 0.0044799156171617975,
+              "n_pairs": 40,
+              "ratio": 0.5,
+              "se": 0.000339102161623835,
+              "specific": true
+            },
+            "status": "valid_specific",
+            "valid": true,
+            "validity": {
+              "df": 39.0,
+              "lower": 0.0066863413900443815,
+              "mean": 0.0070505421749145454,
+              "n": 40,
+              "n_finite": 40,
+              "se": 0.00021615891894721998,
+              "valid": true
+            }
+          },
+          "return": {
+            "specific": true,
+            "specificity": {
+              "anchor": 0.014636528926847858,
+              "df": 39.0,
+              "lower": 0.01113257291947986,
+              "mean_contrast": 0.011800896095504474,
+              "n_pairs": 40,
+              "ratio": 0.5,
+              "se": 0.00039666036219102025,
+              "specific": true
+            },
+            "status": "valid_specific",
+            "valid": true,
+            "validity": {
+              "df": 39.0,
+              "lower": 0.013875728157664318,
+              "mean": 0.014636528926847858,
+              "n": 40,
+              "n_finite": 40,
+              "se": 0.0004515472745605278,
+              "valid": true
+            }
+          }
+        },
+        "specific": true,
+        "status": "valid_specific",
+        "valid": true
+      },
+      "PDI": {
+        "specific": true,
+        "specificity": {
+          "anchor": 2.4291259806550087,
+          "df": 39.0,
+          "lower": 2.379193293928936,
+          "mean_contrast": 2.4150683038479333,
+          "n_pairs": 40,
+          "ratio": 0.5,
+          "se": 0.021292385089383366,
+          "specific": true
+        },
+        "status": "valid_specific",
+        "valid": true,
+        "validity": {
+          "df": 39.0,
+          "lower": 2.4114301160749982,
+          "mean": 2.4291259806550087,
+          "n": 40,
+          "n_finite": 40,
+          "se": 0.010502775162374094,
+          "valid": true
+        }
+      },
+      "RAM": {
+        "specific": true,
+        "specificity": {
+          "anchor": 0.3876212380611352,
+          "df": 39.0,
+          "lower": 0.32523063791540396,
+          "mean_contrast": 0.383958112701575,
+          "n_pairs": 40,
+          "ratio": 0.5,
+          "se": 0.03485568397883703,
+          "specific": true
+        },
+        "status": "valid_specific",
+        "valid": true,
+        "validity": {
+          "df": 39.0,
+          "lower": 0.3483311398072064,
+          "mean": 0.3876212380611352,
+          "n": 40,
+          "n_finite": 40,
+          "se": 0.02331929396288089,
+          "valid": true
+        }
+      },
+      "SRPI": {
+        "specific": true,
+        "specificity": {
+          "anchor": 0.17102768559613363,
+          "df": 39.0,
+          "lower": 0.15349481662608805,
+          "mean_contrast": 0.1679952158172549,
+          "n_pairs": 40,
+          "ratio": 0.5,
+          "se": 0.008606215976671135,
+          "specific": true
+        },
+        "status": "valid_specific",
+        "valid": true,
+        "validity": {
+          "df": 39.0,
+          "lower": 0.158309606595725,
+          "mean": 0.17102768559613363,
+          "n": 40,
+          "n_finite": 40,
+          "se": 0.007548380788892929,
+          "valid": true
+        }
+      }
+    },
+    "reference_seeds": [
+      900,
+      939
+    ],
+    "rule": {
+      "alpha": 0.05,
+      "block_size": 40,
+      "min_finite": 36,
+      "specificity_ratio": 0.5
+    },
+    "schema": "impact-mpc-anchors/1"
+  },
+  "bearer_nodes": {},
+  "channels": {
+    "IIM": [
+      "default"
+    ],
+    "NAS": [
+      "default"
+    ],
+    "PDI": [
+      "default"
+    ],
+    "RAM": [
+      "default"
+    ],
+    "SRPI": [
+      "default"
+    ]
+  },
+  "concordance_route": [
+    {
+      "absent": true,
+      "battery": {
+        "concordant_absent": 0,
+        "concordant_present": 0,
+        "content_on_runs": 456,
+        "no_content_runs": 366
+      },
+      "bearer": "non_workspace",
+      "observation_stage": "source",
+      "present": true,
+      "principle": "PDI",
+      "provisional": false,
+      "substrate": "synthetic_rate",
+      "view": "source"
+    }
+  ],
+  "cutoffs": {
+    "IIM": [
+      0.25,
+      0.1
+    ],
+    "NAS": [
+      0.25,
+      0.1
+    ],
+    "PDI": [
+      0.25,
+      0.1
+    ],
+    "RAM": [
+      0.25,
+      0.1
+    ],
+    "SRPI": [
+      0.25,
+      0.1
+    ]
+  },
+  "declared_necessity_set": [
+    "RAM",
+    "PDI",
+    "NAS",
+    "IIM",
+    "SRPI"
+  ],
+  "directions": {
+    "NAS": [
+      "receive",
+      "return"
+    ]
+  },
+  "estimator_versions": {
+    "IIM": "iim-v5-2026.10",
+    "NAS": "nas-v3-2026.10",
+    "PDI": "pdi-v3-2026.10",
+    "RAM": "ram-v3-2026.10",
+    "SRPI": "srpi-v2-2026.09"
+  },
+  "estimators": {
+    "IIM": {
+      "bootstrap_se_df": 9.0,
+      "cut_mode": "directional",
+      "n_min": 25,
+      "report_cut_modes": [
+        "bidirectional"
+      ],
+      "se_method": "circular_block_bootstrap_10pct_B50",
+      "tpm_estimator": "node_shrinkage"
+    },
+    "NAS": {
+      "block_representation": "block_mean",
+      "coupling_timescale_sec": 0.1,
+      "mode": "conditional_capacity",
+      "se_method": "jackknife_contiguous_10"
+    },
+    "PDI": {
+      "mode": "repertoire",
+      "pdi_bearer": "non_workspace"
+    },
+    "RAM": {
+      "facets_not_applicable": {
+        "F": "no_graded_feedback_referent",
+        "G": "no_goal_contingency_referent",
+        "speed": "speed_not_in_construct"
+      },
+      "se_method": "shift_null_sd",
+      "update": "pe_readout"
+    },
+    "SRPI": {
+      "mode": "agency"
+    }
+  },
+  "name": "mpc-bench-v2-A-H",
+  "necessity_set": [
+    "RAM",
+    "PDI",
+    "NAS",
+    "SRPI"
+  ],
+  "null_families": {
+    "IIM": "circular_shift",
+    "NAS": "block_circular_shift",
+    "PDI": "circular_shift",
+    "RAM": "trial_circular_shift",
+    "SRPI": "yoked_label_permutation"
+  },
+  "precision": {
+    "min_runs": 40,
+    "rows": [
+      {
+        "attainable_se_c": 0.6883599826999673,
+        "decisive": false,
+        "df": 15.0260621780946,
+        "family": "A-H",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.375,
+        "pi_analytic": 0.2569314645552824,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.5,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.03125,
+          "PRESENT": 0.375,
+          "PRESENT_NOT_REACHABLE": 0.515625,
+          "UNDEFINED": 0.625
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.03843271626414453,
+        "s_P": 0.4278744311053281,
+        "witness": "PC_nominal"
+      },
+      {
+        "attainable_se_c": 0.635677276287105,
+        "decisive": false,
+        "df": 26.09101110488423,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 0.4230769230769231,
+        "principle": "IIM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.4230769230769231,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.5576923076923077,
+          "PRESENT_NOT_REACHABLE": 0.21153846153846154,
+          "UNDEFINED": 0.4423076923076923
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.040354043212930485,
+        "s_P": 0.43977997265132207,
+        "witness": "W_IIM_feedforward"
+      },
+      {
+        "attainable_se_c": 0.0872345490852843,
+        "decisive": true,
+        "df": 13.469010600597343,
+        "family": "A-H",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9999994899731287,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 1.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.03791227430765567,
+        "s_P": 0.42463336056459433,
+        "witness": "PC_nominal"
+      },
+      {
+        "attainable_se_c": 0.03938004243315643,
+        "decisive": false,
+        "df": 9.61504344702591,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 2,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.09767400647827297,
+        "predicted_absent_not_reachable_rate": 0.6923076923076923,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.6923076923076923,
+          "INCONCLUSIVE": 0.2692307692307692,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.038461538461538464,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.9615384615384616
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.03127036589239539,
+        "s_P": 0.412121309115954,
+        "witness": "W_NAS_broadcast_only"
+      },
+      {
+        "attainable_se_c": 0.02852911197576946,
+        "decisive": false,
+        "df": 11.609903655432843,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 2,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.15384615384615385,
+        "pi_analytic": 0.4427652824473959,
+        "predicted_absent_not_reachable_rate": 0.17307692307692307,
+        "principle": "NAS",
+        "rates": {
+          "ABSENT": 0.15384615384615385,
+          "ABSENT_NOT_REACHABLE": 0.17307692307692307,
+          "INCONCLUSIVE": 0.5384615384615384,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.1346153846153846,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.7115384615384616
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.03253810751748363,
+        "s_P": 0.4196296119914493,
+        "witness": "W_NAS_no_workspace"
+      },
+      {
+        "attainable_se_c": 0.09014495336096373,
+        "decisive": true,
+        "df": 9.042240490087849,
+        "family": "A-H",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "decisive",
+        "pi": 1.0,
+        "pi_analytic": 0.9999415038090533,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "PDI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.0,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 1.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.0
+        },
+        "replacement": null,
+        "s_A": 0.03547736977749214,
+        "s_P": 0.40935770664993315,
+        "witness": "PC_nominal"
+      },
+      {
+        "attainable_se_c": 0.0,
+        "decisive": false,
+        "df": 9.0,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.7884615384615384,
+        "pi_analytic": 0.7884615384615384,
+        "predicted_absent_not_reachable_rate": 0.21153846153846154,
+        "principle": "PDI",
+        "rates": {
+          "ABSENT": 0.7884615384615384,
+          "ABSENT_NOT_REACHABLE": 0.21153846153846154,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 0.21153846153846154
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.035442920474348306,
+        "s_P": 0.40914009532096435,
+        "witness": "W_PDI_single_attractor"
+      },
+      {
+        "attainable_se_c": 0.3794771245031109,
+        "decisive": false,
+        "df": 74.74127225939185,
+        "family": "A-H",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.671875,
+        "pi_analytic": 0.6324978378255119,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "RAM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.328125,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.671875,
+          "PRESENT_NOT_REACHABLE": 0.015625,
+          "UNDEFINED": 0.328125
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.042064860535126994,
+        "s_P": 0.45031590231552027,
+        "witness": "PC_nominal"
+      },
+      {
+        "attainable_se_c": 0.3287289810073967,
+        "decisive": false,
+        "df": 71.3082215299402,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 0.9038461538461539,
+        "principle": "RAM",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.9038461538461539,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.09615384615384616,
+          "PRESENT": 0.0,
+          "PRESENT_NOT_REACHABLE": 0.0,
+          "UNDEFINED": 1.0
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.0420205738903596,
+        "s_P": 0.45004380888482975,
+        "witness": "W_RAM_no_plasticity"
+      },
+      {
+        "attainable_se_c": 0.28413116111626446,
+        "decisive": false,
+        "df": 9.622175923698634,
+        "family": "A-H",
+        "kind": "present",
+        "members": 1,
+        "n": 64,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.765625,
+        "pi_analytic": 0.7544614403361767,
+        "predicted_absent_not_reachable_rate": null,
+        "principle": "SRPI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.234375,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.765625,
+          "PRESENT_NOT_REACHABLE": 0.140625,
+          "UNDEFINED": 0.234375
+        },
+        "replacement": "paired contrast with the positive control",
+        "s_A": 0.03592061960935995,
+        "s_P": 0.4121536625577616,
+        "witness": "PC_nominal"
+      },
+      {
+        "attainable_se_c": 0.45761019514522894,
+        "decisive": false,
+        "df": 9.040945838184857,
+        "family": "A-H",
+        "kind": "absent",
+        "members": 1,
+        "n": 52,
+        "outcome": "NOT_TESTABLE_BY_DESIGN",
+        "pi": 0.0,
+        "pi_analytic": 0.0,
+        "predicted_absent_not_reachable_rate": 0.9807692307692307,
+        "principle": "SRPI",
+        "rates": {
+          "ABSENT": 0.0,
+          "ABSENT_NOT_REACHABLE": 0.9807692307692307,
+          "INCONCLUSIVE": 0.0,
+          "INVALID_ANCHORS": 0.0,
+          "NULL_MODEL_VIOLATED": 0.0,
+          "PRESENT": 0.019230769230769232,
+          "PRESENT_NOT_REACHABLE": 0.6538461538461539,
+          "UNDEFINED": 0.9807692307692307
+        },
+        "replacement": "target not PRESENT in >= 80 % of seeds",
+        "s_A": 0.03547631855767999,
+        "s_P": 0.4093510669169272,
+        "witness": "W_SRPI_no_efference"
+      }
+    ],
+    "schema": "impact-mpc-precision/1",
+    "threshold": 0.9
+  },
+  "rank_gates": {
+    "IIM": 0.05
+  },
+  "reference": {
+    "kind": "external",
+    "scale": "excess",
+    "se": {
+      "IIM": 0.0008583474768635186,
+      "NAS:receive": 0.00021615891894721998,
+      "NAS:return": 0.0004515472745605278,
+      "PDI": 0.010502775162374094,
+      "RAM": 0.02331929396288089,
+      "SRPI": 0.007548380788892929
+    },
+    "source": "MPC-Bench v2 development reference block 900-939: the positive control's mean excess over its null (n = 40 seeds), scale excess, anchor rule {\"alpha\": 0.05, \"block_size\": 40, \"min_finite\": 36, \"specificity_ratio\": 0.5}; mpc-bench-protocol-builder/1.0.0",
+    "values": {
+      "IIM": 0.0033694589926607775,
+      "NAS:receive": 0.0070505421749145454,
+      "NAS:return": 0.014636528926847858,
+      "PDI": 2.4291259806550087,
+      "RAM": 0.3876212380611352,
+      "SRPI": 0.17102768559613363
+    }
+  },
+  "schema": "impact-mpc-protocol/3",
+  "se_methods": {
+    "IIM": [
+      "circular_block_bootstrap_10pct_B50"
+    ],
+    "NAS": [
+      "jackknife_contiguous_10"
+    ],
+    "PDI": [
+      "concordant",
+      "jackknife_contiguous_10"
+    ],
+    "RAM": [
+      "shift_null_sd"
+    ],
+    "SRPI": [
+      "jackknife_pairs_10"
+    ]
+  },
+  "shared_inputs_declaration": {
+    "id": "H",
+    "shared_inputs": "partial"
+  },
+  "source_rule": "single_source",
+  "status_rule": {
+    "absent_test": "tost",
+    "alpha": 0.05,
+    "alpha_absent": 0.01,
+    "null_violation": true,
+    "present_reachability_flag": true,
+    "version": "tost-v2"
+  }
+}

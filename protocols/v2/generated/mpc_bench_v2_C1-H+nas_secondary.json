@@ -1,0 +1,314 @@
+{
+  "alpha": 0.05,
+  "anchors": {
+    "fallback": "F2",
+    "necessity_set": [
+      "NAS"
+    ],
+    "principles": {
+      "IIM": {
+        "specific": false,
+        "specificity": null,
+        "status": "invalid",
+        "valid": false,
+        "validity": {
+          "df": null,
+          "lower": null,
+          "mean": null,
+          "n": 40,
+          "n_finite": 0,
+          "se": null,
+          "valid": false
+        }
+      },
+      "NAS": {
+        "members": {
+          "receive": {
+            "specific": true,
+            "specificity": {
+              "anchor": 0.012228925526697026,
+              "df": 39.0,
+              "lower": 0.010607808926780553,
+              "mean_contrast": 0.010873182639921106,
+              "n_pairs": 40,
+              "ratio": 0.5,
+              "se": 0.00015750349074596627,
+              "specific": true
+            },
+            "status": "valid_specific",
+            "valid": true,
+            "validity": {
+              "df": 39.0,
+              "lower": 0.0117968579212337,
+              "mean": 0.012228925526697026,
+              "n": 40,
+              "n_finite": 40,
+              "se": 0.00025643894903291226,
+              "valid": true
+            }
+          },
+          "return": {
+            "specific": true,
+            "specificity": {
+              "anchor": 0.00997233688265217,
+              "df": 39.0,
+              "lower": 0.00849490970308808,
+              "mean_contrast": 0.008767847217649772,
+              "n_pairs": 40,
+              "ratio": 0.5,
+              "se": 0.00016199272637160646,
+              "specific": true
+            },
+            "status": "valid_specific",
+            "valid": true,
+            "validity": {
+              "df": 39.0,
+              "lower": 0.009554628459010426,
+              "mean": 0.00997233688265217,
+              "n": 40,
+              "n_finite": 40,
+              "se": 0.00024791654779584085,
+              "valid": true
+            }
+          }
+        },
+        "specific": true,
+        "status": "valid_specific",
+        "valid": true
+      },
+      "PDI": {
+        "specific": false,
+        "specificity": null,
+        "status": "invalid",
+        "valid": false,
+        "validity": {
+          "df": null,
+          "lower": null,
+          "mean": null,
+          "n": 40,
+          "n_finite": 0,
+          "se": null,
+          "valid": false
+        }
+      },
+      "RAM": {
+        "specific": false,
+        "specificity": null,
+        "status": "invalid",
+        "valid": false,
+        "validity": {
+          "df": null,
+          "lower": null,
+          "mean": null,
+          "n": 40,
+          "n_finite": 0,
+          "se": null,
+          "valid": false
+        }
+      },
+      "SRPI": {
+        "specific": false,
+        "specificity": null,
+        "status": "invalid",
+        "valid": false,
+        "validity": {
+          "df": null,
+          "lower": null,
+          "mean": null,
+          "n": 40,
+          "n_finite": 0,
+          "se": null,
+          "valid": false
+        }
+      }
+    },
+    "reference_seeds": [
+      900,
+      939
+    ],
+    "rule": {
+      "alpha": 0.05,
+      "block_size": 40,
+      "min_finite": 36,
+      "specificity_ratio": 0.5
+    },
+    "schema": "impact-mpc-anchors/1"
+  },
+  "bearer_nodes": {},
+  "channels": {
+    "IIM": [
+      "default"
+    ],
+    "NAS": [
+      "default"
+    ],
+    "PDI": [
+      "default"
+    ],
+    "RAM": [
+      "default"
+    ],
+    "SRPI": [
+      "default"
+    ]
+  },
+  "concordance_route": [
+    {
+      "absent": true,
+      "battery": {
+        "concordant_absent": 0,
+        "concordant_present": 0,
+        "content_on_runs": 456,
+        "no_content_runs": 366
+      },
+      "bearer": "non_workspace",
+      "observation_stage": "source",
+      "present": true,
+      "principle": "PDI",
+      "provisional": false,
+      "substrate": "synthetic_rate",
+      "view": "source"
+    }
+  ],
+  "cutoffs": {
+    "IIM": [
+      0.25,
+      0.1
+    ],
+    "NAS": [
+      0.25,
+      0.1
+    ],
+    "PDI": [
+      0.25,
+      0.1
+    ],
+    "RAM": [
+      0.25,
+      0.1
+    ],
+    "SRPI": [
+      0.25,
+      0.1
+    ]
+  },
+  "declared_necessity_set": [
+    "RAM",
+    "PDI",
+    "NAS",
+    "IIM",
+    "SRPI"
+  ],
+  "directions": {
+    "NAS": [
+      "receive",
+      "return"
+    ]
+  },
+  "estimator_versions": {
+    "IIM": "iim-v5-2026.10",
+    "NAS": "nas-v3-2026.10",
+    "PDI": "pdi-v3-2026.10",
+    "RAM": "ram-v3-2026.10",
+    "SRPI": "srpi-v2-2026.09"
+  },
+  "estimators": {
+    "IIM": {
+      "bootstrap_se_df": 9.0,
+      "cut_mode": "directional",
+      "n_min": 25,
+      "report_cut_modes": [
+        "bidirectional"
+      ],
+      "se_method": "circular_block_bootstrap_10pct_B50",
+      "tpm_estimator": "node_shrinkage"
+    },
+    "NAS": {
+      "block_representation": "all_units",
+      "coupling_timescale_sec": 0.1,
+      "mode": "conditional_capacity",
+      "se_method": "jackknife_contiguous_10"
+    },
+    "PDI": {
+      "mode": "repertoire",
+      "pdi_bearer": "non_workspace"
+    },
+    "RAM": {
+      "facets_not_applicable": {
+        "F": "no_graded_feedback_referent",
+        "G": "no_goal_contingency_referent",
+        "speed": "speed_not_in_construct"
+      },
+      "se_method": "shift_null_sd",
+      "update": "pe_readout"
+    },
+    "SRPI": {
+      "mode": "agency"
+    }
+  },
+  "name": "mpc-bench-v2-C1-H+nas_secondary",
+  "necessity_set": [
+    "NAS"
+  ],
+  "null_families": {
+    "IIM": "circular_shift",
+    "NAS": "block_circular_shift",
+    "PDI": "circular_shift",
+    "RAM": "trial_circular_shift",
+    "SRPI": "yoked_label_permutation"
+  },
+  "precision": {
+    "min_runs": 40,
+    "rows": [],
+    "schema": "impact-mpc-precision/1",
+    "threshold": 0.9
+  },
+  "rank_gates": {
+    "IIM": 0.05
+  },
+  "reference": {
+    "kind": "external",
+    "scale": "excess",
+    "se": {
+      "NAS:receive": 0.00025643894903291226,
+      "NAS:return": 0.00024791654779584085
+    },
+    "source": "MPC-Bench v2 development reference block 900-939: the positive control's mean excess over its null (n = 40 seeds), scale excess, anchor rule {\"alpha\": 0.05, \"block_size\": 40, \"min_finite\": 36, \"specificity_ratio\": 0.5}; mpc-bench-protocol-builder/1.0.0",
+    "values": {
+      "NAS:receive": 0.012228925526697026,
+      "NAS:return": 0.00997233688265217
+    }
+  },
+  "schema": "impact-mpc-protocol/3",
+  "se_methods": {
+    "IIM": [
+      "circular_block_bootstrap_10pct_B50"
+    ],
+    "NAS": [
+      "jackknife_contiguous_10"
+    ],
+    "PDI": [
+      "concordant",
+      "jackknife_contiguous_10"
+    ],
+    "RAM": [
+      "shift_null_sd"
+    ],
+    "SRPI": [
+      "jackknife_pairs_10"
+    ]
+  },
+  "shared_inputs_declaration": {
+    "id": "H",
+    "shared_inputs": "partial"
+  },
+  "source_rule": "single_source",
+  "status_rule": {
+    "absent_test": "tost",
+    "alpha": 0.05,
+    "alpha_absent": 0.01,
+    "null_violation": true,
+    "present_reachability_flag": true,
+    "version": "tost-v2"
+  }
+}
