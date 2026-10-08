@@ -7,13 +7,13 @@ holds PC_nominal and the own-lesion witnesses of every family protocol, on
 the same seeds, so that the anchor (the positive control's excess over its
 null), its validity and its specificity (paired contrast with the own
 lesion) can be fixed before the freeze. The same systems are re-run on the
-confirmatory replication block 20900-20919 to test that every anchor status
-replicates.
+confirmatory replication block 20900-20919 (family A: 20900-20939, below) to
+test that every anchor status replicates.
 
 ==============  ==============================================  =========  ===========
 design          systems                                         dev        confirmatory
 ==============  ==============================================  =========  ===========
-A_anchors       PC_nominal and the six v1 single deficits       900-939    20900-20919
+A_anchors       PC_nominal and the six v1 single deficits       900-939    20900-20939
                 (A-R and A-H, every reported form)
 C1_anchors      PC_nominal, W_NAS_no_workspace,                 900-939    20900-20919
                 W_NAS_broadcast_only, W_IIM_feedforward (C1-R
@@ -24,13 +24,22 @@ RAM160_anchors  PC_nominal and W_RAM_no_plasticity at 160       900-939    20900
                 trials (A-RAM160)
 ==============  ==============================================  =========  ===========
 
-Task counts: 280, 160 and 80 (development); 140, 80 and 40 (confirmatory).
+Task counts: 280, 160 and 80 (development); 280, 80 and 40 (confirmatory).
 Where the operating-characteristics check of the development calibration
 shows replication power below 0.9 at 20 seeds, a design's replication block
 extends to 20939 (:data:`REPLICATION_SEEDS_EXTENDED`). That decision is
-declared once, in :data:`CALIBRATION_PENDING` (no block extended until it is
-made); the builders and the task counts read it, and the run manifest
-records it.
+declared once, in :data:`CALIBRATION_PENDING`; the builders and the task
+counts read it, and the run manifest records it. CD-11 extended family A
+(A-H IIM has replication power 0.565 at 20 seeds) and no other design.
+
+The anchors of the forward views (``forward_anchor_replication``,
+:mod:`impact_pipeline.bench.designs_v2.forward`) follow the same rule per
+forward arm: the arm's anchor condition serves every view of the arm, so a
+view below 0.9 extends the runs of its arm and every view of the arm reads
+the extension (as A-R reads the family-A one). Their power is computed from
+the held-out-regime reference anchors, after the held-out release, so this
+part of the decision is declared here too and stays provisional (no arm
+extended) until then.
 """
 
 from __future__ import annotations
@@ -67,16 +76,30 @@ A_SYSTEMS = FA.EXTENDED_SYSTEMS
 C1_SYSTEMS = FC.EXTENDED_SYSTEMS
 RAM_CLASSES = ("PC_nominal", "W_RAM_no_plasticity")
 ANCHOR_DESIGNS = ("A_anchors", "C1_anchors", "RAM160_anchors")
+# The forward arms whose anchor condition runs on the replication block
+# (forward.ARMS, declared here so that this module does not import the
+# forward layer; a test keeps the two equal).
+FORWARD_ARMS = ("hopf", "forward_a_eeg", "forward_a_bold")
 
-# A decision of the development calibration (operating characteristics),
-# declared here once and made there, not here: the anchor designs whose
-# confirmatory replication block extends to 20900-20939.
+# Decisions of the development calibration (operating characteristics),
+# declared here once and made there, not here: the anchor designs, and the
+# forward arms, whose confirmatory replication block extends to 20900-20939.
 CALIBRATION_PENDING = {
     "replication_extended": {
-        "value": {name: False for name in ANCHOR_DESIGNS},
+        "value": {"A_anchors": True, "C1_anchors": False, "RAM160_anchors": False},
         "meaning": "anchor designs whose replication block extends to "
                    "20900-20939 because the replication power at 20 seeds is "
-                   "below 0.9; provisional: none",
+                   "below 0.9; decided at CD-11: family A (A-H IIM 0.565 at "
+                   "20 seeds), no other design",
+    },
+    "forward_replication_extended": {
+        "value": {arm: False for arm in FORWARD_ARMS},
+        "meaning": "forward arms whose anchor runs on the replication block "
+                   "extend to 20900-20939 because the validity-only "
+                   "replication power of one of their views at 20 seeds is "
+                   "below 0.9 (the CD-11 rule), computed from the held-out "
+                   "reference anchors after the held-out release; "
+                   "provisional: none",
     },
 }
 
@@ -89,6 +112,17 @@ def is_replication_extended(design: str) -> bool:
 def n_replication_seeds(design: str) -> int:
     return len(REPLICATION_SEEDS_EXTENDED if is_replication_extended(design)
                else REPLICATION_SEEDS)
+
+
+def is_forward_replication_extended(arm: str) -> bool:
+    """The declared extension of a forward arm's replication block."""
+    return bool(CALIBRATION_PENDING["forward_replication_extended"]["value"][arm])
+
+
+def forward_replication_seeds(arm: str) -> tuple:
+    """The replication seeds of a forward arm's anchor condition."""
+    return (REPLICATION_SEEDS_EXTENDED if is_forward_replication_extended(arm)
+            else REPLICATION_SEEDS)
 
 
 def anchor_seeds(split: str, seeds=None, replication_extended: bool = False) -> tuple:
@@ -172,7 +206,8 @@ ADEMP = {
     "A_anchors": {
         "aims": _ANCHOR_AIMS + " (A-R and A-H, every form with its own anchor)",
         "data": "PC_nominal and the six v1 single deficits of family A on the "
-                "same seeds: 900-939 (development), 20900-20919 (confirmatory)",
+                "same seeds: 900-939 (development), 20900-20939 (confirmatory; "
+                "extended at CD-11)",
         "estimands": "per protocol, form and principle: the mean excess of "
                      "PC_nominal over its null and the paired contrast with the "
                      "own lesion",
@@ -229,6 +264,7 @@ __all__ = [
     "CALIBRATION_PENDING",
     "C1_SYSTEMS",
     "DESIGNS",
+    "FORWARD_ARMS",
     "OWN_LESION",
     "RAM_CLASSES",
     "REFERENCE_SEEDS",
@@ -237,6 +273,8 @@ __all__ = [
     "a_anchors",
     "anchor_seeds",
     "c1_anchors",
+    "forward_replication_seeds",
+    "is_forward_replication_extended",
     "is_replication_extended",
     "n_replication_seeds",
     "ram_anchors",

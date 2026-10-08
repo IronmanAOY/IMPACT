@@ -525,11 +525,12 @@ def test_circular_block_bootstrap_block_count(T):
 def test_bootstrap_se_df_and_the_se_contract():
     p = IIM.IIMParams()
     assert p.se_method_name == "circular_block_bootstrap_10pct_B50"
-    assert p.se_df == 12.0
+    assert p.se_df == IIM.BOOTSTRAP_SE_DF == 9.0  # lowered from 12 at CD-3
     contract = EV.SE_METHODS[p.se_method_name]
     assert contract.principles == ("IIM",)
     assert set(IIM.BOOTSTRAP_SE_DF_ALLOWED) == set(contract.df_values)
     assert IIM.IIMParams(bootstrap_se_df=9).se_df == 9.0
+    assert IIM.IIMParams(bootstrap_se_df=12.0).se_df == 12.0  # the pre-data value
     with pytest.raises(ValueError):
         IIM.IIMParams(bootstrap_se_df=49)  # never B - 1
     jk = IIM.IIMParams(se_method=IIM.SE_METHOD_JACKKNIFE)
@@ -544,7 +545,7 @@ def test_bootstrap_run_reports_se_and_df():
     _, ts = binary_run("ring", coupling=0.45, T=3000, seed=12)
     r = IIM.compute_iim_v5(ts, lag=1, params={"n_null": 19}, null_seed=2, se_seed=3)
     assert r["defined"] and r["se_method"] == "circular_block_bootstrap_10pct_B50"
-    assert r["se_df"] == 12.0 and r["se"] > 0
+    assert r["se_df"] == IIM.BOOTSTRAP_SE_DF and r["se"] > 0
     boot = r["details"]["bootstrap"]
     assert boot["n_blocks"] == 10 and boot["block_length"] == 300
     for cut in IIM.CUT_MODES:
@@ -559,8 +560,15 @@ def test_bootstrap_run_reports_se_and_df():
                                       ["directional"]) == 10
     a = EV.assess_item(IIM.evidence(r), protocol(anchor=0.03))
     assert a.reason not in (R.INVALID_SE, R.NO_SAMPLING_SE)
-    # the status rule reads se_df = 12 (Welch-Satterthwaite never goes below it)
-    assert a.df >= 12.0 - 1e-9 and math.isfinite(a.df)
+    # the status rule reads the record's se_df (Welch-Satterthwaite never goes
+    # below it)
+    assert a.df >= IIM.BOOTSTRAP_SE_DF - 1e-9 and math.isfinite(a.df)
+    # an explicit pre-data df of 12 is carried through to the record and the rule
+    r12 = IIM.compute_iim_v5(ts, lag=1, params={"n_null": 19, "bootstrap_se_df": 12.0},
+                             null_seed=2, se_seed=3)
+    assert r12["se_df"] == 12.0 and r12["se"] == r["se"]
+    a12 = EV.assess_item(IIM.evidence(r12), protocol(anchor=0.03))
+    assert a12.df >= 12.0 - 1e-9 and math.isfinite(a12.df)
 
 
 @pytest.mark.parametrize("se_method", [IIM.SE_METHOD_BOOTSTRAP, IIM.SE_METHOD_JACKKNIFE])

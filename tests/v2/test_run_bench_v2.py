@@ -825,7 +825,14 @@ def test_calibration_pending_parameters_are_declared_once(monkeypatch):
     assert RB.RunSettings().pdi_kmeans_seed == RB.CALIBRATION_PENDING[
         "pdi_kmeans_seed"]["value"]
     assert set(RB.calibration_pending()) == {"pdi_kmeans_seed",
-                                             "anchors.replication_extended"}
+                                             "anchors.replication_extended",
+                                             "anchors.forward_replication_extended"}
+    # provenance of the k-means seed: the v2 feasibility work and every
+    # development calibration run, not the v1 bench (whose seed was the
+    # task's null seed)
+    meaning = RB.CALIBRATION_PENDING["pdi_kmeans_seed"]["meaning"]
+    assert "v2 development feasibility work" in meaning
+    assert "the fixed seed of the v1 bench" not in meaning
     seen = []
 
     def fake(ts, workspace_nodes=None, **kw):

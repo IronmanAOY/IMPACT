@@ -854,6 +854,29 @@ def constants() -> dict:
     }
 
 
+def strict_json(obj):
+    """``obj`` with every non-finite float (NaN, +-inf) replaced by None, so
+    that :data:`CONSTANTS_JSON` is strict JSON (null, not the ``NaN``
+    literal that strict parsers refuse); every other value is unchanged."""
+    import numpy as np
+
+    if isinstance(obj, Mapping):
+        return {k: strict_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [strict_json(v) for v in obj]
+    if isinstance(obj, (float, np.floating)):
+        return obj if math.isfinite(float(obj)) else None
+    return obj
+
+
+def write_constants(path: Path, payload: Mapping) -> None:
+    """Write the constants as strict JSON (:func:`strict_json`)."""
+    Path(path).write_text(
+        json.dumps(strict_json(payload), indent=2, sort_keys=True, default=float,
+                   allow_nan=False) + "\n",
+        encoding="utf-8")
+
+
 # --------------------------------------------------------------------------
 # running
 # --------------------------------------------------------------------------
@@ -940,10 +963,7 @@ def run_one(item: Item, run: Run, *, root=DEFAULT_ROOT, workers: int = 1, seeds=
         check_seed_list(list(seeds))
     if run.kind == CONSTANTS:
         out.mkdir(parents=True, exist_ok=True)
-        payload = constants()
-        (out / CONSTANTS_JSON).write_text(
-            json.dumps(payload, indent=2, sort_keys=True, default=float) + "\n",
-            encoding="utf-8")
+        write_constants(out / CONSTANTS_JSON, constants())
         prov = _provenance(item, run, n_tasks=0, seeds=(), settings=None, argv=argv)
         prov["outcome"] = {"ok": True, "file": CONSTANTS_JSON}
         _write_provenance(out, prov, started)

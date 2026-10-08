@@ -15,8 +15,10 @@ design              systems                                     confirmatory   d
 A_witnesses         the 16 family-A witnesses of the catalogue  20000-20019;   320-331
                     (PW_patchwork in the principle-bearer        PC_nominal and
                     mode); PC_nominal and the six v1             the six
-                    single deficits on 25 more seeds             deficits to
-                                                                 20044
+                    single deficits on 25 more seeds; the two    deficits to
+                    null witnesses on 26 more                    20044; the
+                                                                 nulls to
+                                                                 20045
 A_sweeps            g_b (10 levels 0-2), c_int (10 levels       20000-20009    332-335
                     0-1.2), K {2, 3, 4, 6, 8, 12}
 A_factorial         the 2^5 mechanism cells                     20000-20009    336-339
@@ -27,8 +29,15 @@ A_heldout           ADV_NAS_staggered_tau10 and _sat (NAS       20000-20019    s
                     under R)                                                   980-984
 ==================  ==========================================  =============  ======
 
-Task counts (confirmatory): 16 x 20 + 7 x 25 = 495, 26 x 10 = 260,
-32 x 10 = 320, 7 x 20 = 140 and 2 x 20 = 40.
+Task counts (confirmatory): 16 x 20 + 7 x 25 + 2 x 26 = 547, 26 x 10 =
+260, 32 x 10 = 320, 7 x 20 = 140 and 2 x 20 = 40.
+
+Null witnesses. N_independent_noise and N_ar1 run on 46 confirmatory seeds
+(20000-20045): with the RAM-PE rows of the null-calibration generator left
+out of HCv2-1 (UNDEFINED by construction), the two nulls hold the RAM-PE
+rows of HCv2-1, and 2 x 46 = 92 seed clusters is the smallest size whose
+pooled Clopper-Pearson bound (at 0.05 / 5) stays below 0.07 with one
+PRESENT event (CD-11: seeds are resized, never thresholds).
 
 Held-out conditions. On the confirmatory witness tasks of seeds
 20000-20019, PC_nominal, W_NAS_no_workspace, N_modules_disconnected,
@@ -93,6 +102,8 @@ EXTENDED_SYSTEMS = (
     "W_IIM_feedforward",
     "W_SRPI_no_efference",
 )
+# The null witnesses of HCv2-1: 46 seed clusters each (module docstring).
+NULL_WITNESSES = ("N_independent_noise", "N_ar1")
 # Witness simulations re-scored under the held-out declarations.
 HELD_OUT_RESCORED = ("PC_nominal", "W_NAS_no_workspace", "N_modules_disconnected",
                      "W_IIM_feedforward", "O_inert")
@@ -112,6 +123,7 @@ def bearer_modes(system_id: str) -> tuple:
 SEEDS = {
     "witnesses": {CONFIRMATORY: range(20000, 20020), DEVELOPMENT: range(320, 332)},
     "witnesses_extended": {CONFIRMATORY: range(20020, 20045)},
+    "null_witnesses_extended": {CONFIRMATORY: range(20020, 20046)},
     "held_out_rescorings": {CONFIRMATORY: range(20000, 20020)},
     "misdeclared_access": {CONFIRMATORY: range(20000, 20045)},
     "sweeps": {CONFIRMATORY: range(20000, 20010), DEVELOPMENT: range(332, 336)},
@@ -237,19 +249,23 @@ def witnesses(split: str, *, seeds: Optional[Sequence[int]] = None,
               systems: Optional[Sequence[str]] = None,
               forms: Optional[Sequence[str]] = None) -> List[TaskSpec]:
     """``A_witnesses``: every family-A witness on the witness seeds, PC_nominal
-    and the six single deficits on 25 more confirmatory seeds; the held-out
-    re-scorings on the confirmatory split only."""
+    and the six single deficits on 25 more confirmatory seeds and the two
+    null witnesses on 26 more; the held-out re-scorings on the confirmatory
+    split only."""
     ids = first(_select(catalogue_systems("witness"), systems, "witnesses"),
                 EXTENDED_SYSTEMS)
     forms = FORMS["witnesses"] if forms is None else tuple(forms)
     base_seeds = _seeds(SEEDS["witnesses"], split, seeds)
     ext_seeds = (() if seeds is not None
                  else seeds_of(SEEDS["witnesses_extended"], split))
+    null_ext_seeds = (() if seeds is not None
+                      else seeds_of(SEEDS["null_witnesses_extended"], split))
     rescored = set(seeds_of(SEEDS["held_out_rescorings"], split))
     misdeclared = set(seeds_of(SEEDS["misdeclared_access"], split))
     out = []
     for sid in ids:
-        sys_seeds = base_seeds + (ext_seeds if sid in EXTENDED_SYSTEMS else ())
+        sys_seeds = (base_seeds + (ext_seeds if sid in EXTENDED_SYSTEMS else ())
+                     + (null_ext_seeds if sid in NULL_WITNESSES else ()))
         modes = bearer_modes(sid)
         tags = {"pdi_partition": True} if sid in PDI_PARTITION_SYSTEMS else None
         for seed in sys_seeds:
@@ -383,7 +399,8 @@ ADEMP = {
                 "out) the cost of a misspecified declaration",
         "data": "family-A agents (v1 routing, recording device; 80 trials, 30 "
                 "reafference pairs), the 16 catalogue witnesses on 20 seeds and "
-                "PC_nominal with the six single deficits on 45; R and H from one "
+                "PC_nominal with the six single deficits on 45 and the two null "
+                "witnesses on 46; R and H from one "
                 "simulation; P, Q10, Q25 and J re-scorings of five witnesses on "
                 "20 seeds and the misdeclared PDI access node (held out)",
         "estimands": "per system, protocol and principle the construct value c, "
@@ -454,8 +471,10 @@ ADEMP = {
 DESIGNS = (
     Design("A_witnesses", FAMILY,
            "family-A witnesses under R and H (45 seed clusters for PC_nominal and "
-           "the six single deficits) with the held-out re-scorings",
-           witnesses, {CONFIRMATORY: 16 * 20 + 7 * 25, DEVELOPMENT: 16 * 12},
+           "the six single deficits, 46 for the two null witnesses) with the "
+           "held-out re-scorings",
+           witnesses, {CONFIRMATORY: 16 * 20 + 7 * 25 + 2 * 26,
+                       DEVELOPMENT: 16 * 12},
            ademp=ADEMP["A_witnesses"]),
     Design("A_sweeps", FAMILY, "family-A dose sweeps of g_b, c_int and K",
            sweeps, {CONFIRMATORY: 26 * 10, DEVELOPMENT: 26 * 4},
@@ -490,6 +509,7 @@ __all__ = [
     "HELD_OUT_RESCORED",
     "JOINT_BENCH_METHODS",
     "K_LEVELS",
+    "NULL_WITNESSES",
     "PDI_PARTITION_SYSTEMS",
     "PRINCIPLE_BEARER_SYSTEMS",
     "PROTOCOLS",

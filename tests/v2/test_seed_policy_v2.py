@@ -148,9 +148,17 @@ def test_seed_map_matches_the_design(seed_map):
                      (20280, 20319, "HCv2-11"), (20320, 20419, "HCv2-13"),
                      (20420, 20459, "HCv2-12(b)"), (20460, 20499, "HCv2-12(c, d)")]
     assert conf[(20900, 20919)]["extendable_to"] == 20939
-    for key in [(20000, 20039), (20000, 20019), (20000, 20044), (20000, 20009),
-                (20000, 20060), (20000, 20149)]:
+    # CD-11: the family-A anchor replication block is extended
+    assert conf[(20900, 20919)]["extended"] == [
+        {"design": "A_anchors", "max": 20939,
+         "decided": "CD-11: A-H IIM replication power 0.565 at 20 seeds"}]
+    for key in [(20000, 20039), (20000, 20019), (20000, 20044), (20000, 20045),
+                (20000, 20009), (20000, 20060), (20000, 20149)]:
         assert key in conf
+    # the HCv2-1 resize: the two family-A null witnesses on 46 seeds
+    assert "N_independent_noise and N_ar1" in conf[(20000, 20045)]["use"]
+    twins = {(e["min"], e["max"]): e for e in seed_map["development"]["assignments"]}
+    assert twins[(820, 824)]["use"].endswith("r = 0..6 (RAM-only r = 0..7)")
     assert seed_map["streams"]["keys"] == S.STREAM_KEYS
     assert seed_map["freeze_tag"] == "mpcbench-freeze-v2"
 
@@ -171,6 +179,11 @@ def _mutated(seed_map, fn):
     return m
 
 
+def _family_b(m):
+    (fam_b,) = [e for e in m["confirmatory"]["assignments"] if e["use"] == "family B"]
+    return fam_b
+
+
 @pytest.mark.parametrize("mutate, match", [
     (lambda m: m["development"]["assignments"].append(
         {"min": 990, "max": 1005, "use": "x"}), "not a development block"),
@@ -180,9 +193,9 @@ def _mutated(seed_map, fn):
         {"min": 400, "max": 401, "use": "x"}), "overlap"),
     (lambda m: m["confirmatory"]["assignments"].append(
         {"min": 19990, "max": 20010, "use": "x"}), "not a confirmatory block"),
-    (lambda m: m["confirmatory"]["assignments"][6]["parts"].append(
+    (lambda m: _family_b(m)["parts"].append(
         {"min": 20100, "max": 20120, "use": "x"}), "overlap"),
-    (lambda m: m["confirmatory"]["assignments"][6]["parts"].append(
+    (lambda m: _family_b(m)["parts"].append(
         {"min": 20490, "max": 20510, "use": "x"}), "outside its block"),
     (lambda m: m["streams"]["keys"].update(label_error=3), "stream keys"),
     (lambda m: m["streams"]["twin"].update(r_max=45), "twin replicate range"),

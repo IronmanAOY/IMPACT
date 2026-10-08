@@ -59,7 +59,7 @@
       },
       {
         "min": 820, "max": 824,
-        "use": "development twin networks (r = 1..6)"
+        "use": "development twin networks, r = 0..6 (RAM-only r = 0..7)"
       },
       {
         "min": 850, "max": 899,
@@ -81,6 +81,12 @@
       {"min": 20000, "max": 20039, "use": "manipulation checks; RAM-only arm"},
       {"min": 20000, "max": 20019, "use": "witnesses, adversaries, held-out conditions"},
       {"min": 20000, "max": 20044, "use": "PC_nominal and the single deficits (45 seed clusters)"},
+      {
+        "min": 20000, "max": 20045,
+        "use": "family-A null witnesses N_independent_noise and N_ar1 (46 seed clusters each; HCv2-1)",
+        "resize": "CD-11 / HCv2-1: 92 clusters, the smallest size whose pooled bound tolerates one PRESENT event; 20020-20045 added, no threshold changed",
+        "shared_with": "the forward family-A null class N_ar1 (20000-20060) observes the same N_ar1 simulations, one configuration under two designs as for PC_nominal; no other assignment uses these systems on these seeds"
+      },
       {"min": 20000, "max": 20009, "use": "sweeps, factorial, twin networks"},
       {"min": 20000, "max": 20060, "use": "Hopf G = 0 extension; forward family-A null classes"},
       {"min": 20000, "max": 20149, "use": "Hopf G_nom extension; forward family-A on classes"},
@@ -101,7 +107,10 @@
         "min": 20900, "max": 20919,
         "use": "anchor replication blocks",
         "extendable_to": 20939,
-        "extension_rule": "20900-20939 where the operating-characteristics check shows replication power < 0.9 at 20 seeds"
+        "extension_rule": "20900-20939 where the operating-characteristics check shows replication power < 0.9 at 20 seeds (anchor designs; forward arms after the held-out release)",
+        "extended": [
+          {"design": "A_anchors", "max": 20939, "decided": "CD-11: A-H IIM replication power 0.565 at 20 seeds"}
+        ]
       }
     ]
   },

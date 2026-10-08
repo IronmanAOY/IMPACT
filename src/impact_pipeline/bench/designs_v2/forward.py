@@ -35,7 +35,9 @@ Purposes and regimes
 ``confirmatory``: seeds from 20000, the held-out regime (lead-field seed
 20261001, width 0.6). ``replication``: the anchor conditions on the
 confirmatory replication block 20900-20919 at the held-out regime (the
-forward views' anchor replication, HCv2-6). ``dry_run`` (seeds 384-399) and
+forward views' anchor replication, HCv2-6), extended to 20939 for an arm
+that the CD-11 rule extends (:func:`replication_seeds`; decided after the
+held-out release, none so far). ``dry_run`` (seeds 384-399) and
 ``dev_regime``
 (804-819): the same conditions at about 15 % scale, at the development
 regime. ``reference`` (900-939): the anchor conditions (``G_nom``,
@@ -70,8 +72,14 @@ IIM's ``macro_nodes`` option picks the rank-safe clusters or the v1
 quadrants of a sensor view.
 
 A run carries what some criterion, hypothesis or anchor reads on it
-(:func:`scoring_plan`): the v1 quadrant comparator only at ``G = 0``
-(HCv2-12(d), HCv2-15(b)); on the lesion conditions only NAS (FMb2 is the
+(:func:`scoring_plan`): the v1 quadrant comparator at ``G = 0``
+(HCv2-12(d), HCv2-15(b)) and on the anchor condition ``G_nom`` of the
+held-out-regime anchor runs (reference, replication and their smoke test),
+where its two protocols get their own validity-only anchors (HCv2-6(b));
+not on the development-regime reference runs, because IIM on the sensor
+views above ``G = 0`` is held out (HO-6) and the released held-out-regime
+reference anchors are the design's only exception; on the lesion
+conditions only NAS (FMb2 is the
 only lesion criterion); the source view of a family-A arm, which is no
 admission view, only on the runs whose source contrast FMd reads; and IIM
 on the family-A arms, which is descriptive (design 3.1), as its value and
@@ -142,7 +150,11 @@ DEVELOPMENT_SEED_BLOCKS = MappingProxyType({
 DRY_RUN_FRACTION = 0.15
 CONFIRMATORY_SEED_BASE = S.CONFIRMATORY_SEED_MIN
 # the anchor replication block of the forward views (HCv2-6; seed map 3.7)
+# and its extension, which the CD-11 rule declares per arm
+# (designs_v2.anchors.CALIBRATION_PENDING['forward_replication_extended'];
+# :func:`replication_seeds`)
 REPLICATION_SEEDS = range(20900, 20920)
+REPLICATION_SEEDS_EXTENDED = range(20900, 20940)
 
 HOPF_SOURCE_DURATION_S = 60.0
 # v1 run_bench.BOLD_MIN_DURATION_SEC: 300 volumes at TR 2 s
@@ -332,12 +344,24 @@ def _plain(obj):
     return obj
 
 
+def replication_seeds(arm: str) -> range:
+    """The replication block of an arm's anchor condition: 20900-20919, or
+    20900-20939 where the CD-11 rule extends the arm (declared once, in
+    :data:`impact_pipeline.bench.designs_v2.anchors.CALIBRATION_PENDING`)."""
+    from impact_pipeline.bench.designs_v2 import anchors as AN
+
+    if arm not in ARMS:
+        raise ForwardDesignError(f"arm must be one of {ARMS}")
+    return (REPLICATION_SEEDS_EXTENDED if AN.is_forward_replication_extended(arm)
+            else REPLICATION_SEEDS)
+
+
 def _seeds(cond: Condition, purpose: str) -> List[int]:
     if purpose == CONFIRMATORY:
         return list(range(CONFIRMATORY_SEED_BASE, CONFIRMATORY_SEED_BASE
                           + cond.n_confirmatory))
     if purpose == REPLICATION:
-        return list(REPLICATION_SEEDS) if cond.anchor else []
+        return list(replication_seeds(cond.arm)) if cond.anchor else []
     block = list(DEVELOPMENT_SEED_BLOCKS[purpose])
     if purpose in (DRY_RUN, DEV_REGIME):
         n = min(len(block), int(math.ceil(DRY_RUN_FRACTION * cond.n_confirmatory)))
@@ -398,7 +422,8 @@ def check_regime_policy(tasks: Sequence[ForwardTask]) -> None:
     on the reference block (900-939, anchors after the held-out predictions
     are committed) and the smoke seeds (980-984, outputs discarded); every
     confirmatory task is at the held-out regime, and the replication runs
-    use the replication block 20900-20919.
+    use the replication block of their arm (20900-20919, or 20900-20939
+    where it is extended; :func:`replication_seeds`).
     """
     for t in tasks:
         split = S.split_of(t.seed)
@@ -407,7 +432,7 @@ def check_regime_policy(tasks: Sequence[ForwardTask]) -> None:
         if (t.purpose in CONFIRMATORY_PURPOSES) != (split == S.CONFIRMATORY):
             raise ForwardDesignError(
                 f"{t.task_id}: purpose {t.purpose} on a {split} seed")
-        if t.purpose == REPLICATION and t.seed not in REPLICATION_SEEDS:
+        if t.purpose == REPLICATION and t.seed not in replication_seeds(t.arm):
             raise ForwardDesignError(f"{t.task_id}: seed {t.seed} is outside the "
                                      "replication block")
         if (t.purpose not in CONFIRMATORY_PURPOSES
@@ -600,6 +625,12 @@ _IIM_PRIMARY_CUT = {"report_cut_modes": []}
 # Conditions on which the v1 quadrant comparator is read: G = 0 (HCv2-12(d)
 # under the average reference, HCv2-15(b) without a reference).
 COMPARATOR_CONDITIONS = MappingProxyType({ARM_HOPF: ("hopf_G0",)})
+# Purposes on whose anchor condition (G_nom) the comparator is read as well:
+# the held-out-regime anchor runs, which give its two protocols their own
+# validity-only anchors and their replication (HCv2-6(b)), and the smoke test
+# of those runs. The development-regime reference runs do not carry it: IIM
+# on the sensor views above G = 0 is held out (HO-6).
+COMPARATOR_ANCHOR_PURPOSES = (REFERENCE, REPLICATION, SMOKE)
 # Principles scored on the lesion conditions of the Hopf arm: only NAS has a
 # lesion criterion (FMb2); IIM's admission reads no lesion run.
 LESION_PRINCIPLES_OF_ARM = MappingProxyType({ARM_HOPF: ("NAS",)})
@@ -664,25 +695,36 @@ def reads_view(task: ForwardTask, view: str) -> bool:
         task.condition, frozenset())
 
 
+def reads_comparator(task: ForwardTask) -> bool:
+    """Whether the v1 quadrant comparator is scored on this run: on
+    :data:`COMPARATOR_CONDITIONS`, and on the anchor condition of the
+    :data:`COMPARATOR_ANCHOR_PURPOSES` (an arm without the comparator never
+    scores it)."""
+    if task.condition in COMPARATOR_CONDITIONS.get(task.arm, ()):
+        return True
+    return (task.purpose in COMPARATOR_ANCHOR_PURPOSES
+            and condition(task.arm, task.condition).anchor)
+
+
 def scoring_plan(task: ForwardTask) -> List[dict]:
     """The scorings of a task: one per (view, estimator form) with its id,
     view, stage, declaration, principles, options (protocol vocabulary) and
     the role of each principle (admission, descriptive or comparator).
     A run carries what some criterion, hypothesis or anchor reads on it: the
-    v1 quadrant comparator only on :data:`COMPARATOR_CONDITIONS`, only the
-    principles with a lesion criterion on a lesion condition
+    v1 quadrant comparator only where :func:`reads_comparator` says so, only
+    the principles with a lesion criterion on a lesion condition
     (:data:`LESION_PRINCIPLES_OF_ARM`) and the source view of a family-A arm
     only where :func:`reads_view` says so."""
     cond = condition(task.arm, task.condition)
     lesion = cond.spec.get("lesion", "none") not in (None, "none")
+    comparator = reads_comparator(task)
     out = []
     for view in task.views:
         if not reads_view(task, view):
             continue
         stage = F2.view_spec(view).stage
         for s in _scorings(task.arm, view):
-            if (s["estimator_form"] == IIM_V1_QUADRANTS and task.condition
-                    not in COMPARATOR_CONDITIONS.get(task.arm, ())):
+            if s["estimator_form"] == IIM_V1_QUADRANTS and not comparator:
                 continue
             principles = list(s["principles"])
             if lesion:
@@ -948,7 +990,8 @@ def anchor_replication(split: str, *, purpose: Optional[str] = None, seeds=None,
                        systems=None, arms: Sequence[str] = ARMS,
                        n_low: int = F2.N_LOW_DEFAULT):
     """``forward_anchor_replication``: the anchor condition of every arm
-    (``G_nom``; PC_nominal) on the replication block 20900-20919 at the
+    (``G_nom``; PC_nominal) on the arm's replication block (20900-20919, or
+    20900-20939 where extended; :func:`replication_seeds`) at the
     held-out regime (confirmatory), or on the reference block 900-939 at the
     development regime (development; ``purpose='reference'`` gives the
     held-out regime, a held-out condition before the freeze)."""
@@ -1025,8 +1068,10 @@ ADEMP = {
                 "and replicated on the confirmatory replication block",
         "data": "G_nom of the Hopf arm and PC_nominal of both family-A arms: "
                 "900-939 (development regime; the held-out regime only after "
-                "the held-out predictions are committed) and 20900-20919 "
-                "(held-out regime)",
+                "the held-out predictions are committed) and 20900-20919, "
+                "extended to 20939 for an arm the CD-11 rule extends (held-out "
+                "regime); at the held-out regime the Hopf runs also carry the "
+                "v1 quadrant comparator",
         "estimands": "per view and principle the mean excess of the reference "
                      "condition over its null",
         "methods": "as the arm designs; " + _FORWARD_METHODS,
@@ -1044,10 +1089,11 @@ def _design(name: str, build, confirmatory_tasks: int, description: str):
 
 
 # Confirmatory task counts of the design document (3.2; the BOLD arm's 271 is
-# the planned maximum before curtailment) and of the replication block.
+# the planned maximum before curtailment) and of the replication block (20
+# seeds per arm, 40 for an arm the CD-11 rule extends).
 DOCUMENT_TASKS = MappingProxyType({
     "whole_brain": 371, "forward_family_a": 332, "forward_family_a_bold": 271,
-    ANCHOR_REPLICATION_DESIGN: len(ARMS) * len(REPLICATION_SEEDS)})
+    ANCHOR_REPLICATION_DESIGN: sum(len(replication_seeds(a)) for a in ARMS)})
 
 
 def _designs():
@@ -1243,11 +1289,14 @@ __all__ = [
     "curtailment_order",
     "entry_grain",
     "g_nom_label",
+    "reads_comparator",
     "realise",
     "regime_of_purpose",
+    "replication_seeds",
     "scoring_plan",
     "truncate_whole_brain",
     "BUILDER",
+    "COMPARATOR_ANCHOR_PURPOSES",
     "COMPARATOR_CONDITIONS",
     "CONFIRMATORY_PURPOSES",
     "LESION_PRINCIPLES_OF_ARM",
@@ -1260,6 +1309,7 @@ __all__ = [
     "RECORD_DESIGN_OF_ARM",
     "REPLICATION",
     "REPLICATION_SEEDS",
+    "REPLICATION_SEEDS_EXTENDED",
     "RUNNER_CURTAILMENT",
     "RunnerCurtailment",
     "SYSTEM_BUILDERS",

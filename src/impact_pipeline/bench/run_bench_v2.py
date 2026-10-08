@@ -195,7 +195,10 @@ CALIBRATION_PENDING = {
         "value": 0,
         "meaning": "k-means seed of every PDI v3 count (run, surrogates, "
                    "replicates); an integer, or None for the task's null seed. "
-                   "Provisional value 0: the fixed seed of the v1 bench",
+                   "Value 0: the seed of the v2 development feasibility work "
+                   "and of every development calibration run, kept as "
+                   "decided (not tuned on data); the v1 bench used the task's "
+                   "null seed",
     },
 }
 

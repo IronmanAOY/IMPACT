@@ -799,7 +799,8 @@ def test_a_run_carries_what_some_criterion_reads():
     by_cond = {}
     for t in hopf:
         by_cond.setdefault(t.condition, t)
-    # the v1 quadrant comparator only at G = 0 (HCv2-12(d), HCv2-15(b))
+    # on the admission runs the v1 quadrant comparator only at G = 0
+    # (HCv2-12(d), HCv2-15(b))
     for cond, t in by_cond.items():
         forms = {(s["view"], s["estimator_form"]) for s in D.scoring_plan(t)}
         comp = {f for f in forms if f[1] == D.IIM_V1_QUADRANTS}
@@ -838,6 +839,99 @@ def test_a_run_carries_what_some_criterion_reads():
             assert iim["se_method"] is None, key
         else:
             assert "se_method" not in iim, key
+
+
+QUADRANTS = {("eeg64", D.IIM_V1_QUADRANTS), ("eeg64_noref", D.IIM_V1_QUADRANTS)}
+
+
+@pytest.mark.parametrize("purpose, on_g_nom", [
+    (D.REFERENCE, True), (D.REPLICATION, True), (D.SMOKE, True),
+    # IIM on the sensor views above G = 0 is held out (HO-6)
+    (D.REFERENCE_DEVELOPMENT, False),
+    (D.CONFIRMATORY, False), (D.DRY_RUN, False), (D.DEV_REGIME, False),
+])
+def test_the_quadrant_comparator_on_the_anchor_condition(purpose, on_g_nom):
+    """The v1 quadrant comparator on the Hopf G_nom anchor condition of the
+    held-out-regime anchor runs (own validity-only anchors of its two
+    protocols, HCv2-6(b)), never at the development regime; at G = 0 on
+    every purpose that runs it."""
+    tasks = D.build_tasks(purpose, arms=[D.ARM_HOPF])
+    gn = [t for t in tasks if t.condition == D.g_nom_label()]
+    assert gn
+    for t in gn:
+        forms = {(s["view"], s["estimator_form"]) for s in D.scoring_plan(t)}
+        assert D.reads_comparator(t) is on_g_nom
+        assert (forms >= QUADRANTS) if on_g_nom else not (forms & QUADRANTS)
+        if on_g_nom:
+            quad = [s for s in D.scoring_plan(t)
+                    if s["estimator_form"] == D.IIM_V1_QUADRANTS]
+            assert all(s["principles"] == ["IIM"] and s["roles"] == {
+                "IIM": "comparator"} for s in quad)
+            assert all(s["options"]["IIM"]["macro_nodes"] == "v1_quadrants"
+                       for s in quad)
+    for t in tasks:
+        if t.condition == "hopf_G0":
+            forms = {(s["view"], s["estimator_form"]) for s in D.scoring_plan(t)}
+            assert forms >= QUADRANTS
+        elif t.condition != D.g_nom_label():
+            assert not D.reads_comparator(t)
+    # the family-A arms have no comparator form at all
+    for arm in (D.ARM_A_EEG, D.ARM_A_BOLD):
+        for t in D.build_tasks(purpose, arms=[arm])[:3]:
+            assert not any(s["estimator_form"] == D.IIM_V1_QUADRANTS
+                           for s in D.scoring_plan(t))
+
+
+def test_the_anchor_runners_carry_the_comparator_protocols():
+    from impact_pipeline.bench import designs_v2 as DV
+
+    rep = DV.get_design(D.ANCHOR_REPLICATION_DESIGN)
+    keys = {s.protocol_key for t in rep.tasks(DV.CONFIRMATORY) for s in t.scorings}
+    assert {"hopf-eeg64+iim_v1_quadrants",
+            "hopf-eeg64_noref+iim_v1_quadrants"} <= keys
+    dev = {s.protocol_key for t in rep.tasks(DV.DEVELOPMENT) for s in t.scorings}
+    assert not any("iim_v1_quadrants" in k for k in dev)
+    # the comparator's options on the anchor runs are those of its protocol
+    opts = D.protocol_options()["hopf-eeg64+iim_v1_quadrants"]["estimators"]
+    t = rep.tasks(DV.CONFIRMATORY)[0]
+    ft = D.forward_task_of(t)
+    (q,) = [s for s in D.scoring_plan(ft) if s["scoring_id"] == "eeg64:iim_v1_quadrants"]
+    assert q["options"] == opts
+
+
+def test_the_forward_replication_block_is_extended_per_arm(monkeypatch):
+    from impact_pipeline.bench import designs_v2 as DV
+    from impact_pipeline.bench.designs_v2 import anchors as AN
+
+    # provisional: no arm extended until the CD-11 rule is applied after the
+    # held-out release
+    assert all(D.replication_seeds(a) == D.REPLICATION_SEEDS for a in D.ARMS)
+    assert D.DOCUMENT_TASKS[D.ANCHOR_REPLICATION_DESIGN] == 3 * 20
+    pending = AN.CALIBRATION_PENDING["forward_replication_extended"]
+    monkeypatch.setitem(pending, "value", dict(pending["value"], hopf=True))
+    assert D.replication_seeds(D.ARM_HOPF) == range(20900, 20940)
+    assert D.replication_seeds(D.ARM_A_EEG) == range(20900, 20920)
+    rep = D.build_tasks(D.REPLICATION)
+    by_arm = {a: sorted(t.seed for t in rep if t.arm == a) for a in D.ARMS}
+    assert by_arm == {D.ARM_HOPF: list(range(20900, 20940)),
+                      D.ARM_A_EEG: list(range(20900, 20920)),
+                      D.ARM_A_BOLD: list(range(20900, 20920))}
+    assert all(t.condition in (D.g_nom_label(), "PC_nominal") for t in rep)
+    # the regime policy and the task builder follow the declared block
+    t = D.forward_task(D.ARM_HOPF, D.g_nom_label(), 20935, D.REPLICATION)
+    assert t.regime == "held_out" and t.split == S.CONFIRMATORY
+    with pytest.raises(D.ForwardDesignError, match="not a replication seed"):
+        D.forward_task(D.ARM_A_EEG, "PC_nominal", 20935, D.REPLICATION)
+    bad = D.ForwardTask(**{**t.to_dict(), "arm": D.ARM_A_EEG,
+                           "condition": "PC_nominal",
+                           "views": D.VIEWS_OF_ARM[D.ARM_A_EEG]})
+    with pytest.raises(D.ForwardDesignError, match="replication block"):
+        D.check_regime_policy([bad])
+    seeds = {(t.tags["arm"], t.seed) for t in DV.get_design(
+        D.ANCHOR_REPLICATION_DESIGN).tasks(DV.CONFIRMATORY)}
+    assert len(seeds) == 40 + 20 + 20
+    with pytest.raises(D.ForwardDesignError, match="arm"):
+        D.replication_seeds("no_such_arm")
 
 
 def test_runner_tasks_of_the_forward_arms():

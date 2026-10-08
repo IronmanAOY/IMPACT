@@ -347,7 +347,8 @@ def test_run_end_to_end_and_resume(tmp_path):
     ring = recs[small_ring_task().task_id]
     for s in ring.scorings:
         comp = s.components["IIM"]
-        assert comp.se_method == "circular_block_bootstrap_10pct_B50" and comp.se_df == 12
+        assert comp.se_method == "circular_block_bootstrap_10pct_B50"
+        assert comp.se_df == IIM.BOOTSTRAP_SE_DF
         assert comp.status in (R.PRESENT, R.ABSENT, R.UNDEFINED) and comp.c is not None
         assert comp.reason not in (R.INVALID_SE, R.NO_SAMPLING_SE)
         assert 0 < comp.details["p_ind"] <= 1

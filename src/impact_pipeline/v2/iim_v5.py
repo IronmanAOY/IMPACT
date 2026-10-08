@@ -89,10 +89,15 @@ node-shrinkage TPM and the cut TPMs are the frozen v1 building blocks):
    ``UNDEFINED(INCONCLUSIVE:NULL_NOT_EXCEEDED)``; it never gives ABSENT.
 10. Sampling SE: circular block bootstrap of the analysed series (and of the
     strata labels), blocks of ``ceil(0.1 T)`` samples (10 blocks), ``B =
-    50``, the statistic recomputed on every resample; ``se_df = 12`` (the
-    block-count approximation 12.5 of the SE's variability, rounded down;
-    never ``B - 1``). Calibration may lower ``se_df`` to 9 or fall back to
-    the delete-a-group jackknife over 10 contiguous blocks (``se_df = 9``).
+    50``, the statistic recomputed on every resample. ``se_df = 12`` was
+    declared before any data (the block-count approximation 12.5 of the
+    SE's variability, rounded down; never ``B - 1``); calibration (CD-3)
+    lowered it to 9, because a one-sided 1 % tail exceeded 0.02 in some
+    (protocol, class) twin cells, each by one session. That is the rule's
+    conservative outcome (a larger q, fewer ABSENT calls), not evidence of
+    anti-conservative tails. The other calibration outcome, the
+    delete-a-group jackknife over 10 contiguous blocks (``se_df = 9``), was
+    not taken.
 11. Observation gate: a ``sensor`` or ``source_estimate`` observation is
     ``UNDEFINED(OBSERVATION_MIXED_NOT_ADMITTED)`` unless an admitting
     registry entry exists (``observation_admitted=True``; the forward-arm
@@ -183,7 +188,9 @@ SE_METHODS = (SE_METHOD_BOOTSTRAP, SE_METHOD_JACKKNIFE)
 SE_METHOD_DEFAULT = SE_METHOD_BOOTSTRAP
 BOOTSTRAP_BLOCK_FRAC = 0.10
 BOOTSTRAP_REPLICATES = 50
-BOOTSTRAP_SE_DF = 12.0
+# Declared 12 before any data; CD-3 lowered it to 9 (the one-sided 1 % tail
+# of the bootstrap exceeded 0.02 in some (protocol, class) twin cells).
+BOOTSTRAP_SE_DF = 9.0
 BOOTSTRAP_SE_DF_ALLOWED = (12.0, 9.0)
 JACKKNIFE_GROUPS = 10
 JACKKNIFE_SE_DF = 9.0
