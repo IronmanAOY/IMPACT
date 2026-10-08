@@ -1095,8 +1095,10 @@ def test_parallel_workers_give_the_serial_records(tmp_path):
 
 
 def test_the_cli_runs_a_small_development_plan(tmp_path, capsys):
+    (tmp_path / "no_protocols").mkdir()
     rc = RB.main(["run", "RAM160", "--split", "development", "--seeds", "352",
-                  "--systems", "PC_nominal", "--out", str(tmp_path / "cli")])
+                  "--systems", "PC_nominal", "--out", str(tmp_path / "cli"),
+                  "--protocol-dir", str(tmp_path / "no_protocols")])
     assert rc == 0
     recs = REC.read_jsonl(tmp_path / "cli" / RB.RESULTS_JSONL)
     assert [r.task_id for r in recs] == ["RAM160-PC_nominal-s00352"]
@@ -1514,8 +1516,10 @@ def test_a_draft_key_is_declared_once(monkeypatch):
         RB.load_design_module("z_twice")
 
 
-def test_forward_protocol_drafts_and_runner_options():
+def test_forward_protocol_drafts_and_runner_options(monkeypatch, tmp_path):
     from impact_pipeline.bench.designs_v2 import forward as FW
+
+    monkeypatch.setattr(RB, "GENERATED_DIR", tmp_path)  # the drafts, not the build
 
     RB.load_design_module("forward")
     assert RB.OBSERVATION_GATE_ADMISSION_RUN == FW.ADMISSION_RUN
@@ -1649,3 +1653,13 @@ def test_a_plan_with_curtailed_sampling_is_not_sharded(tmp_path, capsys):
     assert sorted(t.task_id for t in halves) == sorted(t.task_id for t in hopf)
     wit = FA.witnesses(DEV, seeds=[320])
     assert len(RB.shard(wit, 1, 3)) == len(wit[1::3])
+
+
+def test_the_runner_prefers_the_generated_protocols():
+    """With the frozen build in protocols/v2/generated a run resolves the
+    generated file of every key, never its draft."""
+    if not (RB.GENERATED_DIR / "build_manifest.json").is_file():
+        pytest.skip("no generated protocols in this checkout")
+    protos = RB.resolve_protocols(["A-R", "A-H", "C1-R", "hopf-eeg64", "A-none"])
+    assert {p.source for p in protos.values()} == {"generated"}
+    assert not any(p.protocol.name.endswith("-draft") for p in protos.values())
