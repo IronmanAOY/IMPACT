@@ -87,7 +87,19 @@
         "resize": "CD-11 / HCv2-1: 92 clusters, the smallest size whose pooled bound tolerates one PRESENT event; 20020-20045 added, no threshold changed",
         "shared_with": "the forward family-A null class N_ar1 (20000-20060) observes the same N_ar1 simulations, one configuration under two designs as for PC_nominal; no other assignment uses these systems on these seeds"
       },
+      {
+        "min": 20000, "max": 20128,
+        "use": "family-C1 single deficits W_NAS_no_workspace, W_NAS_broadcast_only and W_IIM_feedforward (129 seed clusters each; HCv2-23)",
+        "resize": "CD-11 / HCv2-23: the any-event clusters are keyed by the seed alone, so the A and C1 single deficits on 20000-20044 form 45 clusters (P(SUPPORTED | development) 0.069); 129 clusters tolerate four event clusters (0.884); 20045-20128 added, no threshold changed",
+        "shared_with": "family A keeps its single deficits on 20000-20044; the lowest level of the C1 c_int sweep (c_int = 0) has the knobs of W_IIM_feedforward and also runs on 20000-20064"
+      },
       {"min": 20000, "max": 20009, "use": "sweeps, factorial, twin networks"},
+      {
+        "min": 20000, "max": 20064,
+        "use": "the c_int sweeps of families A and C1 (10 levels, 65 seeds per level; HCv2-14(f))",
+        "resize": "CD-11 / HCv2-14(f): with whole seed profiles resampled, P(SUPPORTED | development) is 0.16 at 10 seeds per level and 0.82 at 65 for the family-A cell; the C1 cell is held out (HO-4) and follows family A by symmetry; 20010-20064 added, no threshold changed",
+        "shared_with": "the g_b and K sweeps stay on 20000-20009; the lowest level (c_int = 0) has the knobs of W_IIM_feedforward, which the witness designs also run on these seeds (20000-20044 in family A, 20000-20128 in family C1)"
+      },
       {"min": 20000, "max": 20060, "use": "Hopf G = 0 extension; forward family-A null classes"},
       {"min": 20000, "max": 20149, "use": "Hopf G_nom extension; forward family-A on classes"},
       {

@@ -19,8 +19,9 @@ A_witnesses         the 16 family-A witnesses of the catalogue  20000-20019;   3
                     null witnesses on 26 more                    20044; the
                                                                  nulls to
                                                                  20045
-A_sweeps            g_b (10 levels 0-2), c_int (10 levels       20000-20009    332-335
-                    0-1.2), K {2, 3, 4, 6, 8, 12}
+A_sweeps            g_b (10 levels 0-2), c_int (10 levels       20000-20009;   332-335
+                    0-1.2), K {2, 3, 4, 6, 8, 12}               c_int to
+                                                                 20064
 A_factorial         the 2^5 mechanism cells                     20000-20009    336-339
 A_adversaries       adversarial_common_driver, reflex_arc,      20000-20019    340-351
                     random_label_self_other, scrambled_feedback,
@@ -29,8 +30,8 @@ A_heldout           ADV_NAS_staggered_tau10 and _sat (NAS       20000-20019    s
                     under R)                                                   980-984
 ==================  ==========================================  =============  ======
 
-Task counts (confirmatory): 16 x 20 + 7 x 25 + 2 x 26 = 547, 26 x 10 =
-260, 32 x 10 = 320, 7 x 20 = 140 and 2 x 20 = 40.
+Task counts (confirmatory): 16 x 20 + 7 x 25 + 2 x 26 = 547, 26 x 10 +
+10 x 55 = 810, 32 x 10 = 320, 7 x 20 = 140 and 2 x 20 = 40.
 
 Null witnesses. N_independent_noise and N_ar1 run on 46 confirmatory seeds
 (20000-20045): with the RAM-PE rows of the null-calibration generator left
@@ -38,6 +39,14 @@ out of HCv2-1 (UNDEFINED by construction), the two nulls hold the RAM-PE
 rows of HCv2-1, and 2 x 46 = 92 seed clusters is the smallest size whose
 pooled Clopper-Pearson bound (at 0.05 / 5) stays below 0.07 with one
 PRESENT event (CD-11: seeds are resized, never thresholds).
+
+The c_int sweep. Its 10 levels run on 65 confirmatory seeds each
+(20000-20064; g_b and K stay on 10) for HCv2-14(f), the Spearman trend
+of IIM-dir on c_int under R. The levels share their seeds (and the null
+seed derived from each), and the development values carry a seed effect,
+so the operating characteristic resamples whole seed profiles: on the
+development rates P(SUPPORTED) is 0.16 at 10 seeds per level and 0.82 at
+65 (CD-11).
 
 Held-out conditions. On the confirmatory witness tasks of seeds
 20000-20019, PC_nominal, W_NAS_no_workspace, N_modules_disconnected,
@@ -127,6 +136,7 @@ SEEDS = {
     "held_out_rescorings": {CONFIRMATORY: range(20000, 20020)},
     "misdeclared_access": {CONFIRMATORY: range(20000, 20045)},
     "sweeps": {CONFIRMATORY: range(20000, 20010), DEVELOPMENT: range(332, 336)},
+    "sweeps_extended": {CONFIRMATORY: range(20010, 20065)},
     "factorial": {CONFIRMATORY: range(20000, 20010), DEVELOPMENT: range(336, 340)},
     "adversaries": {CONFIRMATORY: range(20000, 20020), DEVELOPMENT: range(340, 352)},
     "held_out": {CONFIRMATORY: range(20000, 20020), DEVELOPMENT: S.SMOKE_SEEDS},
@@ -136,6 +146,8 @@ SEEDS = {
 # first switching the mechanism off), K at {2, 3, 4, 6, 8, 12}.
 SWEEP_KNOBS = ("g_b", "c_int", "K")
 K_LEVELS = (2, 3, 4, 6, 8, 12)
+# Knobs whose levels also run on the extended sweep seeds (module docstring).
+EXTENDED_SWEEP_KNOBS = ("c_int",)
 
 FORMS = {
     "witnesses": ("nas_secondary", "iim_bidirectional", "nas_tau_0.05", "nas_tau_0.2"),
@@ -186,6 +198,16 @@ def _seeds(table, split, seeds):
     out = tuple(int(s) for s in seeds)
     S.check_seeds(out, split)
     return out
+
+
+def sweep_seeds(seed_table, knob, split, seeds=None) -> tuple:
+    """The seeds of one sweep knob: the sweep seeds, and the extended sweep
+    seeds for a knob in :data:`EXTENDED_SWEEP_KNOBS` (``seed_table`` is a
+    family's ``SEEDS``). A seed restriction replaces both blocks."""
+    base = _seeds(seed_table["sweeps"], split, seeds)
+    if seeds is not None or knob not in EXTENDED_SWEEP_KNOBS:
+        return base
+    return base + seeds_of(seed_table["sweeps_extended"], split)
 
 
 def catalogue_systems(kind: str, family: str = CATALOGUE_FAMILY,
@@ -285,7 +307,8 @@ def witnesses(split: str, *, seeds: Optional[Sequence[int]] = None,
 def sweeps(split: str, *, seeds: Optional[Sequence[int]] = None,
            knobs: Optional[Sequence[str]] = None,
            forms: Optional[Sequence[str]] = None) -> List[TaskSpec]:
-    """``A_sweeps``: g_b, c_int and K dose levels, the other knobs nominal."""
+    """``A_sweeps``: g_b, c_int and K dose levels, the other knobs nominal;
+    the c_int levels also on the extended sweep seeds."""
     from impact_pipeline.bench.generators import NOMINAL_KNOBS
 
     forms = FORMS["default"] if forms is None else tuple(forms)
@@ -296,7 +319,7 @@ def sweeps(split: str, *, seeds: Optional[Sequence[int]] = None,
             system = f"sweep_{knob}_l{li:02d}"
             tags = {"sweep_knob": knob, "sweep_level": float(level),
                     "bits": list(kn.bits())}
-            for seed in _seeds(SEEDS["sweeps"], split, seeds):
+            for seed in sweep_seeds(SEEDS, knob, split, seeds):
                 out.append(agent_task("A_sweeps", FAMILY, CATALOGUE_FAMILY, system,
                                       seed, kn.to_dict(),
                                       make_scorings(PROTOCOLS, PRINCIPLES, forms),
@@ -419,7 +442,7 @@ ADEMP = {
                 "the mechanism doses",
         "data": "family-A agents with g_b (10 levels 0-2, K = 6), c_int (10 "
                 "levels 0-1.2) or K in {2, 3, 4, 6, 8, 12} varied and the other "
-                "knobs nominal; 10 seeds; R and H",
+                "knobs nominal; 10 seeds (c_int 65, for HCv2-14(f)); R and H",
         "estimands": "c and status per principle and dose level",
         "methods": (JOINT_BENCH_METHODS + "; reported forms: NAS secondary, IIM "
                     "bidirectional"),
@@ -476,8 +499,9 @@ DESIGNS = (
            witnesses, {CONFIRMATORY: 16 * 20 + 7 * 25 + 2 * 26,
                        DEVELOPMENT: 16 * 12},
            ademp=ADEMP["A_witnesses"]),
-    Design("A_sweeps", FAMILY, "family-A dose sweeps of g_b, c_int and K",
-           sweeps, {CONFIRMATORY: 26 * 10, DEVELOPMENT: 26 * 4},
+    Design("A_sweeps", FAMILY,
+           "family-A dose sweeps of g_b, c_int and K (c_int on 65 seeds)",
+           sweeps, {CONFIRMATORY: 26 * 10 + 10 * 55, DEVELOPMENT: 26 * 4},
            ademp=ADEMP["A_sweeps"]),
     Design("A_factorial", FAMILY, "family-A 2^5 factorial", factorial,
            {CONFIRMATORY: 32 * 10, DEVELOPMENT: 32 * 4}, ademp=ADEMP["A_factorial"]),
@@ -501,6 +525,7 @@ __all__ = [
     "CATALOGUE_FAMILY",
     "DESIGNS",
     "EXPECTED_HELD_OUT_RESCORINGS",
+    "EXTENDED_SWEEP_KNOBS",
     "EXTENDED_SYSTEMS",
     "FAMILY",
     "FORMS",
@@ -524,6 +549,7 @@ __all__ = [
     "first",
     "held_out",
     "sweep_levels",
+    "sweep_seeds",
     "sweeps",
     "witnesses",
 ]

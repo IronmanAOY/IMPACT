@@ -27,12 +27,14 @@ P5 = ("RAM", "PDI", "NAS", "IIM", "SRPI")
 # Task counts of the design document (3.2 and 3.7), per design and split.
 DOCUMENT_COUNTS = {
     CONF: {
-        # the two null witnesses on 46 seeds (the HCv2-1 resize) and the
-        # family-A anchor replication block on 40 (CD-11)
-        "A_witnesses": 16 * 20 + 7 * 25 + 2 * 26, "A_sweeps": 260, "A_factorial": 320,
-        "A_adversaries": 140, "A_heldout": 40, "A_twins": 300 + 10,
-        "A_anchors": 7 * 40, "RAM160": 440, "RAM160_twins": 210,
-        "C1_witnesses": 13 * 20 + 4 * 25, "C1_sweeps": 200, "C1_factorial": 320,
+        # the two null witnesses on 46 seeds (the HCv2-1 resize), the family-A
+        # anchor replication block on 40, the three C1 single deficits on 129
+        # (HCv2-23) and the c_int sweeps of A and C1 on 65 (HCv2-14(f); CD-11)
+        "A_witnesses": 16 * 20 + 7 * 25 + 2 * 26, "A_sweeps": 260 + 10 * 55,
+        "A_factorial": 320, "A_adversaries": 140, "A_heldout": 40,
+        "A_twins": 300 + 10, "A_anchors": 7 * 40, "RAM160": 440, "RAM160_twins": 210,
+        "C1_witnesses": 13 * 20 + 4 * 25 + 3 * 84, "C1_sweeps": 200 + 10 * 55,
+        "C1_factorial": 320,
         "C1_twins": 180, "C1_anchors": 80, "RAM160_anchors": 2 * 20,
         # the forward arms (3.2; the BOLD arm's 271 before curtailment) and
         # the forward views' anchor replication (3 arms x 20)
@@ -295,6 +297,50 @@ def test_the_null_witnesses_are_sized_for_one_tolerated_event(repo_root):
     assert HE.cp_upper(1, n, level) < 0.07 <= HE.cp_upper(1, n - 1, level)
 
 
+def test_the_c1_single_deficits_are_sized_for_verdict_specificity(plans, repo_root):
+    """HCv2-23 (CD-11 resize): the any-event clusters are keyed by the seed
+    alone, so the A and C1 single deficits on shared seeds form one cluster;
+    the three C1 single deficits of the pool run on 129 seeds, the smallest
+    count whose pooled Clopper-Pearson bound stays below 0.07 with four event
+    clusters (seeds resized, the bound unchanged). Family A keeps 45."""
+    import json
+
+    from impact_pipeline.v2 import hypothesis_engine as HE
+    from impact_pipeline.v2 import registry_v3 as RV
+
+    spec = json.loads((repo_root / "protocols/v2/hypotheses_v2.json").read_text())
+    (part,) = [p for h in spec["hypotheses"] if h["id"] == "HCv2-23"
+               for p in h["parts"] if p["rule"] == "any_event_clusters"]
+    assert part["data"]["cluster"] == ["seed"]
+    bound, alpha = part["params"]["bound"], part["params"]["alpha"]
+    deficits = set(spec["vocabulary"]["systems.single_deficits"])
+    # the pool's C1 members: the single deficits whose target is scored on C1
+    assert set(FC.SPECIFICITY_SYSTEMS) == {
+        sid for sid in A2.system_ids(kind="witness", family="C")
+        if sid in deficits
+        and A2.get_entry(sid).get("target") not in FC.NOT_APPLICABLE}
+    assert set(FC.SPECIFICITY_SYSTEMS) < set(FC.EXTENDED_SYSTEMS)
+    by_sys = {}
+    for t in plans[CONF]["C1_witnesses"]:
+        by_sys.setdefault(t.system, set()).add(t.seed)
+    for sid, seeds in by_sys.items():
+        n = (129 if sid in FC.SPECIFICITY_SYSTEMS else 45 if sid in FC.EXTENDED_SYSTEMS
+             else 20)
+        assert seeds == set(range(20000, 20000 + n)), sid
+    a_seeds = {t.seed for t in plans[CONF]["A_witnesses"] if t.system in deficits}
+    assert a_seeds == set(range(20000, 20045))
+    clusters = a_seeds | {s for sid in FC.SPECIFICITY_SYSTEMS for s in by_sys[sid]}
+    n = len(clusters)
+    assert n == 129 == RV.min_runs_for_demonstration(bound, alpha, events=4)
+    assert HE.cp_upper(4, n, alpha) < bound <= HE.cp_upper(4, n - 1, alpha)
+    # at the size before the resize the two families shared 45 clusters
+    assert HE.cp_upper(3, 45, alpha) > bound
+    # the development plan and a seed restriction are unchanged
+    assert {t.seed for t in plans[DEV]["C1_witnesses"]} == set(range(372, 384))
+    only = FC.witnesses(CONF, seeds=[20100], systems=["W_IIM_feedforward"])
+    assert [(t.system, t.seed) for t in only] == [("W_IIM_feedforward", 20100)]
+
+
 @pytest.mark.parametrize("family", ["A", "C"])
 def test_the_patchwork_iim_grain_is_the_iim_modules_three_subgroups(family):
     """The patchwork's declared IIM grain in the principle-bearer mode, the
@@ -390,6 +436,31 @@ def test_sweeps_factorial_and_adversaries(plans):
     for t in sw:
         if t.tags["sweep_knob"] == "g_b":
             assert t.params["knobs"]["K"] == 6
+    # HCv2-14(f) (CD-11 resize): the c_int levels on 65 seeds, the other
+    # knobs on 10; the development sweeps keep one block
+    seeds = {}
+    for t in sw:
+        seeds.setdefault((t.tags["sweep_knob"], t.system), set()).add(t.seed)
+    assert len(seeds) == 26
+    for (knob, system), got in seeds.items():
+        n = 65 if knob in FA.EXTENDED_SWEEP_KNOBS else 10
+        assert got == set(range(20000, 20000 + n)), (knob, system)
+    assert FA.EXTENDED_SWEEP_KNOBS == ("c_int",)
+    assert {t.seed for t in plans[DEV]["A_sweeps"]} == set(range(332, 336))
+    only = FA.sweeps(CONF, seeds=[20050], knobs=["c_int"])
+    assert len(only) == 10 and {t.seed for t in only} == {20050}
+    assert FA.sweep_seeds(FA.SEEDS, "g_b", CONF) == tuple(range(20000, 20010))
+    assert FA.sweep_seeds(FA.SEEDS, "c_int", DEV) == tuple(range(332, 336))
+    # the C1 c_int sweep follows family A (its HCv2-14(f) cell is held out)
+    c1 = {}
+    for t in plans[CONF]["C1_sweeps"]:
+        c1.setdefault((t.tags["sweep_knob"], t.system), set()).add(t.seed)
+    assert len(c1) == 20
+    for (knob, system), got in c1.items():
+        n = 65 if knob in FA.EXTENDED_SWEEP_KNOBS else 10
+        assert got == set(range(20000, 20000 + n)), (knob, system)
+    assert {t.seed for t in plans[DEV]["C1_sweeps"]} == set(range(372, 376))
+    assert len(FC.sweeps(CONF, seeds=[20050], knobs=["c_int"])) == 10
     fac = plans[CONF]["A_factorial"]
     assert len({t.system for t in fac}) == 32
     adv = plans[CONF]["A_adversaries"]

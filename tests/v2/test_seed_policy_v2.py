@@ -153,10 +153,27 @@ def test_seed_map_matches_the_design(seed_map):
         {"design": "A_anchors", "max": 20939,
          "decided": "CD-11: A-H IIM replication power 0.565 at 20 seeds"}]
     for key in [(20000, 20039), (20000, 20019), (20000, 20044), (20000, 20045),
-                (20000, 20009), (20000, 20060), (20000, 20149)]:
+                (20000, 20128), (20000, 20009), (20000, 20064), (20000, 20060),
+                (20000, 20149)]:
         assert key in conf
     # the HCv2-1 resize: the two family-A null witnesses on 46 seeds
     assert "N_independent_noise and N_ar1" in conf[(20000, 20045)]["use"]
+    # the HCv2-23 and HCv2-14(f) resizes: the three C1 single deficits on 129
+    # seeds and the c_int sweeps of A and C1 on 65
+    assert "HCv2-23" in conf[(20000, 20128)]["use"]
+    assert "c_int sweeps of families A and C1" in conf[(20000, 20064)]["use"]
+    for key in [(20000, 20045), (20000, 20128), (20000, 20064)]:
+        assert conf[key]["resize"].startswith("CD-11")
+        assert "no threshold changed" in conf[key]["resize"]
+    # the c_int = 0 sweep level has the knobs of W_IIM_feedforward, which the
+    # witness designs run on the same seeds; both blocks say so
+    from impact_pipeline.bench import adversarial_v2 as A2
+    from impact_pipeline.bench.designs_v2 import family_a as FA
+
+    assert FA.sweep_levels("c_int")[0] == 0.0
+    assert A2.get_entry("W_IIM_feedforward")["knobs"] == {"c_int": 0.0}
+    for key in [(20000, 20128), (20000, 20064)]:
+        assert "knobs of W_IIM_feedforward" in conf[key]["shared_with"]
     twins = {(e["min"], e["max"]): e for e in seed_map["development"]["assignments"]}
     assert twins[(820, 824)]["use"].endswith("r = 0..6 (RAM-only r = 0..7)")
     assert seed_map["streams"]["keys"] == S.STREAM_KEYS

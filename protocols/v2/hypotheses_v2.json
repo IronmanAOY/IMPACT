@@ -278,7 +278,7 @@
    ]
   },
   "witnesses_20": {
-   "use": "the 20-seed witness, adversary and held-out set (parts whose data the design states as 20 seeds or seeds 20000-20019); the 45-seed extension of PC_nominal and the single deficits and the 46-seed extension of the two family-A null witnesses are outside it; development: the whole development range (the dry run has no 45-seed extension)",
+   "use": "the 20-seed witness, adversary and held-out set (parts whose data the design states as 20 seeds or seeds 20000-20019); the 45-seed extension of PC_nominal and the single deficits, the 129-seed extension of the three C1 single deficits of HCv2-23 and the 46-seed extension of the two family-A null witnesses are outside it; development: the whole development range (the dry run has no 45-seed extension)",
    "confirmatory": [
     20000,
     20019
@@ -19907,7 +19907,7 @@
     "C"
    ],
    "successor_of": "HC3",
-   "expectation": "Development (CD-6; family A, reference block 900-939 and witness seeds 320-331 and 340-351; block bootstrap SE at the decided se_df 9, df 12 in brackets). Under R: median paired Delta c(PC - W_IIM_feedforward) 0.90 over 52 pairs, 49 >= 0.5, Hodges-Lehmann one-sided 95 % lower bound 0.91; PC_nominal PRESENT 58/64 = 0.906 (60/64), so (d) is decisive by one row; W_IIM_feedforward PRESENT 0/52 and ABSENT 12/52 (13/52), so (c) stays NOT_TESTABLE_BY_DESIGN (pi0 0.23); O_inert PRESENT 0/12; Spearman rho of c with c_int 0.09 (40 runs, one-sided p 0.28; an inverted U, median c 0.97 at c_int 0.53 and 0.06 at 1.2), so (f) is expected FALSIFIED. Under H: median Delta c -0.61 over 47 pairs, consistent with (e); PRESENT PC_nominal 24/64, W_IIM_feedforward 29/52, O_inert 11/12 (HCv2-14(H-present)).",
+   "expectation": "Development (CD-6; family A, reference block 900-939 and witness seeds 320-331 and 340-351; block bootstrap SE at the decided se_df 9, df 12 in brackets). Under R: median paired Delta c(PC - W_IIM_feedforward) 0.90 over 52 pairs, 49 >= 0.5, Hodges-Lehmann one-sided 95 % lower bound 0.91; PC_nominal PRESENT 58/64 = 0.906 (60/64), so (d) is decisive by one row; W_IIM_feedforward PRESENT 0/52 and ABSENT 12/52 (13/52), so (c) stays NOT_TESTABLE_BY_DESIGN (pi0 0.23); O_inert PRESENT 0/12; Spearman rho of c with c_int 0.09 (40 runs, one-sided p 0.28; an inverted U, median c 0.97 at c_int 0.53 and 0.06 at 1.2), so (f) would be expected FALSIFIED at 10 seeds per level; on the resized c_int sweep (65 seeds per level, CD-11) P(SUPPORTED | development) is 0.82, see (f). Under H: median Delta c -0.61 over 47 pairs, consistent with (e); PRESENT PC_nominal 24/64, W_IIM_feedforward 29/52, O_inert 11/12 (HCv2-14(H-present)).",
    "notes": "Family A parts are R; family C1 parts are held out (HO-4). C1 disclosure: the C1 predictions were committed on 2026-10-05 (ac13c2d; file last changed 2026-10-06, d3bcb09). The C1 reference blocks, which HO-4 permits, were computed on 2026-10-07: median Delta c 0.76 under C1-R (33/40 >= 0.5) and 0.82 under C1-H (32/40), contrary to the frozen limit prediction (e); PC PRESENT 0.40 (C1-R) and 0.25 (C1-H), so (d) on C1 is NOT_TESTABLE_BY_DESIGN and replaced by (a). The C1 predictions and thresholds are unchanged, and no testability or seed-count decision on these parts used these values.",
    "parts": [
     {
@@ -20133,6 +20133,7 @@
       ]
      },
      "label": "R",
+     "notes": "Seed count (CD-11; seeds resized, never thresholds). The family-A c_int sweep runs its 10 levels on 65 seeds each (20000-20064; 10 before); the g_b and K sweeps stay on 10. The levels share their seeds and the null seeds derived from them, and the development values carry a seed effect, so the operating characteristic resamples whole seed profiles: P(SUPPORTED | development) is 0.16 at 10 seeds per level and 0.82 at 65 (0.64 at 45, 0.85 at 70), and P(FALSIFIED | the development effect) is 0.18. The development effect rests on 4 seeds per level and rises then falls with c_int (rho 0.09 over 40 runs). The C1 cell is held out (HO-4), so its factor cannot be computed and the part's P(SUPPORTED) is at most this value; the C1 c_int sweep runs on the same 65 seeds per level, by symmetry and without any C1 IIM value.",
      "requires": {
       "usable": [
        "c_int"
@@ -21744,6 +21745,7 @@
    "successor_of": "HC5",
    "verdict_level_absent": true,
    "statement": "FALSIFIED if some class's CP lower bound at 0.05/m exceeds 0.07; SUPPORTED if the seed-cluster 'any event' pooled rate (a seed is an event if any of its deficit runs is MPC_CONSISTENT; clusters span families) has CP upper bound (0.05) < 0.07; else INDETERMINATE.",
+   "notes": "Seed counts (CD-11; seeds resized, never thresholds). The any-event clusters are keyed by the seed alone and span families, so the A and C1 single deficits on the shared seeds 20000-20044 form 45 clusters, not 90. On the development rates (family A: 3 any-event clusters in 52; family C1: NAS PRESENT in 0 of 72 rows) P(SUPPORTED | development) is 0.069 at 45 clusters. The three C1 single deficits of the pool, W_NAS_no_workspace, W_NAS_broadcast_only and W_IIM_feedforward, therefore run on 129 seeds (20000-20128) and family A keeps 45: 129 is the smallest count whose pooled CP upper bound at 0.05 stays below 0.07 with four event clusters, and P(SUPPORTED | development) is 0.884 (at least 0.88 at every count up to 400; P(FALSIFIED) about 0). The resize works only through C1 clusters without events, and no C1 verdict could be MPC_CONSISTENT in development, where C1 IIM is held out (HO-4); with a Jeffreys predictive on the family-A rate P(SUPPORTED) is 0.78, on both rates 0.39. The other parts that read these C1 systems (HCv2-5, -7, -14 and -22) read them on all their seeds, except that a part pairing them with PC_nominal keeps its 45 pairs; HCv2-4 and HCv2-8(d) keep their named seed blocks.",
    "parts": [
     {
      "id": "HCv2-23",

@@ -12,17 +12,40 @@ record says so.
 design          systems                                          confirm.     dev
 ==============  ===============================================  ===========  =======
 C1_witnesses    the 13 family-C witnesses of the catalogue (the  20000-20019  372-383
-                duplicated family-A nulls replaced by            (4 to 20044)
-                N_uncoupled, plus N_modules_disconnected);
-                PC_nominal, W_NAS_no_workspace,
+                duplicated family-A nulls replaced by            (4 to 20044,
+                N_uncoupled, plus N_modules_disconnected);       3 of them
+                PC_nominal, W_NAS_no_workspace,                  to 20128)
                 W_NAS_broadcast_only and W_IIM_feedforward on 25
-                more seeds
+                more seeds, the three single deficits on 84
+                more
 C1_sweeps       g_b and c_int (10 levels each)                   20000-20009  372-375
+                                                                 (c_int to
+                                                                 20064)
 C1_factorial    the 2^5 cells                                    20000-20009  376-379
 ==============  ===============================================  ===========  =======
 
-Task counts (confirmatory): 13 x 20 + 4 x 25 = 360 (the design table says
-"about 14 x 20"; the catalogue defines 13 family-C witnesses), 200 and 320.
+Task counts (confirmatory): 13 x 20 + 4 x 25 + 3 x 84 = 612 (the design
+table says "about 14 x 20"; the catalogue defines 13 family-C witnesses),
+20 x 10 + 10 x 55 = 750 and 320.
+
+Verdict specificity. HCv2-23 pools the MPC_CONSISTENT verdicts of the A
+and C1 single deficits whose target is in N_anch into seed clusters keyed
+by the seed alone, so on shared seeds the two families form one cluster.
+With both families on 20000-20044 that is 45 clusters, and the family-A
+event rate of development (3 any-event clusters in 52) leaves the pooled
+bound above 0.07. The three C1 single deficits of the pool,
+W_NAS_no_workspace, W_NAS_broadcast_only and W_IIM_feedforward, therefore
+run on 129 confirmatory seeds (20000-20128), the smallest count whose
+pooled Clopper-Pearson bound (at 0.05) stays below 0.07 with four event
+clusters; family A keeps 45. On the development rates P(SUPPORTED) is
+0.069 at 45 clusters and 0.884 at 129 (CD-11: seeds are resized, never
+thresholds).
+
+The c_int sweep. As in family A, its 10 levels run on 65 confirmatory
+seeds each (20000-20064; g_b stays on 10). HCv2-14(f) is decided per
+family and is SUPPORTED only if both cells are; the C1 cell is held out
+(HO-4), so its operating characteristic cannot be computed, and the size
+follows family A by symmetry, chosen without any C1 IIM value (CD-11).
 
 IIM v5 on C1 is held out until the freeze: on the development split the
 C1 scorings leave IIM out (the reference-block anchors of the ``anchors``
@@ -49,6 +72,10 @@ CATALOGUE_FAMILY = "C"
 PROTOCOLS = {"R": "C1-R", "H": "C1-H"}
 EXTENDED_SYSTEMS = ("PC_nominal", "W_NAS_no_workspace", "W_NAS_broadcast_only",
                     "W_IIM_feedforward")
+# The C1 single deficits of HCv2-23: 129 seed clusters each (module
+# docstring).
+SPECIFICITY_SYSTEMS = ("W_NAS_no_workspace", "W_NAS_broadcast_only",
+                       "W_IIM_feedforward")
 # Principles declared not applicable on the C1 carrier recording.
 NOT_APPLICABLE = ("RAM", "PDI", "SRPI")
 # IIM on C1 is held out: no output before the freeze outside the anchors.
@@ -58,7 +85,9 @@ SWEEP_KNOBS = ("g_b", "c_int")
 SEEDS = {
     "witnesses": {CONFIRMATORY: range(20000, 20020), DEVELOPMENT: range(372, 384)},
     "witnesses_extended": {CONFIRMATORY: range(20020, 20045)},
+    "specificity_extended": {CONFIRMATORY: range(20045, 20129)},
     "sweeps": {CONFIRMATORY: range(20000, 20010), DEVELOPMENT: range(372, 376)},
+    "sweeps_extended": {CONFIRMATORY: range(20010, 20065)},
     "factorial": {CONFIRMATORY: range(20000, 20010), DEVELOPMENT: range(376, 380)},
 }
 FORMS = FA.FORMS
@@ -80,16 +109,21 @@ def _scorings(split, forms, modes=("system",)):
 def witnesses(split: str, *, seeds: Optional[Sequence[int]] = None,
               systems: Optional[Sequence[str]] = None,
               forms: Optional[Sequence[str]] = None) -> List[TaskSpec]:
-    """``C1_witnesses``."""
+    """``C1_witnesses``: every C1 witness on the witness seeds, PC_nominal
+    and the three single deficits on 25 more confirmatory seeds, and the
+    three single deficits on 84 more (HCv2-23)."""
     ids = FA.first(FA._select(FA.catalogue_systems("witness", CATALOGUE_FAMILY),
                               systems, "witnesses"), EXTENDED_SYSTEMS)
     forms = FORMS["witnesses"] if forms is None else tuple(forms)
     base = FA._seeds(SEEDS["witnesses"], split, seeds)
     ext = () if seeds is not None else FA.seeds_of(SEEDS["witnesses_extended"], split)
+    spec_ext = (() if seeds is not None
+                else FA.seeds_of(SEEDS["specificity_extended"], split))
     out = []
     for sid in ids:
         modes = FA.bearer_modes(sid)
-        for seed in base + (ext if sid in EXTENDED_SYSTEMS else ()):
+        for seed in (base + (ext if sid in EXTENDED_SYSTEMS else ())
+                     + (spec_ext if sid in SPECIFICITY_SYSTEMS else ())):
             out.append(FA.catalogue_task("C1_witnesses", FAMILY, CATALOGUE_FAMILY, sid,
                                          seed, _scorings(split, forms, modes),
                                          module=MODULE))
@@ -99,7 +133,8 @@ def witnesses(split: str, *, seeds: Optional[Sequence[int]] = None,
 def sweeps(split: str, *, seeds: Optional[Sequence[int]] = None,
            knobs: Optional[Sequence[str]] = None,
            forms: Optional[Sequence[str]] = None) -> List[TaskSpec]:
-    """``C1_sweeps``: g_b and c_int at the v1 levels."""
+    """``C1_sweeps``: g_b and c_int at the v1 levels, the c_int levels also
+    on the extended sweep seeds (as in family A)."""
     from impact_pipeline.bench.generators import NOMINAL_KNOBS
 
     forms = FORMS["default"] if forms is None else tuple(forms)
@@ -109,7 +144,7 @@ def sweeps(split: str, *, seeds: Optional[Sequence[int]] = None,
             kn = NOMINAL_KNOBS.replace(**{knob: level})
             tags = {"sweep_knob": knob, "sweep_level": float(level),
                     "bits": list(kn.bits())}
-            for seed in FA._seeds(SEEDS["sweeps"], split, seeds):
+            for seed in FA.sweep_seeds(SEEDS, knob, split, seeds):
                 out.append(FA.agent_task("C1_sweeps", FAMILY, CATALOGUE_FAMILY,
                                          f"sweep_{knob}_l{li:02d}", seed,
                                          kn.to_dict(), _scorings(split, forms),
@@ -151,8 +186,9 @@ ADEMP = {
                 "applicable there",
         "data": "family C1 (the v1 family C, Stuart-Landau units recorded as "
                 "Re z at 20 Hz): the 13 catalogue witnesses on 20 seeds, "
-                "PC_nominal, W_NAS_no_workspace, W_NAS_broadcast_only and "
-                "W_IIM_feedforward on 45; R and H from one simulation",
+                "PC_nominal on 45 and W_NAS_no_workspace, "
+                "W_NAS_broadcast_only and W_IIM_feedforward on 129 (HCv2-23); "
+                "R and H from one simulation",
         "estimands": "per system, protocol and principle the construct value c, "
                      "the status and its reason; per system and protocol the "
                      "verdict; paired contrasts with PC_nominal",
@@ -167,7 +203,7 @@ ADEMP = {
     "C1_sweeps": {
         "aims": "dose-response of NAS and IIM on family C1",
         "data": "family-C1 agents with g_b or c_int at 10 levels and the other "
-                "knobs nominal; 10 seeds; R and H",
+                "knobs nominal; 10 seeds (c_int 65, for HCv2-14(f)); R and H",
         "estimands": "c and status of NAS and IIM per dose level",
         "methods": (C1_METHODS + "; reported forms: NAS secondary, IIM "
                     "bidirectional"),
@@ -188,11 +224,15 @@ ADEMP = {
 DESIGNS = (
     Design("C1_witnesses", FAMILY,
            "family-C1 witnesses under R and H (45 seed clusters for PC_nominal, "
-           "W_NAS_no_workspace, W_NAS_broadcast_only and W_IIM_feedforward)",
-           witnesses, {CONFIRMATORY: 13 * 20 + 4 * 25, DEVELOPMENT: 13 * 12},
+           "129 for W_NAS_no_workspace, W_NAS_broadcast_only and "
+           "W_IIM_feedforward)",
+           witnesses, {CONFIRMATORY: 13 * 20 + 4 * 25 + 3 * 84,
+                       DEVELOPMENT: 13 * 12},
            ademp=ADEMP["C1_witnesses"]),
-    Design("C1_sweeps", FAMILY, "family-C1 dose sweeps of g_b and c_int", sweeps,
-           {CONFIRMATORY: 20 * 10, DEVELOPMENT: 20 * 4}, ademp=ADEMP["C1_sweeps"]),
+    Design("C1_sweeps", FAMILY,
+           "family-C1 dose sweeps of g_b and c_int (c_int on 65 seeds)", sweeps,
+           {CONFIRMATORY: 20 * 10 + 10 * 55, DEVELOPMENT: 20 * 4},
+           ademp=ADEMP["C1_sweeps"]),
     Design("C1_factorial", FAMILY, "family-C1 2^5 factorial", factorial,
            {CONFIRMATORY: 32 * 10, DEVELOPMENT: 32 * 4},
            ademp=ADEMP["C1_factorial"]),
@@ -209,6 +249,7 @@ __all__ = [
     "NOT_APPLICABLE",
     "PROTOCOLS",
     "SEEDS",
+    "SPECIFICITY_SYSTEMS",
     "factorial",
     "principles",
     "sweeps",

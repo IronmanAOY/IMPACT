@@ -4530,6 +4530,37 @@ def test_the_anchor_hypotheses_follow_the_development_statuses(spec):
     assert "14/20" not in p22["notes"]
 
 
+def test_the_resized_parts_state_their_seed_counts_and_keep_their_rules(spec):
+    # CD-11: seeds resized, never thresholds; each resize states its seed
+    # count and P(SUPPORTED | development) before and after
+    h23 = next(h for h in spec["hypotheses"] if h["id"] == "HCv2-23")
+    p23 = spec_part(spec, "HCv2-23")
+    assert p23["params"] == {"bound": 0.07, "alpha": 0.05}
+    assert p23["data"]["cluster"] == ["seed"]
+    for s in ("129 seeds (20000-20128)", "family A keeps 45", "0.069", "0.884",
+              "HO-4"):
+        assert s in h23["notes"], s
+    # the other readers of the resized C1 systems; HCv2-1 reads the nulls only
+    assert "(HCv2-5, -7, -14 and -22)" in h23["notes"]
+    pool = ("W_NAS_no_workspace", "W_NAS_broadcast_only", "W_IIM_feedforward",
+            "@systems.single_deficits")
+    h1 = json.dumps(next(h for h in spec["hypotheses"] if h["id"] == "HCv2-1"))
+    assert not any(s in h1 for s in pool)
+    for hid in ("HCv2-4", "HCv2-8"):
+        h = json.dumps(next(h for h in spec["hypotheses"] if h["id"] == hid))
+        assert "W_NAS_no_workspace" in h and "seed_block" in h, hid
+    p14f = spec_part(spec, "HCv2-14(f)")
+    assert p14f["params"] == {"alpha": 0.05, "require_positive_slope": False}
+    for s in ("65 seeds each (20000-20064", "0.16 at 10 seeds", "0.82 at 65",
+              "HO-4", "the C1 c_int sweep runs on the same 65 seeds"):
+        assert s in p14f["notes"], s
+    h14 = next(h for h in spec["hypotheses"] if h["id"] == "HCv2-14")
+    assert "65 seeds per level" in h14["expectation"]
+    use = spec["seed_blocks"]["witnesses_20"]["use"]
+    assert "129-seed extension of the three C1 single deficits" in use
+    assert spec["seed_blocks"]["witnesses_20"]["confirmatory"] == [20000, 20019]
+
+
 def test_the_cell_predictions_of_hcv2_22_iii_split_by_declaration(world, spec):
     # with the decided A-H anchors (NAS specific under H, CD-7) the K -> NAS
     # cell exists under both declarations
