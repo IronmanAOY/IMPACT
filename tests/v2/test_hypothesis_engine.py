@@ -3765,6 +3765,60 @@ def test_evaluator_script_refuses_unfrozen_or_cross_split_inputs(world, tmp_path
         BH.run(tmp_path / "m3", records=[rec_file], audit=audit, check_code=False)
 
 
+def test_the_evaluator_reads_the_freeze_tag_the_runners_write(world):
+    import scripts.bench_hypotheses_v2 as BH
+    from scripts.v2 import iim_validation_v2 as V
+
+    tag = "mpcbench-freeze-v2"
+    code = {"git_sha": "a" * 40, "git_dirty": False, "trees": {},
+            "freeze_tag": tag, "freeze_tag_commit": "b" * 40}
+    # the v2 runner's record provenance (flat) and the family-B record
+    # provenance (the same fields, built from the run's code identity)
+    flat = {"runner_version": "x", "confirmatory": True, "label": None, **code}
+    fam_b = V.record_provenance({"code": code}, "confirmatory")
+    assert fam_b["freeze_tag"] == tag and fam_b["confirmatory"] is True
+    for prov in (flat, fam_b, {"code": {"freeze_tag": tag}}):
+        recs = [
+            {**r, "seed": 20000 + i, "split": "confirmatory", "provenance": prov}
+            for i, r in enumerate(world.records[:3])
+        ]
+        assert BH.record_freeze_tag(recs[0]) == tag
+        assert BH.check_records(recs, development=False, freeze_tag=tag) == (
+            "confirmatory"
+        )
+    untagged = [
+        {**r, "seed": 20000 + i, "split": "confirmatory",
+         "provenance": {**flat, "freeze_tag": None}}
+        for i, r in enumerate(world.records[:3])
+    ]
+    with pytest.raises(BH.EvaluationRefused, match="freeze tag"):
+        BH.check_records(untagged, development=False, freeze_tag=tag)
+
+
+def test_the_evaluator_refuses_only_blocking_audit_failures(world):
+    import scripts.bench_hypotheses_v2 as BH
+    from scripts.v2 import integrity_audit as IA
+
+    recs = world.records[:5]
+    rep = {
+        "ok": False,
+        "checks": [{"id": "IA-2", "status": "FAIL",
+                    "failure_kinds": {"task_error": 1}}],
+        "blocking_failures": [],
+        "excluded_task_ids": [recs[0]["task_id"]],
+        "not_run": [],
+        "records_sha256": IA.records_digest(recs),
+    }
+    BH.check_audit(rep, recs)  # record-level failures: excluded, reported
+    blocking = {**rep, "blocking_failures": [{"id": "IA-7", "kind": "missing",
+                                              "n": 2}]}
+    with pytest.raises(BH.EvaluationRefused, match="blocking"):
+        BH.check_audit(blocking, recs)
+    legacy = {k: v for k, v in rep.items() if k != "blocking_failures"}
+    with pytest.raises(BH.EvaluationRefused, match="IA-2"):
+        BH.check_audit(legacy, recs)
+
+
 def test_operating_characteristics_of_a_part_with_several_cells(oc):
     one = oc.oc_three_zone(20, 0.9, m=3)
     part = oc.part_oc("three_zone", {"x": 0.8}, 20, 0.9, n_cells=[20, 20, 20])

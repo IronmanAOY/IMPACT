@@ -21,13 +21,20 @@ family>[-values]``), the one convention of the evaluator and the integrity
 audit (``hypothesis_engine.protocol_key``).
 
 Outputs (``--out``): ``iim_validation_v2.jsonl`` (task records, appended;
-the run resumes and skips completed task ids), ``iim_validation_v2_components.csv``
+the run resumes: completed task ids are skipped, failed tasks run again, and
+an interrupted last line, superseded records and the records of failed tasks
+are dropped from the file before the run continues),
+``iim_validation_v2_plan.json`` (the task ids and seeds of the run's plan,
+written before anything runs; the integrity audit reads it with ``--plan``),
+``iim_validation_v2_components.csv``
 (one row per scoring), ``iim_validation_v2_summary.csv`` (descriptive rates
 and medians per cell, scoring and cut mode; the decisions are the
 evaluator's), ``iim_validation_v2_exact.csv`` (the exact targets, anchors and
 their statuses on the exact path, and the strict monotonicity of the
 HCv2-12 (a) sweeps) and ``iim_validation_v2.json`` (design, plan, protocol
-hashes and provenance).
+hashes and provenance). Every task record carries the run's code identity in
+its ``provenance`` (git SHA, trees, split and, for a confirmatory run, the
+freeze tag and its commit), as the v2 runner's records do.
 
 Seed policy: a development run uses the development mirrors (seeds 400-439)
 and refuses any other seed; a confirmatory run (``--split confirmatory``)
@@ -78,6 +85,8 @@ COMPONENTS_CSV = "iim_validation_v2_components.csv"
 SUMMARY_CSV = "iim_validation_v2_summary.csv"
 EXACT_CSV = "iim_validation_v2_exact.csv"
 SUMMARY_JSON = "iim_validation_v2.json"
+PLAN_JSON = "iim_validation_v2_plan.json"
+PLAN_SCHEMA = "mpc-bench-family-b-plan/1"
 OBSERVATIONS = {"source": "direct", "sensor": "sensor_mixing",
                 "source_estimate": "source_estimate", "bold": "hemodynamic"}
 
@@ -180,9 +189,11 @@ def _error_component(task, scoring, cut, stage, exc, timing) -> REC.ComponentRec
         seconds=timing.get("seconds"), load_average=timing.get("load_average"))
 
 
-def score_task(task: FB.Task, params_override=None) -> REC.TaskRecord:
+def score_task(task: FB.Task, params_override=None,
+               provenance=None) -> REC.TaskRecord:
     """Simulate a task and score it under every declaration of its cell in
-    both cut modes (one scoring each)."""
+    both cut modes (one scoring each); ``provenance`` is the run's record
+    provenance (:func:`record_provenance`)."""
     cell = task.cell
     t_all, cpu_all = time.perf_counter(), time.process_time()
     with PV.timed() as t_sim:
@@ -239,10 +250,11 @@ def score_task(task: FB.Task, params_override=None) -> REC.TaskRecord:
                 "load_average": t_sim["load_average"],
                 # the task's wall and CPU time (one BLAS thread): its cost
                 "total_s": round(time.perf_counter() - t_all, 4),
-                "cpu_s": round(time.process_time() - cpu_all, 4)})
+                "cpu_s": round(time.process_time() - cpu_all, 4)},
+        provenance=dict(provenance or {}))
 
 
-def run_task(task: FB.Task, params_override=None) -> REC.TaskRecord:
+def run_task(task: FB.Task, params_override=None, provenance=None) -> REC.TaskRecord:
     """:func:`score_task` with estimator logging and warnings silenced; a
     task that fails outside the estimators becomes an ``error`` record."""
     previous = logging.root.manager.disable
@@ -251,14 +263,15 @@ def run_task(task: FB.Task, params_override=None) -> REC.TaskRecord:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             try:
-                return score_task(task, params_override)
+                return score_task(task, params_override, provenance)
             except Exception as exc:  # noqa: BLE001 - recorded, not raised
                 return REC.TaskRecord(
                     task_id=task.task_id, design=FB.DESIGN, family=FB.FAMILY,
                     system=task.cell.system, seed=int(task.seed),
                     generator_version=FB.GENERATOR_VERSION, status=REC.TASK_ERROR,
                     split=task.split, config={"cell": task.cell.to_dict()},
-                    error=f"{type(exc).__name__}: {exc}")
+                    error=f"{type(exc).__name__}: {exc}",
+                    provenance=dict(provenance or {}))
     finally:
         logging.disable(previous)
 
@@ -376,25 +389,92 @@ def exact_table(hypotheses=None, n_min: int = IIM.N_MIN_DEFAULT) -> pd.DataFrame
 # --------------------------------------------------------------------------
 # the run
 # --------------------------------------------------------------------------
-def _done(path: Path) -> set:
-    out = set()
+def _read_latest(path: Path) -> tuple:
+    """The latest record of every task id in a results file and the number
+    of lines that are not records (an interrupted write) and of superseded
+    records."""
+    latest, n_bad, n_superseded = {}, 0, 0
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                rec = json.loads(line)
-                if rec.get("status") != REC.TASK_ERROR:
-                    out.add(rec["task_id"])
-    return out
+            if not line.strip():
+                continue
+            try:
+                rec = REC.loads(line)
+            except (ValueError, TypeError, KeyError):
+                n_bad += 1
+                continue
+            n_superseded += rec.task_id in latest
+            latest[rec.task_id] = rec
+    return latest, n_bad, n_superseded
+
+
+def prepare_resume(path: Path) -> set:
+    """Make a results file resumable, as the v2 runner does: keep the latest
+    record of every task that did not fail; drop unreadable lines,
+    superseded records and the records of failed tasks (they run again);
+    rewrite the file when something was dropped. Returns the done task ids."""
+    latest, n_bad, n_superseded = _read_latest(path)
+    keep = {t: r for t, r in latest.items() if r.status != REC.TASK_ERROR}
+    if path.exists() and (n_bad or n_superseded or len(keep) < len(latest)):
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for tid in sorted(keep):
+                fh.write(REC.dumps(keep[tid]) + "\n")
+        tmp.replace(path)
+    elif path.exists() and path.stat().st_size:
+        # a last record written without its line end: end the line, so that
+        # the next record starts on a line of its own
+        with open(path, "rb") as fh:
+            fh.seek(-1, 2)
+            last = fh.read(1)
+        if last != b"\n":
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write("\n")
+    return set(keep)
+
+
+def _done(path: Path) -> set:
+    """Task ids with a record that is not an error."""
+    latest, _, _ = _read_latest(path)
+    return {t for t, r in latest.items() if r.status != REC.TASK_ERROR}
 
 
 def _latest(path: Path) -> List[REC.TaskRecord]:
-    latest = {}
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                rec = REC.loads(line)
-                latest[rec.task_id] = rec
+    latest, _, _ = _read_latest(path)
     return [latest[k] for k in sorted(latest)]
+
+
+def record_provenance(provenance: dict, split: str) -> dict:
+    """The provenance every task record carries: the code identity of the
+    run (the fields of the v2 runner's records)."""
+    code = dict((provenance or {}).get("code") or {})
+    return {
+        "runner_version": VALIDATION_VERSION,
+        "git_sha": code.get("git_sha"),
+        "git_dirty": code.get("git_dirty"),
+        "trees": code.get("trees"),
+        "confirmatory": split == S.CONFIRMATORY,
+        "freeze_tag": code.get("freeze_tag"),
+        "freeze_tag_commit": code.get("freeze_tag_commit"),
+        "label": None,
+    }
+
+
+def write_plan(out: Path, tasks: List[FB.Task], split: str) -> Path:
+    """``iim_validation_v2_plan.json``: the task ids and seeds of the run's
+    plan, for the integrity audit (IA-7, ``--plan``). A confirmatory run
+    refuses an output directory whose plan names other tasks."""
+    path = out / PLAN_JSON
+    payload = {"schema": PLAN_SCHEMA, "design": FB.DESIGN, "split": split,
+               "task_ids": [t.task_id for t in tasks],
+               "tasks": [{"task_id": t.task_id, "seed": int(t.seed)} for t in tasks]}
+    if path.exists() and split == S.CONFIRMATORY:
+        old = json.loads(path.read_text(encoding="utf-8"))
+        if old.get("task_ids") != payload["task_ids"]:
+            raise ValueError(f"{path} holds another plan; use a new output "
+                             "directory")
+    path.write_text(json.dumps(payload, indent=1, sort_keys=True), encoding="utf-8")
+    return path
 
 
 def run(out_dir, *, split: str = S.DEVELOPMENT, hypotheses=None, seeds=None,
@@ -422,8 +502,10 @@ def run(out_dir, *, split: str = S.DEVELOPMENT, hypotheses=None, seeds=None,
         provenance = PV.run_provenance(seeds=seeds_all)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    write_plan(out, todo_all, split)
+    rec_prov = record_provenance(provenance, split)
     jsonl = out / RESULTS_JSONL
-    done = _done(jsonl)
+    done = prepare_resume(jsonl)
     todo = [t for t in todo_all if t.task_id not in done]
     if limit is not None:
         todo = todo[: int(limit)]
@@ -435,12 +517,13 @@ def run(out_dir, *, split: str = S.DEVELOPMENT, hypotheses=None, seeds=None,
 
         if int(workers) > 1 and len(todo) > 1:
             with ProcessPoolExecutor(max_workers=int(workers)) as ex:
-                futs = [ex.submit(run_task, t, params_override) for t in todo]
+                futs = [ex.submit(run_task, t, params_override, rec_prov)
+                        for t in todo]
                 for f in as_completed(futs):
                     emit(f.result())
         else:
             for t in todo:
-                emit(run_task(t, params_override))
+                emit(run_task(t, params_override, rec_prov))
     records = _latest(jsonl)
     comps = component_table(records)
     comps.to_csv(out / COMPONENTS_CSV, index=False)
@@ -519,7 +602,7 @@ def main(argv=None) -> int:
     try:
         res = run(args.out, split=args.split, hypotheses=hyps, seeds=_ints(args.seeds),
                   workers=args.workers, freeze_tag=args.freeze_tag, limit=args.limit)
-    except (PV.ConfirmatoryGuardError, S.SeedPolicyError) as exc:
+    except (PV.ConfirmatoryGuardError, S.SeedPolicyError, ValueError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
     table = res["table"]

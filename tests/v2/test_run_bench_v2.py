@@ -993,6 +993,11 @@ def test_schema_3_records_with_duplicate_hashes_timing_and_load(tmp_path):
         la = r.timing["load_average"]
         assert la is None or len(la) == 3
         assert r.provenance["runner_version"] == RB.RUNNER_VERSION
+        # the evaluator reads the freeze tag where the runner writes it
+        from scripts import bench_hypotheses_v2 as BH
+
+        assert "freeze_tag" in r.provenance
+        assert BH.record_freeze_tag(r.to_dict()) == r.provenance["freeze_tag"]
         assert r.generator_version == "mpc-bench-generators/2.0.0"
         for s in r.scorings:
             for c in s.components.values():

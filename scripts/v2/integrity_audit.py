@@ -9,7 +9,12 @@ leniently (one JSON object per line), so a record that breaks the schema is
 reported instead of stopping the audit. Every failure is listed, the
 affected task ids are collected in ``excluded_task_ids`` (the evaluator
 drops them from every hypothesis), and the audit outcome is reported beside
-the tally.
+the tally. Failures that no exclusion repairs (``blocking_failures``: every
+IA-1 and IA-6 failure, a reason of the vocabulary that does not map to
+UNDEFINED, unreadable lines, a seed outside the seed policy, a mixed or wrong
+split, a planned task without a record, curtailment that does not match the
+plan, the identities of IA-8) stop a confirmatory evaluation; a design's component error rate above the
+IA-2 bound is reported and excludes nothing.
 
 =====  ===============================================================
 IA-1   the v1 regression gate (``scripts/v2/regression_gate.py``): its
@@ -117,15 +122,36 @@ RUNNER_LABEL_KEYS = (
     "system_config_sha256",
 )
 LIST_LIMIT = 50
+# failures that no exclusion of records can repair, or that show the run
+# did not use the frozen inputs: the regression gate (every IA-1 failure),
+# the reason vocabulary, every family-protocol mismatch (IA-6; the
+# evaluator refuses mismatches), unreadable lines, seeds outside the seed
+# policy, mixed or wrong splits, planned tasks without a record and
+# curtailment that does not match the plan, and the identities of the status
+# rule and of NAS. They stop a confirmatory evaluation. Every other failure names the records it
+# concerns, which leave every hypothesis (``excluded_task_ids``); the
+# component error rate of a design above the IA-2 bound is reported and
+# excludes nothing (the errored components stay
+# ``UNDEFINED(ESTIMATOR_ERROR:<type>)``).
+BLOCKING_FAILURE_KINDS = {
+    "IA-4": ("reason_not_undefined",),
+    "IA-7": ("unreadable_line", "seed_policy", "split_label",
+             "mixed_or_wrong_split", "missing", "curtailed_outside_plan",
+             "curtailed_but_recorded", "duplicated_in_plan"),
+    "IA-8": ("entry_points_disagree", "nas_v3_v1_identity"),
+}
+BLOCKING_CHECKS = ("IA-1", "IA-6")
 
 
 def _check(cid, status, summary, failures=(), excluded=(), **details) -> dict:
     failures = list(failures)
+    kinds = Counter(str(f.get("kind") or "failure") for f in failures)
     return {
         "id": cid,
         "status": status,
         "summary": summary,
         "n_failures": len(failures),
+        "failure_kinds": dict(sorted(kinds.items())),
         "failures": failures[:LIST_LIMIT],
         "excluded_task_ids": sorted(set(excluded)),
         "details": details,
@@ -1071,6 +1097,23 @@ def ia10_twins(records, spec) -> dict:
 # --------------------------------------------------------------------------
 # the audit
 # --------------------------------------------------------------------------
+def blocking_failures(checks) -> List[dict]:
+    """The failures of the given checks that stop a confirmatory evaluation
+    (:data:`BLOCKING_CHECKS`, :data:`BLOCKING_FAILURE_KINDS`): ``{"id",
+    "kind", "n"}`` per check and kind."""
+    out = []
+    for c in checks:
+        if c.get("status") != FAIL:
+            continue
+        kinds = c.get("failure_kinds") or {"failure": c.get("n_failures") or 1}
+        for kind, n in sorted(kinds.items()):
+            if c["id"] in BLOCKING_CHECKS or kind in BLOCKING_FAILURE_KINDS.get(
+                c["id"], ()
+            ):
+                out.append({"id": c["id"], "kind": kind, "n": int(n)})
+    return out
+
+
 def records_digest(records) -> str:
     """SHA-256 over the sorted canonical JSON of the records: the evaluator
     checks that it judges the records the audit saw."""
@@ -1126,6 +1169,7 @@ def run_audit(
     return {
         "version": AUDIT_VERSION,
         "ok": all(c["status"] != FAIL for c in checks),
+        "blocking_failures": blocking_failures(checks),
         "not_run": [c["id"] for c in checks if c["status"] == NOT_RUN],
         "n_records": len(recs),
         "records_sha256": records_digest(recs),
@@ -1251,6 +1295,9 @@ def main(argv=None) -> int:
         f"integrity audit: {'PASS' if rep['ok'] else 'FAIL'}; "
         f"{len(rep['excluded_task_ids'])} records excluded"
     )
+    for b in rep["blocking_failures"]:
+        print(f"blocking failure (stops a confirmatory evaluation): "
+              f"{b['id']} {b['kind']} ({b['n']})")
     if args.out:
         Path(args.out).write_text(
             json.dumps(rep, indent=1, default=str) + "\n", encoding="utf-8"

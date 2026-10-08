@@ -567,6 +567,42 @@ def test_run_audit_collects_the_excluded_records(spec):
     assert rep["excluded_task_ids"] == sorted([recs[0]["task_id"], "dup"])
 
 
+def test_failures_that_name_their_records_do_not_block(spec):
+    recs = clean_records()
+    gate = {"ok": True, "quick": False, "checks": []}
+    planned = [r["task_id"] for r in recs]
+    # a task that still failed after its rerun: listed, excluded, and the
+    # evaluation goes on without it
+    failed = rec("w-A-failed", seed=110, status="error", scorings=[])
+    failed["error"] = "LinAlgError: SVD did not converge"
+    rep = IA.run_audit(recs + [failed], spec=spec, gate_report=gate,
+                       planned_task_ids=planned + ["w-A-failed"])
+    assert not rep["ok"] and rep["blocking_failures"] == []
+    assert "w-A-failed" in rep["excluded_task_ids"]
+    ia2 = next(c for c in rep["checks"] if c["id"] == "IA-2")
+    assert ia2["failure_kinds"]["task_error"] == 1
+    # a planned task without a record cannot be excluded: it blocks
+    rep = IA.run_audit(recs, spec=spec, gate_report=gate,
+                       planned_task_ids=planned + ["never-ran"])
+    assert rep["blocking_failures"] == [{"id": "IA-7", "kind": "missing", "n": 1}]
+    # every failure of the regression gate blocks
+    rep = IA.run_audit(recs, spec=spec, planned_task_ids=planned,
+                       gate_report={"ok": False, "checks": [
+                           {"name": "rejudge_records", "status": "FAIL"}]})
+    assert [b["id"] for b in rep["blocking_failures"]] == ["IA-1"]
+    # a design's component error rate above the bound is reported only
+    c = IA.ia2_component_isolation(recs, max_rate=-1.0)
+    assert c["status"] == IA.FAIL and IA.blocking_failures([c]) == []
+    # a record judged under another protocol than the frozen one blocks, and
+    # so does a seed outside the seed policy
+    c = IA.ia6_protocol_hashes(recs, {"A-R": {"hash": "0" * 64}})
+    assert c["status"] == IA.FAIL
+    assert {b["id"] for b in IA.blocking_failures([c])} == {"IA-6"}
+    c = IA.ia7_plan_and_seeds(recs + [rec("v1-seed", seed=10001)])
+    assert {(b["id"], b["kind"]) for b in IA.blocking_failures([c])} >= {
+        ("IA-7", "seed_policy")}
+
+
 def test_audit_command_line(tmp_path):
     recs = clean_records()
     f = tmp_path / "records.jsonl"

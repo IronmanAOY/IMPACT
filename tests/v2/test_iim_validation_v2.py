@@ -367,6 +367,60 @@ def test_run_end_to_end_and_resume(tmp_path):
     assert again["summary"]["n_run"] == 0 and len(again["records"]) == 3
 
 
+def test_records_carry_provenance_and_the_plan_is_written(tmp_path):
+    from scripts.v2 import integrity_audit as IA
+
+    task = small_ring_task()
+    out = tmp_path / "fb"
+    res = V.run(out, split=S.DEVELOPMENT, task_list=[task], write_exact=False)
+    (rec,) = res["records"]
+    # the code identity of the run, in the fields of the v2 runner's records
+    prov = rec.provenance
+    assert prov["git_sha"] == res["summary"]["provenance"]["code"]["git_sha"]
+    assert prov["confirmatory"] is False and prov["freeze_tag"] is None
+    assert set(prov) == {"runner_version", "git_sha", "git_dirty", "trees",
+                         "confirmatory", "freeze_tag", "freeze_tag_commit", "label"}
+    # the plan of task ids, read by the integrity audit (IA-7)
+    plan = out / V.PLAN_JSON
+    assert IA._load_plan(plan) == [task.task_id]
+    assert IA._load_smoke([plan]) == []
+    recs, bad = IA.read_raw_records([out])
+    check = IA.ia7_plan_and_seeds(recs, IA._load_plan(plan), S.DEVELOPMENT, bad)
+    assert check["status"] == IA.PASS and check["details"]["plan_checked"]
+
+
+def test_resume_drops_an_interrupted_line_and_failed_tasks(tmp_path):
+    from scripts.v2 import integrity_audit as IA
+
+    task = small_ring_task()
+    out = tmp_path / "fb"
+    V.run(out, split=S.DEVELOPMENT, task_list=[task], write_exact=False)
+    jsonl = out / V.RESULTS_JSONL
+    good = jsonl.read_text(encoding="utf-8")
+    # a run cut off while writing a record
+    jsonl.write_text(good + '{"task_id": "B:cut', encoding="utf-8")
+    again = V.run(out, split=S.DEVELOPMENT, task_list=[task], write_exact=False)
+    assert again["summary"]["n_run"] == 0
+    assert jsonl.read_text(encoding="utf-8") == good
+    # a failed task runs again and its error record leaves the file
+    err = REC.TaskRecord(task_id=task.task_id, design=FB.DESIGN, family=FB.FAMILY,
+                         system=task.cell.system, seed=int(task.seed),
+                         generator_version=FB.GENERATOR_VERSION,
+                         status=REC.TASK_ERROR, split=task.split,
+                         config={"cell": task.cell.to_dict()}, error="planted")
+    jsonl.write_text(REC.dumps(err) + "\n", encoding="utf-8")
+    third = V.run(out, split=S.DEVELOPMENT, task_list=[task], write_exact=False)
+    assert third["summary"]["n_run"] == 1
+    recs, bad = IA.read_raw_records([jsonl])
+    assert bad == [] and [r["status"] for r in recs] == [REC.TASK_OK]
+    # a confirmatory output directory keeps its plan
+    other = small_ring_task()
+    (tmp_path / "p").mkdir()
+    V.write_plan(tmp_path / "p", [other], S.CONFIRMATORY)
+    with pytest.raises(ValueError, match="another plan"):
+        V.write_plan(tmp_path / "p", [other, *gate_tasks()], S.CONFIRMATORY)
+
+
 def test_a_raising_scoring_leaves_the_others_intact(tmp_path, monkeypatch):
     task = dev_task("HCv2-13", lambda c: c.n_time == 3000, 435)
     real = IIM.compute_iim_v5

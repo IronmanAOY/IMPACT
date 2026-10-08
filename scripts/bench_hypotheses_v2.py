@@ -36,11 +36,12 @@ carry the freeze tag, an evaluator checkout that is not the frozen tree
 (``provenance.confirmatory_guard``), a hypotheses file that differs from its
 version at the freeze tag (the guard covers ``src/`` and ``scripts/`` only),
 records that break the schema, records whose family-protocol hash differs
-from the frozen protocol (IA-6), an integrity audit that is missing,
-failed, left a check not run or was run on other records, manipulation
-checks from another split than the records, a mechanism-on table given
-outside the frozen hypotheses file, and a confirmatory evaluation without
-the frozen family protocols.
+from the frozen protocol (IA-6), an integrity audit that is missing, has a
+blocking failure (``blocking_failures``, IA-6 among them; a failure that names
+its records only excludes them), left a check not run or was run on other records,
+manipulation checks from another split than the records, a mechanism-on
+table given outside the frozen hypotheses file, and a confirmatory
+evaluation without the frozen family protocols.
 ``--development`` evaluates development records to test the evaluator; its
 outputs are flagged ``DEVELOPMENT - NOT A RESULT``.
 
@@ -148,6 +149,17 @@ def load_protocols(paths) -> dict:
         raise EvaluationRefused(f"protocols: {exc}") from exc
 
 
+def record_freeze_tag(rec):
+    """The freeze tag a record's provenance names: the runners write it at
+    ``provenance['freeze_tag']`` (the v2 runner and the family-B validation);
+    a full provenance block carries it at ``provenance['code']['freeze_tag']``."""
+    prov = rec.get("provenance") or {}
+    tag = prov.get("freeze_tag")
+    if tag is None:
+        tag = (prov.get("code") or {}).get("freeze_tag")
+    return tag
+
+
 def check_records(recs, *, development: bool, freeze_tag: str, excluded=()) -> str:
     """The split of the records (refusing schema failures, mixed splits, the
     wrong split and, for a confirmatory evaluation, records without the
@@ -174,8 +186,7 @@ def check_records(recs, *, development: bool, freeze_tag: str, excluded=()) -> s
             r.get("task_id")
             for r in recs
             if r.get("task_id") not in excluded
-            and ((r.get("provenance") or {}).get("code") or {}).get("freeze_tag")
-            != freeze_tag
+            and record_freeze_tag(r) != freeze_tag
         )
         if untagged:
             raise EvaluationRefused(
@@ -192,8 +203,13 @@ def check_protocol_hashes(recs, protocols, excluded=()) -> List[dict]:
 
 
 def check_audit(audit_rep, recs) -> None:
-    """A confirmatory evaluation needs an integrity audit that passed, ran
-    every check and saw exactly these records."""
+    """A confirmatory evaluation needs an integrity audit that ran every
+    check, saw exactly these records and has no blocking failure. A failure
+    that names the records it concerns does not stop the evaluation: those
+    records leave every hypothesis (``excluded_task_ids``) and the audit
+    outcome is reported beside the tally. An audit report that does not
+    classify its failures (no ``blocking_failures``) is refused when it
+    failed."""
     from scripts.v2 import integrity_audit as IA
 
     if audit_rep is None:
@@ -202,7 +218,16 @@ def check_audit(audit_rep, recs) -> None:
         failed = [
             c["id"] for c in audit_rep.get("checks") or () if c.get("status") == "FAIL"
         ]
-        raise EvaluationRefused(f"the integrity audit failed: {failed}")
+        blocking = audit_rep.get("blocking_failures")
+        if blocking is None:
+            raise EvaluationRefused(
+                f"the integrity audit failed: {failed} (the report does not "
+                "classify its failures)"
+            )
+        if blocking:
+            raise EvaluationRefused(
+                f"the integrity audit has blocking failures: {blocking[:5]}"
+            )
     if audit_rep.get("not_run"):
         raise EvaluationRefused(f"integrity checks not run: {audit_rep['not_run']}")
     if audit_rep.get("records_sha256") != IA.records_digest(recs):
@@ -326,6 +351,11 @@ def run(
             "ok": audit_rep.get("ok"),
             "version": audit_rep.get("version"),
             "checks": {c["id"]: c["status"] for c in audit_rep.get("checks") or ()},
+            "failure_kinds": {
+                c["id"]: c.get("failure_kinds")
+                for c in audit_rep.get("checks") or ()
+                if c.get("status") == "FAIL"
+            },
             "excluded_task_ids": sorted(excluded),
         }
     )
