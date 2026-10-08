@@ -903,10 +903,11 @@ def test_the_forward_replication_block_is_extended_per_arm(monkeypatch):
     from impact_pipeline.bench import designs_v2 as DV
     from impact_pipeline.bench.designs_v2 import anchors as AN
 
-    # provisional: no arm extended until the CD-11 rule is applied after the
-    # held-out release
-    assert all(D.replication_seeds(a) == D.REPLICATION_SEEDS for a in D.ARMS)
-    assert D.DOCUMENT_TASKS[D.ANCHOR_REPLICATION_DESIGN] == 3 * 20
+    # decided at CD-11 after the held-out release: the Hopf arm is extended
+    assert D.replication_seeds(D.ARM_HOPF) == range(20900, 20940)
+    assert all(D.replication_seeds(a) == D.REPLICATION_SEEDS
+               for a in D.ARMS if a != D.ARM_HOPF)
+    assert D.DOCUMENT_TASKS[D.ANCHOR_REPLICATION_DESIGN] == 40 + 2 * 20
     pending = AN.CALIBRATION_PENDING["forward_replication_extended"]
     monkeypatch.setitem(pending, "value", dict(pending["value"], hopf=True))
     assert D.replication_seeds(D.ARM_HOPF) == range(20900, 20940)
@@ -967,7 +968,11 @@ def test_runner_tasks_of_the_forward_arms():
         assert all(t.has_held_out for t in conf)  # the held-out regime
     rep = DV.get_design(D.ANCHOR_REPLICATION_DESIGN)
     conf = rep.tasks(DV.CONFIRMATORY)
-    assert {t.seed for t in conf} == set(range(20900, 20920))
+    by_arm = {}
+    for t in conf:
+        by_arm.setdefault(t.tags["arm"], set()).add(t.seed)
+    assert by_arm == {a: set(D.replication_seeds(a)) for a in D.ARMS}
+    assert by_arm[D.ARM_HOPF] == set(range(20900, 20940))  # extended at CD-11
     assert {(t.tags["arm"], t.system) for t in conf} == {
         (D.ARM_HOPF, D.g_nom_label()), (D.ARM_A_EEG, "PC_nominal"),
         (D.ARM_A_BOLD, "PC_nominal")}

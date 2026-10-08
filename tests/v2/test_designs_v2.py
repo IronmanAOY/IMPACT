@@ -37,9 +37,10 @@ DOCUMENT_COUNTS = {
         "C1_factorial": 320,
         "C1_twins": 180, "C1_anchors": 80, "RAM160_anchors": 2 * 20,
         # the forward arms (3.2; the BOLD arm's 271 before curtailment) and
-        # the forward views' anchor replication (3 arms x 20)
+        # the forward views' anchor replication (the Hopf arm on 40 seeds by
+        # CD-11, the two family-A arms on 20)
         "whole_brain": 371, "forward_family_a": 332, "forward_family_a_bold": 271,
-        "forward_anchor_replication": 3 * 20,
+        "forward_anchor_replication": 40 + 2 * 20,
     },
     DEV: {
         "A_witnesses": 16 * 12, "A_sweeps": 26 * 4, "A_factorial": 32 * 4,
@@ -622,13 +623,14 @@ def test_the_forward_replication_extension_is_declared_per_arm(monkeypatch):
     # one arm list, declared in both modules
     assert AN.FORWARD_ARMS == FW.ARMS
     pending = AN.CALIBRATION_PENDING["forward_replication_extended"]
-    # decided after the held-out release: provisional, no arm extended
-    assert pending["value"] == {arm: False for arm in FW.ARMS}
-    assert "CD-11" in pending["meaning"] and "provisional" in pending["meaning"]
-    assert all(AN.forward_replication_seeds(a) == AN.REPLICATION_SEEDS
-               for a in FW.ARMS)
-    assert RB.calibration_pending()["anchors.forward_replication_extended"] is pending
-    monkeypatch.setitem(pending, "value", dict(pending["value"], hopf=True))
-    assert AN.is_forward_replication_extended("hopf")
+    # decided after the held-out release (CD-11): the Hopf arm only
+    assert pending["value"] == {arm: arm == "hopf" for arm in FW.ARMS}
+    assert "decided at CD-11" in pending["meaning"]
     assert AN.forward_replication_seeds("hopf") == AN.REPLICATION_SEEDS_EXTENDED
+    assert all(AN.forward_replication_seeds(a) == AN.REPLICATION_SEEDS
+               for a in FW.ARMS if a != "hopf")
+    assert RB.calibration_pending()["anchors.forward_replication_extended"] is pending
+    monkeypatch.setitem(pending, "value", dict(pending["value"], hopf=False))
+    assert not AN.is_forward_replication_extended("hopf")
+    assert AN.forward_replication_seeds("hopf") == AN.REPLICATION_SEEDS
     assert not AN.is_forward_replication_extended("forward_a_eeg")

@@ -93,13 +93,15 @@ CALIBRATION_PENDING = {
                    "20 seeds), no other design",
     },
     "forward_replication_extended": {
-        "value": {arm: False for arm in FORWARD_ARMS},
+        "value": {arm: arm == "hopf" for arm in FORWARD_ARMS},
         "meaning": "forward arms whose anchor runs on the replication block "
                    "extend to 20900-20939 because the validity-only "
                    "replication power of one of their views at 20 seeds is "
                    "below 0.9 (the CD-11 rule), computed from the held-out "
-                   "reference anchors after the held-out release; "
-                   "provisional: none",
+                   "reference anchors after the held-out release; decided at "
+                   "CD-11: the Hopf arm (IIM at eeg64_noref 0.264, "
+                   "mne_template 0.699 and eeg64 0.862 at 20 seeds), neither "
+                   "family-A arm",
     },
 }
 
