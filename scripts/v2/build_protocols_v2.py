@@ -2741,8 +2741,33 @@ def _downstream(dec: Decisions, mech_entries: Sequence[dict]) -> List[str]:
         out.append("designs_v2/null_calibration: leave RAM out of the null-calibration "
                    "scorings")
     if dec["null_calibration_ram"] == "require_defined":
-        out.append("protocols/v2/hypotheses_v2.json HCv2-1 and HCv2-3: count only "
-                   "defined RAM rows")
+        # the clause that keeps a RAM row only where it is defined, in the
+        # data.where (at any depth) of every decisive part of each hypothesis;
+        # a reported part (such as HCv2-1(definedness)) decides nothing
+        clause = [{"principle": {"ne": "RAM"}}, {"defined": True}]
+
+        def has_clause(node) -> bool:
+            if isinstance(node, Mapping):
+                any_ = node.get("any")
+                if (isinstance(any_, list) and len(any_) == len(clause)
+                        and all(c in any_ for c in clause)):
+                    return True
+                return any(has_clause(v) for v in node.values())
+            if isinstance(node, list):
+                return any(has_clause(v) for v in node)
+            return False
+
+        def decisive(hid) -> List[dict]:
+            return [p for h in spec.get("hypotheses") or () if h.get("id") == hid
+                    for p in h.get("parts") or () if p.get("role") != HE.REPORTED_ROLE]
+
+        missing = [hid for hid in ("HCv2-1", "HCv2-3")
+                   if not decisive(hid)
+                   or not all(has_clause((p.get("data") or {}).get("where"))
+                              for p in decisive(hid))]
+        if missing:
+            out.append(f"protocols/v2/hypotheses_v2.json {' and '.join(missing)}: "
+                       "count only defined RAM rows")
     if spec.get("status") != "final":
         out.append("protocols/v2/hypotheses_v2.json status: final at the freeze")
     out.append("registry v3: built from the confirmatory forward arms with "

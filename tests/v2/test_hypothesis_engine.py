@@ -505,6 +505,58 @@ def test_kappa_rules_with_zero_rms_are_not_evaluable():
     assert {c["cell"]: c["outcome"] for c in r.cells} == {"PDI": NE, "NAS": SUP}
 
 
+def test_kappa_null_leaves_admitted_concordant_rows_out():
+    # an admitted concordant component has SE 0 and no sampling SE (its
+    # error control is the concordance battery): with exclude_concordant it
+    # enters no kappa0 or tail, and its cell keeps its place in P
+    z = stats.norm.ppf((np.arange(400) + 0.5) / 400)
+
+    def row(cell, value, se, method, i):
+        return {
+            "_cell": cell,
+            "_value": value,
+            "se_c": se,
+            "df_c": 9.0,
+            "_cluster": f"{cell}{i}",
+            "se_method": method,
+        }
+
+    sampled = [row("NAS", 0.02 * v, 0.02, "jackknife", i) for i, v in enumerate(z)]
+    # concordant two-state counts: c > 0 with SE 0
+    mixed = sampled + [row("NAS", 0.3, 0.0, "concordant", 400 + i) for i in range(40)]
+    only = [row("PDI", 0.0, 0.0, "concordant", i) for i in range(30)]
+    opt = {"exclude_concordant": True}
+    r = HE.RULES["kappa_null"](HE.Prepared(copy.deepcopy(mixed + only)), opt)
+    nas, pdi = r.cells
+    assert nas["cell"] == "NAS" and nas["n"] == 400 and nas["n_concordant"] == 40
+    assert nas["outcome"] == SUP and nas["kappa"] == pytest.approx(1.0, abs=0.02)
+    assert pdi == {
+        "cell": "PDI",
+        "n": 0,
+        "n_concordant": 30,
+        "outcome": NE,
+        "reason": HE.CONCORDANT_ONLY_REASON,
+    }
+    assert r.outcome == SUP and r.stats == {"P": 2}
+    # the NAS cell is the cell of its sampled rows alone, at the same P
+    alone = HE.RULES["kappa_null"](HE.Prepared(copy.deepcopy(sampled + only)), {})
+    assert alone.stats == {"P": 2}
+    assert {k: v for k, v in nas.items() if k != "n_concordant"} == alone.cells[0]
+    # without the option the concordant rows enter as SE-0 rows: each is an
+    # upper-tail event, and the cell is no longer calibrated
+    old = HE.RULES["kappa_null"](HE.Prepared(copy.deepcopy(mixed + only)), {})
+    assert old.cells[0]["n"] == 440 and "n_concordant" not in old.cells[0]
+    up = r.cells[0]["tails"]["upper"]["k"]
+    assert old.cells[0]["tails"]["upper"]["k"] == up + 40
+    assert old.cells[0]["outcome"] != SUP
+    assert old.cells[1]["reason"] == HE.ZERO_RMS_REASON
+    # a cell without concordant rows reports 0 and is judged as before
+    plain = HE.RULES["kappa_null"](HE.Prepared(copy.deepcopy(sampled)), opt)
+    base = HE.RULES["kappa_null"](HE.Prepared(copy.deepcopy(sampled)), {})
+    assert plain.cells[0].pop("n_concordant") == 0
+    assert plain.cells == base.cells and plain.outcome == base.outcome
+
+
 def test_kappa_twins_per_se_method_counts_the_class_sessions():
     # a class of 5 twin networks x 7 sessions in which 33 sessions are
     # admitted concordant components (SE 0, no sampling SE) and 2 carry the
@@ -4273,6 +4325,72 @@ def test_hcv2_1_and_hcv2_3_count_only_defined_ram_rows(spec):
     out = HE.evaluate_part(spec_part(spec, "HCv2-1"), spec, ctx)
     ram = [c for c in out["cells"] if c["cell"].endswith("|RAM")]
     assert sum(c["n"] for c in ram) == 2
+
+
+def test_hcv2_3_leaves_admitted_concordant_pdi_rows_out_and_reports_them(spec):
+    null = dict(
+        design="null_calibration", decl="none", family="null", protocol="A-none"
+    )
+    z = stats.norm.ppf((np.arange(200) + 0.5) / 200)
+    sampled = [
+        comp_row(
+            f"j{i}",
+            "ar1",
+            "ABSENT",
+            0.02 * v,
+            principle="PDI",
+            seed=i,
+            se_c=0.02,
+            df_c=None,
+            se_method="jackknife_contiguous_10",
+            **null,
+        )
+        for i, v in enumerate(z)
+    ]
+    concordant = [
+        comp_row(
+            f"k{i}",
+            "ar1",
+            "ABSENT",
+            0.0,
+            principle="PDI",
+            seed=500 + i,
+            se_c=0.0,
+            df_c=None,
+            se_method="concordant",
+            **null,
+        )
+        for i in range(50)
+    ]
+    protocols = _every_principle_anchored("A-R", "A-none")
+    part = spec_part(spec, "HCv2-3")
+    assert part["params"]["exclude_concordant"] is True
+
+    def run(rows):
+        ctx = HE.build_context(sources={"components": rows}, protocols=protocols)
+        out = HE.evaluate_part(part, spec, ctx)
+        rep = HE.evaluate_part(spec_part(spec, "HCv2-3(concordant)"), spec, ctx)
+        return out, rep
+
+    # mixed: the PDI cell is judged on its 200 rows with a sampling SE
+    out, rep = run(sampled + concordant)
+    (cell,) = out["cells"]
+    assert cell["cell"] == "PDI" and cell["n"] == 200 and cell["n_concordant"] == 50
+    assert cell["kappa"] == pytest.approx(1.0, abs=0.02)
+    assert cell["outcome"] == SUP and cell["prediction"] == SUP
+    assert out["stats"] == {"P": 1}
+    assert rep["role"] == HE.REPORTED_ROLE and rep["outcome"] == HE.REPORTED
+    (rc,) = rep["cells"]
+    assert (rc["cell"], rc["k"], rc["n"]) == ("PDI", 50, 250)
+    assert rc["rate"] == pytest.approx(0.2)
+    # development: every PDI null row is concordant, so the cell stays (in
+    # P) and is NOT_EVALUABLE, and the share reported is 1
+    out, rep = run(concordant)
+    (cell,) = out["cells"]
+    assert cell["outcome"] == NE and cell["reason"] == HE.CONCORDANT_ONLY_REASON
+    assert cell["n_concordant"] == 50 and out["outcome"] == NE
+    assert out["stats"] == {"P": 1}
+    assert [(c["k"], c["n"]) for c in rep["cells"]] == [(50, 50)]
 
 
 def test_the_dose_only_rows_are_reported_beside_hcv2_5():

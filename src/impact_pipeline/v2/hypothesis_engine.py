@@ -79,10 +79,12 @@ trial, which is conservative for every Clopper-Pearson (CP) bound below.
   normal with the tie-corrected variance); ``spearman_monotone``;
   ``stepwise_sign``; ``newcombe_includes_zero`` (Newcombe's hybrid score
   interval of a difference of two proportions).
-* calibration: ``kappa_null`` (interval calibration at the null),
-  ``kappa_twins`` (SE calibration against white-box twins: pooled
-  within-network SD over the RMS of the SE, chi-square interval on
-  ``sum (n_twin - 1)`` degrees of freedom, and the ``q_A`` tails; with
+* calibration: ``kappa_null`` (interval calibration at the null; with
+  ``exclude_concordant`` an admitted concordant row, which has no sampling
+  SE, enters no kappa0 or tail, while its cell keeps its place in ``P`` and
+  reports their number), ``kappa_twins`` (SE calibration against white-box
+  twins: pooled within-network SD over the RMS of the SE, chi-square
+  interval on ``sum (n_twin - 1)`` degrees of freedom, and the ``q_A`` tails; with
   ``by_se_method`` a class splits per SE method, and its sessions without
   a sampling SE count against each method's defined share),
   ``concordance_twins``. An RMS of the SEs of 0 leaves kappa undefined
@@ -1543,6 +1545,9 @@ def _df_of(row):
 
 
 ZERO_RMS_REASON = "the SEs have RMS 0: kappa is undefined"
+CONCORDANT_ONLY_REASON = (
+    "fewer than 3 rows with a sampling SE: the admitted concordant rows carry none"
+)
 
 
 def _se_method_cells(prep) -> List[Tuple[str, List[dict], int]]:
@@ -1589,15 +1594,27 @@ def rule_kappa_null(prep, p):
         return RuleResult(NOT_EVALUABLE, "no rows")
     P = int(_p(p, "P", len(cells)))
     t_level = float(_p(p, "tail_level", 0.05 / (2 * P)))
+    exclude_concordant = bool(_p(p, "exclude_concordant", False))
     out = []
     for label, rows in cells.items():
+        extra = {}
+        if exclude_concordant:
+            # an admitted concordant component has no sampling SE (SE 0); its
+            # error control is the concordance battery, so it enters no
+            # kappa0 or tail, and the cell (its place in P) stays
+            n_concordant = sum(1 for r in rows if r.get("se_method") == "concordant")
+            rows = [r for r in rows if r.get("se_method") != "concordant"]
+            extra = {"n_concordant": n_concordant}
         good = [
             r
             for r in rows
             if _finite(r.get("_value")) is not None and _finite(_se_of(r)) is not None
         ]
         if len(good) < 3:
-            out.append({"cell": label, "n": len(good), "outcome": NOT_EVALUABLE})
+            cell = {"cell": label, "n": len(good), **extra, "outcome": NOT_EVALUABLE}
+            if extra.get("n_concordant"):
+                cell["reason"] = CONCORDANT_ONLY_REASON
+            out.append(cell)
             continue
         c = np.asarray([float(r["_value"]) for r in good])
         se = np.asarray([float(_se_of(r)) for r in good])
@@ -1609,6 +1626,7 @@ def rule_kappa_null(prep, p):
                 {
                     "cell": label,
                     "n": len(good),
+                    **extra,
                     "outcome": NOT_EVALUABLE,
                     "reason": ZERO_RMS_REASON,
                 }
@@ -1642,6 +1660,7 @@ def rule_kappa_null(prep, p):
             {
                 "cell": label,
                 "n": len(good),
+                **extra,
                 "kappa": kap,
                 "df": df,
                 "interval": [lo, hi],

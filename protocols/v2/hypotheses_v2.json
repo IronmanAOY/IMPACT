@@ -17614,11 +17614,11 @@
    "successor_of": "HC1",
    "prediction": "FALSIFIED",
    "statement": "(a) kappa0 = SD(c) / RMS(se_c) has its point in [0.8, 1.25] and its 90 % chi-square interval inside [0.67, 1.5]; (b) both one-sided tail rates P(c - q_P se_c > 0) and P(c + q_P se_c < 0) are <= 0.075 (point).",
-   "expectation": "NAS, IIM, PDI, RAM-PE calibrated; SRPI v1 FALSIFIED on the conservative side (kappa0 about 0.5-0.7).",
+   "expectation": "Development (null calibration at seed 400 with 32 replicates per null kind, and the family-A null witnesses on seeds 320-331, judged under the decided build): all 152 PDI null rows (128 null-calibration, 24 witness) are admitted concordant components without a sampling SE, so the PDI cell is expected NOT_EVALUABLE; HCv2-3(concordant) reports their count and share (152 of 152). SRPI v1 FALSIFIED on the conservative side (kappa0 0.47, 90 % CI 0.43-0.52), as predicted. NAS conservative in both directions (kappa0 0.69; 90 % CI 0.62-0.77 receive, 0.63-0.78 return; lower-tail rates 0.067 and 0.058): FALSIFIED on the conservative side. IIM (kappa0 0.76, 0.69-0.85) and RAM-PE (0.74, 0.60-0.99; 24 defined rows) conservative and short of the calibration criterion (INDETERMINATE).",
    "parts": [
     {
      "id": "HCv2-3",
-     "text": "per anchored principle under A-R (NAS per direction, each with its own SE): kappa0 and both tails; FALSIFIED if some kappa0 interval lies outside [0.8, 1.25] or some tail's cluster-robust lower bound at 0.05/(2P) exceeds 0.10 (P counts NAS's two directions)",
+     "text": "per anchored principle under A-R (NAS per direction, each with its own SE): kappa0 and both tails; FALSIFIED if some kappa0 interval lies outside [0.8, 1.25] or some tail's cluster-robust lower bound at 0.05/(2P) exceeds 0.10 (P counts NAS's two directions); an admitted concordant row (a PDI component with SE 0, which has no sampling SE: its error control is the concordance battery) enters no kappa0 or tail, and its cell keeps its place in P",
      "rule": "kappa_null",
      "params": {
       "point": [
@@ -17632,7 +17632,8 @@
       "level": 0.9,
       "tail_max": 0.075,
       "tail_falsify": 0.1,
-      "q_alpha": 0.05
+      "q_alpha": 0.05,
+      "exclude_concordant": true
      },
      "data": {
       "where": {
@@ -17721,7 +17722,52 @@
        "prediction": "SUPPORTED"
       }
      ],
-     "notes": "SRPI v1 predicted FALSIFIED on the conservative side [R]. NAS is calibrated per direction: its component c is the smaller direction, whose spread and tails differ from those of either direction even when each direction's SE is exact. RAM-PE rows count only where defined (null_calibration_ram = require_defined, as in HCv2-1). The family-A null witnesses enter on all their seeds (46 each, 20000-20045; CD-11)."
+     "notes": "SRPI v1 predicted FALSIFIED on the conservative side [R]. NAS is calibrated per direction: its component c is the smaller direction, whose spread and tails differ from those of either direction even when each direction's SE is exact. RAM-PE rows count only where defined (null_calibration_ram = require_defined, as in HCv2-1). The family-A null witnesses enter on all their seeds (46 each, 20000-20045; CD-11). Admitted concordant rows leave the kappa0 and the tails as in HCv2-4 (a, b); a cell with fewer than 3 other rows is NOT_EVALUABLE. Their number and share per cell are reported in HCv2-3(concordant)."
+    },
+    {
+     "id": "HCv2-3(concordant)",
+     "text": "reported: the number and share of admitted concordant rows (no sampling SE; error control by the concordance battery) per anchored principle; they enter no kappa0 or tail of HCv2-3",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "where": {
+       "declaration_id": [
+        "R",
+        "none"
+       ],
+       "estimator_form": "@form.primary",
+       "any": [
+        {
+         "design": "@design.null_calibration"
+        },
+        {
+         "design": "@design.witnesses",
+         "family": "@family.A",
+         "system": "@systems.nulls_A"
+        }
+       ],
+       "all": [
+        {
+         "any": [
+          {
+           "principle": {
+            "ne": "RAM"
+           }
+          },
+          {
+           "defined": true
+          }
+         ]
+        }
+       ]
+      },
+      "principle_filter": "valid_anchor",
+      "event": {
+       "concordant": true
+      },
+      "cell_label": "{principle}"
+     },
+     "role": "reported"
     }
    ]
   },

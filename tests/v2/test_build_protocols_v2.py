@@ -364,6 +364,63 @@ def test_a_decision_against_the_rule_needs_a_deviation_note():
     assert not any("nas_se_method" in b for b in blocking if "pending" not in b)
 
 
+def test_downstream_asks_for_defined_ram_rows_only_while_the_spec_lacks_them(
+        monkeypatch):
+    """require_defined: the freeze list names HCv2-1 and HCv2-3 only while
+    their data selections lack the clause that keeps a RAM row only where it
+    is defined."""
+    clause = [{"principle": {"ne": "RAM"}}, {"defined": True}]
+
+    def dec(value):
+        return BP.load_decisions({"schema": BP.DECISIONS_SCHEMA, "status": "final",
+                                  "decisions": {"null_calibration_ram":
+                                                {"value": value}}})
+
+    def strip(node):
+        if isinstance(node, dict):
+            return {k: strip(v) for k, v in node.items()
+                    if not (k == "any" and v == clause)}
+        if isinstance(node, list):
+            return [strip(v) for v in node]
+        return node
+
+    def without(spec, hid):
+        spec = copy.deepcopy(spec)
+        for h in spec["hypotheses"]:
+            if h["id"] == hid:
+                h["parts"] = strip(h["parts"])
+        return spec
+
+    def ram_lines(spec, value="require_defined"):
+        monkeypatch.setattr(BP, "_hypotheses_spec", lambda: spec)
+        return [x for x in BP._downstream(dec(value), []) if "defined RAM" in x]
+
+    spec = copy.deepcopy(BP._hypotheses_spec())
+    # the hypotheses file carries the clause in both: nothing left to do
+    assert ram_lines(spec) == []
+    assert ram_lines(without(spec, "HCv2-3")) == [
+        "protocols/v2/hypotheses_v2.json HCv2-3: count only defined RAM rows"]
+    assert ram_lines(without(without(spec, "HCv2-1"), "HCv2-3")) == [
+        "protocols/v2/hypotheses_v2.json HCv2-1 and HCv2-3: count only defined "
+        "RAM rows"]
+    # a reported part decides nothing: the clause in HCv2-3(concordant)
+    # alone does not do, and HCv2-1(definedness) needs none
+    decisive_only = copy.deepcopy(spec)
+    h3 = next(h for h in decisive_only["hypotheses"] if h["id"] == "HCv2-3")
+    assert [p.get("role") for p in h3["parts"]] == [None, "reported"]
+    assert ram_lines(decisive_only) == []
+    h3["parts"][0] = strip(h3["parts"][0])
+    assert ram_lines(decisive_only) == [
+        "protocols/v2/hypotheses_v2.json HCv2-3: count only defined RAM rows"]
+    # the order of the two alternatives does not matter
+    swapped = without(spec, "HCv2-1")
+    h1 = next(h for h in swapped["hypotheses"] if h["id"] == "HCv2-1")
+    h1["parts"][0]["data"]["where"]["any"] = clause[::-1]
+    assert ram_lines(swapped) == []
+    # another decision asks for nothing of the sort
+    assert ram_lines(without(spec, "HCv2-3"), "keep") == []
+
+
 @pytest.mark.parametrize("bad", [
     {"schema": "x"},
     {"schema": BP.DECISIONS_SCHEMA, "decisions": {"no_such": {"value": 1}}},
