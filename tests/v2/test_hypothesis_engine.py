@@ -1510,7 +1510,8 @@ def _runner_details(p, det):
                 }
             }
     if p == "IIM" and "p_ind" in det:
-        est["p_ind"] = det.pop("p_ind")
+        # the runner writes the rank p-value at both levels
+        out["p_ind"] = est["p_ind"] = det.pop("p_ind")
     if p == "PDI":
         if "n_states" in det:
             est["counts"] = [det.pop("n_states")] * 4
@@ -1595,6 +1596,12 @@ def runner_format(rec):
         for p, c in sc["components"].items():
             c["details"] = _runner_details(p, c.get("details"))
     return rec
+
+
+def with_details(r, **values):
+    """A row whose top-level details carry ``values`` (the layout of the
+    family-B validation records)."""
+    return {**r, "details": {**(r.get("details") or {}), **values}}
 
 
 def with_estimator(r, **values):
@@ -2834,7 +2841,7 @@ PERTURBATIONS = {
             "config.cell.condition": "independent",
             "config.cell.n_time": 1000,
         },
-        lambda r: with_estimator(r, p_ind=0.01),
+        lambda r: with_details(r, p_ind=0.01),
         FAL,
     ),
     "HCv2-3": (
@@ -4681,3 +4688,17 @@ def test_the_held_out_transcription_agrees_with_the_hypotheses(spec):
         vocab["view.eeg_low"],
         vocab["view.bold"],
     }
+
+
+def test_the_iim_rank_p_value_resolves_in_both_record_layouts():
+    """The family-B validation writes ``p_ind`` in the component details
+    only; the runner writes it there and in the estimator details. HCv2-2
+    and HCv2-13 read family-B rows, HCv2-15 (a) reads runner rows."""
+    spec = HE.load_spec()
+    assert spec["fields"]["iim_p_ind"] == "details.p_ind"
+    fields = HE.Fields(spec["fields"], spec["derived"])
+    family_b = {"principle": "IIM", "details": {"p_ind": 0.03}}
+    runner = {"principle": "IIM",
+              "details": {"p_ind": 0.6, "estimator": {"p_ind": 0.6}}}
+    assert fields.get(family_b, "@iim_p_ind") == 0.03
+    assert fields.get(runner, "@iim_p_ind") == 0.6

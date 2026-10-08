@@ -115,7 +115,7 @@
   "nas_rank1_z_return": "details.estimator.descriptors.pooled_rank1.te_out_z",
   "nas_excess_receive": "details.estimator.directions.receive.excess",
   "nas_excess_return": "details.estimator.directions.return.excess",
-  "iim_p_ind": "details.estimator.p_ind",
+  "iim_p_ind": "details.p_ind",
   "pdi_k_full": "details.estimator.full_bearer.counts.0",
   "pdi_k_content": "details.estimator.counts.0",
   "pdi_ami_ignition": "details.estimator.ami_ignition_full_bearer",
