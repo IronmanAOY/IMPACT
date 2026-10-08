@@ -2741,6 +2741,7 @@ def build_parser() -> argparse.ArgumentParser:
     mp.add_argument("--out", required=True)
     mp.add_argument("--confirmatory", action="store_true")
     mp.add_argument("--freeze-tag", default=None)
+    mp.add_argument("--workers", type=int, default=1)
     for name in ("run", "list"):
         p = sub.add_parser(name, help="run a plan" if name == "run"
                            else "print the task ids of a plan")
@@ -2781,20 +2782,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 # generator family of the manipulation checks -> family label of the records
 MANIPULATION_FAMILY = {"C": "C1"}
+# tables of the prerequisite M, in the order they are written
+MANIPULATION_TABLES = ("switches", "realisation", "summary", "pc_half",
+                       "pc_half_summary", "twins")
 
 
 def run_manipulation(seeds: Sequence[int], out_dir, *, families=("A", "C"),
                      confirmatory: bool = False, freeze_tag: Optional[str] = None,
-                     repo_root=None) -> dict:
+                     repo_root=None, workers: int = 1) -> dict:
     """
     The prerequisite M (:func:`impact_pipeline.bench.manipulation_v2.
-    prerequisite_m`): the frozen switch checks and the realisation checks of
-    the new systems, written to ``manipulation_switches.csv``,
-    ``manipulation_realisation.csv`` and ``manipulation_summary.csv`` with a
-    manifest. Oracle channels only, so it may run on development seeds
-    before the freeze; confirmatory seeds go through the confirmatory guard.
-    ``complete`` (every check computed) is reported apart from the pass/fail
-    of the checks.
+    prerequisite_m`): the frozen switch checks and the gated realisation
+    checks of the new systems and of the slow-context arm, written to
+    ``manipulation_switches.csv``, ``manipulation_realisation.csv`` and
+    ``manipulation_summary.csv``, and the reported checks (never gates),
+    written to ``manipulation_pc_half.csv`` (per seed),
+    ``manipulation_pc_half_summary.csv`` and ``manipulation_twins.csv``,
+    with a manifest. Oracle channels only, so it may run on development
+    seeds before the freeze; confirmatory seeds go through the confirmatory
+    guard. ``complete`` (every gated check computed) is reported apart from
+    the pass/fail of the checks; the manifest lists the checks that are not
+    usable and, under ``reported``, the outcomes of the reported checks.
+    ``workers`` > 1 runs the checks on that many processes (same tables).
     """
     from impact_pipeline.bench import manipulation_v2 as MV
 
@@ -2807,24 +2816,32 @@ def run_manipulation(seeds: Sequence[int], out_dir, *, families=("A", "C"),
         raise RunPolicyError(f"confirmatory guard: {exc}") from exc
     if not confirmatory:
         S.assert_development(seeds)
-    res = MV.prerequisite_m(seeds, families=tuple(families))
+    res = MV.prerequisite_m(seeds, families=tuple(families), workers=int(workers))
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    for name in ("switches", "realisation", "summary"):
+    tables = {}
+    for name in MANIPULATION_TABLES:
+        if name not in res:
+            continue
         table = res[name]
         if "family" in getattr(table, "columns", ()):
             # the records name the v1 family C "C1"; usability is looked up
             # by the record's family, so the checks carry the same label
             table = table.assign(family=table["family"].replace(MANIPULATION_FAMILY))
         table.to_csv(out / f"manipulation_{name}.csv", index=False)
-    summary = res["summary"]
-    passed = (bool(summary["usable"].all()) if "usable" in summary.columns else None)
+        tables[name] = table
+    summary = tables["summary"]
+    usable = "usable" in summary.columns
+    passed = bool(summary["usable"].all()) if usable else None
     manifest = {
-        "schema": "mpc-bench-manipulation-manifest/2",
+        "schema": "mpc-bench-manipulation-manifest/3",
         "runner_version": RUNNER_VERSION,
         "check_versions": res["check_versions"],
         "seeds": seeds, "split": res["split"], "families": list(families),
         "complete": bool(res["complete"]), "all_usable": passed,
+        "not_usable": (_manipulation_labels(summary[~summary["usable"].astype(bool)])
+                       if usable else []),
+        "reported": _reported_outcomes(tables),
         "provenance": _sanitize(prov), "confirmatory": bool(confirmatory),
     }
     (out / "manipulation_manifest.json").write_text(
@@ -2832,12 +2849,45 @@ def run_manipulation(seeds: Sequence[int], out_dir, *, families=("A", "C"),
     return manifest
 
 
+def _manipulation_labels(rows) -> List[str]:
+    """``<family>:<check id>`` of summary rows, the check id as the
+    hypothesis evaluator names it (the switch, or
+    ``<system>[:<variant>]/<check>``)."""
+    out = []
+    for r in rows.to_dict("records"):
+        sw, var = r.get("switch"), r.get("variant")
+        if isinstance(sw, str) and sw:
+            cid = sw
+        else:
+            var = f":{var}" if isinstance(var, str) and var else ""
+            cid = f"{r.get('system_id')}{var}/{r.get('check')}"
+        out.append(f"{r.get('family')}:{cid}")
+    return out
+
+
+def _reported_outcomes(tables: Mapping) -> dict:
+    """The reported checks of the prerequisite M: whether the PC_half median
+    lies between the off and nominal medians (per family and switch), and
+    the twin checks passed per family and twin witness."""
+    out = {}
+    pc = tables.get("pc_half_summary")
+    if pc is not None and not pc.empty:
+        out["pc_half_between"] = {f"{r['family']}:{r['switch']}": bool(r["between"])
+                                  for r in pc.to_dict("records")}
+    tw = tables.get("twins")
+    if tw is not None and not tw.empty:
+        groups = tw.groupby(["family", "system_id"], sort=False)["passed"]
+        out["twins"] = {f"{fam}:{sid}": {"passes": int(v.sum()), "n": int(v.size)}
+                        for (fam, sid), v in groups}
+    return out
+
+
 def _main(args) -> int:
     if args.command == "manipulation":
         man = run_manipulation(_parse_ints(args.seeds), args.out,
                                families=tuple(_parse_list(args.families)),
                                confirmatory=args.confirmatory,
-                               freeze_tag=args.freeze_tag)
+                               freeze_tag=args.freeze_tag, workers=args.workers)
         print(f"prerequisite M: complete={man['complete']} "
               f"all_usable={man['all_usable']}; results in {args.out}")
         # 0 iff every check was computed; pass/fail is reported, not the code

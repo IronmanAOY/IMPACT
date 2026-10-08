@@ -247,8 +247,10 @@ RESTRICTED_CPU_S_PER_TASK = {
 }
 # The oracle checks (prerequisite M and the realisation checks) per seed of
 # families A and C: one development seed took 9.7 s including the start-up
-# of the process (calibration smoke test, CD-13).
-ORACLE_CPU_S_PER_SEED = 8.0
+# of the process (calibration smoke test, CD-13); the slow-context check and
+# the reported PC_half and twin checks add about 30 s (PC_half 7.5 s, the
+# twins of A and C1 22 s, measured on seed 320).
+ORACLE_CPU_S_PER_SEED = 38.0
 
 
 class CalibrationError(ValueError):
@@ -316,8 +318,10 @@ ITEMS: Tuple[Item, ...] = (
          "sweeps; no estimator",
          (Run("constants", CONSTANTS),)),
     Item("oracle_checks", ("CD-13",),
-         "prerequisite M and the realisation checks of the new systems on "
-         "development seeds 320-359 (oracle channels only)",
+         "prerequisite M on development seeds 320-359 (oracle channels only): "
+         "the switch checks, the gated realisation checks of the new systems "
+         "and of the slow-context BOLD arm, and the reported PC_half and twin "
+         "checks of design 3.5",
          (Run("manipulation", MANIPULATION, seeds=ORACLE_SEEDS),)),
     Item("anchors_A", ("CD-7", "CD-11"),
          "family-A reference block 900-939: PC_nominal and the six single deficits "
@@ -973,10 +977,12 @@ def run_one(item: Item, run: Run, *, root=DEFAULT_ROOT, workers: int = 1, seeds=
         if limit is not None:
             sd = sd[: int(limit)]
         check_seed_list(sd)
-        man = RB.run_manipulation(sd, out, families=ORACLE_FAMILIES)
+        man = RB.run_manipulation(sd, out, families=ORACLE_FAMILIES,
+                                  workers=int(workers))
         prov = _provenance(item, run, n_tasks=len(sd), seeds=sd, settings=None,
                            argv=argv)
-        prov["outcome"] = {"complete": man["complete"], "all_usable": man["all_usable"]}
+        prov["outcome"] = {"complete": man["complete"], "all_usable": man["all_usable"],
+                           "not_usable": man["not_usable"], "reported": man["reported"]}
         _write_provenance(out, prov, started)
         return prov["outcome"]
     if run.kind == FAMILY_B:

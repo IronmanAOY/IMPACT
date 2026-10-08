@@ -17128,7 +17128,7 @@
   ]
  },
  "oracle_checks": {
-  "note": "prerequisite M per row: a part with requires.oracle drops every row of a system whose switch or realisation check is not usable in the row's family (reason ORACLE; a cell that loses every row is listed as NOT_EVALUABLE); a paired row needs the checks of both of its systems. Check ids are those of bench.manipulation_v2: the switch name, or <system>[:<variant>]/<check>.",
+  "note": "prerequisite M per row: a part with requires.oracle drops every row of a system whose switch or realisation check is not usable in the row's family (reason ORACLE; a cell that loses every row is listed as NOT_EVALUABLE); a paired row needs the checks of both of its systems. A row that matches a condition's where also needs the condition's checks, looked up in the condition's family (registry entries carry no family). Check ids are those of bench.manipulation_v2: the switch name, or <system>[:<variant>]/<check>.",
   "systems": {
    "W_RAM_no_plasticity": [
     "eta"
@@ -17169,7 +17169,26 @@
     "ADV_NAS_staggered_sat:saturating/driver_reaches_every_module",
     "ADV_NAS_staggered_sat:saturating/stated_time_constants"
    ]
-  }
+  },
+  "conditions": [
+   {
+    "label": "slow-context BOLD arm (forward_a_bold): every condition of the arm runs under the slow_context_bold preset, so its records, anchor replications and registry entries need the realisation of the preset (design 3.4; a gate because a failed realisation means the condition was not produced)",
+    "where": {
+     "any": [
+      {
+       "arm": "forward_a_bold"
+      },
+      {
+       "config.forward.arm": "forward_a_bold"
+      }
+     ]
+    },
+    "family": "@family.A",
+    "checks": [
+     "PC_nominal:slow_context_bold/slow_context_dwell"
+    ]
+   }
+  ]
  },
  "pending_calibration": [
   {
@@ -17255,8 +17274,8 @@
    "role": "prerequisite",
    "labels": [],
    "successor_of": "M",
-   "statement": "A switch or new system is usable in a family iff its check passes in >= 36/40 seeds (seeds 20000-20039). Parts that need an unusable switch or system are NOT_EVALUABLE (reason ORACLE).",
-   "expectation": "v1: 12/12 family x switch cells usable (worst 39/40). Development (CD-13, seeds 320-359): 25 of 26 checks pass 40/40, every switch check of families A and C1 among them; ADV_NAS_staggered_tau10 driver_reaches_every_module passes 34/40 (36 needed; the six failures, 0.035-0.048 against the floor 0.05, are in the 8 s modules), so that condition is predicted not usable: P(usable) is 0.26 at a true pass rate of 0.85 and 0.63 at 0.90, about 0.74 not usable. If it is not usable, its HCv2-0(b) cell is FALSIFIED and HCv2-9(d) is NOT_EVALUABLE (reason ORACLE). The condition, its check and its threshold are unchanged.",
+   "statement": "A switch or new system is usable in a family iff its check passes in >= 36/40 seeds (seeds 20000-20039). Parts that need an unusable switch or system are NOT_EVALUABLE (reason ORACLE). The realisation check of the slow-context preset (PC_nominal under slow_context_bold, family A) is gated in the same way and is required by the rows of the forward BOLD arm only (oracle_checks.conditions). PC_half between the off and nominal medians and the twin hashes are reported, never gates.",
+   "expectation": "v1: 12/12 family x switch cells usable (worst 39/40). Development (CD-13, seeds 320-359): 26 of 27 checks pass 40/40, every switch check of families A and C1 among them and the slow-context check (shortest complete context run 30.0-34.5 s against 30 s); ADV_NAS_staggered_tau10 driver_reaches_every_module passes 34/40 (36 needed; the six failures, 0.035-0.048 against the floor 0.05, are in the 8 s modules), so that condition is predicted not usable: P(usable) is 0.26 at a true pass rate of 0.85 and 0.63 at 0.90, about 0.74 not usable. If it is not usable, its HCv2-0(b) cell is FALSIFIED and HCv2-9(d) is NOT_EVALUABLE (reason ORACLE). The condition, its check and its threshold are unchanged. Reported (development): PC_half lies between the off and nominal medians in 10 of 12 family x switch cells; not for K in A and C1, whose context-information signature is higher at PC_half's K = 3 than at the nominal K = 6 (medians 0.66 against 0.49 in A, 0.64 against 0.63 in C1); the twins pass 1920/1920 (8 twin witnesses x 40 seeds x replicates 1-6).",
    "parts": [
     {
      "id": "HCv2-0(a)",
@@ -17287,7 +17306,7 @@
     },
     {
      "id": "HCv2-0(b)",
-     "text": "realisation checks of the new systems (mpc-bench-manipulation/1.1.0) usable",
+     "text": "realisation checks of the new systems and of the slow-context preset (mpc-bench-manipulation/1.1.0) usable",
      "rule": "usable_share",
      "params": {
       "share": 0.9,
@@ -17311,6 +17330,59 @@
        "seed"
       ]
      }
+    },
+    {
+     "id": "HCv2-0(c)",
+     "text": "reported: PC_half lies between the switched-off and the nominal medians of each 1.0.0 signature, per family and switch (design 3.5; never a gate)",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "source": "manipulation",
+      "where": {
+       "kind": "reported",
+       "system_id": "PC_half",
+       "check": "between_off_and_nominal"
+      },
+      "event": {
+       "passed": true
+      },
+      "cells": [
+       "family",
+       "check_id"
+      ],
+      "cluster": [
+       "family",
+       "check_id"
+      ]
+     },
+     "role": "reported"
+    },
+    {
+     "id": "HCv2-0(d)",
+     "text": "reported: twins of the twin witnesses (replicates 1-6, families A and C1) share the structural hash of replicate 0 and differ from it in the schedule hash and the series (design 3.5; the integrity audit IA-10 checks the same on the records)",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "source": "manipulation",
+      "where": {
+       "kind": "reported",
+       "check": "twin_hashes"
+      },
+      "event": {
+       "passed": true
+      },
+      "cells": [
+       "family",
+       "system_id"
+      ],
+      "cluster": [
+       "family",
+       "system_id",
+       "seed",
+       "replicate"
+      ]
+     },
+     "role": "reported"
     }
    ]
   },
@@ -18226,7 +18298,10 @@
       "value": "excess"
      },
      "label": "R",
-     "notes": "The v1 quadrant comparator protocols hopf-eeg64+iim_v1_quadrants and hopf-eeg64_noref+iim_v1_quadrants have their own validity-only anchors, from the quadrant pipeline on the released G_nom reference runs, and replicate here like every forward view; they do not inherit the v2 cluster pipeline's anchor (design_IIM D3). The PRESENT statuses of HCv2-15(b) are judged under these anchors."
+     "notes": "The v1 quadrant comparator protocols hopf-eeg64+iim_v1_quadrants and hopf-eeg64_noref+iim_v1_quadrants have their own validity-only anchors, from the quadrant pipeline on the released G_nom reference runs, and replicate here like every forward view; they do not inherit the v2 cluster pipeline's anchor (design_IIM D3). The PRESENT statuses of HCv2-15(b) are judged under these anchors.",
+     "requires": {
+      "oracle": true
+     }
     }
    ]
   },
@@ -21327,7 +21402,10 @@
       "cell_label": "{view}"
      },
      "label": "R",
-     "notes": "Corrected before the release of the held-out anchors as a logical error (CD-5). The original admitted_for_absent predictions (yes on EEG-64 and EEG-low; no on BOLD, 'K = 3 read as one state'; committed in d3bcb09 and kept in original_predictions) assumed the exact path that design decision 9 had already rejected: a concordant PDI count outside an admitted concordance cell is UNDEFINED(NO_SAMPLING_SE), never ABSENT, and no forward cell is admitted (the CD-5 battery covers the source cell only). The corrected values follow mechanically from the 3.6 rule (absent needs FM0 and FMabs; vacuous iff pi0 < 0.1) on the development-regime forward rows (dry run 384-399 and 804-819, lead-field seed 20260928, width 0.5) judged under a development-regime build: on every view FM0 holds, none of the 22 on-runs per view is ABSENT (FMabs is demonstrable at the 190 confirmatory on-runs) and every null run is UNDEFINED(NO_SAMPLING_SE), so pi0 = 0 and each view is vacuous. The PRESENT predictions are unchanged."
+     "notes": "Corrected before the release of the held-out anchors as a logical error (CD-5). The original admitted_for_absent predictions (yes on EEG-64 and EEG-low; no on BOLD, 'K = 3 read as one state'; committed in d3bcb09 and kept in original_predictions) assumed the exact path that design decision 9 had already rejected: a concordant PDI count outside an admitted concordance cell is UNDEFINED(NO_SAMPLING_SE), never ABSENT, and no forward cell is admitted (the CD-5 battery covers the source cell only). The corrected values follow mechanically from the 3.6 rule (absent needs FM0 and FMabs; vacuous iff pi0 < 0.1) on the development-regime forward rows (dry run 384-399 and 804-819, lead-field seed 20260928, width 0.5) judged under a development-regime build: on every view FM0 holds, none of the 22 on-runs per view is ABSENT (FMabs is demonstrable at the 190 confirmatory on-runs) and every null run is UNDEFINED(NO_SAMPLING_SE), so pi0 = 0 and each view is vacuous. The PRESENT predictions are unchanged.",
+     "requires": {
+      "oracle": true
+     }
     }
    ]
   },

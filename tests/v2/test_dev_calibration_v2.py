@@ -99,3 +99,26 @@ def test_a_non_finite_value_cannot_reach_the_file(tmp_path, monkeypatch):
     monkeypatch.setattr(DC, "strict_json", lambda obj: obj)
     with pytest.raises(ValueError):
         DC.write_constants(tmp_path / "c.json", {"a": float("nan")})
+
+
+def test_the_oracle_item_runs_on_the_workers_and_records_the_reported_checks(
+        tmp_path, monkeypatch):
+    calls = []
+
+    def fake(seeds, out, *, families, workers):
+        calls.append((list(seeds), tuple(families), workers))
+        return {"complete": True, "all_usable": False,
+                "not_usable": ["A:ADV_NAS_staggered_tau10:tau10/x"],
+                "reported": {"pc_half_between": {"A:K": False}}}
+
+    monkeypatch.setattr(DC.RB, "run_manipulation", fake)
+    out = DC.run_item("oracle_checks", root=tmp_path, workers=12, limit=2)
+    assert calls == [([320, 321], DC.ORACLE_FAMILIES, 12)]
+    assert out["manipulation"]["not_usable"] == ["A:ADV_NAS_staggered_tau10:tau10/x"]
+    assert out["manipulation"]["reported"] == {"pc_half_between": {"A:K": False}}
+    prov = json.loads((tmp_path / "oracle_checks" / "manipulation"
+                       / DC.PROVENANCE_JSON).read_text(encoding="utf-8"))
+    assert prov["outcome"]["reported"] == {"pc_half_between": {"A:K": False}}
+    item = DC.get_item("oracle_checks")
+    assert "slow-context" in item.description and "PC_half" in item.description
+    assert DC.plan_run(item.runs[0])["cpu_s"] == 40 * DC.ORACLE_CPU_S_PER_SEED

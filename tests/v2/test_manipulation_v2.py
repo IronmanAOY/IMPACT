@@ -219,15 +219,71 @@ def test_prerequisite_m_collects_switches_and_new_systems():
     assert set(summ["kind"]) == {"switch", "new_system"}
     assert (summ.loc[summ.kind == "switch", "n"] == 1).all()
     new = summ[summ.kind == "new_system"]
-    assert set(new["system_id"]) == set(MV.CHECKS_BY_SYSTEM)
+    assert set(new["system_id"]) == set(MV.CHECKS_BY_SYSTEM) | {"PC_nominal"}
     assert out["complete"] and out["seeds"] == [0]
     assert out["split"] == "development"
     # 16 trials hold no reversal: the reversal-tracking signature is 0 at the
     # nominal dose, its relative change undefined, and the data incomplete
-    only_a = MV.prerequisite_m([1], families=("A",), config=SMALL)
+    only_a = MV.prerequisite_m([1], families=("A",), config=SMALL, reported=False)
     assert set(only_a["switches"]["family"]) == {"A"}
     assert "N_uncoupled" not in set(only_a["realisation"]["system_id"])
     assert not only_a["complete"]
+    assert "pc_half" not in only_a and "twins" not in only_a
+
+
+def test_prerequisite_m_gates_the_slow_context_preset_and_reports_the_rest():
+    """The slow-context check is a gated realisation row of family A (after
+    the new systems, the switch and system rows unchanged); PC_half and the
+    twins are reported, with gate False; more workers give the same tables."""
+    cfg = SMALL.replace(n_trials=40)
+    out = MV.prerequisite_m([0, 1], config=cfg)
+    real = out["realisation"]
+    ref = MV.realisation_report([0, 1], config=cfg)
+    pd.testing.assert_frame_equal(real.iloc[: len(ref)].reset_index(drop=True), ref)
+    slow = real.iloc[len(ref):]
+    assert list(slow.columns) == list(MV.REALISATION_COLUMNS)
+    assert set(slow["family"]) == {"A"} and list(slow["seed"]) == [0, 1]
+    assert set(slow["system_id"]) == {"PC_nominal"}
+    assert set(slow["variant"]) == {"slow_context_bold"}
+    assert set(slow["check"]) == {"slow_context_dwell"}
+    assert slow["gate"].all() and slow["passed"].all()
+    assert (slow["value"] >= MV.SLOW_CONTEXT_MIN_DWELL_SEC - 0.05).all()
+    summ = out["summary"].set_index("check")
+    assert summ.loc["slow_context_dwell", "usable"]
+    assert summ.loc["slow_context_dwell", "family"] == "A"
+    sw = pd.concat([M.manipulation_report(f, [0, 1], cfg)
+                    for f in (g.simulate_family_a, g.simulate_family_c)],
+                   ignore_index=True)
+    pd.testing.assert_frame_equal(out["switches"], sw)
+    # reported
+    pc = out["pc_half"]
+    assert len(pc) == 2 * 2 * len(M.SWITCHES)
+    ps = out["pc_half_summary"]
+    assert len(ps) == 2 * len(M.SWITCHES) and not ps["gate"].any()
+    assert (ps["passed"] == ps["between"]).all()
+    assert set(ps["system_id"]) == {"PC_half"}
+    assert list(ps["variant"]) == list(ps["switch"])
+    tw = out["twins"]
+    assert not tw["gate"].any() and set(tw["check"]) == {MV.TWIN_CHECK}
+    assert set(zip(tw["family"], tw["system_id"])) == {
+        (f, s) for f in ("A", "C") for s in MV.twin_systems(f)}
+    assert sorted(set(tw["replicate"])) == list(MV.TWIN_REPLICATES)
+    assert MV.TWIN_REPLICATES == (1, 2, 3, 4, 5, 6)
+    assert tw["passed"].all()
+    one = MV.prerequisite_m([0], families=("A",), config=cfg)
+    two = MV.prerequisite_m([0], families=("A",), config=cfg, workers=2)
+    for key in ("switches", "realisation", "summary", "pc_half", "pc_half_summary",
+                "twins"):
+        pd.testing.assert_frame_equal(one[key], two[key])
+
+
+def test_twin_systems_are_those_of_the_twin_designs():
+    from impact_pipeline.bench.designs_v2 import twins as T
+
+    assert tuple(MV.twin_systems("A")) == T.twin_classes("A")
+    assert tuple(MV.twin_systems("C")) == T.twin_classes("C")
+    assert MV.TWIN_REPLICATES == tuple(T.REPLICATES["A"][S.CONFIRMATORY])
+    assert MV.TWIN_REPLICATES == tuple(T.REPLICATES["C1"][S.CONFIRMATORY])
 
 
 def test_prerequisite_m_keeps_the_seed_policy():
@@ -277,6 +333,11 @@ def test_pc_half_rows_and_summary():
     summ = MV.pc_half_summary(synth).set_index("switch")
     assert summ.loc["eta", "between"] and not summ.loc["K", "between"]
     assert summ.loc["eta", "median_half"] == 0.5 and not summ["gate"].any()
+    # each summary row is a reported check row
+    assert summ.loc["eta", "passed"] and not summ.loc["K", "passed"]
+    assert set(summ["system_id"]) == {"PC_half"}
+    assert set(summ["check"]) == {"between_off_and_nominal"}
+    assert summ.loc["K", "variant"] == "K"
 
 
 def test_twin_check():
@@ -285,6 +346,7 @@ def test_twin_check():
     assert df["passed"].all() and df["same_structure"].all()
     assert df["new_schedule"].all() and df["new_series"].all()
     assert df["r0_equals_reference"].isna().all()
+    assert set(df["check"]) == {"twin_hashes"} and not df["gate"].any()
     ref = g.simulate_family_a(None, SMALL, 2)
     ok = MV.twin_check("PC_nominal", 2, (1,), "A", config=SMALL, reference=ref)
     assert ok["r0_equals_reference"].iloc[0] and ok["passed"].iloc[0]
@@ -302,6 +364,24 @@ def test_slow_context_check_fails_without_slow_contexts():
     assert row["config_in_force"] and row["n_runs"] > 0
     assert row["shortest_run_sec"] < MV.SLOW_CONTEXT_MIN_DWELL_SEC
     assert not row["passed"]
+    # a gated realisation row of the preset (check id
+    # PC_nominal:slow_context_bold/slow_context_dwell)
+    assert row["gate"] and row["variant"] == "slow_context_bold"
+    assert row["check"] == "slow_context_dwell" and row["system_id"] == "PC_nominal"
+    assert row["value"] == row["shortest_run_sec"]
+    assert row["threshold"] == MV.SLOW_CONTEXT_MIN_DWELL_SEC
+    assert row["details"]["n_runs"] == row["n_runs"]
+    assert MV.SLOW_CONTEXT_CHECK_ID == "PC_nominal:slow_context_bold/slow_context_dwell"
+    # the nominal preset is realised; without context changes the check fails
+    ok = MV.slow_context_check(1).iloc[0]
+    assert ok["passed"] and ok["value"] >= MV.SLOW_CONTEXT_MIN_DWELL_SEC - 0.05
+    cat["config_presets"]["slow_context_bold"]["config"]["ctx_dwell"] = [1e6, 2e6]
+    none = MV.slow_context_check(1, catalogue=cat).iloc[0]
+    assert none["n_runs"] == 0 and none["value"] == 0.0 and not none["passed"]
+    # the preset's timing must be in force
+    cat = copy.deepcopy(A2.load_catalogue_v2())
+    row = MV.slow_context_check(1, catalogue=cat, config={"trial_sec": 6.0}).iloc[0]
+    assert row["passed"]  # the preset overrides the caller's trial length
 
 
 def test_real_hashes_of_twins_seeds_and_knobs():

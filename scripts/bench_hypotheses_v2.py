@@ -9,9 +9,11 @@ loads the inputs, applies the refusals and writes the outputs.
 Inputs
 ------
 ``--records``         ``mpc-bench-result/3`` JSON-lines files or directories
-``--manipulation``    the per-seed tables of the prerequisite M: the switch
-                      checks and the realisation checks
-                      (``bench.manipulation_v2.prerequisite_m``; CSV or JSON)
+``--manipulation``    the tables of the prerequisite M: the switch checks,
+                      the realisation checks and the reported checks
+                      (``bench.manipulation_v2.prerequisite_m``; CSV or JSON;
+                      tables without a ``passed`` column, such as the
+                      usability summary, are left out)
 ``--registry``        registry v3 admission entries (JSON)
 ``--protocols``       the frozen family protocols (``impact-mpc-protocol/3``
                       files ``mpc_bench_v2_<key>.json`` or their
@@ -124,9 +126,11 @@ def _read_table(path) -> List[dict]:
 
 
 def manipulation_source(paths) -> List[dict]:
-    """The ``manipulation`` rows from switch and realisation tables (a table
-    with a ``switch`` column holds switch checks; one with ``system_id`` and
-    ``check`` holds realisation checks)."""
+    """The ``manipulation`` rows from switch and realisation tables (a row
+    with a ``switch`` holds a switch check; one with ``system_id`` and
+    ``check`` a realisation check; a row with ``gate`` False is a reported
+    check; :func:`HE.manipulation_rows` leaves out rows without a
+    ``passed`` field)."""
     switches, real = [], []
     for p in _files(paths, ("*.csv", "*.json")):
         rows = _read_table(p)

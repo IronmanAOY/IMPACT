@@ -116,10 +116,14 @@ directions), else from ``se_c`` and ``df_c``.
 Prerequisite M is applied per row: a part's ``requires`` names switch or
 realisation checks (``usable``; check ids may be templates on the row) and,
 with ``oracle``, the checks of the row's system in the file's
-``oracle_checks`` (both systems of a paired row). A row whose check is not
-usable in its family is dropped; a cell that loses every row is listed as
-``NOT_EVALUABLE`` (reason ORACLE), and the part is NOT_EVALUABLE when no
-row is left.
+``oracle_checks`` (both systems of a paired row) and the checks of every
+``oracle_checks`` condition whose ``where`` the row matches (a condition
+may name the family its checks belong to, for rows without one, such as
+registry entries). A row whose check is not usable in its family is
+dropped; a cell that loses every row is listed as ``NOT_EVALUABLE``
+(reason ORACLE), and the part is NOT_EVALUABLE when no row is left. Rows of
+reported manipulation checks (``gate`` False) are of kind ``reported`` and
+never enter the usability.
 
 Also here: the one map between the names of the v2 protocol files and the
 names of the v2 estimators (:data:`PROTOCOL_ESTIMATOR_NAMES`), and the one
@@ -2284,14 +2288,22 @@ def check_id(row: Mapping) -> str:
     """The id of a prerequisite-M check: the switch name for a frozen 1.0.0
     switch check (``eta``, ``K``, ``g_b``, ``ff_only``, ``c_int``, ``e``),
     ``<system>[:<variant>]/<check>`` for a realisation check of a new
-    system (``bench.manipulation_v2`` rows)."""
-    if not _blank(row.get("switch")):
-        return str(row["switch"])
+    system and for a row that names both a system and a check, such as a
+    reported PC_half row that also names its switch (``bench.manipulation_v2``
+    rows)."""
     sysid, check = row.get("system_id"), row.get("check")
+    if not _blank(row.get("switch")) and (_blank(sysid) or _blank(check)):
+        return str(row["switch"])
     if _blank(sysid) or _blank(check):
         raise ValueError("a manipulation row names a switch or a system and a check")
     var = row.get("variant")
     return f"{sysid}{'' if _blank(var) else ':' + str(var)}/{check}"
+
+
+def _truth(v) -> bool:
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1")
+    return bool(v)
 
 
 def manipulation_rows(
@@ -2300,20 +2312,22 @@ def manipulation_rows(
     """Rows of the ``manipulation`` source from the per-seed tables of the
     prerequisite M (``bench.manipulation_v2.prerequisite_m``: ``switches``
     with family, switch, seed, passed; ``realisation`` with system_id,
-    variant, family, check, seed, passed): ``kind`` (switch or new_system),
-    ``check_id``, ``family``, ``seed`` and ``passed``."""
+    variant, family, check, seed, passed): ``kind`` (switch or new_system;
+    ``reported`` for a row whose ``gate`` is false, a reported check that
+    never decides usability), ``check_id``, ``family``, ``seed`` and
+    ``passed``. A row without a ``passed`` field is not a check result (a
+    usability summary or a table of signature values) and is left out; a
+    check row whose ``passed`` is blank did not pass."""
     out = []
     for kind, rows in (("switch", switches), ("new_system", realisation)):
         for r in rows:
             d = {k: (None if _blank(v) else v) for k, v in dict(r).items()}
-            d["kind"] = kind
+            if "passed" not in d:
+                continue
+            gate = d.get("gate")
+            d["kind"] = "reported" if gate is not None and not _truth(gate) else kind
             d["check_id"] = check_id(d)
-            passed = d.get("passed")
-            d["passed"] = (
-                (str(passed).strip().lower() in ("true", "1"))
-                if isinstance(passed, str)
-                else bool(passed)
-            )
+            d["passed"] = _truth(d["passed"])
             if d.get("seed") is not None:
                 d["seed"] = int(d["seed"])
             out.append(d)
@@ -2986,6 +3000,31 @@ def validate_spec(spec: Mapping) -> dict:
             ):
                 raise SpecError(f"oracle_checks of {name}: a list of check ids")
         _check_refs(oracle["systems"], "oracle_checks", vocab, fields)
+        conds = oracle.get("conditions", [])
+        if not isinstance(conds, list):
+            raise SpecError("oracle_checks.conditions is a list")
+        for i, cond in enumerate(conds):
+            where = f"oracle_checks.conditions[{i}]"
+            if not isinstance(cond, Mapping) or set(cond) - {
+                "label",
+                "where",
+                "family",
+                "checks",
+            }:
+                raise SpecError(
+                    f"{where}: a condition takes label, where, family and checks"
+                )
+            if not isinstance(cond.get("where"), Mapping) or not cond["where"]:
+                raise SpecError(f"{where}: a condition needs a 'where' predicate")
+            checks = cond.get("checks")
+            if not isinstance(checks, list) or not checks or not all(
+                isinstance(c, str) and c for c in checks
+            ):
+                raise SpecError(f"{where}: checks is a list of check ids")
+            if cond.get("family") is not None and not isinstance(cond["family"], str):
+                raise SpecError(f"{where}: family is a family label")
+            _check_predicate(cond["where"], where, fields)
+            _check_refs(cond, where, vocab, fields)
     for name, blk in (spec.get("seed_blocks") or {}).items():
         dev, conf = blk.get("development"), blk.get("confirmatory")
         if dev is not None:
@@ -3496,20 +3535,35 @@ def _concordance_admitted(cond: Mapping, ctx: Context) -> Optional[bool]:
     return False if seen and ctx.protocols else None
 
 
-def _row_checks(row, req: Mapping, spec: Mapping, fields) -> List[str]:
-    """The prerequisite-M checks a row needs: the part's ``usable`` checks
-    and, with ``oracle``, the checks of the row's system (and of the b system
-    of a paired row) in the file's ``oracle_checks``; check ids may be
-    templates on the row (``{system}:{@variant}/stated_time_constants``)."""
-    out = [render_template(c, row, fields) for c in req.get("usable") or ()]
+def _row_checks(row, req: Mapping, spec: Mapping, fields) -> List[Tuple[str, str]]:
+    """The prerequisite-M checks a row needs, as (family, check id): the
+    part's ``usable`` checks and, with ``oracle``, the checks of the row's
+    system (and of the b system of a paired row) in the file's
+    ``oracle_checks`` and the checks of every ``oracle_checks`` condition
+    whose ``where`` the row (or the b row) matches. A check belongs to the
+    row's family unless its condition names one. Check ids may be templates
+    on the row (``{system}:{@variant}/stated_time_constants``)."""
+    fam = str(row.get("family"))
+    out = [(fam, render_template(c, row, fields)) for c in req.get("usable") or ()]
     if req.get("oracle"):
-        systems = (spec.get("oracle_checks") or {}).get("systems") or {}
+        oracle = spec.get("oracle_checks") or {}
+        systems = oracle.get("systems") or {}
         for r in (row, row.get("_b_row")):
-            if r is not None:
-                out += [
-                    render_template(c, r, fields)
-                    for c in systems.get(r.get("system"), ())
-                ]
+            if r is None:
+                continue
+            out += [
+                (fam, render_template(c, r, fields))
+                for c in systems.get(r.get("system"), ())
+            ]
+            for cond in oracle.get("conditions") or ():
+                where = resolve(cond.get("where"), spec)
+                if evaluate_predicate(where, r, fields) is True:
+                    cf = fam
+                    if cond.get("family"):
+                        cf = str(resolve(cond["family"], spec))
+                    out += [
+                        (cf, render_template(c, r, fields)) for c in cond["checks"]
+                    ]
     return out
 
 
@@ -3532,18 +3586,17 @@ def _requires(
     failing: "OrderedDict[str, set]" = OrderedDict()
     n_kept: Dict[str, int] = {}
     for r in prep.rows:
-        fam = str(r.get("family"))
         bad = sorted(
             {
-                c
-                for c in _row_checks(r, req, spec or {}, fields)
-                if not ctx.usability.get((fam, str(c)), False)
+                (f, c)
+                for f, c in _row_checks(r, req, spec or {}, fields)
+                if not ctx.usability.get((f, str(c)), False)
             }
         )
         cell = r.get("_cell")
         n_kept.setdefault(cell, 0)
         if bad:
-            failing.setdefault(cell, set()).update(f"{fam}:{c}" for c in bad)
+            failing.setdefault(cell, set()).update(f"{f}:{c}" for f, c in bad)
         else:
             kept.append(r)
             n_kept[cell] += 1
@@ -3755,6 +3808,14 @@ def _evaluate_part(
     for cell, g in cell_gates.items():
         if g["outcome"] != "decisive":
             cells.append({"cell": cell, "outcome": g["outcome"], "gate": g})
+    # a cell the prerequisite M emptied is listed once, with the reason ORACLE
+    # (a rule that lists its expected cells reports it as missing too)
+    emptied = {c["cell"] for c in oracle_cells}
+    cells = [
+        c
+        for c in cells
+        if not (c.get("cell") in emptied and c.get("outcome") == NOT_EVALUABLE)
+    ]
     cells.extend(oracle_cells)
     outcome = res.outcome
     preds = resolve(list(part.get("cell_predictions") or ()), spec)

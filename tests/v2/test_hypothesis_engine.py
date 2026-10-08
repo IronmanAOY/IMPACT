@@ -2556,6 +2556,7 @@ class World:
                 ("ADV_NAS_staggered_sat", "saturating"),
             )
         ]
+        checks.append(("A", "PC_nominal", "slow_context_bold", "slow_context_dwell"))
         real = [
             {
                 "family": f,
@@ -2568,7 +2569,21 @@ class World:
             for f, s, v, c in checks
             for seed in range(600, 640)
         ]
-        return HE.manipulation_rows([r for r in rows], real)
+        # the reported checks (gate False): PC_half per family and switch, and
+        # the twins of PC_nominal
+        reported = [
+            {"family": fam, "switch": sw, "system_id": "PC_half", "variant": sw,
+             "check": "between_off_and_nominal", "passed": sw != "K", "gate": False}
+            for fam in ("A", "C1")
+            for sw in ("eta", "K", "g_b", "ff_only", "c_int", "e")
+        ]
+        reported += [
+            {"family": "A", "system_id": "PC_nominal", "check": "twin_hashes",
+             "seed": seed, "replicate": r, "passed": True, "gate": False}
+            for seed in range(600, 640)
+            for r in range(1, 7)
+        ]
+        return HE.manipulation_rows(rows + reported[:12], real + reported[12:])
 
     @staticmethod
     def registry():
@@ -3309,6 +3324,223 @@ def test_prerequisite_m_checks_both_systems_of_a_pair_and_variants():
     assert cells["variant=uniform"]["checks"] == [
         "A:ADV_NAS_staggered_driver:uniform/stated_time_constants"
     ]
+
+
+SLOW = "PC_nominal:slow_context_bold/slow_context_dwell"
+
+
+def test_prerequisite_m_gates_the_slow_context_arm_only(spec):
+    """The slow-context check is required by the rows of the forward BOLD
+    arm (its records, anchor replications and registry entries) and by no
+    other row, and is looked up in family A for registry entries."""
+    (cond,) = spec["oracle_checks"]["conditions"]
+    assert cond["checks"] == [SLOW]
+    fwd = {"forward": {"arm": "forward_a_bold", "condition": "PC_nominal"}}
+    eeg = {"forward": {"arm": "forward_a_eeg", "condition": "PC_nominal"}}
+    rows = [
+        comp_row(f"{lab}{i}", "PC_nominal", "PRESENT", 1.0, seed=i, principle="PDI",
+                 design=design, config=cfg, view=view)
+        for lab, design, cfg, view in (
+            ("bold", "forward_family_a_bold", fwd, "bold"),
+            ("anch", "forward_anchor_replication", fwd, "bold"),
+            ("eeg", "forward_family_a", eeg, "eeg64"),
+            ("wit", "witnesses", {}, None),
+        )
+        for i in range(20)
+    ]
+    part = {
+        "id": "p-oracle-condition",
+        "rule": "three_zone",
+        "params": {"x": 0.8},
+        "requires": {"oracle": True},
+        "data": {"event": {"status": "PRESENT"}, "cells": ["design"]},
+    }
+    mspec = mini_spec([part], oracle_checks=spec["oracle_checks"])
+    out = HE.evaluate_part(part, mspec, _oracle_ctx(rows, {("A", SLOW): False}))
+    cells = {c["cell"]: c for c in out["cells"]}
+    for d in ("forward_family_a_bold", "forward_anchor_replication"):
+        assert cells[f"design={d}"]["outcome"] == NE
+        assert cells[f"design={d}"]["checks"] == [f"A:{SLOW}"]
+    assert cells["design=forward_family_a"]["outcome"] == SUP
+    assert cells["design=witnesses"]["outcome"] == SUP
+    out = HE.evaluate_part(part, mspec, _oracle_ctx(rows, {("A", SLOW): True}))
+    assert {c["outcome"] for c in out["cells"]} == {SUP}
+    # registry entries carry no family: the condition names family A
+    reg = HE.registry_rows(
+        {
+            "entries": [
+                {"principle": "PDI", "arm": arm, "substrate": "x", "view": v,
+                 "admitted_for_present": "yes", "admitted_for_absent": "vacuous",
+                 "anchor_valid": True}
+                for v, arm in (("eeg64", "forward_a_eeg"), ("eeglow", "forward_a_eeg"),
+                               ("bold", "forward_a_bold"))
+            ]
+        }
+    )
+    h21 = spec_part(spec, "HCv2-21")
+    assert h21["requires"] == {"oracle": True}
+    for usable, bold in ((True, SUP), (False, NE)):
+        ctx = HE.build_context(sources={"components": [], "registry": reg})
+        ctx.usability = {("A", SLOW): usable}
+        out = HE.evaluate_part(h21, spec, ctx)
+        cells = {c["cell"]: c for c in out["cells"]}
+        assert out["outcome"] == SUP and cells["eeg64"]["outcome"] == SUP
+        assert cells["bold"]["outcome"] == bold
+        # an emptied cell is listed once, with the reason ORACLE
+        assert [c["cell"] for c in out["cells"]].count("bold") == 1
+        if not usable:
+            assert cells["bold"]["reason"].startswith("ORACLE")
+            assert cells["bold"]["checks"] == [f"A:{SLOW}"]
+    assert spec_part(spec, "HCv2-6(b)")["requires"] == {"oracle": True}
+
+
+def test_oracle_conditions_are_validated():
+    spec = copy.deepcopy(HE.load_spec())
+    good = copy.deepcopy(spec["oracle_checks"]["conditions"][0])
+    for bad, msg in (
+        ({**good, "systems": []}, "a condition takes"),
+        ({**good, "where": {}}, "needs a 'where'"),
+        ({**good, "checks": []}, "list of check ids"),
+        ({**good, "checks": "x/y"}, "list of check ids"),
+        ({**good, "family": 1}, "family label"),
+        ({**good, "where": {"arm": {"bogus": 1}}}, "unknown operators"),
+        ({**good, "family": "@no_such_family"}, "unknown reference"),
+    ):
+        spec["oracle_checks"]["conditions"] = [bad]
+        with pytest.raises(HE.SpecError, match=msg):
+            HE.validate_spec(spec)
+    spec["oracle_checks"]["conditions"] = good
+    with pytest.raises(HE.SpecError, match="is a list"):
+        HE.validate_spec(spec)
+
+
+def test_manipulation_rows_leave_out_summaries_and_keep_reported_checks_apart():
+    switches = [
+        {"family": "A", "switch": "g_b", "seed": 600, "passed": "True"},
+        # a usability summary row and a per-seed PC_half value row: no result
+        {"kind": "switch", "family": "A", "switch": "g_b", "n": 40, "passes": 40,
+         "usable": "True", "system_id": "", "check": ""},
+        {"family": "A", "seed": 600, "switch": "g_b", "nominal": 0.03, "half": 0.02,
+         "off": 0.0},
+        # the reported PC_half row (names its switch and its check)
+        {"family": "A", "switch": "K", "system_id": "PC_half", "variant": "K",
+         "check": "between_off_and_nominal", "between": "False", "passed": "False",
+         "gate": "False"},
+    ]
+    real = [
+        {"family": "A", "system_id": "PC_nominal", "variant": "slow_context_bold",
+         "check": "slow_context_dwell", "seed": 600, "passed": "True", "gate": "True"},
+        {"family": "A", "system_id": "PC_nominal", "check": "twin_hashes",
+         "seed": 600, "replicate": 1, "passed": True, "gate": False},
+        # PC_half has twins too: its twin rows are not PC_half rows of (c)
+        {"family": "A", "system_id": "PC_half", "check": "twin_hashes",
+         "seed": 600, "replicate": 1, "passed": True, "gate": False},
+    ]
+    rows = HE.manipulation_rows(switches, real)
+    got = [(r["kind"], r["check_id"], r["passed"]) for r in rows]
+    assert got == [
+        ("switch", "g_b", True),
+        ("reported", "PC_half:K/between_off_and_nominal", False),
+        ("new_system", SLOW, True),
+        ("reported", "PC_nominal/twin_hashes", True),
+        ("reported", "PC_half/twin_hashes", True),
+    ]
+    # reported rows never decide usability
+    ctx = HE.build_context(sources={"manipulation": rows})
+    rep = HE.evaluate(HE.load_spec(), ctx)
+    assert rep["usability"] == {"A:g_b": True, f"A:{SLOW}": True}
+    h0 = next(h for h in rep["hypotheses"] if h["id"] == "HCv2-0")
+    parts = {p["id"]: p for p in h0["parts"]}
+    assert parts["HCv2-0(c)"]["role"] == "reported"
+    assert parts["HCv2-0(c)"]["outcome"] == HE.REPORTED
+    (cell,) = parts["HCv2-0(c)"]["cells"]
+    assert cell["cell"] == "family=A|check_id=PC_half:K/between_off_and_nominal"
+    assert cell["k"] == 0 and cell["n"] == 1
+    assert [c["cell"] for c in parts["HCv2-0(d)"]["cells"]] == [
+        "family=A|system_id=PC_nominal", "family=A|system_id=PC_half"]
+    assert all(c["k"] == 1 for c in parts["HCv2-0(d)"]["cells"])
+
+
+def test_a_check_row_with_a_blank_result_counts_as_not_passed():
+    """Only a row without a ``passed`` field is left out: a check row whose
+    result is blank (a CSV cell left empty) still counts, as a failure, so
+    a missing result can never raise a pass rate."""
+    rows = HE.manipulation_rows(
+        [{"family": "A", "switch": "g_b", "seed": s, "passed": p}
+         for s, p in ((600, "True"), (601, ""), (602, None))],
+        [{"family": "A", "system_id": "PC_nominal", "variant": "slow_context_bold",
+          "check": "slow_context_dwell", "seed": 600, "passed": "", "gate": "True"}],
+    )
+    got = [(r["kind"], r["check_id"], r["seed"], r["passed"]) for r in rows]
+    assert got == [
+        ("switch", "g_b", 600, True),
+        ("switch", "g_b", 601, False),
+        ("switch", "g_b", 602, False),
+        ("new_system", SLOW, 600, False),
+    ]
+
+
+def test_the_evaluator_reads_the_oracle_directory_without_its_summaries(tmp_path):
+    """Every table the oracle item writes is read (the evaluator is given the
+    directory's CSV files): the usability summary and the per-seed PC_half
+    values are no check results and add no row, so a check passed in 40 of
+    40 seeds counts 40 rows, not 41."""
+    import csv
+
+    import scripts.bench_hypotheses_v2 as BH
+
+    def write(name, rows):
+        path = tmp_path / f"manipulation_{name}.csv"
+        cols = list(dict.fromkeys(k for r in rows for k in r))
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=cols)
+            w.writeheader()
+            w.writerows(rows)
+
+    write("switches", [{"switch": "g_b", "seed": s, "passed": True, "family": "A"}
+                       for s in range(320, 360)])
+    write("realisation", [{"system_id": "PC_nominal", "family": "A", "seed": s,
+                           "variant": "slow_context_bold",
+                           "check": "slow_context_dwell", "value": 31.0,
+                           "passed": s != 320, "gate": True}
+                          for s in range(320, 360)])
+    write("summary", [{"kind": "switch", "family": "A", "switch": "g_b", "n": 40,
+                       "passes": 40, "usable": True, "system_id": "", "check": ""}])
+    write("pc_half", [{"family": "A", "seed": 320, "switch": "g_b", "nominal": 0.03,
+                       "half": 0.02, "off": 0.0}])
+    write("pc_half_summary", [{"family": "A", "switch": "g_b", "between": True,
+                               "gate": False, "system_id": "PC_half",
+                               "variant": "g_b", "check": "between_off_and_nominal",
+                               "passed": True}])
+    write("twins", [{"system_id": "PC_nominal", "family": "A", "seed": 320,
+                     "replicate": 1, "check": "twin_hashes", "passed": True,
+                     "gate": False}])
+    rows = BH.manipulation_source([str(p) for p in sorted(tmp_path.glob("*.csv"))])
+    kinds = {}
+    for r in rows:
+        kinds.setdefault((r["kind"], r["check_id"]), []).append(r["passed"])
+    assert {k: (sum(v), len(v)) for k, v in kinds.items()} == {
+        ("switch", "g_b"): (40, 40),
+        ("new_system", SLOW): (39, 40),
+        ("reported", "PC_half:g_b/between_off_and_nominal"): (1, 1),
+        ("reported", "PC_nominal/twin_hashes"): (1, 1),
+    }
+
+
+def test_the_synthetic_prerequisite_m_reports_pc_half_and_twins(evaluated):
+    _, rep = evaluated
+    h0 = next(h for h in rep["hypotheses"] if h["id"] == "HCv2-0")
+    parts = {p["id"]: p for p in h0["parts"]}
+    assert rep["usability"][f"A:{SLOW}"] is True
+    assert parts["HCv2-0(b)"]["outcome"] == SUP
+    assert any(c["check"] == SLOW for c in parts["HCv2-0(b)"]["cells"])
+    pc = {c["cell"]: c for c in parts["HCv2-0(c)"]["cells"]}
+    assert len(pc) == 12 and all(c["outcome"] == HE.REPORTED for c in pc.values())
+    assert pc["family=A|check_id=PC_half:K/between_off_and_nominal"]["k"] == 0
+    (tw,) = parts["HCv2-0(d)"]["cells"]
+    assert tw["n"] == 240 and tw["k"] == 240
+    # the reported parts are not counted with the decisive ones
+    assert rep["tally"]["reported_parts"] >= 2
 
 
 def test_requirements_are_validated():

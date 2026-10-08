@@ -1112,9 +1112,54 @@ def test_the_manipulation_runner_reports_completeness_apart_from_pass_fail(tmp_p
     assert isinstance(man["all_usable"], bool)
     for name in ("switches", "realisation", "summary"):
         assert (out / f"manipulation_{name}.csv").stat().st_size > 0
+    # the gated slow-context check is a realisation row; the reported checks
+    # have tables of their own and a block in the manifest
+    import pandas as pd
+
+    real = pd.read_csv(out / "manipulation_realisation.csv")
+    slow = real[real["check"] == "slow_context_dwell"]
+    assert len(slow) == 1 and slow["gate"].all()
+    assert man["schema"] == "mpc-bench-manipulation-manifest/3"
+    assert (man["not_usable"] == []) == man["all_usable"]
+    for name in ("pc_half", "pc_half_summary", "twins"):
+        table = pd.read_csv(out / f"manipulation_{name}.csv")
+        assert len(table) and set(table["family"]) == {"A"}
+    assert set(man["reported"]["pc_half_between"]) == {
+        f"A:{sw}" for sw in ("eta", "K", "g_b", "ff_only", "c_int", "e")}
+    assert {k: v["n"] for k, v in man["reported"]["twins"].items()} == {
+        f"A:{s}": 6 for s in ("PC_nominal", "PC_half", "W_PDI_single_attractor",
+                              "W_NAS_no_workspace", "W_IIM_feedforward")}
     with pytest.raises(ValueError, match="development run uses seeds"):
         RB.run_manipulation([20000], tmp_path / "refused")
     assert not (tmp_path / "refused").exists()
+
+
+def test_the_manipulation_manifest_names_checks_as_the_evaluator_does():
+    import pandas as pd
+
+    from impact_pipeline.v2 import hypothesis_engine as HE
+
+    summ = pd.DataFrame([
+        {"kind": "switch", "family": "C1", "switch": "g_b", "system_id": None,
+         "variant": None, "check": None, "usable": False},
+        {"kind": "new_system", "family": "A", "switch": None,
+         "system_id": "ADV_NAS_staggered_tau10", "variant": "tau10",
+         "check": "driver_reaches_every_module", "usable": False},
+        {"kind": "new_system", "family": "A", "switch": None,
+         "system_id": "W_PDI_no_multistability", "variant": float("nan"),
+         "check": "no_ignition", "usable": False},
+    ])
+    got = RB._manipulation_labels(summ)
+    assert got == [f"{r['family']}:{HE.check_id(r)}" for r in summ.to_dict("records")]
+    assert got[1] == "A:ADV_NAS_staggered_tau10:tau10/driver_reaches_every_module"
+    pc = pd.DataFrame([{"family": "C1", "switch": "K", "between": False},
+                       {"family": "C1", "switch": "eta", "between": True}])
+    tw = pd.DataFrame([{"family": "A", "system_id": "PC_nominal", "passed": p}
+                       for p in (True, True, False)])
+    rep = RB._reported_outcomes({"pc_half_summary": pc, "twins": tw})
+    assert rep == {"pc_half_between": {"C1:K": False, "C1:eta": True},
+                   "twins": {"A:PC_nominal": {"passes": 2, "n": 3}}}
+    assert RB._reported_outcomes({}) == {}
 
 
 # --------------------------------------------------------------------------

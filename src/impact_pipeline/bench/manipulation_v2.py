@@ -35,18 +35,30 @@ stated_time_constants        ADV_NAS_staggered_*      the filtered drive
                                                       stated time constant
                                                       and the stated
                                                       transform
+slow_context_dwell           PC_nominal under the     every complete context
+                             slow_context_bold        run lasts at least 30 s
+                             preset (the forward      and the preset's trial
+                             BOLD arm; family A)      timing is in force
 ===========================  =======================  =======================
+
+The slow-context check is the realisation check of the slow-context BOLD
+agents (design 3.4). Design 3.5 does not list it; it is a gate because a
+failed realisation means that the condition of the forward BOLD arm was
+not produced. Its check id is
+``PC_nominal:slow_context_bold/slow_context_dwell``, and the hypotheses
+file requires it only for the rows of that arm (``oracle_checks``).
 
 :func:`prerequisite_m` collects the data of the prerequisite M: the frozen
 1.0.0 switch checks on families A and C1 together with these checks, and
-the usability of every switch and new system per family.
+the usability of every switch and new system per family, and the reported
+checks below.
 
-Reported checks (never gates): PC_half lies between the switched-off and the
-nominal medians of each 1.0.0 signature (:func:`pc_half_summary`); twins
-share the structural hash and differ in the schedule hash, and replicate 0 is
-the witness run itself (integrity audit; :func:`twin_check`); the
-slow-context preset realises context dwells of at least 30 s
-(:func:`slow_context_check`).
+Reported checks (never gates; rows with ``gate`` False): PC_half lies
+between the switched-off and the nominal medians of each 1.0.0 signature
+(:func:`pc_half_check` per seed, :func:`pc_half_summary` per family and
+switch); twins share the structural hash and differ in the schedule hash,
+and replicate 0 is the witness run itself (:func:`twin_check`; the
+integrity audit IA-10 checks the same on the records).
 
 Ignition occupancy is the share of samples in which the hub's all-or-none
 amplification is on: the ignition gate ``g_b s_ign`` above half its full
@@ -80,6 +92,7 @@ from impact_pipeline.bench.adversarial_v2 import (
     config_preset,
     get_entry,
     staggered_drive_input,
+    system_ids,
 )
 from impact_pipeline.bench.generators import (
     NOMINAL_KNOBS,
@@ -100,6 +113,19 @@ IGNITION_OCCUPANCY_MAX = 0.05
 CONTEXT_FLOOR = M.NOMINAL_FLOOR["K"]
 TIME_CONSTANT_RTOL = 1e-6
 SLOW_CONTEXT_MIN_DWELL_SEC = 30.0
+SLOW_CONTEXT_PRESET = "slow_context_bold"
+SLOW_CONTEXT_SYSTEM = "PC_nominal"
+SLOW_CONTEXT_CHECK = "slow_context_dwell"
+SLOW_CONTEXT_FAMILIES = ("A",)
+SLOW_CONTEXT_CHECK_ID = (f"{SLOW_CONTEXT_SYSTEM}:{SLOW_CONTEXT_PRESET}/"
+                         f"{SLOW_CONTEXT_CHECK}")
+# the confirmatory twin replicates of families A and C1 (design 3.2)
+TWIN_REPLICATES = tuple(range(1, 7))
+TWIN_CHECK = "twin_hashes"
+PC_HALF_SYSTEM = "PC_half"
+PC_HALF_CHECK = "between_off_and_nominal"
+REALISATION_COLUMNS = ("system_id", "family", "seed", "variant", "check", "value",
+                       "threshold", "passed", "gate", "details", "check_version")
 
 STAGGERED_IDS = tuple(STAGGERED_SYSTEM_VARIANTS)
 CHECKS_BY_SYSTEM = {
@@ -443,26 +469,127 @@ def summarise_realisation(df: pd.DataFrame, pass_share: float = USABLE_PASS_SHAR
     return out
 
 
+def slow_context_report(seeds: Iterable[int], families: Sequence[str] = ("A", "C"),
+                        config=None, catalogue: Optional[Mapping] = None
+                        ) -> pd.DataFrame:
+    """The gated slow-context check (:func:`slow_context_check`) in the
+    realisation-table columns, for every seed of every family among
+    ``families`` that has the slow-context arm (family A)."""
+    frames = [slow_context_check(int(s), family=f, config=config,
+                                 catalogue=catalogue)[list(REALISATION_COLUMNS)]
+              for f in families if f in SLOW_CONTEXT_FAMILIES for s in seeds]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def twin_systems(family: str, catalogue: Optional[Mapping] = None) -> List[str]:
+    """The catalogue witnesses with twin sessions in ``family`` (``A``, or
+    ``C`` for C1; the catalogue's ``twin_families``), in catalogue order."""
+    return [sid for sid in system_ids(catalogue, kind="witness", family=family)
+            if family in (get_entry(sid, catalogue).get("twin_families") or ())]
+
+
+_SIMULATORS = {"A": simulate_family_a, "C": simulate_family_c}
+
+
+def _unit(task: tuple) -> pd.DataFrame:
+    """One unit of :func:`prerequisite_m` (a module-level function, so that
+    a worker process can run it)."""
+    kind, sid, fam, var, seed, config, catalogue = task
+    if kind == "switch":
+        cfg = None if config is None else _agent_config(config)
+        return M.manipulation_check(_SIMULATORS[fam], seed, cfg)
+    if kind == "realisation":
+        return realisation_check(sid, seed, fam, var, config, catalogue)
+    if kind == "slow_context":
+        return slow_context_report([seed], (fam,), config, catalogue)
+    if kind == "pc_half":
+        return pc_half_check(seed, fam, config, catalogue)
+    if kind == "twins":
+        return twin_check(sid, seed, TWIN_REPLICATES, fam, config=config,
+                          catalogue=catalogue)
+    raise ValueError(f"unknown unit {kind!r}")  # pragma: no cover
+
+
+def _units(seeds, families, config, catalogue, reported) -> Dict[str, List[tuple]]:
+    """The units of every table, in the order of the sequential reports
+    (switches: family, seed; realisation: system, family, variant, seed)."""
+    out: Dict[str, List[tuple]] = {
+        "switches": [("switch", None, f, None, s, config, catalogue)
+                     for f in families for s in seeds],
+        "realisation": [],
+        "slow_context": [("slow_context", None, f, None, s, config, catalogue)
+                         for f in families if f in SLOW_CONTEXT_FAMILIES
+                         for s in seeds],
+    }
+    for sid in CHECKS_BY_SYSTEM:
+        entry = get_entry(sid, catalogue)
+        for fam in [f for f in families if f in entry["families"]]:
+            for var in _variants(sid):
+                out["realisation"] += [("realisation", sid, fam, var, s, config,
+                                        catalogue) for s in seeds]
+    if reported:
+        out["pc_half"] = [("pc_half", None, f, None, s, config, catalogue)
+                          for f in families for s in seeds]
+        out["twins"] = [("twins", sid, f, None, s, config, catalogue)
+                        for f in families for sid in twin_systems(f, catalogue)
+                        for s in seeds]
+    return out
+
+
+def _run_units(units: Sequence[tuple], workers: int) -> List[pd.DataFrame]:
+    if workers <= 1 or len(units) <= 1:
+        return [_unit(u) for u in units]
+    import concurrent.futures
+    import multiprocessing
+
+    with concurrent.futures.ProcessPoolExecutor(
+            max_workers=int(workers),
+            mp_context=multiprocessing.get_context("spawn")) as pool:
+        return list(pool.map(_unit, units, chunksize=1))
+
+
+def _concat(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
+    frames = [f for f in frames if not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def prerequisite_m(seeds: Iterable[int], families: Sequence[str] = ("A", "C"),
                    config=None, catalogue: Optional[Mapping] = None,
-                   pass_share: float = USABLE_PASS_SHARE) -> dict:
+                   pass_share: float = USABLE_PASS_SHARE, *, reported: bool = True,
+                   workers: int = 1) -> dict:
     """
     The data of the prerequisite M: the frozen 1.0.0 checks of every switch
     (eta, K, g_b, ff_only, c_int, e) on families A and C1 and the gated
-    realisation checks of the new systems, per seed, and their usability
-    per family (``summary``: one row per switch or system check). ``complete``
-    is True only if every check was computed (a finite value in every row).
+    realisation checks of the new systems and of the slow-context arm, per
+    seed (``realisation``: the new systems first, then the slow-context
+    rows), and their usability per family (``summary``: one row per switch
+    or system check). ``complete`` is True only if every gated check was
+    computed (a finite value in every row).
+
+    With ``reported`` (the default) the reported checks are added, never
+    gates: ``pc_half`` (the PC_half, nominal and switched-off signature per
+    seed), ``pc_half_summary`` (:func:`pc_half_summary`) and ``twins``
+    (:func:`twin_check` of the twin witnesses of each family against
+    replicates 1-6). ``workers`` > 1 runs the units on that many spawned
+    processes; the tables are the same as with one.
+
     The seeds must satisfy the v2 seed policy (one split; ``split`` is
     derived from them).
     """
     seeds = [int(s) for s in seeds]
     split = check_seeds(seeds)
-    sims = {"A": simulate_family_a, "C": simulate_family_c}
-    cfg = None if config is None else _agent_config(config)
-    switches = pd.concat([M.manipulation_report(sims[f], seeds, cfg)
-                          for f in families], ignore_index=True)
-    real = realisation_report(seeds, families=families, config=config,
-                              catalogue=catalogue)
+    families = tuple(families)
+    units = _units(seeds, families, config, catalogue, reported)
+    order = list(units)
+    flat = [u for name in order for u in units[name]]
+    results = _run_units(flat, int(workers))
+    tables, i = {}, 0
+    for name in order:
+        n = len(units[name])
+        tables[name] = results[i:i + n]
+        i += n
+    switches = _concat(tables["switches"])
+    real = _concat(tables["realisation"] + tables["slow_context"])
     sw = _usability(switches, ["family", "switch"], "relative_change", pass_share)
     sw.insert(0, "kind", "switch")
     sw["check_version"] = BASE_CHECK_VERSION
@@ -470,7 +597,7 @@ def prerequisite_m(seeds: Iterable[int], families: Sequence[str] = ("A", "C"),
     rs.insert(0, "kind", "new_system")
     values = np.r_[switches["relative_change"].to_numpy(dtype=float),
                    real["value"].to_numpy(dtype=float)]
-    return {
+    out = {
         "switches": switches,
         "realisation": real,
         "summary": pd.concat([sw, rs], ignore_index=True),
@@ -479,6 +606,12 @@ def prerequisite_m(seeds: Iterable[int], families: Sequence[str] = ("A", "C"),
         "seeds": seeds,
         "split": split,
     }
+    if reported:
+        pc = _concat(tables["pc_half"])
+        out["pc_half"] = pc
+        out["pc_half_summary"] = pc_half_summary(pc) if not pc.empty else pd.DataFrame()
+        out["twins"] = _concat(tables["twins"])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +652,10 @@ def _agent_config(config):
 def pc_half_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Per (family, switch): the medians over seeds of the switched-off,
     PC_half and nominal signatures and ``between`` (the PC_half median lies
-    between the other two). Reported, never a gate."""
+    between the other two). Reported, never a gate: each row is also a
+    reported check row (``system_id`` PC_half, ``variant`` the switch,
+    ``check`` between_off_and_nominal, ``passed`` = ``between``, ``gate``
+    False)."""
     g = df.groupby(["family", "switch", "signature"], sort=False)
     out = g.agg(n=("seed", "nunique"), median_off=("off", "median"),
                 median_half=("half", "median"),
@@ -528,6 +664,11 @@ def pc_half_summary(df: pd.DataFrame) -> pd.DataFrame:
     hi = np.maximum(out["median_off"], out["median_nominal"])
     out["between"] = (out["median_half"] >= lo) & (out["median_half"] <= hi)
     out["gate"] = False
+    out["system_id"] = PC_HALF_SYSTEM
+    out["variant"] = out["switch"]
+    out["check"] = PC_HALF_CHECK
+    out["passed"] = out["between"]
+    out["check_version"] = MANIPULATION_CHECK_VERSION_V2
     return out
 
 
@@ -537,8 +678,8 @@ def twin_check(system_id: str, seed: int, replicates: Sequence[int] = (1, 2),
                reference: Optional[BenchSystem] = None) -> pd.DataFrame:
     """Twins of one witness run against its replicate 0: shared structural
     hash, different schedule hash and different series (one row per
-    replicate). ``reference`` (e.g. the stored witness run) is compared with
-    replicate 0 bit for bit."""
+    replicate; ``check`` twin_hashes, reported). ``reference`` (e.g. the
+    stored witness run) is compared with replicate 0 bit for bit."""
     base = build_system(system_id, seed, family, replicate=0, preset=preset,
                         config=config, catalogue=catalogue)
     s0, d0 = structural_hash(base), schedule_hash(base)
@@ -563,6 +704,7 @@ def twin_check(system_id: str, seed: int, replicates: Sequence[int] = (1, 2),
             "new_series": new_ts, "r0_equals_reference": same_as_reference,
             "passed": bool(same_struct and new_sched and new_ts
                            and same_as_reference is not False),
+            "check": TWIN_CHECK,
             "gate": False, "check_version": MANIPULATION_CHECK_VERSION_V2,
         })
     return pd.DataFrame(rows)
@@ -578,27 +720,34 @@ def context_runs_sec(system: BenchSystem) -> np.ndarray:
     return np.diff(edges) * float(system.dt)
 
 
-def slow_context_check(seed: int, system_id: str = "PC_nominal", family: str = "A",
-                       catalogue: Optional[Mapping] = None) -> pd.DataFrame:
-    """The slow-context preset realised: every complete context run lasts
-    at least 30 s, and the preset's trial timing is in force (reported)."""
-    s = build_system(system_id, seed, family, preset="slow_context_bold",
-                     catalogue=catalogue)
+def slow_context_check(seed: int, system_id: str = SLOW_CONTEXT_SYSTEM,
+                       family: str = "A", catalogue: Optional[Mapping] = None,
+                       config=None) -> pd.DataFrame:
+    """The slow-context preset realised (gated): every complete context run
+    lasts at least 30 s, and the preset's trial timing is in force. One row
+    in the realisation-table columns (``variant`` is the preset; ``value``
+    the shortest complete run in s, 0 when no context change completes a
+    run), with ``n_runs``, ``shortest_run_sec``, ``median_run_sec`` and
+    ``config_in_force`` also as columns of their own."""
+    s = build_system(system_id, seed, family, preset=SLOW_CONTEXT_PRESET,
+                     config=config, catalogue=catalogue)
     runs = context_runs_sec(s)
-    want = config_preset("slow_context_bold", catalogue)
+    want = config_preset(SLOW_CONTEXT_PRESET, catalogue)
     cfg = s.meta["config"]
     timing_ok = all(_same(cfg[k], v) for k, v in want.items())
     shortest = float(runs.min()) if runs.size else float("nan")
-    return pd.DataFrame([{
-        "system_id": system_id, "family": family, "seed": int(seed),
-        "check": "slow_context_dwell", "n_runs": int(runs.size),
+    extra = {
+        "n_runs": int(runs.size),
         "shortest_run_sec": shortest,
         "median_run_sec": float(np.median(runs)) if runs.size else float("nan"),
-        "threshold": SLOW_CONTEXT_MIN_DWELL_SEC, "config_in_force": timing_ok,
-        "passed": bool(runs.size and shortest >= SLOW_CONTEXT_MIN_DWELL_SEC - s.dt
-                       and timing_ok),
-        "gate": False, "check_version": MANIPULATION_CHECK_VERSION_V2,
-    }])
+        "config_in_force": timing_ok,
+    }
+    passed = bool(runs.size and shortest >= SLOW_CONTEXT_MIN_DWELL_SEC - s.dt
+                  and timing_ok)
+    row = _row(system_id, family, seed, SLOW_CONTEXT_PRESET, SLOW_CONTEXT_CHECK,
+               shortest if runs.size else 0.0, SLOW_CONTEXT_MIN_DWELL_SEC, passed,
+               dict(extra))
+    return pd.DataFrame([{**row, **extra}])
 
 
 def _same(a, b) -> bool:
@@ -611,6 +760,7 @@ __all__ = [
     "CHECKS_BY_SYSTEM",
     "IGNITION_OCCUPANCY_MAX",
     "MANIPULATION_CHECK_VERSION_V2",
+    "SLOW_CONTEXT_CHECK_ID",
     "check_system",
     "context_runs_sec",
     "hub_periphery_paths",
@@ -624,7 +774,9 @@ __all__ = [
     "realised_time_constants",
     "schedule_hash",
     "slow_context_check",
+    "slow_context_report",
     "structural_hash",
     "summarise_realisation",
     "twin_check",
+    "twin_systems",
 ]
