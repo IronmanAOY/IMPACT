@@ -82,8 +82,11 @@ trial, which is conservative for every Clopper-Pearson (CP) bound below.
 * calibration: ``kappa_null`` (interval calibration at the null),
   ``kappa_twins`` (SE calibration against white-box twins: pooled
   within-network SD over the RMS of the SE, chi-square interval on
-  ``sum (n_twin - 1)`` degrees of freedom, and the ``q_A`` tails),
-  ``concordance_twins``.
+  ``sum (n_twin - 1)`` degrees of freedom, and the ``q_A`` tails; with
+  ``by_se_method`` a class splits per SE method, and its sessions without
+  a sampling SE count against each method's defined share),
+  ``concordance_twins``. An RMS of the SEs of 0 leaves kappa undefined
+  (NOT_EVALUABLE).
 * admission and anchors: ``admission_matches``, ``anchor_replicates``,
   ``fmd_concordance``.
 * ``describe``: a reported summary without a decision.
@@ -1535,6 +1538,34 @@ def _df_of(row):
     return row["_df"] if "_df" in row else row.get("df_c")
 
 
+ZERO_RMS_REASON = "the SEs have RMS 0: kappa is undefined"
+
+
+def _se_method_cells(prep) -> List[Tuple[str, List[dict], int]]:
+    """The cells of an SE calibration per (class, SE method): each class
+    (a cell of the selection) splits by the rows' sampling SE method into
+    cells labelled ``<class>|<method>``. A row without a sampling SE (an
+    undefined component, which has no SE method, or an admitted concordant
+    component, whose error control is the concordance battery) forms no
+    cell but counts among the sessions of its class in every cell's defined
+    share. Returns ``(label, rows, n_rows_without_se)`` in the order of each
+    cell's first row."""
+    units = []
+    for label, rows in prep.cells().items():
+        by_method: "OrderedDict[str, List[dict]]" = OrderedDict()
+        n_without = 0
+        for r in rows:
+            method = r.get("se_method")
+            if method is None or method == "concordant":
+                n_without += 1
+            else:
+                by_method.setdefault(str(method), []).append(r)
+        for method, rr in by_method.items():
+            units.append((f"{label}|{method}", rr, n_without))
+    order = {id(r): i for i, r in enumerate(prep.rows)}
+    return sorted(units, key=lambda u: order[id(u[1][0])])
+
+
 def _q(alpha, df):
     from impact_pipeline import evidence_v2 as E
 
@@ -1566,7 +1597,20 @@ def rule_kappa_null(prep, p):
             continue
         c = np.asarray([float(r["_value"]) for r in good])
         se = np.asarray([float(_se_of(r)) for r in good])
-        kap = float(np.std(c, ddof=1) / rms(se))
+        rms_se = rms(se)
+        if not rms_se > 0:
+            # every SE is 0 (for example admitted concordant components,
+            # which carry no sampling SE): kappa0 is undefined
+            out.append(
+                {
+                    "cell": label,
+                    "n": len(good),
+                    "outcome": NOT_EVALUABLE,
+                    "reason": ZERO_RMS_REASON,
+                }
+            )
+            continue
+        kap = float(np.std(c, ddof=1) / rms_se)
         df = len(good) - 1
         lo, hi = kappa_interval(kap, df, level)
         q = np.asarray([_q(q_alpha, _df_of(r)) for r in good])
@@ -1622,9 +1666,13 @@ def rule_kappa_twins(prep, p):
     cells = prep.cells()
     if not cells:
         return RuleResult(NOT_EVALUABLE, "no rows")
-    m = int(_p(p, "m", 2 * len(cells)))
+    if _p(p, "by_se_method", False):
+        units = _se_method_cells(prep)
+    else:
+        units = [(label, rows, 0) for label, rows in cells.items()]
+    m = int(_p(p, "m", 2 * len(units)))
     out = []
-    for label, rows in cells.items():
+    for label, rows, n_without_se in units:
         nets = OrderedDict()
         for r in rows:
             nets.setdefault(r["_network"], []).append(r)
@@ -1632,6 +1680,9 @@ def rule_kappa_twins(prep, p):
             (_finite(r.get("_value")) is not None and _finite(_se_of(r)) is not None)
             for r in rows
         ]
+        # the sessions of the class without a sampling SE count as sessions
+        # in which c is not defined under the cell's SE method
+        defined += [False] * n_without_se
         share = float(np.mean(defined)) if defined else 0.0
         if share < min_defined:
             out.append(
@@ -1669,7 +1720,20 @@ def rule_kappa_twins(prep, p):
                 {"cell": label, "outcome": NOT_EVALUABLE, "reason": "no twin set"}
             )
             continue
-        kap = sd / rms(ses)
+        rms_se = rms(ses)
+        if not rms_se > 0:
+            out.append(
+                {
+                    "cell": label,
+                    "networks": len(groups),
+                    "df": df,
+                    "defined_share": share,
+                    "outcome": NOT_EVALUABLE,
+                    "reason": ZERO_RMS_REASON,
+                }
+            )
+            continue
+        kap = sd / rms_se
         lo, hi = kappa_interval(kap, df, level)
         tails, tail_fail, tail_ok = {}, False, True
         for name, ev in (("below", up_ev), ("above", lo_ev)):
@@ -2849,8 +2913,10 @@ def _check_data(data, where, spec, fields, *, member=False):
     for e in data.get("exclude") or ():
         if e not in ("target", "non_target", "declared_dependencies"):
             raise SpecError(f"{where}: unknown exclusion {e!r}")
-    if "mechanism_on" in data and data["mechanism_on"] not in ("own", "all_n_anch"):
-        raise SpecError(f"{where}: mechanism_on must be own or all_n_anch")
+    if "mechanism_on" in data and data["mechanism_on"] not in MECHANISM_ON_MODES:
+        raise SpecError(
+            f"{where}: mechanism_on must be one of {', '.join(MECHANISM_ON_MODES)}"
+        )
 
 
 def _check_refs(obj, where, vocab, fields) -> None:
@@ -2901,12 +2967,13 @@ def validate_spec(spec: Mapping) -> dict:
     for name, pred in (spec.get("derived") or {}).items():
         _check_predicate(pred, f"derived {name}", fields)
         _check_refs(pred, f"derived {name}", vocab, fields)
-    _check_refs(
-        (spec.get("mechanism_on") or {}).get("entries") or [],
-        "mechanism_on",
-        vocab,
-        fields,
-    )
+    for table in sorted(set(MECHANISM_ON_TABLES.values())):
+        _check_refs(
+            (spec.get("mechanism_on") or {}).get(table) or [],
+            "mechanism_on",
+            vocab,
+            fields,
+        )
     oracle = spec.get("oracle_checks")
     if oracle is not None:
         if not isinstance(oracle, Mapping) or not isinstance(
@@ -3116,14 +3183,29 @@ def _principle_ok(row, ctx, mode, principle=None) -> Optional[bool]:
     return None if st is None else st in ("valid_specific", "valid_nonspecific")
 
 
-def _mechanism_entries(spec, ctx) -> Tuple[Optional[list], Optional[str]]:
-    if ctx.mechanism_on is not None:
+# the mechanism-on modes of a data selection and the table of the file's
+# ``mechanism_on`` block each reads: the CD-8 labels ("own": the row's
+# principle is on; "all_n_anch": every principle of the protocol's N_anch is
+# on) or the rows that the dose condition alone labels on and the CD-8 rule
+# labels off ("dose_only", reported beside HCv2-5)
+MECHANISM_ON_TABLES = {
+    "own": "entries",
+    "all_n_anch": "entries",
+    "dose_only": "dose_only_entries",
+}
+MECHANISM_ON_MODES = tuple(MECHANISM_ON_TABLES)
+
+
+def _mechanism_entries(
+    spec, ctx, table="entries"
+) -> Tuple[Optional[list], Optional[str]]:
+    if ctx.mechanism_on is not None and table == "entries":
         return resolve(list(ctx.mechanism_on), spec), "context"
     block = spec.get("mechanism_on") or {}
     status = block.get("status")
     if ctx.split == S.CONFIRMATORY and status != "final":
         return None, f"mechanism-on labels are {status!r}, not final (CD-8)"
-    return resolve(list(block.get("entries") or ()), spec), status
+    return resolve(list(block.get(table) or ()), spec), status
 
 
 def _mechanism_on(row, principle, entries, fields) -> bool:
@@ -3209,7 +3291,7 @@ def prepare(
         if isinstance(spec.get("declared_dependencies"), Mapping)
         else {tuple(d) for d in (spec.get("declared_dependencies") or ())}
     )
-    mech_entries = None
+    mech_tables: Dict[str, list] = {}
     for idx, member in enumerate(members):
         eff = {**{k: v for k, v in data.items() if k in _MEMBER_KEYS}, **member}
         label = str(member.get("label", data.get("label", idx)))
@@ -3277,11 +3359,14 @@ def prepare(
                     r for r in rows if (r.get("system"), r.get("principle")) not in deps
                 ]
         if eff.get("mechanism_on"):
-            if mech_entries is None:
-                mech_entries, why = _mechanism_entries(spec, ctx)
-                if mech_entries is None:
+            table = MECHANISM_ON_TABLES[eff["mechanism_on"]]
+            if table not in mech_tables:
+                entries, why = _mechanism_entries(spec, ctx, table)
+                if entries is None:
                     raise _NotEvaluable(why)
-            if eff["mechanism_on"] == "own":
+                mech_tables[table] = entries
+            mech_entries = mech_tables[table]
+            if eff["mechanism_on"] in ("own", "dose_only"):
                 rows = [
                     r
                     for r in rows

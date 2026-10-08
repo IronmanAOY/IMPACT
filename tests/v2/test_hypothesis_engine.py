@@ -462,6 +462,89 @@ def test_kappa_null_rule():
     assert r.outcome == FAL and r.cells[0]["side"] == HE.SIDE_CONSERVATIVE
 
 
+def _twin_rows(cell, *, n_nets=5, n_sessions=7, se=0.02, method="m", scale=1.0):
+    out = []
+    for net in range(n_nets):
+        for r, z in enumerate(_z(n_sessions)):
+            out.append(
+                {
+                    "_cell": cell,
+                    "_network": net,
+                    "_value": net + scale * se * z,
+                    "se_c": se,
+                    "df_c": 9.0,
+                    "principle": "PDI",
+                    "estimator_version": "pdi-v3",
+                    "se_method": method,
+                }
+            )
+    return out
+
+
+def test_kappa_rules_with_zero_rms_are_not_evaluable():
+    # SEs that are all 0 (admitted concordant components carry no sampling
+    # SE) leave kappa undefined: NOT_EVALUABLE with a reason, not a crash
+    rows = [
+        {"_cell": "PDI", "_value": 0.01 * i, "se_c": 0.0, "_cluster": i}
+        for i in range(10)
+    ]
+    r = HE.RULES["kappa_null"](HE.Prepared(rows), {})
+    assert r.outcome == NE
+    assert r.cells[0]["reason"] == HE.ZERO_RMS_REASON and r.cells[0]["n"] == 10
+    # the twin rule: pooled SD 0 over RMS 0 (one count per network)
+    twins = _twin_rows("PDI", se=0.0, method="concordant")
+    r = HE.RULES["kappa_twins"](HE.Prepared(twins), {})
+    assert r.outcome == NE and r.cells[0]["reason"] == HE.ZERO_RMS_REASON
+    # a zero-RMS cell does not hide another cell's outcome
+    rows += [
+        {"_cell": "NAS", "_value": 0.02 * z, "se_c": 0.02, "_cluster": 100 + i}
+        for i, z in enumerate(stats.norm.ppf((np.arange(400) + 0.5) / 400))
+    ]
+    r = HE.RULES["kappa_null"](HE.Prepared(rows), {})
+    assert r.outcome == SUP
+    assert {c["cell"]: c["outcome"] for c in r.cells} == {"PDI": NE, "NAS": SUP}
+
+
+def test_kappa_twins_per_se_method_counts_the_class_sessions():
+    # a class of 5 twin networks x 7 sessions in which 33 sessions are
+    # admitted concordant components (SE 0, no sampling SE) and 2 carry the
+    # jackknife SE: the concordant sessions form no cell and enter no kappa,
+    # and the jackknife cell has c defined in 2 of 35 sessions, so it is not
+    # eligible (HCv2-4: >= 80 %)
+    rows = _twin_rows("A:W|PDI", se=0.0, method="concordant")
+    for row in rows[:2]:
+        row.update(se_method="jackknife_contiguous_10", se_c=0.3)
+    r = HE.RULES["kappa_twins"](HE.Prepared(rows), {"by_se_method": True})
+    (cell,) = r.cells
+    assert cell["cell"] == "A:W|PDI|jackknife_contiguous_10"
+    assert cell["outcome"] == NE and cell["defined_share"] == pytest.approx(2 / 35)
+    assert r.outcome == NE
+    # undefined components (no SE method) count among the sessions too
+    rows = _twin_rows("A:X|IIM", method="bootstrap")
+    for row in rows[:5]:
+        row.update(se_method=None, _value=None, se_c=None)
+    r = HE.RULES["kappa_twins"](HE.Prepared(rows), {"by_se_method": True})
+    (cell,) = r.cells
+    assert cell["cell"] == "A:X|IIM|bootstrap"
+    assert cell["defined_share"] == pytest.approx(30 / 35) and cell["outcome"] == SUP
+    # without sessions lacking a sampling SE the per-method cells are the
+    # cells of a selection labelled by the method (same labels, order, m)
+    rows = (
+        _twin_rows("A:Y|PDI", method="jk")
+        + _twin_rows("A:Z|IIM", method="bootstrap", scale=2.0)
+        + _twin_rows("A:Y|PDI", method="other", scale=0.5)
+    )
+    labelled = copy.deepcopy(rows)
+    for row in labelled:
+        row["_cell"] = f"{row['_cell']}|{row['se_method']}"
+    a = HE.RULES["kappa_twins"](HE.Prepared(rows), {"by_se_method": True})
+    b = HE.RULES["kappa_twins"](HE.Prepared(labelled), {})
+    assert [c["cell"] for c in a.cells] == ["A:Y|PDI|jk", "A:Z|IIM|bootstrap",
+                                            "A:Y|PDI|other"]
+    assert a.cells == b.cells and a.outcome == b.outcome == FAL
+    assert a.stats == b.stats == {"m": 6}
+
+
 def test_admission_and_anchor_rules():
     reg = HE.Prepared(
         [
@@ -850,7 +933,21 @@ def test_the_shipped_hypotheses_file_is_valid_and_complete():
     pids = {p["id"] for h in spec["hypotheses"] for p in h["parts"]} | set(ids)
     for item in spec["pending_calibration"]:
         assert all(a == "all" or a in pids for a in item["affects"]), item
-    assert spec["mechanism_on"]["status"] == "pending_cd8"
+    # the decided CD-7 and CD-8 tables (copied from the decided build)
+    assert spec["declared_dependencies"]["status"] == "final"
+    assert spec["mechanism_on"]["status"] == "final"
+    mech = spec["mechanism_on"]
+    assert mech["entries"] and mech["dose_only_entries"]
+    keys = [
+        (e["family"], e["declaration"], e["principle"], json.dumps(e["where"]))
+        for e in mech["entries"]
+    ]
+    assert len(keys) == len(set(keys))
+    off = {k for k, e in zip(keys, mech["entries"]) if not e["on"]}
+    for e in mech["dose_only_entries"]:
+        assert e["on"] is True
+        k = (e["family"], e["declaration"], e["principle"], json.dumps(e["where"]))
+        assert k in off, k
     assert len(HE.spec_sha256(spec)) == 64
 
 
@@ -1498,7 +1595,7 @@ class World:
         route = [
             {
                 "principle": "PDI",
-                "substrate": "A",
+                "substrate": "synthetic_rate",
                 "observation_stage": "source",
                 "view": "source",
                 "bearer": "non_workspace",
@@ -1679,6 +1776,9 @@ class World:
         if system == "O_inert":
             return 0.0
         if system == "N_modules_disconnected":
+            # disconnecting the modules leaves RAM, PDI and SRPI on (CD-8)
+            if p in ("RAM", "PDI", "SRPI"):
+                return 1.0
             return (0.9 if decl == "H" and fam == "A" else 0.0) if p == "NAS" else 0.0
         if system == "PC_half":
             return 0.5
@@ -2499,10 +2599,12 @@ class World:
                 "admitted_for_absent": ab,
                 "anchor_valid": True,
             }
+            # the corrected HCv2-21 pattern: without an admitted forward
+            # concordance cell ABSENT is unreachable on every view (vacuous)
             for v, arm, sub, pr, ab in (
-                ("eeg64", "forward_a_eeg", "eeg_like_forward", "yes", "yes"),
-                ("eeglow", "forward_a_eeg", "eeg_like_forward", "yes", "yes"),
-                ("bold", "forward_a_bold", "bold_like_forward", "no", "no"),
+                ("eeg64", "forward_a_eeg", "eeg_like_forward", "yes", "vacuous"),
+                ("eeglow", "forward_a_eeg", "eeg_like_forward", "yes", "vacuous"),
+                ("bold", "forward_a_bold", "bold_like_forward", "no", "vacuous"),
             )
         ]
         # an entry of another arm with the same principle and view is not
@@ -3775,3 +3877,426 @@ def test_one_protocol_key_convention(tmp_path):
         named.append(E.ProtocolV3.from_dict(d))
     ctx = HE.build_context(sources={"components": []}, protocols=named)
     assert set(ctx.protocols) == {"A-R", "C1-H"}
+
+
+# ==========================================================================
+# the specification after the calibration decisions
+# ==========================================================================
+def spec_part(spec, pid):
+    return next(
+        p for h in spec["hypotheses"] for p in h.get("parts") or () if p["id"] == pid
+    )
+
+
+def test_hcv2_4_leaves_concordant_twin_sessions_out_of_the_kappa(world, spec):
+    part = spec_part(spec, "HCv2-4(a,b)")
+    ctx = make_ctx(world)
+    base = HE.evaluate_part(part, spec, ctx)
+    assert not any("concordant" in c["cell"] for c in base["cells"])
+    # the admitted concordant W_PDI_single_attractor sessions form no cell
+    assert not any(
+        "W_PDI_single_attractor" in c["cell"] and "|PDI|" in c["cell"]
+        for c in base["cells"]
+    )
+    # two of its 35 A-R twin sessions with a jackknife SE: that cell has c
+    # defined in 2 of 35 sessions and is not eligible
+    two = perturbed(
+        ctx,
+        "components",
+        {
+            "design": "A_twins",
+            "system": "W_PDI_single_attractor",
+            "principle": "PDI",
+            "declaration_id": "R",
+            "seed": 820,
+            "replicate": [0, 1],
+        },
+        lambda r: restatus(r, 0.0),
+    )
+    out = HE.evaluate_part(part, spec, two)
+    (cell,) = [
+        c
+        for c in out["cells"]
+        if "W_PDI_single_attractor" in c["cell"] and ":R|PDI|" in c["cell"]
+    ]
+    assert cell["cell"].endswith("|jackknife_contiguous_10")
+    assert cell["outcome"] == NE
+    assert cell["defined_share"] == pytest.approx(2 / 35)
+    assert out["outcome"] == base["outcome"]
+    others = [c for c in out["cells"] if c is not cell]
+    assert others == base["cells"]
+
+
+def test_hcv2_20a_takes_the_route_branch_on_the_builders_admitted_cell(spec):
+    from scripts.v2 import build_protocols_v2 as BP
+
+    part = spec_part(spec, "HCv2-20(a)")
+    battery = {
+        "substrate": BP.FAMILY_SUBSTRATE["A"],
+        "observation_stage": "source",
+        "view": "source",
+        "bearer": "non_workspace",
+        "rule_absent": True,
+        "rule_present": True,
+        "provisional": False,
+        "content_on_runs": 450,
+        "concordant_absent": 0,
+        "no_content_runs": 360,
+        "concordant_present": 0,
+    }
+
+    def chosen(p, evidence):
+        cells = BP.concordance_cells(evidence, {"pdi_concordance": "rule"})
+        ctx = HE.build_context(
+            sources={"components": []},
+            protocols={"A-R": {"concordance_route": cells}},
+        )
+        out, why = HE._apply_choose(dict(p), ctx, spec)
+        assert why is None
+        return out
+
+    out = chosen(part, [battery])
+    assert out["chosen"] == "then" and out["params"]["x"] == 0.8
+    assert out["chosen_text"].startswith("ABSENT in >= 80 %")
+    # a cell of another substrate does not admit the family-A route
+    other = {**battery, "substrate": BP.FAMILY_SUBSTRATE["C1"]}
+    assert chosen(part, [other])["chosen"] == "else"
+    # the family id the gate compared before never matched the builder's cell
+    old = copy.deepcopy(part)
+    old["choose"]["if"]["concordance_admitted"]["substrate"] = "@family.A"
+    assert chosen(old, [battery])["chosen"] == "else"
+
+
+def _every_principle_anchored(*keys):
+    statuses = {p: {"status": "valid_specific"} for p in HE.PRINCIPLES}
+    return {
+        k: {"necessity_set": list(HE.PRINCIPLES), "anchors": {"principles": statuses}}
+        for k in keys
+    }
+
+
+def test_hcv2_1_and_hcv2_3_count_only_defined_ram_rows(spec):
+    null = dict(
+        design="null_calibration", decl="none", family="null", protocol="A-none"
+    )
+    bench = dict(design="A_witnesses", decl="R", family="A", protocol="A-R")
+    rows = [
+        # RAM-PE on the null-calibration generator: undefined by construction
+        comp_row(
+            "nc-ram",
+            "ar1",
+            "UNDEFINED",
+            None,
+            principle="RAM",
+            reason=R.INSUFFICIENT_UPDATES,
+            estimate=None,
+            **null,
+        ),
+        # another principle's undefined row stays (a non-event in HCv2-1)
+        comp_row(
+            "nc-nas",
+            "ar1",
+            "UNDEFINED",
+            None,
+            principle="NAS",
+            reason=R.INSUFFICIENT_TIMEPOINTS,
+            estimate=None,
+            **null,
+        ),
+        # a decision-type UNDEFINED with a finite c is a defined RAM-PE row
+        comp_row(
+            "w-ar1",
+            "N_ar1",
+            "UNDEFINED",
+            0.05,
+            principle="RAM",
+            reason=R.ABSENT_NOT_REACHABLE,
+            estimate=0.4,
+            se_c=0.03,
+            df_c=39.0,
+            **bench,
+        ),
+        comp_row(
+            "w-noise",
+            "N_independent_noise",
+            "ABSENT",
+            0.0,
+            principle="RAM",
+            reason=None,
+            estimate=0.35,
+            se_c=0.02,
+            df_c=39.0,
+            **bench,
+        ),
+    ]
+    ctx = HE.build_context(
+        sources={"components": rows},
+        protocols=_every_principle_anchored("A-R", "A-none"),
+    )
+    for pid in ("HCv2-1", "HCv2-3"):
+        prep = HE.prepare(spec_part(spec, pid)["data"], spec, ctx)
+        kept = {r["task_id"] for r in prep.rows}
+        assert kept == {"nc-nas", "w-ar1", "w-noise"}, pid
+    # the cell rule of HCv2-1 counts the defined RAM-PE rows only
+    out = HE.evaluate_part(spec_part(spec, "HCv2-1"), spec, ctx)
+    ram = [c for c in out["cells"] if c["cell"].endswith("|RAM")]
+    assert sum(c["n"] for c in ram) == 2
+
+
+def test_the_dose_only_rows_are_reported_beside_hcv2_5():
+    mech = {
+        "status": "final",
+        "entries": [
+            {"principle": "IIM", "where": {"system": "PC_half"}, "on": False},
+            {"where": {"system": ["PC_half", "PC_nominal"]}, "on": True},
+        ],
+        "dose_only_entries": [
+            {"principle": "IIM", "where": {"system": "PC_half"}, "on": True}
+        ],
+    }
+    data = {
+        "where": {"design": "witnesses"},
+        "event": {"status": "ABSENT"},
+        "cells": ["system", "principle"],
+    }
+    spec = mini_spec(
+        [
+            {"id": "on", "rule": "describe", "params": {},
+             "data": {**data, "mechanism_on": "own"}},
+            {"id": "dose", "rule": "describe", "params": {}, "role": "reported",
+             "data": {**data, "mechanism_on": "dose_only"}},
+        ],
+        mechanism_on=mech,
+    )
+    rows = [
+        comp_row(f"{s}-{p}", s, "ABSENT", 0.0, principle=p, seed=20000)
+        for s in ("PC_half", "PC_nominal")
+        for p in ("IIM", "NAS")
+    ]
+    ctx = HE.build_context(sources={"components": rows}, split=S.CONFIRMATORY)
+    h = next(x for x in spec["hypotheses"] if x["id"] == "HCv2-1")
+    on, dose = (HE.evaluate_part(p, spec, ctx) for p in h["parts"])
+    assert {c["cell"] for c in on["cells"]} == {
+        "system=PC_half|principle=NAS",
+        "system=PC_nominal|principle=IIM",
+        "system=PC_nominal|principle=NAS",
+    }
+    (cell,) = dose["cells"]
+    assert cell["cell"] == "system=PC_half|principle=IIM" and cell["k"] == 1
+    # an unknown mode is refused; labels that are not final are not used in a
+    # confirmatory evaluation
+    bad = copy.deepcopy(h["parts"])
+    bad[1]["data"]["mechanism_on"] = "dose"
+    with pytest.raises(HE.SpecError, match="mechanism_on must be one of"):
+        mini_spec(bad, mechanism_on=mech)
+    draft = mini_spec(h["parts"], mechanism_on={**mech, "status": "draft"})
+    hd = next(x for x in draft["hypotheses"] if x["id"] == "HCv2-1")
+    out = HE.evaluate_part(hd["parts"][1], draft, ctx)
+    assert out["outcome"] == NE and "not final" in out["reason"]
+
+
+def test_the_shipped_mechanism_table_is_the_cd8_rule():
+    spec = HE.load_spec()
+    entries = spec["mechanism_on"]["entries"]
+    fields = HE.Fields(spec.get("fields"), spec.get("derived"))
+
+    def on(family, decl, design, system, principle):
+        row = {"family": family, "declaration_id": decl, "design": design,
+               "system": system}
+        return HE._mechanism_on(row, principle, entries, fields)
+
+    # every witness with a dose is labelled, not only the eight mechanism
+    # witnesses: W_PDI_no_multistability keeps RAM on and has PDI off
+    assert on("A", "R", "A_witnesses", "W_PDI_no_multistability", "RAM")
+    assert not on("A", "R", "A_witnesses", "W_PDI_no_multistability", "PDI")
+    assert on("A", "R", "A_witnesses", "N_modules_disconnected", "RAM")
+    # the median condition: A-R IIM with g_b off is off although its dose is on
+    assert not on("A", "R", "A_witnesses", "PC_half", "IIM")
+    # C1 IIM is labelled by the dose condition alone (HO-4)
+    assert on("C1", "R", "C1_factorial", "b00010", "IIM")
+    assert not on("C1", "R", "C1_witnesses", "W_IIM_feedforward", "IIM")
+    # an unmatched row is not on
+    assert not on("A", "R", "A_adversaries", "ADV_NAS_staggered_driver", "NAS")
+
+
+def test_hcv2_21_corrected_admission_keeps_the_original_prediction(spec):
+    part = spec_part(spec, "HCv2-21")
+    preds, orig = part["params"]["predictions"], part["params"]["original_predictions"]
+    assert {v: p["admitted_for_absent"] for v, p in preds.items()} == {
+        "@view.eeg64": "vacuous",
+        "@view.eeg_low": "vacuous",
+        "@view.bold": "vacuous",
+    }
+    assert {v: p["admitted_for_absent"] for v, p in orig.items()} == {
+        "@view.eeg64": "yes",
+        "@view.eeg_low": "yes",
+        "@view.bold": "no",
+    }
+    # the PRESENT predictions are not part of the correction
+    for v in ("@view.eeg64", "@view.eeg_low"):
+        assert preds[v]["admitted_for_present"] == orig[v]["admitted_for_present"]
+    assert "logical error" in part["notes"]
+    pending = [i for i in spec["pending_calibration"] if "(CD-5)" in i["item"]]
+    assert "HCv2-21" in pending[0]["affects"]
+
+    # the registry pattern of the original prediction now falsifies it
+    def registry(absent):
+        return HE.registry_rows(
+            {
+                "entries": [
+                    {"principle": "PDI", "arm": arm, "substrate": "x", "view": v,
+                     "admitted_for_present": "yes", "admitted_for_absent": a,
+                     "anchor_valid": True}
+                    for v, arm, a in zip(("eeg64", "eeglow", "bold"),
+                                         ("forward_a_eeg", "forward_a_eeg",
+                                          "forward_a_bold"), absent)
+                ]
+            }
+        )
+
+    for absent, want in ((("vacuous",) * 3, SUP), (("yes", "yes", "no"), FAL)):
+        ctx = HE.build_context(sources={"components": [], "registry": registry(absent)})
+        assert HE.evaluate_part(part, spec, ctx)["outcome"] == want
+
+
+def test_the_anchor_hypotheses_follow_the_development_statuses(spec):
+    part = spec_part(spec, "HCv2-6(a)")
+    preds = {
+        (e["protocol"], e["principle"]): e["status"]
+        for e in part["params"]["predictions"]
+    }
+    assert preds[("@protocol.A-H", "NAS")] == "valid_specific"
+    assert preds[("@protocol.A-H", "IIM")] == "valid_nonspecific"
+    assert preds[("@protocol.C1-H", "IIM")] == "valid_specific"
+    assert "held out (HO-4)" not in part["notes"]
+    assert "20900-20939" in part["text"]
+    # the K -> NAS cell of HCv2-22(iii) is predicted by declaration
+    p22 = spec_part(spec, "HCv2-22(iii)")
+    by_decl = {
+        cp["match"]["declaration_id"]: cp["prediction"]
+        for cp in p22["cell_predictions"]
+    }
+    assert by_decl == {"H": FAL, "R": SUP}
+    assert "14/20" not in p22["notes"]
+
+
+def test_the_cell_predictions_of_hcv2_22_iii_split_by_declaration(world, spec):
+    # with the decided A-H anchors (NAS specific under H, CD-7) the K -> NAS
+    # cell exists under both declarations
+    ctx = make_ctx(world)
+    ctx.protocols = copy.deepcopy(ctx.protocols)
+    a_h = ctx.protocols["A-H"]
+    a_h["anchors"]["necessity_set"].append("NAS")
+    a_h["anchors"]["principles"]["NAS"]["status"] = "valid_specific"
+    a_h["necessity_set"] = list(a_h["anchors"]["necessity_set"])
+    p = HE.evaluate_part(spec_part(spec, "HCv2-22(iii)"), spec, ctx)
+    cells = {
+        c["cell"]: c.get("prediction")
+        for c in p["cells"]
+        if c["cell"].endswith("|W_PDI_single_attractor|NAS")
+    }
+    assert cells == {"A-H|W_PDI_single_attractor|NAS": FAL,
+                     "A-R|W_PDI_single_attractor|NAS": SUP}
+
+
+def test_the_new_reported_parts_are_reported(evaluated):
+    _, rep = evaluated
+    parts = {p["id"]: p for h in rep["hypotheses"] for p in h["parts"]}
+    for pid in ("HCv2-1(definedness)", "HCv2-5(dose-only)", "HCv2-14(H-present)"):
+        assert parts[pid]["role"] == "reported"
+        assert parts[pid]["outcome"] == HE.REPORTED, pid
+    h14 = {c["cell"]: c for c in parts["HCv2-14(H-present)"]["cells"]}
+    assert set(h14) == {"A:O_inert", "A:W_IIM_feedforward"}
+
+
+def test_the_held_out_predictions_are_unchanged_since_their_commit(spec):
+    """HCv2-10, HCv2-15 and the held-out parts keep their committed text,
+    rule, parameters, data and predictions (d3bcb09); HCv2-21 is the one
+    documented correction (CD-5), and a held-out part may only gain an
+    expectation note."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(HE.SPEC_PATH).resolve().parents[2]
+    proc = subprocess.run(
+        ["git", "-C", str(root), "show", "d3bcb09:protocols/v2/hypotheses_v2.json"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        pytest.skip("the commit of the held-out predictions is not available")
+    old = {h["id"]: h for h in json.loads(proc.stdout)["hypotheses"]}
+    new = {h["id"]: h for h in spec["hypotheses"]}
+    for hid in ("HCv2-10", "HCv2-15"):
+        assert new[hid] == old[hid], hid
+    keys = ("text", "rule", "params", "data", "prediction", "cell_predictions",
+            "gate", "choose", "role", "label", "replaced_by")
+    for hid, h in old.items():
+        for p in h.get("parts") or ():
+            held_out = p.get("label") == "HO" or "HO" in (h.get("labels") or ()) and (
+                p.get("label") is None
+            )
+            if not held_out or p["id"] == "HCv2-21":
+                continue
+            q = spec_part(spec, p["id"])
+            assert {k: q.get(k) for k in keys} == {k: p.get(k) for k in keys}, p["id"]
+
+
+def test_the_held_out_transcription_agrees_with_the_hypotheses(spec):
+    """The transcribed admission table (protocols/v2/held_out_predictions_v2.json)
+    states the flags the admission hypotheses decide on, the HCv2-21
+    correction included, and names existing hypotheses."""
+    from pathlib import Path
+
+    path = Path(HE.SPEC_PATH).with_name("held_out_predictions_v2.json")
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["schema"] == "mpc-bench-held-out-predictions/1"
+    assert [e["id"] for e in doc["held_out_elements"]] == [
+        f"HO-{i}" for i in range(1, 8)
+    ]
+    ids = {h["id"] for h in spec["hypotheses"]} | {
+        e["id"] for e in spec["integrity_audit"]
+    }
+    for row in doc["held_out_elements"] + doc["admission_table"]:
+        for t in row["tested_in"]:
+            assert t.split(" ")[0].split("(")[0] in ids, t
+    vocab = spec["vocabulary"]
+
+    def flags(pid, flag):
+        preds = HE.resolve(spec_part(spec, pid)["params"]["predictions"], spec)
+        return {v: p[flag] for v, p in preds.items() if flag in p}
+
+    def table(principle, flag):
+        return {
+            v: row[flag]
+            for row in doc["admission_table"]
+            if row["principle"] == principle and flag in row
+            for v in row["views"]
+        }
+
+    nas_present = table("NAS", "admitted_for_present")
+    assert flags("HCv2-10", "admitted_for_present") == nas_present
+    assert flags("HCv2-10(absent)", "admitted_for_absent") == table(
+        "NAS", "admitted_for_absent"
+    )
+    pdi = spec_part(spec, "HCv2-21")
+    assert flags("HCv2-21", "admitted_for_absent") == table(
+        "PDI", "admitted_for_absent"
+    )
+    assert flags("HCv2-21", "admitted_for_present") == table(
+        "PDI", "admitted_for_present"
+    )
+    original = HE.resolve(pdi["params"]["original_predictions"], spec)
+    for row in doc["admission_table"]:
+        if row["principle"] == "PDI":
+            assert row["corrected"] == "HCv2-21"
+            for v in row["views"]:
+                assert (
+                    original[v]["admitted_for_absent"]
+                    == row["original"]["admitted_for_absent"]
+                )
+    assert set(table("PDI", "admitted_for_absent")) == {
+        vocab["view.eeg64"],
+        vocab["view.eeg_low"],
+        vocab["view.bold"],
+    }

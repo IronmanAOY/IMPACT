@@ -1,0 +1,223 @@
+{
+ "schema": "mpc-bench-held-out-predictions/1",
+ "source": "MPC-Bench v2 design (MPC_BENCH_V2_DESIGN.md), section 1.4 'Held-out status' and section 3.6 'Predicted admission table', transcribed so that the release of the held-out forward anchors names a committed copy of every held-out prediction. The decisive statements are those of protocols/v2/hypotheses_v2.json; this file adds the rows of the admission table that no hypothesis states as a decision.",
+ "labels": {
+  "R": "replication of development results at the development regime",
+  "C": "follows from the construct",
+  "HO": "held out"
+ },
+ "held_out_elements": [
+  {
+   "id": "HO-1",
+   "element": "declaration misspecification",
+   "held_out": "label errors in the declared context (q = 0.1, 0.25), missing slow phase (partial declaration), jittered cue onsets, for NAS and IIM on family A",
+   "tested_in": [
+    "HCv2-9"
+   ]
+  },
+  {
+   "id": "HO-2",
+   "element": "out-of-scope drivers",
+   "held_out": "staggered driver with its time constants multiplied by 10 (S = C 0.5 s, hub 3 s, M = V 8 s; mostly outside the basis span 10 tau_c = 1 s) and with a saturating post-filter transform",
+   "tested_in": [
+    "HCv2-9"
+   ]
+  },
+  {
+   "id": "HO-3",
+   "element": "forward regime",
+   "held_out": "EEG lead-field seed 20261001, conduction width 0.6, the paper-2 low-density montage, and the template-lead-field inverse at that regime; development used seed 20260928 and width 0.5",
+   "tested_in": [
+    "HCv2-10",
+    "HCv2-15",
+    "HCv2-21"
+   ]
+  },
+  {
+   "id": "HO-4",
+   "element": "IIM v5 on family C1",
+   "held_out": "IIM-dir with drivers recorded on C1 (only reference-block anchors are computed before the freeze)",
+   "tested_in": [
+    "HCv2-14 (C1 parts)"
+   ]
+  },
+  {
+   "id": "HO-5",
+   "element": "IIM non-monotone regime",
+   "held_out": "ring coupling 0.9 and 1.5 with the v5 estimator and occupancy gate",
+   "tested_in": [
+    "HCv2-12(b)"
+   ]
+  },
+  {
+   "id": "HO-6",
+   "element": "IIM sensitivity to Hopf coupling at sensor level",
+   "held_out": "G sweep of the v2 sensor pipeline",
+   "tested_in": [
+    "HCv2-15(e)"
+   ]
+  },
+  {
+   "id": "HO-7",
+   "element": "Tier B",
+   "held_out": "echo time constants 6 s and 12 s; zero-mean workspace broadcast witness; mis-declared PDI access node on the content-on witnesses",
+   "tested_in": [
+    "HCv2-B3",
+    "HCv2-B6",
+    "HCv2-20(d)"
+   ]
+  }
+ ],
+ "admission_table": [
+  {
+   "principle": "NAS",
+   "views": [
+    "source"
+   ],
+   "predicted": "present yes; absent yes",
+   "admitted_for_present": "yes",
+   "admitted_for_absent": "yes",
+   "label": "R (development: null at G = 0; hub lesion 15 % vs random 67 % of unlesioned)",
+   "tested_in": [
+    "HCv2-10",
+    "HCv2-10(absent)"
+   ]
+  },
+  {
+   "principle": "NAS",
+   "views": [
+    "eeg64",
+    "eeglow",
+    "mne_template"
+   ],
+   "predicted": "present no (FMa); absent vacuous",
+   "admitted_for_present": "no",
+   "admitted_for_absent": "vacuous",
+   "label": "R (development: significant at G = 0 in 5/6-6/6 seeds for every sensor and source-estimate view)",
+   "tested_in": [
+    "HCv2-10",
+    "HCv2-10(absent)"
+   ]
+  },
+  {
+   "principle": "NAS",
+   "views": [
+    "bold"
+   ],
+   "predicted": "UNDEFINED (SAMPLING_UNRESOLVED) on every task",
+   "label": "C (IA-3)",
+   "tested_in": [
+    "IA-3"
+   ]
+  },
+  {
+   "principle": "IIM",
+   "views": [
+    "eeg64",
+    "eeg64_noref",
+    "eeglow",
+    "mne_template"
+   ],
+   "pipeline": "EEG v2 clusters (ZCA)",
+   "predicted": "FMa yes; FMd no (orthogonalisation removes the near-zero-lag Hopf coupling), hence present no; absent yes or vacuous",
+   "admitted_for_present": "no",
+   "admitted_for_absent": [
+    "yes",
+    "vacuous"
+   ],
+   "label": "FMa R; FMd HO",
+   "tested_in": [
+    "HCv2-15(a)",
+    "HCv2-15(c)",
+    "HCv2-15(e-FMd)"
+   ]
+  },
+  {
+   "principle": "IIM",
+   "views": [
+    "eeg64",
+    "eeg64_noref"
+   ],
+   "pipeline": "v1 quadrant montage (iim_v1_quadrants)",
+   "predicted": "average reference: MACRO_RANK_DEFICIENT; no reference: PRESENT at G = 0 in >= 80 %",
+   "label": "R",
+   "tested_in": [
+    "HCv2-15(b)"
+   ]
+  },
+  {
+   "principle": "IIM",
+   "views": [
+    "bold"
+   ],
+   "predicted": "UNDEFINED (INSUFFICIENT_OCCUPANCY) or not PRESENT at every G; absent vacuous or yes",
+   "admitted_for_absent": [
+    "vacuous",
+    "yes"
+   ],
+   "label": "C",
+   "tested_in": [
+    "HCv2-15(d-present)",
+    "HCv2-15(d-absent)"
+   ]
+  },
+  {
+   "principle": "PDI",
+   "views": [
+    "eeg64",
+    "eeglow"
+   ],
+   "pipeline": "full-bearer upper bound",
+   "predicted": "present yes (declared non-specific); absent vacuous",
+   "admitted_for_present": "yes",
+   "admitted_for_absent": "vacuous",
+   "original": {
+    "predicted": "present yes (declared non-specific); absent yes",
+    "admitted_for_absent": "yes"
+   },
+   "corrected": "HCv2-21",
+   "label": "R (development: PC B 2.55, W_PDI_no_multistability 0/10)",
+   "tested_in": [
+    "HCv2-21"
+   ]
+  },
+  {
+   "principle": "PDI",
+   "views": [
+    "bold"
+   ],
+   "pipeline": "slow contexts",
+   "predicted": "absent vacuous",
+   "admitted_for_absent": "vacuous",
+   "original": {
+    "predicted": "absent no (K = 3 read as one state)",
+    "admitted_for_absent": "no"
+   },
+   "corrected": "HCv2-21",
+   "label": "R (development 6/10)",
+   "tested_in": [
+    "HCv2-21"
+   ]
+  },
+  {
+   "principle": [
+    "RAM",
+    "SRPI"
+   ],
+   "views": [
+    "any human modality"
+   ],
+   "predicted": "not definable on the paper-2 data (0/2457); no admission in Tier A",
+   "label": "-",
+   "tested_in": []
+  }
+ ],
+ "corrections": [
+  {
+   "hypothesis": "HCv2-21",
+   "rows": "PDI EEG-64, EEG-low and BOLD: admitted_for_absent",
+   "kind": "logical error, corrected before the release (CD-5)",
+   "reason": "The original ABSENT predictions assumed the exact path that design decision 9 had already rejected: a concordant PDI count outside an admitted concordance cell is UNDEFINED(NO_SAMPLING_SE), never ABSENT, and the CD-5 battery admits the source cell only. The corrected values follow from the 3.6 rule on the development-regime forward rows (FM0 holds, no on-run is ABSENT, every null run is UNDEFINED, so pi0 = 0 and absent is vacuous on every view); the details are in the notes of HCv2-21."
+  }
+ ]
+}
