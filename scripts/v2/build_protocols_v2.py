@@ -362,16 +362,25 @@ def _mechanism_value(v):
 def _replication_value(v):
     """Each anchor design to true or false; the forward anchor design
     (its views' validity-only replication, decided once the released
-    reference block gives its power) may be given beside them."""
+    reference block gives its power) may be given beside them, as each
+    forward arm to true or false: one anchor run serves every view of its
+    arm, so the arm is what extends."""
     from impact_pipeline.bench.designs_v2 import anchors as AN
 
-    need = set(AN.ANCHOR_DESIGNS) - {FORWARD_ANCHOR_DESIGN}
+    need = set(AN.ANCHOR_DESIGNS)
     allowed = need | {FORWARD_ANCHOR_DESIGN}
+    arms = set(AN.FORWARD_ARMS)
+    fwd = v.get(FORWARD_ANCHOR_DESIGN, {}) if isinstance(v, Mapping) else None
     if (not isinstance(v, Mapping) or not need <= set(v) <= allowed
-            or not all(isinstance(x, bool) for x in v.values())):
-        raise BuildError(f"must map each of {sorted(need)} (and optionally "
-                         f"{FORWARD_ANCHOR_DESIGN}) to true or false")
-    return {k: bool(v[k]) for k in sorted(v)}
+            or not all(isinstance(v[k], bool) for k in need)
+            or not isinstance(fwd, Mapping)
+            or (FORWARD_ANCHOR_DESIGN in v and set(fwd) != arms)
+            or not all(isinstance(x, bool) for x in fwd.values())):
+        raise BuildError(f"must map each of {sorted(need)} to true or false (and "
+                         f"optionally {FORWARD_ANCHOR_DESIGN} each of "
+                         f"{sorted(arms)} to true or false)")
+    return {k: ({a: bool(fwd[a]) for a in sorted(fwd)} if k == FORWARD_ANCHOR_DESIGN
+                else bool(v[k])) for k in sorted(v)}
 
 
 def _regime_value(v):
@@ -421,8 +430,13 @@ def _forward_n_low():
 
 
 def _replication_code():
+    """The extensions the code runs: the anchor designs', and the forward
+    arms' under the forward anchor design."""
     from impact_pipeline.bench.designs_v2 import anchors as AN
-    return dict(AN.CALIBRATION_PENDING["replication_extended"]["value"])
+    out = dict(AN.CALIBRATION_PENDING["replication_extended"]["value"])
+    out[FORWARD_ANCHOR_DESIGN] = dict(
+        AN.CALIBRATION_PENDING["forward_replication_extended"]["value"])
+    return out
 
 
 DECISIONS: Tuple[DecisionSpec, ...] = (
@@ -468,9 +482,11 @@ DECISIONS: Tuple[DecisionSpec, ...] = (
                  "median c >= 2 delta) or 'structural' (the hypotheses-file draft)",
                  lambda: "structural", _mechanism_value),
     DecisionSpec("replication_extended", "CD-11",
-                 "anchor designs whose replication block extends to 20900-20939",
+                 "anchor designs (and forward arms) whose replication block "
+                 "extends to 20900-20939",
                  _replication_code, _replication_value,
-                 ("impact_pipeline.bench.designs_v2.anchors.CALIBRATION_PENDING",
+                 ("impact_pipeline.bench.designs_v2.anchors.CALIBRATION_PENDING "
+                  "(replication_extended; forward_replication_extended per arm)",
                   _replication_code)),
     DecisionSpec("paper2_regime", "CD-12",
                  "paper-2 regime from the BIDS metadata: n_low and reference scheme "
@@ -1885,6 +1901,8 @@ def replication_power(series_by_key: Mapping, entries_by_key: Mapping) -> dict:
     forward views and forms replicate validity only (HCv2-6 (b)); their
     status is valid or invalid. A protocol without reference-block runs
     (a forward view before the release) has no entry."""
+    from impact_pipeline.bench.designs_v2 import anchors as AN
+
     rng = np.random.default_rng(BOOTSTRAP_SEED)
     out = {}
     for design, keys in PRIMARY_PROTOCOLS_OF_ANCHOR_DESIGN.items():
@@ -1911,6 +1929,11 @@ def replication_power(series_by_key: Mapping, entries_by_key: Mapping) -> dict:
         low = sorted(k for k, v in per.items() if v["power"]["20"] < 0.9)
         out[design] = {"anchors": per, "below_0.9_at_20": low,
                        "suggest_extended": bool(low), "validity_only": validity_only}
+        if design == FORWARD_ANCHOR_DESIGN:
+            # one anchor run serves every view of its arm: the arm extends
+            below = {_forward_arm_view_of_key(k.split("|")[0])[0] for k in low}
+            out[design]["suggest_extended_by_arm"] = {
+                arm: arm in below for arm in sorted(AN.FORWARD_ARMS)}
     return out
 
 
@@ -1918,13 +1941,18 @@ def replication_suggestion(replication: Mapping) -> Optional[dict]:
     """The CD-11 suggestion from :func:`replication_power`: extend a design
     whose replication power at 20 seeds is below 0.9 somewhere. The family
     designs need their anchors (else no suggestion); the forward design
-    joins once its reference block exists (after the release)."""
+    joins once its reference block exists (after the release), per arm:
+    an arm extends where one of its views or forms is below 0.9."""
     designs = [d for d in replication if d not in VALIDITY_ONLY_ANCHOR_DESIGNS
                or replication[d]["anchors"]]
     if not all(replication[d]["anchors"] for d in designs):
         return None
-    return {"value": {d: replication[d]["suggest_extended"] for d in sorted(designs)},
-            "rule": "extend where the replication power at 20 seeds is below 0.9"}
+    value = {d: (replication[d]["suggest_extended_by_arm"]
+                 if d == FORWARD_ANCHOR_DESIGN else replication[d]["suggest_extended"])
+             for d in sorted(designs)}
+    return {"value": value,
+            "rule": "extend where the replication power at 20 seeds is below 0.9 "
+                    "(a forward arm where one of its views is)"}
 
 
 def _lower_bounds(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -2659,16 +2687,31 @@ def decisions_record(dec: Decisions, suggestions: Mapping) -> Tuple[dict, List[s
 def _code_view(val, code_val) -> Tuple[object, object]:
     """A decided value and the code's value as they are compared: a mapping
     on the keys the code carries (the rest of the decision is not code); a
-    map of switches (the anchor designs' extensions) on the keys of either,
-    a switch the other side lacks read as off, so a decided extension the
-    code cannot carry is no match."""
+    map of switches (the anchor designs' extensions, the forward arms' as a
+    nested map) on the switches of either, a switch the other side lacks
+    read as off, so a decided extension the code cannot carry is no match."""
     if not (isinstance(code_val, Mapping) and isinstance(val, Mapping)):
         return val, code_val
-    if all(isinstance(x, bool) for x in (*code_val.values(), *val.values())):
-        keys = sorted(set(code_val) | set(val))
-        return ({k: bool(val.get(k, False)) for k in keys},
-                {k: bool(code_val.get(k, False)) for k in keys})
+    want, have = _switches(val), _switches(code_val)
+    if want is not None and have is not None:
+        keys = sorted(set(want) | set(have))
+        return ({k: want.get(k, False) for k in keys},
+                {k: have.get(k, False) for k in keys})
     return {k: val.get(k) for k in code_val}, code_val
+
+
+def _switches(m: Mapping) -> Optional[Dict[str, bool]]:
+    """A map of switches (true or false, or a map of them) flattened to
+    ``{"key" or "key.sub": bool}``; None if anything else is in it."""
+    out = {}
+    for k, x in m.items():
+        if isinstance(x, bool):
+            out[str(k)] = x
+        elif isinstance(x, Mapping) and all(isinstance(y, bool) for y in x.values()):
+            out.update({f"{k}.{a}": y for a, y in x.items()})
+        else:
+            return None
+    return out
 
 
 def _same(a, b) -> bool:

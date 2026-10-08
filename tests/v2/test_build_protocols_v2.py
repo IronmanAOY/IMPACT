@@ -31,6 +31,7 @@ import pytest
 from impact_pipeline import evidence_v2 as E
 from impact_pipeline.bench import designs_v2 as D
 from impact_pipeline.bench import run_bench_v2 as RB
+from impact_pipeline.bench.designs_v2 import forward as FW
 from impact_pipeline.v2 import PRINCIPLES
 from impact_pipeline.v2 import hypothesis_engine as HE
 from impact_pipeline.v2 import records as REC
@@ -1617,6 +1618,7 @@ def test_the_quadrant_forms_have_no_inherited_anchors(full_build):
         assert f"anchors of {key}: 0 of 40 reference seeds" in blocking
     rep = ev["replication_power"][BP.FORWARD_ANCHOR_DESIGN]
     assert rep["validity_only"] is True and rep["anchors"] == {}
+    assert rep["suggest_extended_by_arm"] == {arm: False for arm in FW.ARMS}
 
 
 def test_the_replication_suggestion_waits_for_the_forward_anchors():
@@ -1624,15 +1626,38 @@ def test_the_replication_suggestion_waits_for_the_forward_anchors():
         return {"anchors": {"x|IIM": {}} if anchors else {},
                 "suggest_extended": below}
 
+    by_arm = {arm: arm == FW.ARM_A_BOLD for arm in FW.ARMS}
     rep = {"A_anchors": design(True), "C1_anchors": design(False),
            "RAM160_anchors": design(False),
            BP.FORWARD_ANCHOR_DESIGN: design(False, anchors=False)}
     assert BP.replication_suggestion(rep)["value"] == {
         "A_anchors": True, "C1_anchors": False, "RAM160_anchors": False}
-    rep[BP.FORWARD_ANCHOR_DESIGN] = design(True)
-    assert BP.replication_suggestion(rep)["value"][BP.FORWARD_ANCHOR_DESIGN] is True
+    rep[BP.FORWARD_ANCHOR_DESIGN] = dict(design(True), suggest_extended_by_arm=by_arm)
+    assert BP.replication_suggestion(rep)["value"][BP.FORWARD_ANCHOR_DESIGN] == by_arm
     rep["C1_anchors"] = design(False, anchors=False)
     assert BP.replication_suggestion(rep) is None
+
+
+def test_a_forward_view_below_the_power_target_extends_its_arm(monkeypatch):
+    """The forward suggestion is per arm, the unit the code extends: a view
+    or form below 0.9 at 20 seeds extends the arm that runs it."""
+    key = "hopf-eeg64+iim_v1_quadrants"
+    seeds = np.arange(T.ANCHOR_BLOCK_SIZE)
+    # a third of the reference seeds without a value: often fewer than
+    # 18 of 20 finite on a resampled block
+    pc = np.where(seeds % 3 == 0, np.nan, 0.05)
+    series = {"IIM": {"pc": pc, "lesion": np.zeros(T.ANCHOR_BLOCK_SIZE)}}
+    entries = {"IIM": {"status": T.ANCHOR_VALID_NONSPECIFIC, "valid": True}}
+    monkeypatch.setattr(BP, "PRINCIPLES", ("IIM",))
+    rep = BP.replication_power({key: series}, {key: entries})
+    fwd = rep[BP.FORWARD_ANCHOR_DESIGN]
+    assert fwd["below_0.9_at_20"] == [f"{key}|IIM"]
+    assert fwd["suggest_extended_by_arm"] == {
+        arm: arm == FW.ARM_HOPF for arm in FW.ARMS}
+    assert "suggest_extended_by_arm" not in rep["A_anchors"]
+    for key in BP.PRIMARY_PROTOCOLS_OF_ANCHOR_DESIGN[BP.FORWARD_ANCHOR_DESIGN]:
+        arm = BP._forward_arm_view_of_key(key)[0]
+        assert key.startswith(FW.PROTOCOL_PREFIX_OF_ARM[arm] + "-")
 
 
 def test_released_quadrant_anchors_are_their_own(tmp_path):
@@ -1680,23 +1705,54 @@ def test_released_quadrant_anchors_are_their_own(tmp_path):
     assert not any(f"anchors of {key}" in b for b in res["manifest"]["blocking"])
 
 
-def test_the_replication_decision_may_name_the_forward_design():
+def test_the_replication_decision_may_name_the_forward_arms():
     base = {"A_anchors": True, "C1_anchors": False, "RAM160_anchors": False}
     assert BP._replication_value(base) == base
-    with_fwd = dict(base, **{BP.FORWARD_ANCHOR_DESIGN: True})
+    arms = {arm: False for arm in FW.ARMS}
+    with_fwd = dict(base, **{BP.FORWARD_ANCHOR_DESIGN: dict(arms, hopf=True)})
     assert BP._replication_value(with_fwd) == with_fwd
     for bad in ({"A_anchors": True}, dict(base, other=True),
-                dict(base, A_anchors="yes")):
+                dict(base, A_anchors="yes"),
+                dict(base, **{BP.FORWARD_ANCHOR_DESIGN: True}),
+                dict(base, **{BP.FORWARD_ANCHOR_DESIGN: {"hopf": True}}),
+                dict(base, **{BP.FORWARD_ANCHOR_DESIGN: dict(arms, hopf="yes")})):
         with pytest.raises(BP.BuildError):
             BP._replication_value(bad)
     dec = BP.load_decisions({
         "schema": BP.DECISIONS_SCHEMA, "status": "draft",
         "decisions": {"replication_extended": {"value": with_fwd}}})
-    rec, _blocking = BP.decisions_record(dec, {})
+    rec, blocking = BP.decisions_record(dec, {})
+    # the code extends no forward arm
+    assert rec["decisions"]["replication_extended"]["code"]["consistent"] is False
+    assert any(b.startswith("decision replication_extended:") for b in blocking)
+
+
+def test_the_replication_code_reads_the_forward_arms(monkeypatch):
+    """The CD-11 code value carries the forward arms' extensions
+    (anchors.CALIBRATION_PENDING['forward_replication_extended']); a
+    decision that leaves the forward arms out reads them as not extended."""
+    from impact_pipeline.bench.designs_v2 import anchors as AN
+
+    family = dict(AN.CALIBRATION_PENDING["replication_extended"]["value"])
     code = BP._replication_code()
-    keys = set(code) | set(with_fwd)
-    assert rec["decisions"]["replication_extended"]["code"]["consistent"] is (
-        {k: code.get(k, False) for k in keys} == {k: with_fwd[k] for k in keys})
+    assert code == dict(family, **{BP.FORWARD_ANCHOR_DESIGN: {
+        arm: False for arm in FW.ARMS}})
+    assert BP._replication_value(code) == code
+
+    def consistent(value):
+        dec = BP.load_decisions({
+            "schema": BP.DECISIONS_SCHEMA, "status": "draft",
+            "decisions": {"replication_extended": {"value": value}}})
+        rec, _blocking = BP.decisions_record(dec, {})
+        return rec["decisions"]["replication_extended"]["code"]["consistent"]
+
+    extended = {arm: arm == FW.ARM_A_EEG for arm in FW.ARMS}
+    assert consistent(family)
+    pending = copy.deepcopy(AN.CALIBRATION_PENDING)
+    pending["forward_replication_extended"]["value"] = extended
+    monkeypatch.setattr(AN, "CALIBRATION_PENDING", pending)
+    assert not consistent(family)
+    assert consistent(dict(family, **{BP.FORWARD_ANCHOR_DESIGN: extended}))
 
 
 def test_a_decided_extension_the_code_lacks_is_no_match(monkeypatch):
@@ -1719,9 +1775,11 @@ def test_a_decided_extension_the_code_lacks_is_no_match(monkeypatch):
                              for b in blocking)
         return ok
 
+    off = {arm: False for arm in FW.ARMS}
     assert consistent(code)
-    assert consistent(dict(code, **{BP.FORWARD_ANCHOR_DESIGN: False}))
-    assert not consistent(dict(code, **{BP.FORWARD_ANCHOR_DESIGN: True}))
+    assert consistent(dict(code, **{BP.FORWARD_ANCHOR_DESIGN: off}))
+    hopf = dict(off, hopf=True)
+    assert not consistent(dict(code, **{BP.FORWARD_ANCHOR_DESIGN: hopf}))
     assert not consistent(dict(code, A_anchors=False))
     # a mapping that is not all switches is compared on the code's keys
     assert BP._code_view({"n_low": 32, "reference": "average", "tr_s": None},
