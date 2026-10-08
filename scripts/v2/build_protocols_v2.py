@@ -26,8 +26,9 @@ Outputs (``--out``, default ``protocols/v2/generated/``)
     concordance cells, the precision block of the testability gates); the
     held-out declarations ``A-P``, ``A-Q10``, ``A-Q25``, ``A-J`` and the
     null-calibration protocol ``A-none``, copies of the generated ``A-R``
-    with their declaration (``A-none``: none); the forward views (anchors from
-    the reference block at the held-out regime, released after the held-out
+    with their declaration (``A-none``: none); the forward views and the v1
+    quadrant forms of the Hopf EEG views (their own anchors from the
+    reference block at the held-out regime, released after the held-out
     predictions were committed); the family-B protocols
     ``B-<anchor>-<cut>-<null family>[-values]`` exactly as the family-B
     validation builds them, and ``B``, the family-B protocol that carries the
@@ -42,7 +43,10 @@ Outputs (``--out``, default ``protocols/v2/generated/``)
     every testability row (also below the minimum run count) with its sources.
 ``mechanism_on.json``
     the CD-8 labels as a list of entries in the hypotheses-file format
-    (usable as the evaluator's ``--mechanism-on`` on development records).
+    (usable as the evaluator's ``--mechanism-on`` on development records):
+    the rule's entries (witness doses from the v2 system catalogue), then
+    the dose-only entries of the cells the held-out rule leaves without
+    development rows (C1 IIM).
 ``declared_dependencies.json``
     the CD-7 declared dependencies of HCv2-22 (iii).
 ``calibration_decisions.json``
@@ -155,9 +159,23 @@ NO_REPORTED_CUT = tuple(DERIVED_FROM_A_R)
 # the anchor designs: development reference block per family protocol
 ANCHOR_DESIGNS = ("A_anchors", "C1_anchors", "RAM160_anchors")
 FORWARD_ANCHOR_DESIGN = "forward_anchor_replication"
+# the v1 quadrant comparator forms of the Hopf EEG views: their own anchors
+# on the forward anchor condition (validity only), never their base view's
+FORWARD_OWN_ANCHOR_FORMS = ("hopf-eeg64+iim_v1_quadrants",
+                            "hopf-eeg64_noref+iim_v1_quadrants")
+# the protocols whose anchor status a design's replication block tests
+# (CD-11, HCv2-6): the family protocols, and every forward view and quadrant
+# form with its own anchors (validity only, HCv2-6 (b))
 PRIMARY_PROTOCOLS_OF_ANCHOR_DESIGN = {
     "A_anchors": ("A-R", "A-H"), "C1_anchors": ("C1-R", "C1-H"),
-    "RAM160_anchors": ("A-RAM160",)}
+    "RAM160_anchors": ("A-RAM160",),
+    FORWARD_ANCHOR_DESIGN: ("fwdA-eeg64", "fwdA-eeglow", "fwdA-source",
+                            "fwdA_bold-bold", "fwdA_bold-source", "hopf-bold",
+                            "hopf-eeg64", "hopf-eeg64_noref", "hopf-eeglow",
+                            "hopf-mne_template", "hopf-source")
+    + FORWARD_OWN_ANCHOR_FORMS}
+VALIDITY_ONLY_ANCHOR_DESIGNS = (FORWARD_ANCHOR_DESIGN,)
+VALID = "valid"  # the status of a valid anchor where only validity is tested
 # the protocols of the gated parts (HCv2-14 (c, d), HCv2-22 (ii)) and the
 # designs whose development rows enter the testability table
 GATE_PROTOCOLS = ("A-R", "A-H", "C1-R", "C1-H", "A-RAM160")
@@ -175,19 +193,33 @@ OWN_KNOB = {"RAM": "eta", "PDI": "K", "NAS": "g_b", "IIM": "c_int", "SRPI": "e"}
 SWEEP_DESIGNS = ("A_sweeps", "C1_sweeps")
 FACTORIAL_DESIGNS = ("A_factorial", "C1_factorial")
 WITNESS_DESIGNS = ("A_witnesses", "C1_witnesses")
-MECHANISM_WITNESSES = ("PC_nominal", "PC_half", "W_RAM_no_plasticity",
-                       "W_PDI_single_attractor", "W_NAS_no_workspace",
-                       "W_NAS_broadcast_only", "W_IIM_feedforward",
-                       "W_SRPI_no_efference")
+MECHANISM_DESIGNS = SWEEP_DESIGNS + FACTORIAL_DESIGNS + WITNESS_DESIGNS
+# HCv2-5 scores no patchwork: its mechanisms sit on separate bearers, so no
+# witness row of it is labelled (unmatched rows are not on)
+MECHANISM_EXCLUDED_GENERATORS = ("patchwork",)
+# the family-principle cells whose development rows the held-out rule
+# withholds on the mechanism-on designs (HO-4: IIM on C1). Their labels are
+# the dose condition alone, placed after the rule entries.
+DOSE_ONLY_MECHANISM_CELLS = (("C1", "IIM"),)
 # substrate of a record's source view (the evidence item's substrate)
 FAMILY_SUBSTRATE = {"A": "synthetic_rate", "C1": "stuart_landau"}
 # the concordance-route admission rule (design 2.4 item 4, CD-5)
 CONCORDANCE_MIN_RUNS = DC.CONCORDANCE_MIN_RUNS
 FORWARD_SUBSTRATES = ("eeg_like_forward", "bold_like_forward")
+# The admitted cell is the family-A battery's (A-R, source view, the
+# declared access bearer). A protocol carries no route where the same cell
+# key would name other runs: a PDI block with a declared access module (the
+# mis-declared access form, another bearer) and the BOLD forward arm, whose
+# slow-context agents and longer windows are another regime than the
+# battery's even on the source view.
+NO_CONCORDANCE_ROUTE_PREFIXES = ("fwdA_bold-",)
 # the SE calibration rules (design 2.1 item 9, 2.2 item 5, 2.3 item 4)
 KAPPA_BOUNDS = (0.8, 1.25)
 KAPPA_LEVEL = 0.90
 TAIL_MAX = 0.02
+# HCv2-4: a class enters the calibration with c defined in >= 80 % of its
+# twin sessions
+DEFINED_SHARE_MIN = 0.8
 # The statement of HCv2-4 (a), reported beside the CD-2 reading: the point in
 # KAPPA_BOUNDS and the 90 % interval inside these wider bounds. With the
 # development twins (5 networks x 7 sessions, df 30 per class) the 90 %
@@ -328,11 +360,17 @@ def _mechanism_value(v):
 
 
 def _replication_value(v):
+    """Each anchor design to true or false; the forward anchor design
+    (its views' validity-only replication, decided once the released
+    reference block gives its power) may be given beside them."""
     from impact_pipeline.bench.designs_v2 import anchors as AN
 
-    if not isinstance(v, Mapping) or set(v) != set(AN.ANCHOR_DESIGNS) or not all(
-            isinstance(x, bool) for x in v.values()):
-        raise BuildError(f"must map each of {AN.ANCHOR_DESIGNS} to true or false")
+    need = set(AN.ANCHOR_DESIGNS) - {FORWARD_ANCHOR_DESIGN}
+    allowed = need | {FORWARD_ANCHOR_DESIGN}
+    if (not isinstance(v, Mapping) or not need <= set(v) <= allowed
+            or not all(isinstance(x, bool) for x in v.values())):
+        raise BuildError(f"must map each of {sorted(need)} (and optionally "
+                         f"{FORWARD_ANCHOR_DESIGN}) to true or false")
     return {k: bool(v[k]) for k in sorted(v)}
 
 
@@ -1052,18 +1090,30 @@ def _scores(payload: Mapping, principle: str) -> bool:
     return principle in (payload.get("estimators") or {})
 
 
+def carries_concordance_route(key: str, payload: Mapping) -> bool:
+    """Whether a protocol carries the admitted concordance cells: it scores
+    PDI, its PDI block declares no access module and it is no protocol of
+    the BOLD forward arm (:data:`NO_CONCORDANCE_ROUTE_PREFIXES`)."""
+    if not _scores(payload, "PDI"):
+        return False
+    if (payload["estimators"]["PDI"] or {}).get("access_module") is not None:
+        return False
+    return not str(key).startswith(NO_CONCORDANCE_ROUTE_PREFIXES)
+
+
 def assemble(key: str, base: dict, dec: Decisions, *, reference: dict, anchors: dict,
              concordance: Sequence = (), precision: Optional[dict] = None) -> object:
     """A protocol from a draft payload: the decisions, the reference, the
     anchors block with ``N_anch`` as the necessity set, the admitted
-    concordance cells (protocols that score PDI) and the precision block."""
+    concordance cells (:func:`carries_concordance_route`) and the precision
+    block."""
     payload = apply_estimator_decisions(copy.deepcopy(base), dec)
     payload["reference"] = reference
     payload["anchors"] = anchors
     n_anch = list(anchors["necessity_set"]) or list(E.PRINCIPLES)
     payload["necessity_set"] = n_anch
-    payload["concordance_route"] = (list(concordance) if _scores(payload, "PDI")
-                                    else [])
+    payload["concordance_route"] = (list(concordance)
+                                    if carries_concordance_route(key, payload) else [])
     payload["precision"] = precision
     if key in NO_REPORTED_CUT and "IIM" in payload["estimators"]:
         payload["estimators"]["IIM"]["report_cut_modes"] = []
@@ -1183,11 +1233,17 @@ def testability(rows: Sequence[dict], dec: Decisions) -> Tuple[List[dict], List[
     return good, table
 
 
-def family_b_rows(data: DevData) -> Tuple[Optional[dict], dict]:
+def family_b_rows(data: DevData, se_df: Optional[float] = None,
+                  protos: Optional[Mapping] = None) -> Tuple[Optional[dict], dict]:
     """The family-B testability row (HCv2-11 (c)): IIM-dir ABSENT on the
-    feed-forward star at coupling >= 0.2 (statuses as recorded on the exact
-    family-B scale)."""
+    feed-forward star at coupling >= 0.2 on the exact family-B scale. With
+    ``se_df`` each stored IIM component is judged again under its family-B
+    protocol (``protos``, default :func:`family_b_protocols`) at that block
+    bootstrap df (the decided ``iim_bootstrap_se_df``); without it, or for a
+    record whose protocol is not known, the recorded status counts."""
     g = FAMILY_B_GATE
+    if se_df is not None and protos is None:
+        protos = family_b_protocols()
     runs = []
     for _src, rec in data.select(("family_b",)):
         cell = (rec.config or {}).get("cell") or {}
@@ -1201,10 +1257,17 @@ def family_b_rows(data: DevData) -> Tuple[Optional[dict], dict]:
             c = s.components.get("IIM")
             if c is None:
                 continue
+            proto = None if se_df is None else protos.get(s.protocol_id)
+            if proto is not None:
+                j = rejudge(rec, s, c, proto, se_df_override=se_df)
+                runs.append({"status": j.status, "reason": j.reason, "flags": j.flags,
+                             "se_c": j.se_c, "df_c": j.df_c, "seed": rec.seed})
+                continue
             runs.append({"status": c.status, "reason": c.reason, "flags": c.flags,
                          "se_c": c.se_c, "df_c": c.df_c, "seed": rec.seed})
     info = {"family": g["family"], "principle": g["principle"], "witness": g["witness"],
-            "kind": g["kind"], "n": len(runs), "sources": ["family_b"]}
+            "kind": g["kind"], "n": len(runs), "sources": ["family_b"],
+            "se_df": se_df}
     if len(runs) < T.MIN_RUNS:
         info["row"] = None
         info["why"] = f"{len(runs)} development runs; the gate needs {T.MIN_RUNS}"
@@ -1219,8 +1282,12 @@ def concordance_evidence(rows: Sequence[dict]) -> List[dict]:
     """Per (substrate, observation stage, view, bearer) cell of PDI: the
     content-on runs and their concordant ABSENTs, the no-content runs and
     their concordant PRESENTs (battery classes, and the forward family-A
-    conditions), and the rule's admission (0 events among >= 300 runs; a
-    forward cell's admission is provisional)."""
+    conditions except the BOLD arm's source view), and the rule's admission
+    (0 events among >= 300 runs; a forward cell's admission is
+    provisional). Where a view has no reference yet (c undefined), a
+    concordant count at one state (zero excess) on a content-on run is a
+    concordant ABSENT, and a concordant no-content run with a positive
+    excess is recorded as undetermined."""
     from impact_pipeline.bench.designs_v2 import forward as FW
 
     content = {c[0]: c[1] for c in DC.BATTERY_CLASSES}
@@ -1246,20 +1313,30 @@ def concordance_evidence(rows: Sequence[dict]) -> List[dict]:
         bearer = est.get("counted_bearer")
         if not sub or not bearer:
             continue  # no estimator output: no cell to count it in
+        if (str(r["protocol"]).startswith(NO_CONCORDANCE_ROUTE_PREFIXES)
+                and sub not in FORWARD_SUBSTRATES):
+            continue  # the BOLD arm's source view: not the battery's regime
         key = (sub, r["scoring"].observation_stage, r["view"], bearer)
         cell = cells.setdefault(key, {"on": 0, "on_events": 0, "off": 0,
                                       "off_events": 0, "on_concordant": 0,
-                                      "off_concordant": 0, "classes": set()})
+                                      "off_concordant": 0, "off_undetermined": 0,
+                                      "classes": set()})
         cell["classes"].add(r["system"])
         c = j.c
+        # without a reference c is None; a concordant count at one state
+        # (zero excess) is then still an ABSENT event, a positive excess on
+        # a no-content run an event that cannot be told (recorded)
+        x = excess_of(r["comp"]) if j.concordant and c is None else float("nan")
         if kind == DC.CONTENT_ON:
             cell["on"] += 1
             cell["on_concordant"] += int(j.concordant)
-            cell["on_events"] += int(j.concordant and c is not None and abs(c) < DELTA)
+            cell["on_events"] += int(j.concordant and (
+                abs(c) < DELTA if c is not None else x == 0.0))
         else:
             cell["off"] += 1
             cell["off_concordant"] += int(j.concordant)
             cell["off_events"] += int(j.concordant and c is not None and c > Z)
+            cell["off_undetermined"] += int(j.concordant and c is None and x > 0.0)
     out = []
     for (sub, stage, view, bearer), c in sorted(cells.items(),
                                                 key=lambda kv: str(kv[0])):
@@ -1273,6 +1350,7 @@ def concordance_evidence(rows: Sequence[dict]) -> List[dict]:
             "content_on_concordant": c["on_concordant"],
             "no_content_runs": c["off"], "concordant_present": c["off_events"],
             "no_content_concordant": c["off_concordant"],
+            "concordant_present_undetermined": c["off_undetermined"],
             "cp_upper_absent": _f(HE.cp_upper(c["on_events"], c["on"], 0.05))
             if c["on"] else None,
             "cp_upper_present": _f(HE.cp_upper(c["off_events"], c["off"], 0.05))
@@ -1321,10 +1399,17 @@ def se_calibration(data: DevData, protos: Mapping, dec: Decisions) -> dict:
     """SE calibration on the development twins (CD-2 to CD-4): per (principle,
     SE method, protocol, class[, direction]) the pooled within-network kappa,
     its 90 % chi-square interval and the ``q_A`` tail rates (the IIM block
-    bootstrap also at the lowered df 9); the methods the rules suggest."""
+    bootstrap also at the lowered df 9); the methods the rules suggest.
+    An admitted concordant PDI component has no sampling SE (its error
+    control is the battery): it forms no cell but counts among the class's
+    sessions, so a cell's ``defined_share`` is the share of the class's twin
+    sessions with a defined ``c`` and SE under the cell's method. A cell is
+    eligible for the rules with a share >= 0.8 (HCv2-4) and a defined kappa
+    (an RMS of the SEs of 0 leaves kappa undefined)."""
     iim_boot = _iim().SE_METHOD_DEFAULT
     admitted: Dict[tuple, object] = {}
     cal: Dict[tuple, Dict[int, list]] = {}
+    sessions: Dict[tuple, set] = {}
     # a twin session enters once per SE method: a task run again (a tagged
     # re-run with the decided protocols) is taken from the untagged run,
     # else from the first run by path
@@ -1337,8 +1422,13 @@ def se_calibration(data: DevData, protos: Mapping, dec: Decisions) -> dict:
             if base is None:
                 continue
             for p, comp in s.components.items():
+                # every twin session of the class counts, an undefined
+                # component (no SE method) and a concordant one among them
+                for d in (E.NAS_DIRECTIONS if p == "NAS" else (None,)):
+                    sessions.setdefault((p, s.protocol_id, rec.system, d), set()).add(
+                        (rec.task_id, s.scoring_id))
                 method = comp.se_method
-                if method is None:
+                if method is None or method == E.SE_METHOD_CONCORDANT:
                     continue
                 once = (rec.task_id, s.scoring_id, p, method)
                 if once in seen:
@@ -1367,6 +1457,8 @@ def se_calibration(data: DevData, protos: Mapping, dec: Decisions) -> dict:
                                                     key=lambda kv: str(kv[0])):
         members = 2 if p == "NAS" else 1
         groups, ses, n = [], [], 0
+        n_defined = sum(len(ms) for ms in nets.values())
+        n_sessions = len(sessions.get((p, key, system, d), ())) or n_defined
         ev = {"below": [], "above": [], "below_df9": [], "above_df9": []}
         for _seed, ms in sorted(nets.items()):
             if len(ms) < 2:
@@ -1384,7 +1476,8 @@ def se_calibration(data: DevData, protos: Mapping, dec: Decisions) -> dict:
                     ev["above" + suffix].append(m["c"] - q * m["se"] > mean)
             n += len(ms)
         sd, df = HE.pooled_within_sd(groups)
-        kap = sd / HE.rms(ses) if ses and df else float("nan")
+        rms = HE.rms(ses) if ses else float("nan")
+        kap = sd / rms if df and rms > 0 else float("nan")
         lo, hi = (HE.kappa_interval(kap, df, KAPPA_LEVEL) if df
                   else (float("nan"), float("nan")))
         tails = {k: (float(np.mean(v)) if v else None) for k, v in ev.items()
@@ -1393,10 +1486,14 @@ def se_calibration(data: DevData, protos: Mapping, dec: Decisions) -> dict:
         both = lo_f is not None and hi_f is not None
         point_inside = bool(kap_f is not None
                             and KAPPA_BOUNDS[0] <= kap_f <= KAPPA_BOUNDS[1])
+        share = n_defined / n_sessions
         cells.append({
             "principle": p, "se_method": method, "protocol": key, "class": system,
             "direction": d, "networks": len(groups), "sessions": n, "df": df,
             "kappa": kap_f, "interval": [lo_f, hi_f], "tails": tails,
+            "defined_sessions": n_defined, "class_sessions": n_sessions,
+            "defined_share": share,
+            "eligible": bool(share >= DEFINED_SHARE_MIN and kap_f is not None),
             # CD-2 (and CD-4): the interval inside [0.8, 1.25]; entirely
             # outside it is the falsification criterion of HCv2-4
             "inside": bool(both and lo_f >= KAPPA_BOUNDS[0] and hi_f <= KAPPA_BOUNDS[1]),
@@ -1419,64 +1516,99 @@ def _admit_method(proto, principle, method):
     return E.ProtocolV3.from_dict(payload)
 
 
+def calibrated(cell: Mapping) -> bool:
+    """A method calibrated in a class (PRE_DATA_COMMITMENTS section 2, the
+    binding reading of CD-2 to CD-4): the HCv2-4 (a) statement holds (kappa
+    point in [0.8, 1.25], its 90 % interval inside [0.67, 1.5]) and both
+    one-sided ``q_A`` tail rates are <= 0.02."""
+    return bool(cell["hcv2_4_a"] and cell["tails_ok"])
+
+
+def _class_of(cell: Mapping) -> tuple:
+    return (cell["protocol"], cell["class"], cell["direction"])
+
+
+def _keep_or_switch(cells: Sequence[dict], principle: str, default: str,
+                    fallback: str) -> dict:
+    """CD-3 and CD-4: keep the default method unless it fails to be
+    calibrated in some eligible class and the fallback is calibrated in
+    every class (each eligible class of either method); a method that is
+    not better is never swapped in."""
+    mine = [c for c in cells if c["principle"] == principle and c["eligible"]]
+    dflt = {_class_of(c): c for c in mine if c["se_method"] == default}
+    fb = {_class_of(c): c for c in mine if c["se_method"] == fallback}
+    default_fails = sorted(k for k, c in dflt.items() if not calibrated(c))
+    fallback_ok = bool(fb) and all(k in fb and calibrated(fb[k])
+                                   for k in set(dflt) | set(fb))
+    all_default = [c for c in cells if c["principle"] == principle
+                   and c["se_method"] == default]
+    return {
+        "value": (None if not dflt else fallback if default_fails and fallback_ok
+                  else default),
+        "classes": len(dflt), "calibrated_classes": len(dflt) - len(default_fails),
+        "fallback": fallback, "fallback_classes": len(fb),
+        "fallback_calibrated_classes": sum(calibrated(c) for c in fb.values()),
+        "fallback_calibrated_everywhere": fallback_ok,
+        "not_eligible_classes": len(all_default) - len(dflt),
+        # the falsification side of HCv2-4 and the literal reading of design
+        # 2.1 item 9 (interval inside [0.8, 1.25]), reported beside the rule
+        "failing_classes": sum(c["outside"] for c in dflt.values()),
+        "classes_not_inside": sum(not c["inside"] for c in dflt.values())}
+
+
 def _se_suggestions(cells: Sequence[dict], data: DevData, protos: Mapping) -> dict:
+    """The rules' suggestions for the SE decisions from the eligible twin
+    cells (:func:`calibrated`; cells below the defined share or without a
+    kappa are left out)."""
     nas = _nas()
     out = {}
     by_method: Dict[str, List[dict]] = {}
     for c in cells:
-        if c["principle"] == "NAS":
+        if c["principle"] == "NAS" and c["eligible"]:
             by_method.setdefault(c["se_method"], []).append(c)
-    calibrated = [m for m, cs in by_method.items()
-                  if cs and all(c["inside"] and c["tails_ok"] for c in cs)]
-    calibrated_4a = [m for m, cs in by_method.items()
-                     if cs and all(c["hcv2_4_a"] and c["tails_ok"] for c in cs)]
+    # every class with an eligible cell of some method: a method without an
+    # eligible cell in one of them is not calibrated there
+    classes = {_class_of(c) for cs in by_method.values() for c in cs}
+    good = [m for m, cs in by_method.items()
+            if {_class_of(c) for c in cs if calibrated(c)} >= classes]
+    inside = [m for m, cs in by_method.items()
+              if cs and all(c["inside"] and c["tails_ok"] for c in cs)]
 
     def rank(m):
         scheme, groups = m.split("_")[1], int(m.rsplit("_", 1)[1])
         return (groups - 1, scheme == "contiguous", -groups)
 
     out["nas_se_method"] = {
-        "value": (None if not by_method else max(calibrated, key=rank) if calibrated
+        "value": (None if not by_method else max(good, key=rank) if good
                   else nas.SE_METHOD_DEFAULT),
-        "candidates": sorted(by_method), "calibrated": sorted(calibrated),
-        "rule": "the calibrated method (kappa interval inside [0.8, 1.25] and q_A "
-                "tails <= 0.02 in every class) with the largest df; ties go to the "
-                "contiguous scheme; none calibrated: contiguous G = 10",
-        "calibrated_by_the_hcv2_4_a_statement": sorted(calibrated_4a),
-        "value_by_the_hcv2_4_a_statement": (
-            None if not by_method else max(calibrated_4a, key=rank) if calibrated_4a
-            else nas.SE_METHOD_DEFAULT),
-        "note": "reported beside the rule: kappa point in [0.8, 1.25] and its 90 % "
-                "interval inside [0.67, 1.5] (HCv2-4 (a)); at df 30 the interval "
-                "lies inside [0.8, 1.25] only for a kappa point in about [0.97, 0.98]"}
+        "candidates": sorted(by_method), "calibrated": sorted(good),
+        "calibrated_classes": {m: sum(calibrated(c) for c in cs)
+                               for m, cs in sorted(by_method.items())},
+        "classes": {m: len(cs) for m, cs in sorted(by_method.items())},
+        "rule": "the method calibrated in every class (HCv2-4 (a) statement: kappa "
+                "point in [0.8, 1.25] and its 90 % interval inside [0.67, 1.5]; q_A "
+                "tails <= 0.02) with the largest df; ties go to the contiguous "
+                "scheme; none calibrated: contiguous G = 10",
+        "calibrated_by_the_interval_inside_reading": sorted(inside),
+        "note": "reported beside the rule: the literal reading of design 2.1 item 9 "
+                "(interval inside [0.8, 1.25]); at df 30 it holds only for a kappa "
+                "point in about [0.97, 0.98] (PRE_DATA_COMMITMENTS section 2)"}
     iim = _iim()
-    boot = [c for c in cells if c["principle"] == "IIM"
+    out["iim_se_method"] = dict(
+        _keep_or_switch(cells, "IIM", iim.SE_METHOD_DEFAULT, DC.IIM_SE_FALLBACK),
+        rule="block bootstrap unless it fails to be calibrated in some class and "
+             "the contiguous jackknife G = 10 is calibrated in every class")
+    boot = [c for c in cells if c["principle"] == "IIM" and c["eligible"]
             and c["se_method"] == iim.SE_METHOD_DEFAULT]
-    fails = [c for c in boot if c["outside"]]
     tail_bad = [c for c in boot if not c["tails_ok"]]
-    out["iim_se_method"] = {
-        "value": None if not boot else (DC.IIM_SE_FALLBACK if fails
-                                        else iim.SE_METHOD_DEFAULT),
-        "rule": "block bootstrap unless its kappa interval lies entirely outside "
-                "[0.8, 1.25] in some class (then the contiguous jackknife G = 10)",
-        "classes": len(boot), "failing_classes": len(fails),
-        "classes_not_inside": sum(not c["inside"] for c in boot),
-        "classes_failing_the_hcv2_4_a_statement": sum(not c["hcv2_4_a"] for c in boot)}
     out["iim_bootstrap_se_df"] = {
         "value": None if not boot else (9.0 if tail_bad else 12.0),
         "rule": "12; 9 if a one-sided q_A tail of the bootstrap exceeds 0.02",
         "classes_with_tail_above": len(tail_bad)}
-    ram = [c for c in cells if c["principle"] == "RAM"
-           and c["se_method"] == "shift_null_sd"]
-    out["ram_se_method"] = {
-        "value": None if not ram else (DC.RAM_SE_FALLBACK
-                                       if any(c["outside"] for c in ram)
-                                       else "shift_null_sd"),
-        "rule": "shift-null SD unless its kappa interval lies entirely outside "
-                "[0.8, 1.25] in some class",
-        "classes": len(ram), "failing_classes": sum(c["outside"] for c in ram),
-        "classes_not_inside": sum(not c["inside"] for c in ram),
-        "classes_failing_the_hcv2_4_a_statement": sum(not c["hcv2_4_a"] for c in ram)}
+    out["ram_se_method"] = dict(
+        _keep_or_switch(cells, "RAM", "shift_null_sd", DC.RAM_SE_FALLBACK),
+        rule="shift-null SD unless it fails to be calibrated in some class and the "
+             "trial jackknife G = 10 is calibrated in every class")
     return out
 
 
@@ -1546,43 +1678,113 @@ def occupancy_evidence(data: DevData) -> dict:
                     "which every cell passes"}
 
 
-def mechanism_on(rows: Sequence[dict]) -> Tuple[List[dict], List[dict]]:
-    """The CD-8 labels: per (family, declaration, principle, design, system)
-    of the dry-run sweeps, factorial and witnesses, the development median c
-    and the dose ratio; "on" iff the ratio >= 0.5 and the median >= 2 delta.
-    Returns the entries (hypotheses-file format, first match decides) and the
-    evidence."""
+def witness_dose(system: str, principle: str) -> Optional[float]:
+    """The dose ratio of a witness system's ``principle`` mechanism, from the
+    v2 system catalogue (``bench/witnesses_v2.yaml``): an agent witness's
+    knobs against the nominal knobs (0 where the knobs switch the mechanism
+    off, ``Knobs.bits``; else the principle's own knob over its nominal
+    value); a witness without knobs (the nulls, the hypersynchronous
+    oscillator) by its intended pattern. None for a system the catalogue
+    does not list as a witness, a patchwork
+    (:data:`MECHANISM_EXCLUDED_GENERATORS`) or a principle the pattern
+    leaves unspecified."""
+    from impact_pipeline.bench import adversarial_v2 as AV
+    from impact_pipeline.bench.generators import NOMINAL_KNOBS, knobs_from_dict
+
+    try:
+        entry = AV.get_entry(system)
+    except KeyError:
+        return None
+    gen = entry.get("generator")
+    if entry["kind"] != "witness" or gen in MECHANISM_EXCLUDED_GENERATORS:
+        return None
+    i = PRINCIPLES.index(principle)
+    if gen == "family_a":
+        knobs = knobs_from_dict(entry.get("knobs") or {})
+        if not knobs.bits()[i]:
+            return 0.0
+        own = OWN_KNOB[principle]
+        return float(getattr(knobs, own)) / float(getattr(NOMINAL_KNOBS, own))
+    pattern = entry.get("intended_pattern") or ()
+    v = pattern[i] if i < len(pattern) else None
+    return None if v is None else float(v)
+
+
+def dose_ratio(design: str, system: str, tags: Mapping, principle: str
+               ) -> Optional[float]:
+    """The dose of ``principle``'s mechanism in a row of the mechanism-on
+    designs relative to its nominal dose: the swept level of the principle's
+    own knob over its nominal value (1 for another knob), the factorial
+    cell's bit, the witness's catalogue dose (:func:`witness_dose`); None
+    outside these designs or where no dose is defined."""
     from impact_pipeline.bench.generators import NOMINAL_KNOBS
 
     nominal = NOMINAL_KNOBS.to_dict()
+    if design in SWEEP_DESIGNS:
+        knob, level = tags.get("sweep_knob"), _f(tags.get("sweep_level"))
+        if knob is None or level is None:
+            return None
+        return (level / float(nominal[knob]) if knob == OWN_KNOB.get(principle)
+                and float(nominal[knob]) else 1.0)
+    if design in FACTORIAL_DESIGNS:
+        # the cell's mechanism bits in PRINCIPLES order (Knobs.bits)
+        bits = tags.get("bits") or []
+        if len(bits) != len(PRINCIPLES):
+            return None
+        return float(bits[PRINCIPLES.index(principle)])
+    if design in WITNESS_DESIGNS:
+        return witness_dose(system, principle)
+    return None
+
+
+def _dose_on(ratio: float) -> bool:
+    return ratio >= T.MECHANISM_ON_DOSE_RATIO - 1e-9
+
+
+def dose_only_plan() -> List[dict]:
+    """The rows of the mechanism-on designs whose development output the
+    held-out rule withholds (:data:`DOSE_ONLY_MECHANISM_CELLS`): per
+    (family, declaration, principle, design, system) of the development plan
+    the task tags (no task is run)."""
+    out, seen = [], set()
+    tasks = RB.build_tasks(list(MECHANISM_DESIGNS), S.DEVELOPMENT)
+    for t in tasks:
+        for fam, p in DOSE_ONLY_MECHANISM_CELLS:
+            if t.family != fam:
+                continue
+            for s in t.scorings:
+                if s.estimator_form != D.PRIMARY_FORM:
+                    continue
+                k = (fam, s.declaration_id, p, t.design, t.system)
+                if k not in seen:
+                    seen.add(k)
+                    out.append({"family": fam, "declaration": s.declaration_id,
+                                "principle": p, "design": t.design,
+                                "system": t.system, "tags": dict(t.tags or {})})
+    return sorted(out, key=lambda e: str((e["family"], e["declaration"],
+                                         e["principle"], e["design"], e["system"])))
+
+
+def mechanism_on(rows: Sequence[dict], dose_only: Sequence[Mapping] = ()
+                 ) -> Tuple[List[dict], List[dict]]:
+    """The CD-8 labels: per (family, declaration, principle, design, system)
+    of the dry-run sweeps, factorial and witnesses (every witness the
+    catalogue gives a dose, :func:`dose_ratio`), the development median c
+    and the dose ratio; "on" iff the ratio >= 0.5 and the median >= 2 delta.
+    The rows of ``dose_only`` (:func:`dose_only_plan`; cells without
+    development rows) follow the rule's entries, labelled by the dose
+    condition alone. Returns the entries (hypotheses-file format, first
+    match decides) and the evidence."""
     groups: Dict[tuple, List[float]] = {}
     meta: Dict[tuple, dict] = {}
-    targets = _witness_targets()
     for r in rows:
         if r["form"] != D.PRIMARY_FORM or r["record"].replicate:
             continue
-        d = r["design"]
-        tags, p = r["tags"], r["principle"]
-        if d in SWEEP_DESIGNS:
-            knob, level = tags.get("sweep_knob"), _f(tags.get("sweep_level"))
-            if knob is None or level is None:
-                continue
-            ratio = (level / float(nominal[knob]) if knob == OWN_KNOB.get(p)
-                     and float(nominal[knob]) else 1.0)
-        elif d in FACTORIAL_DESIGNS:
-            # the cell's mechanism bits in PRINCIPLES order (Knobs.bits)
-            bits = tags.get("bits") or []
-            if len(bits) != len(PRINCIPLES):
-                continue
-            ratio = float(bits[PRINCIPLES.index(p)])
-        elif d in WITNESS_DESIGNS and r["system"] in MECHANISM_WITNESSES:
-            if targets.get(r["system"]) == p:
-                ratio = 0.0
-            elif r["system"] == "PC_half":
-                ratio = 0.5
-            else:
-                ratio = 1.0
-        else:
+        d, p = r["design"], r["principle"]
+        if d not in MECHANISM_DESIGNS:
+            continue
+        ratio = dose_ratio(d, r["system"], r["tags"], p)
+        if ratio is None:
             continue
         k = (r["family"], r["declaration"], p, d, r["system"])
         groups.setdefault(k, [])
@@ -1595,13 +1797,29 @@ def mechanism_on(rows: Sequence[dict]) -> Tuple[List[dict], List[dict]]:
         vals = groups[k]
         med = float(np.median(vals)) if vals else None
         ratio = meta[k]["dose_ratio"]
-        on = bool(ratio >= T.MECHANISM_ON_DOSE_RATIO - 1e-9 and med is not None
+        on = bool(_dose_on(ratio) and med is not None
                   and med >= T.MECHANISM_ON_C_RATIO * DELTA)
         entries.append({"principle": p, "family": fam, "declaration": decl,
                         "where": {"design": d, "system": system}, "on": on})
         evidence.append({"family": fam, "declaration": decl, "principle": p,
                          "design": d, "system": system, "n": len(vals),
                          "median_c": med, "dose_ratio": ratio, "on": on})
+    for row in dose_only:
+        k = (row["family"], row["declaration"], row["principle"], row["design"],
+             row["system"])
+        if k in groups:
+            continue
+        ratio = dose_ratio(row["design"], row["system"], row.get("tags") or {},
+                           row["principle"])
+        if ratio is None:
+            continue
+        fam, decl, p, d, system = k
+        on = _dose_on(ratio)
+        entries.append({"principle": p, "family": fam, "declaration": decl,
+                        "where": {"design": d, "system": system}, "on": on})
+        evidence.append({"family": fam, "declaration": decl, "principle": p,
+                         "design": d, "system": system, "n": 0, "median_c": None,
+                         "dose_ratio": ratio, "on": on, "dose_only": True})
     return entries, evidence
 
 
@@ -1659,13 +1877,18 @@ def iim_agents_expectation(rows: Sequence[dict]) -> dict:
 
 
 def replication_power(series_by_key: Mapping, entries_by_key: Mapping) -> dict:
-    """CD-11 for the anchors: per primary family protocol and principle the
+    """CD-11 for the anchors: per primary protocol of each anchor design
+    (:data:`PRIMARY_PROTOCOLS_OF_ANCHOR_DESIGN`) and principle the
     probability that its development status (valid and specific; valid,
     non-specific; invalid) recurs on a replication block of 20 (and 40)
-    seeds, by resampling the reference-block seeds (fixed stream)."""
+    seeds, by resampling the reference-block seeds (fixed stream). The
+    forward views and forms replicate validity only (HCv2-6 (b)); their
+    status is valid or invalid. A protocol without reference-block runs
+    (a forward view before the release) has no entry."""
     rng = np.random.default_rng(BOOTSTRAP_SEED)
     out = {}
     for design, keys in PRIMARY_PROTOCOLS_OF_ANCHOR_DESIGN.items():
+        validity_only = design in VALIDITY_ONLY_ANCHOR_DESIGNS
         per = {}
         for key in keys:
             series = series_by_key.get(key)
@@ -1676,17 +1899,32 @@ def replication_power(series_by_key: Mapping, entries_by_key: Mapping) -> dict:
                 names = ([f"NAS:{d}" for d in E.NAS_DIRECTIONS] if p == "NAS" else [p])
                 if not all(n in series for n in names):
                     continue
-                want = entries[p]["status"]
+                want = (entries[p]["status"] if not validity_only
+                        else VALID if entries[p]["valid"] else T.ANCHOR_INVALID)
                 res = {}
                 for size in (20, 40):
                     idx = rng.integers(0, T.ANCHOR_BLOCK_SIZE, (BOOTSTRAP_DRAWS, size))
-                    st_ = _resampled_statuses(series, names, idx)
+                    st_ = _resampled_statuses(series, names, idx,
+                                              validity_only=validity_only)
                     res[str(size)] = float(np.mean(st_ == want))
                 per[f"{key}|{p}"] = {"development_status": want, "power": res}
         low = sorted(k for k, v in per.items() if v["power"]["20"] < 0.9)
         out[design] = {"anchors": per, "below_0.9_at_20": low,
-                       "suggest_extended": bool(low)}
+                       "suggest_extended": bool(low), "validity_only": validity_only}
     return out
+
+
+def replication_suggestion(replication: Mapping) -> Optional[dict]:
+    """The CD-11 suggestion from :func:`replication_power`: extend a design
+    whose replication power at 20 seeds is below 0.9 somewhere. The family
+    designs need their anchors (else no suggestion); the forward design
+    joins once its reference block exists (after the release)."""
+    designs = [d for d in replication if d not in VALIDITY_ONLY_ANCHOR_DESIGNS
+               or replication[d]["anchors"]]
+    if not all(replication[d]["anchors"] for d in designs):
+        return None
+    return {"value": {d: replication[d]["suggest_extended"] for d in sorted(designs)},
+            "rule": "extend where the replication power at 20 seeds is below 0.9"}
 
 
 def _lower_bounds(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1705,11 +1943,13 @@ def _lower_bounds(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     return n, mean, lower
 
 
-def _resampled_statuses(series, names, idx: np.ndarray) -> np.ndarray:
+def _resampled_statuses(series, names, idx: np.ndarray, *,
+                        validity_only: bool = False) -> np.ndarray:
     """The anchor status of each resampled block (rows of ``idx``): valid iff
     at least 36/40 of the block's values are finite and the t lower bound is
     > 0; specific iff the paired contrast's mean is >= 0.5 x the anchor and
-    its lower bound > 0 (every direction of NAS)."""
+    its lower bound > 0 (every direction of NAS). ``validity_only``: valid
+    (:data:`VALID`) or invalid."""
     size = idx.shape[1]
     min_finite = math.ceil(T.ANCHOR_MIN_FINITE * size / T.ANCHOR_BLOCK_SIZE)
     valid = np.ones(idx.shape[0], dtype=bool)
@@ -1718,11 +1958,15 @@ def _resampled_statuses(series, names, idx: np.ndarray) -> np.ndarray:
         pc, les = series[name]["pc"][idx], series[name]["lesion"][idx]
         n, mean, lower = _lower_bounds(pc)
         valid &= (n >= min_finite) & np.nan_to_num(lower > 0, nan=False)
+        if validity_only:
+            continue
         d = np.where(np.isfinite(pc) & np.isfinite(les), pc - les, np.nan)
         _nd, dm, dl = _lower_bounds(d)
         with np.errstate(invalid="ignore"):
             specific &= np.nan_to_num((dm >= T.SPECIFICITY_RATIO * mean) & (dl > 0),
                                       nan=False)
+    if validity_only:
+        return np.where(valid, VALID, T.ANCHOR_INVALID)
     return np.where(~valid, T.ANCHOR_INVALID,
                     np.where(specific, T.ANCHOR_VALID_SPECIFIC,
                              T.ANCHOR_VALID_NONSPECIFIC))
@@ -1730,7 +1974,7 @@ def _resampled_statuses(series, names, idx: np.ndarray) -> np.ndarray:
 
 def dependency_evidence(rows: Sequence[dict], protos: Mapping) -> List[dict]:
     """HCv2-22 (iii) on development data: per (protocol, single-deficit
-    witness, other principle with a valid anchor) the share of seeds with
+    witness, other principle of ``N_anch``) the share of seeds with
     ``|c_p(w) - c_p(PC)| < z`` (paired on the seed)."""
     targets = _witness_targets()
     by: Dict[tuple, Dict[int, float]] = {}
@@ -1745,10 +1989,10 @@ def dependency_evidence(rows: Sequence[dict], protos: Mapping) -> List[dict]:
         proto = protos.get(key)
         if proto is None:
             continue
+        n_anch = _necessity_set(proto) or set()
         for w, target in sorted(targets.items()):
             for p in PRINCIPLES:
-                if p == target or proto.anchor_status(p) not in (
-                        T.ANCHOR_VALID_SPECIFIC, T.ANCHOR_VALID_NONSPECIFIC):
+                if p == target or p not in n_anch:
                     continue
                 a, b = by.get((key, w, p), {}), by.get((key, "PC_nominal", p), {})
                 common = sorted(set(a) & set(b))
@@ -1896,11 +2140,13 @@ def grain_cap_evidence(data: DevData) -> dict:
 def anchored_keys() -> List[str]:
     """The protocol keys that carry their own anchors: the scorings of the
     reference-block designs (families A and C1, the RAM-only arm with every
-    form that has its own anchor, and every forward view)."""
+    form that has its own anchor, and every forward view) and the v1
+    quadrant forms of the Hopf EEG views (:data:`FORWARD_OWN_ANCHOR_FORMS`,
+    scored on the anchor condition of the released reference block only)."""
     tasks = RB.build_tasks(list(ANCHOR_DESIGNS), S.DEVELOPMENT)
     tasks += RB.build_tasks([FORWARD_ANCHOR_DESIGN], S.DEVELOPMENT,
                             purpose="reference_development")
-    return sorted(set(RB.protocol_keys(tasks)))
+    return sorted(set(RB.protocol_keys(tasks)) | set(FORWARD_OWN_ANCHOR_FORMS))
 
 
 def reference_plan() -> Dict[Tuple[str, str], set]:
@@ -2036,7 +2282,7 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
     stage2 = {k: anchored(k, concordance=cells) for k in own_keys}
     rows2 = judged_rows(data, stage2, dev_designs, dec=dec)
     prec_rows, table = testability(rows2, dec)
-    fb_row, fb_info = family_b_rows(data)
+    fb_row, fb_info = family_b_rows(data, dec["iim_bootstrap_se_df"], fb)
     table.append(fb_info)
     for t in table:
         if not t.get("se_method_matches_decision", True):
@@ -2044,7 +2290,8 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
                             f"{t['witness']}: computed with the SE methods "
                             f"{t['se_methods']}, not the decided one (re-run with the "
                             "protocols of the decisions)")
-    gate_missing = _gates_without_rows(table, prec_rows + ([fb_row] if fb_row else []))
+    gate_missing = _gates_without_rows(table, prec_rows + ([fb_row] if fb_row else []),
+                                       stage2)
     blocking.extend(f"testability gate without a row: {g}" for g in gate_missing)
     final: Dict[str, object] = {}
     for key in own_keys:
@@ -2070,7 +2317,8 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
         payload["anchors"] = src["anchors"]
         payload["necessity_set"] = src["necessity_set"]
         payload["concordance_route"] = (src["concordance_route"]
-                                        if _scores(payload, "PDI") else [])
+                                        if carries_concordance_route(key, payload)
+                                        else [])
         payload["precision"] = None
         final[key] = E.ProtocolV3.from_dict(_named(payload, key))
         inherited[key] = base
@@ -2085,7 +2333,7 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
 
     # 5. evidence
     rows_final = judged_rows(data, final, dev_designs, dec=dec)
-    mech_entries, mech_evidence = mechanism_on(rows_final)
+    mech_entries, mech_evidence = mechanism_on(rows_final, dose_only_plan())
     se_cal = se_calibration(data, final, dec)
     occupancy = occupancy_evidence(data)
     replication = replication_power(series_by_key, entries_by_key)
@@ -2104,11 +2352,9 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
             e["no_content_runs"] >= CONCORDANCE_MIN_RUNS for e in conc_ev),
         "consistent": _canon(rule_cells) == _canon(cells)}
     suggestions["mechanism_on"] = {"value": "rule", "rule": "design 4.7 (iii)"}
-    if all(replication[d]["anchors"] for d in replication):
-        suggestions["replication_extended"] = {
-            "value": {d: replication[d]["suggest_extended"]
-                      for d in sorted(replication)},
-            "rule": "extend where the replication power at 20 seeds is below 0.9"}
+    rep_sug = replication_suggestion(replication)
+    if rep_sug is not None:
+        suggestions["replication_extended"] = rep_sug
     evidence = {
         "schema": EVIDENCE_SCHEMA,
         "flag": DEVELOPMENT_FLAG,
@@ -2282,12 +2528,44 @@ def _part_systems(part: Mapping, vocab: Mapping) -> Optional[List[str]]:
     return out
 
 
-def _gates_without_rows(table: Sequence[dict], rows: Sequence[dict]) -> List[str]:
+def _necessity_set(proto) -> Optional[set]:
+    """``N_anch`` of a protocol as the hypothesis engine reads it (the
+    anchors block's, else the protocol's necessity set)."""
+    if proto is None:
+        return None
+    anchors = proto.anchors if isinstance(proto.anchors, Mapping) else {}
+    if anchors.get("necessity_set") is not None:
+        return set(anchors["necessity_set"])
+    return set(proto.necessity_set)
+
+
+def _target_kept(proto, principle: Optional[str],
+                 target_filter: Optional[str]) -> bool:
+    """Whether a part's ``target_filter`` keeps the cells of a witness whose
+    target is ``principle`` under ``proto`` (no filter or no protocol: kept):
+    ``in_n_anch`` keeps a principle of ``N_anch``, ``valid_anchor`` a
+    principle with a valid anchor (specific or not); a witness without a
+    target is dropped, as the engine drops its rows."""
+    if not target_filter or proto is None:
+        return True
+    if principle is None:
+        return False
+    if target_filter == "in_n_anch":
+        return principle in (_necessity_set(proto) or ())
+    return proto.anchor_status(principle) in (T.ANCHOR_VALID_SPECIFIC,
+                                              T.ANCHOR_VALID_NONSPECIFIC)
+
+
+def _gates_without_rows(table: Sequence[dict], rows: Sequence[dict],
+                        protos: Optional[Mapping] = None) -> List[str]:
     """The gates the hypotheses file declares without a precision row, the
     templates expanded over the gate protocols and the witness targets of
     the systems the part selects: a part gate needs its row; a per-cell gate
     a row for every cell with development runs (a cell without any, such as
-    a not-applicable principle on C1, is not a cell of the part)."""
+    a not-applicable principle on C1, is not a cell of the part). A part's
+    ``target_filter`` drops the cells whose witness target it drops under
+    the generated protocol of the cell (``protos``)."""
+    protos = protos or {}
     have = {(r["family"], r["principle"], r["witness"], r["kind"]) for r in rows}
     seen = {(t["family"], t["principle"], t["witness"], t["kind"]) for t in table
             if t.get("n")}
@@ -2310,11 +2588,18 @@ def _gates_without_rows(table: Sequence[dict], rows: Sequence[dict]) -> List[str
                          if systems is None or w in systems]
             else:
                 pairs = [(g.get("witness"), g.get("principle"))]
+            target_filter = (part.get("data") or {}).get("target_filter")
             wanted = []
             for f in fams:
                 for w, t in pairs:
+                    # the filter reads the witness's target (engine: the
+                    # target of the row's system), not the gate's principle
+                    if not _target_kept(protos.get(f), targets.get(w), target_filter):
+                        continue
                     p = t if g.get("principle") == "{target}" else g.get("principle")
                     wanted.append((f, p, w, g.get("kind")))
+            if not wanted:
+                continue
             if g.get("per_cell"):
                 for w in wanted:
                     if w in seen and w not in have:
@@ -2348,9 +2633,8 @@ def decisions_record(dec: Decisions, suggestions: Mapping) -> Tuple[dict, List[s
         if spec.code is not None:
             where, fn = spec.code
             code_val = fn()
-            want = ({k: val[k] for k in code_val} if isinstance(code_val, Mapping)
-                    and isinstance(val, Mapping) else val)
-            ok = _same(want, code_val)
+            want, have = _code_view(val, code_val)
+            ok = _same(want, have)
             entry["code"] = {"where": where, "value": code_val, "consistent": ok}
             if not ok:
                 blocking.append(f"decision {spec.name}: {val!r} differs from the code "
@@ -2370,6 +2654,21 @@ def decisions_record(dec: Decisions, suggestions: Mapping) -> Tuple[dict, List[s
     return ({"schema": "mpc-bench-calibration-decisions-applied/1",
              "decisions_status": dec.status, "decisions_sha256": dec.sha256,
              "decisions": out}, blocking)
+
+
+def _code_view(val, code_val) -> Tuple[object, object]:
+    """A decided value and the code's value as they are compared: a mapping
+    on the keys the code carries (the rest of the decision is not code); a
+    map of switches (the anchor designs' extensions) on the keys of either,
+    a switch the other side lacks read as off, so a decided extension the
+    code cannot carry is no match."""
+    if not (isinstance(code_val, Mapping) and isinstance(val, Mapping)):
+        return val, code_val
+    if all(isinstance(x, bool) for x in (*code_val.values(), *val.values())):
+        keys = sorted(set(code_val) | set(val))
+        return ({k: bool(val.get(k, False)) for k in keys},
+                {k: bool(code_val.get(k, False)) for k in keys})
+    return {k: val.get(k) for k in code_val}, code_val
 
 
 def _same(a, b) -> bool:

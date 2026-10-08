@@ -20,6 +20,7 @@ The development calibration runner and the protocol builder of MPC-Bench v2:
 * a stored component re-judged by the builder equals the runner's own
   judgment under the same protocol.
 """
+import copy
 import dataclasses
 import json
 from pathlib import Path
@@ -619,17 +620,19 @@ def test_se_calibration_on_twins(built, tmp_path, se_factor, inside, outside):
         assert c["inside"] is inside and c["outside"] is outside
         assert c["hcv2_4_a"] is inside
         assert (c["kappa"] > 1.25) is outside
+        assert c["defined_share"] == 1.0 and c["eligible"]
     sug = res["suggestions"]["nas_se_method"]
     assert sug["value"] == "jackknife_contiguous_10"  # calibrated or the fallback
     assert sug["calibrated"] == (["jackknife_contiguous_10"] if inside else [])
-    assert sug["calibrated_by_the_hcv2_4_a_statement"] == sug["calibrated"]
+    assert sug["calibrated_by_the_interval_inside_reading"] == sug["calibrated"]
 
 
 def test_se_calibration_at_the_development_twin_size(built, tmp_path):
     """5 networks x 7 sessions (df 30): the 90 % interval of a calibrated SE
-    spans a factor of about 1.54, so the CD-2 reading (interval inside
-    [0.8, 1.25]) fails where the HCv2-4 (a) statement holds; both are
-    reported, the rule's suggestion follows CD-2."""
+    spans a factor of about 1.54, so the literal reading of design 2.1
+    (interval inside [0.8, 1.25]) fails where the HCv2-4 (a) statement
+    holds; both are reported, the rule's suggestion follows the HCv2-4 (a)
+    statement (PRE_DATA_COMMITMENTS section 2)."""
     root = tmp_path / "root"
     write_root(root, "twins", "A_twins",
                _twins(np.random.default_rng(11), 1.0, n_networks=5))
@@ -643,6 +646,10 @@ def test_se_calibration_at_the_development_twin_size(built, tmp_path):
         assert c["inside"] is (lo >= 0.8 and hi <= 1.25)
         assert c["hcv2_4_a"] is (0.8 <= c["kappa"] <= 1.25 and lo >= 0.67 and hi <= 1.5)
     assert any(c["hcv2_4_a"] and not c["inside"] for c in cells)
+    sug = res["suggestions"]["nas_se_method"]
+    good = all(BP.calibrated(c) for c in cells)
+    assert sug["calibrated"] == (["jackknife_contiguous_10"] if good else [])
+    assert sug["calibrated_by_the_interval_inside_reading"] == []
 
 
 def _battery(n_on, n_events, n_off=0):
@@ -1196,3 +1203,526 @@ def test_a_system_restriction_keeps_the_designs_that_have_the_system():
     assert {t.tags["arm"] for t in tasks} == {"forward_a_eeg", "forward_a_bold"}
     with pytest.raises(DC.NoTasks, match="unknown conditions"):
         DC.runner_tasks(fwd, systems=["no_such_condition"])
+
+
+# --------------------------------------------------------------------------
+# admitted concordant twins, the eligible SE cells and the binding SE rules
+# --------------------------------------------------------------------------
+def test_admitted_concordant_twins_form_no_se_cell(built, tmp_path, monkeypatch):
+    """An admitted concordant PDI component has no sampling SE: it forms no
+    calibration cell (its SE of 0 gave kappa 0/0 and stopped the build) but
+    counts among the class's sessions, so the jackknife cell of the class
+    with 2 of 35 sessions is not eligible. A cell whose SEs are all 0 has no
+    kappa and is not eligible either."""
+    rng = np.random.default_rng(13)
+    a = ANCHOR["PDI"]
+    recs = []
+    for net in range(5):
+        for r in range(7):
+            concordant = not (net == 0 and r < 2)
+            pdi = component("PDI", a * (1 + 0.1 * rng.standard_normal()),
+                            0.0 if concordant else 0.1 * a, replicate=r,
+                            se_method=E.SE_METHOD_CONCORDANT if concordant else None)
+            recs.append(record("A_twins", OWN["PDI"], 500 + net, [pdi], replicate=r))
+            pc = component("PDI", a * (1 + 0.1 * rng.standard_normal()), 0.1 * a,
+                           replicate=r)
+            recs.append(record("A_twins", "PC_nominal", 500 + net, [pc], replicate=r))
+    root = tmp_path / "root"
+    write_root(root, "twins", "A_twins", recs)
+    rejudge = BP.rejudge
+
+    def zero_se_on_pc(rec, s, comp, proto, **kw):
+        j = rejudge(rec, s, comp, proto, **kw)
+        return dataclasses.replace(j, se_c=0.0) if rec.system == "PC_nominal" else j
+
+    monkeypatch.setattr(BP, "rejudge", zero_se_on_pc)
+    res = BP.se_calibration(BP.DevData(root), built["protocols"],
+                            BP.load_decisions(None))
+    assert not any(c["se_method"] == E.SE_METHOD_CONCORDANT for c in res["cells"])
+    cells = {c["class"]: c for c in res["cells"]}
+    assert set(cells) == {OWN["PDI"], "PC_nominal"}
+    pdi = cells[OWN["PDI"]]
+    assert pdi["se_method"] == "jackknife_contiguous_10"
+    assert (pdi["defined_sessions"], pdi["class_sessions"]) == (2, 35)
+    assert pdi["defined_share"] == pytest.approx(2 / 35)
+    assert pdi["kappa"] is not None and pdi["eligible"] is False
+    pc = cells["PC_nominal"]
+    assert pc["kappa"] is None and pc["defined_share"] == 1.0 and not pc["eligible"]
+    assert pc["inside"] is False and pc["outside"] is False
+
+
+def test_undefined_twin_sessions_count_among_the_class_sessions(built, tmp_path):
+    """HCv2-4: the defined share is over every twin session of the class; a
+    session whose component has no estimator output (no SE method) is one
+    of them."""
+    def build_with(n_undefined):
+        recs = _twins(np.random.default_rng(11), 1.0, n_networks=5)
+        for i in range(n_undefined):
+            rec = recs[i]
+            (s,) = rec.scorings
+            comp = dataclasses.replace(s.components["NAS"], se_method=None)
+            recs[i] = dataclasses.replace(
+                rec, scorings=(dataclasses.replace(s, components={"NAS": comp}),))
+        root = tmp_path / f"root{n_undefined}"
+        write_root(root, "twins", "A_twins", recs)
+        res = BP.se_calibration(BP.DevData(root), built["protocols"],
+                                BP.load_decisions(None))
+        return [c for c in res["cells"] if c["principle"] == "NAS"]
+
+    for c in build_with(4):
+        assert (c["defined_sessions"], c["class_sessions"]) == (31, 35)
+        assert c["defined_share"] == pytest.approx(31 / 35) and c["eligible"]
+    for c in build_with(8):
+        assert (c["defined_sessions"], c["class_sessions"]) == (27, 35)
+        assert not c["eligible"]
+
+
+def _se_cell(p, method, cls, good=True, eligible=True, tails_ok=True):
+    return {"principle": p, "se_method": method, "protocol": "A-R", "class": cls,
+            "direction": None, "eligible": eligible, "hcv2_4_a": good,
+            "tails_ok": tails_ok, "inside": False, "outside": False}
+
+
+@pytest.mark.parametrize("p, default, fallback", [
+    ("IIM", "circular_block_bootstrap_10pct_B50", DC.IIM_SE_FALLBACK),
+    ("RAM", "shift_null_sd", DC.RAM_SE_FALLBACK)])
+def test_the_se_fallback_needs_calibration_in_every_class(p, default, fallback):
+    """CD-3 and CD-4 (PRE_DATA_COMMITMENTS section 2): the fallback replaces
+    the default only where the default fails to be calibrated in some class
+    and the fallback is calibrated in every class."""
+    name = {"IIM": "iim_se_method", "RAM": "ram_se_method"}[p]
+
+    def value(cells):
+        return BP._se_suggestions(cells, None, {})[name]["value"]
+
+    cells = [_se_cell(p, default, "PC_nominal"), _se_cell(p, default, "PC_half", False),
+             _se_cell(p, fallback, "PC_nominal"), _se_cell(p, fallback, "PC_half")]
+    assert value(cells) == fallback
+    # a fallback that is not calibrated everywhere is not better
+    assert value(cells[:3] + [_se_cell(p, fallback, "PC_half", False)]) == default
+    # nor one that misses a class of the default
+    assert value(cells[:3]) == default
+    # a default calibrated in every eligible class stays
+    assert value([_se_cell(p, default, "PC_nominal"),
+                  _se_cell(p, default, "PC_half", False, eligible=False)]
+                 + cells[2:]) == default
+    # calibrated means the HCv2-4 (a) statement and both tails
+    assert value([_se_cell(p, default, "PC_nominal", tails_ok=False)]
+                 + cells[2:3]) == fallback
+    assert value([]) is None
+
+
+def test_the_nas_method_is_the_largest_df_calibrated_everywhere():
+    cells = [_se_cell("NAS", m, cls) for m in ("jackknife_contiguous_10",
+                                               "jackknife_interleaved_20")
+             for cls in ("PC_nominal", "W_NAS_no_workspace")]
+    sug = BP._se_suggestions(cells, None, {})["nas_se_method"]
+    assert sug["value"] == "jackknife_interleaved_20"
+    cells[3]["tails_ok"] = False
+    sug = BP._se_suggestions(cells, None, {})["nas_se_method"]
+    assert sug["value"] == "jackknife_contiguous_10"
+    assert sug["calibrated_classes"] == {"jackknife_contiguous_10": 2,
+                                         "jackknife_interleaved_20": 1}
+    # a class no method is eligible in is no class of the rule
+    cells[1]["eligible"] = cells[3]["eligible"] = False
+    sug = BP._se_suggestions(cells, None, {})["nas_se_method"]
+    assert sug["value"] == "jackknife_interleaved_20"
+    # a method without an eligible cell in a class of another method is not
+    # calibrated there
+    cells[1]["eligible"] = True
+    sug = BP._se_suggestions(cells, None, {})["nas_se_method"]
+    assert sug["value"] == "jackknife_contiguous_10"
+    assert sug["calibrated"] == ["jackknife_contiguous_10"]
+    # none calibrated: contiguous G = 10
+    for c in cells:
+        c["hcv2_4_a"] = False
+    assert BP._se_suggestions(cells, None, {})["nas_se_method"]["value"] == (
+        "jackknife_contiguous_10")
+
+
+# --------------------------------------------------------------------------
+# the concordance route on the admitted cell only, the battery's counts
+# --------------------------------------------------------------------------
+def test_the_concordance_route_only_on_the_admitted_cell(tmp_path):
+    """The battery's cell (family A, source view, the declared access bearer)
+    is carried by the protocols that score PDI on it, not by the
+    mis-declared access form and not by the BOLD forward arm."""
+    root = tmp_path / "root"
+    write_root(root, "anchors_A", "A_anchors",
+               reference_block(np.random.default_rng(7)))
+    write_root(root, "pdi_concordance", "battery", _battery(300, 0, 300))
+    dec = {"schema": BP.DECISIONS_SCHEMA, "status": "draft",
+           "decisions": {"pdi_concordance": {"value": "rule"}}}
+    keys = ["A-R", "A-R+pdi_misdeclared_access", "fwdA-source", "fwdA_bold-source",
+            "fwdA_bold-bold"]
+    res = BP.build(dec, root, keys=keys)
+    route = {k: res["protocols"][k].to_dict()["concordance_route"] for k in keys}
+    assert [c["substrate"] for c in route["A-R"]] == ["synthetic_rate"]
+    assert route["fwdA-source"] == route["A-R"]
+    for k in ("A-R+pdi_misdeclared_access", "fwdA_bold-source", "fwdA_bold-bold"):
+        assert route[k] == [], k
+    mis = res["protocols"]["A-R+pdi_misdeclared_access"]
+    assert mis.estimator_options("PDI")["access_module"] == "S"
+
+
+def test_the_bold_arm_source_rows_are_not_pooled_with_the_battery(built, tmp_path):
+    from impact_pipeline.bench.designs_v2 import forward as FW
+
+    root = tmp_path / "root"
+    write_root(root, "pdi_concordance", "battery", _battery(10, 0, 4))
+    rows = BP.judged_rows(BP.DevData(root), built["protocols"], [DC.BATTERY_DESIGN],
+                          dec=BP.load_decisions(None))
+    (base,) = BP.concordance_evidence(rows)
+
+    def forward(arm, protocol):
+        return [dict(r, protocol=protocol, design=FW.RECORD_DESIGN_OF_ARM[arm],
+                     system="PC_nominal", tags={}) for r in rows[:3]]
+
+    (cell,) = BP.concordance_evidence(rows + forward(FW.ARM_A_BOLD, "fwdA_bold-source"))
+    assert cell["content_on_runs"] == base["content_on_runs"] == 10
+    (cell,) = BP.concordance_evidence(rows + forward(FW.ARM_A_EEG, "fwdA-source"))
+    assert cell["content_on_runs"] == 13
+
+
+def test_concordant_counts_without_a_reference(tmp_path):
+    """On a view without a reference c is undefined: a concordant count at
+    one state (zero excess) on a content-on run is a concordant ABSENT; a
+    concordant positive excess on a no-content run is recorded as
+    undetermined."""
+    recs = _battery(6, 2, 2)
+    for i in range(3):
+        comp = component("PDI", ANCHOR["PDI"], 0.0, se_method=E.SE_METHOD_CONCORDANT)
+        tags = {"battery_class": "N_ar1", "content": "off"}
+        recs.append(record(DC.BATTERY_DESIGN, "battery_N_ar1", 880 + i, [comp],
+                           config={"tags": tags}, task_id=f"battery-x{i}"))
+    root = tmp_path / "root"
+    write_root(root, "pdi_concordance", "battery", recs)
+    pending = E.ProtocolV3.from_dict(RB.draft_protocol("A-R").to_dict())
+    rows = BP.judged_rows(BP.DevData(root), {"A-R": pending}, [DC.BATTERY_DESIGN],
+                          dec=BP.load_decisions(None))
+    assert rows and all(r["judged"].c is None and r["judged"].concordant for r in rows)
+    (cell,) = BP.concordance_evidence(rows)
+    assert (cell["content_on_runs"], cell["concordant_absent"]) == (6, 2)
+    assert (cell["no_content_runs"], cell["concordant_present"]) == (5, 0)
+    assert cell["concordant_present_undetermined"] == 3
+
+
+# --------------------------------------------------------------------------
+# testability gates by the part's target filter
+# --------------------------------------------------------------------------
+class _Anchored:
+    """A protocol's anchor information as the gate filter reads it."""
+
+    def __init__(self, n_anch, status):
+        self.anchors = {"necessity_set": list(n_anch)}
+        self.necessity_set = tuple(n_anch)
+        self._status = dict(status)
+
+    def anchor_status(self, p):
+        return self._status.get(p)
+
+
+def test_the_target_filter_drops_the_not_applicable_c1_cells():
+    """HCv2-22 (ii) keeps a cell only where its target is in N_anch: the C1
+    cells of the principles declared not applicable there (PDI, RAM, SRPI)
+    have runs but are no cells of the part."""
+    seen = [_seen(OWN[p], p, family=f) for f in ("C1-R", "C1-H")
+            for p in ("PDI", "RAM", "SRPI")]
+    missing = [m for m in BP._gates_without_rows(seen, [])
+               if m.startswith("HCv2-22(ii)")]
+    assert len(missing) == 6
+    c1 = _Anchored(("NAS", "IIM"), {"NAS": T.ANCHOR_VALID_SPECIFIC,
+                                    "IIM": T.ANCHOR_VALID_SPECIFIC,
+                                    "PDI": T.ANCHOR_INVALID, "RAM": T.ANCHOR_INVALID,
+                                    "SRPI": T.ANCHOR_INVALID})
+    protos = {"C1-R": c1, "C1-H": c1}
+    assert not [m for m in BP._gates_without_rows(seen, [], protos)
+                if m.startswith("HCv2-22(ii)")]
+    # a target of N_anch with runs and no row is still a missing cell
+    more = seen + [_seen(OWN["NAS"], "NAS", family="C1-R")]
+    (m,) = [m for m in BP._gates_without_rows(more, [], protos)
+            if m.startswith("HCv2-22(ii)")]
+    assert "'C1-R', 'NAS', 'W_NAS_no_workspace'" in m
+    # valid_anchor keeps a valid anchor, specific or not
+    nonspecific = _Anchored(("NAS",), {"NAS": T.ANCHOR_VALID_SPECIFIC,
+                                       "IIM": T.ANCHOR_VALID_NONSPECIFIC})
+    assert BP._target_kept(nonspecific, "IIM", "valid_anchor")
+    assert not BP._target_kept(nonspecific, "IIM", "in_n_anch")
+    assert not BP._target_kept(c1, "PDI", "valid_anchor")
+    assert BP._target_kept(None, "PDI", "in_n_anch")
+    assert BP._target_kept(c1, "PDI", None)
+    # a witness without a target is dropped by a filter, as in the engine
+    assert not BP._target_kept(c1, None, "in_n_anch")
+    assert BP._target_kept(None, None, "in_n_anch")
+
+
+def test_the_target_filter_reads_the_witness_target(monkeypatch):
+    """A gate with a fixed witness and principle under a target filter: the
+    engine keeps a row by its system's witness target, so the builder asks
+    for the gate's row by the witness target too, not by the gate's
+    principle."""
+    spec = copy.deepcopy(BP._hypotheses_spec())
+    part = {"id": "X(a)", "data": {"target_filter": "in_n_anch"},
+            "gate": {"per_cell": True, "kind": "absent", "family": "{protocol_id}",
+                     "principle": "NAS", "witness": OWN["IIM"]}}
+    spec["hypotheses"] = [{"id": "X", "parts": [part]}]
+    monkeypatch.setattr(BP, "_hypotheses_spec", lambda: spec)
+    seen = [_seen(OWN["IIM"], "NAS", family="C1-R")]
+    no_iim = _Anchored(("NAS",), {"NAS": T.ANCHOR_VALID_SPECIFIC})
+    with_iim = _Anchored(("NAS", "IIM"), {"NAS": T.ANCHOR_VALID_SPECIFIC,
+                                          "IIM": T.ANCHOR_VALID_SPECIFIC})
+    assert BP._gates_without_rows(seen, [], {"C1-R": no_iim}) == []
+    (m,) = BP._gates_without_rows(seen, [], {"C1-R": with_iim})
+    assert m.startswith("X(a)") and "'C1-R', 'NAS'" in m
+    # PC_nominal has no witness target: the filter drops its cells
+    part["gate"]["witness"] = "PC_nominal"
+    seen = [_seen("PC_nominal", "NAS", family="C1-R")]
+    assert BP._gates_without_rows(seen, [], {"C1-R": with_iim}) == []
+
+
+def test_dependency_rates_cover_the_necessity_set(built):
+    """HCv2-22 (iii) development rates: the other principles of N_anch only
+    (SRPI's anchor on A-R is valid but not specific)."""
+    rows = []
+    for w in ("PC_nominal", OWN["NAS"]):
+        for p in ("PDI", "SRPI"):
+            for seed in range(340, 344):
+                j = BP.Judged("ABSENT", None, (), 1.0, 0.01, 9.0, {}, None, False)
+                rows.append({"form": D.PRIMARY_FORM, "design": "A_witnesses",
+                             "judged": j, "protocol": "A-R", "system": w,
+                             "principle": p, "seed": seed})
+    out = BP.dependency_evidence(rows, {"A-R": built["protocols"]["A-R"]})
+    assert {(d["witness"], d["principle"]) for d in out} == {(OWN["NAS"], "PDI")}
+
+
+# --------------------------------------------------------------------------
+# mechanism-on labels from the catalogue doses; dose-only C1 IIM entries
+# --------------------------------------------------------------------------
+def _mech_row(design, system, p, c, *, family="A", declaration="R", tags=None,
+              seed=340):
+    j = BP.Judged("ABSENT", None, (), c, 0.01, 12.0, {}, None, False)
+    return {"design": design, "system": system, "principle": p, "family": family,
+            "declaration": declaration, "form": D.PRIMARY_FORM, "tags": tags or {},
+            "judged": j, "record": record(design, system, seed, [], family=family)}
+
+
+def test_witness_doses_come_from_the_catalogue():
+    assert BP.witness_dose("PC_nominal", "IIM") == 1.0
+    assert BP.witness_dose("PC_half", "PDI") == pytest.approx(0.5)
+    assert BP.witness_dose("W_PDI_no_multistability", "PDI") == 0.0
+    assert BP.witness_dose("W_PDI_no_multistability", "RAM") == 1.0
+    assert BP.witness_dose("W_NAS_broadcast_only", "NAS") == 0.0  # ff_only
+    assert BP.witness_dose("N_modules_disconnected", "IIM") == 0.0
+    assert BP.witness_dose("N_ar1", "RAM") == 0.0  # no knobs: intended pattern
+    assert BP.witness_dose("PW_patchwork", "NAS") is None
+    assert BP.witness_dose("adversarial_common_driver", "NAS") is None
+    assert BP.witness_dose("no_such_system", "NAS") is None
+
+
+def test_mechanism_on_labels_every_witness_with_a_dose():
+    rows = [_mech_row("A_witnesses", "W_PDI_no_multistability", p, 1.0, seed=s)
+            for p in PRINCIPLES for s in range(340, 344)]
+    rows += [_mech_row("A_witnesses", "W_NAS_broadcast_only", "NAS", 1.0),
+             _mech_row("A_witnesses", "PW_patchwork", "NAS", 1.0),
+             _mech_row("A_witnesses", "N_ar1", "RAM", 1.0),
+             _mech_row("A_witnesses", "PC_half", "IIM", 1.0),
+             _mech_row("C1_witnesses", "PC_nominal", "IIM", 0.05, family="C1")]
+    plan = BP.dose_only_plan()
+    entries, evidence = BP.mechanism_on(rows, plan)
+    lab = {}
+    for e in entries:
+        k = (e["family"], e["declaration"], e["principle"], e["where"]["design"],
+             e["where"]["system"])
+        assert k not in lab, k  # one entry per cell
+        lab[k] = e["on"]
+    w = "A_witnesses"
+    assert lab[("A", "R", "RAM", w, "W_PDI_no_multistability")] is True
+    assert lab[("A", "R", "PDI", w, "W_PDI_no_multistability")] is False
+    assert lab[("A", "R", "NAS", w, "W_NAS_broadcast_only")] is False
+    assert lab[("A", "R", "RAM", w, "N_ar1")] is False
+    assert lab[("A", "R", "IIM", w, "PC_half")] is True
+    assert not any(k[4] == "PW_patchwork" for k in lab)
+    # C1 IIM: the dose condition alone, after the rule's entries; a cell
+    # with development rows keeps the rule's label
+    flags = [bool(e.get("dose_only")) for e in evidence]
+    assert flags == sorted(flags) and any(flags)
+    assert lab[("C1", "R", "IIM", "C1_witnesses", "PC_nominal")] is False  # rule
+    assert lab[("C1", "H", "IIM", "C1_witnesses", "PC_nominal")] is True
+    assert lab[("C1", "R", "IIM", "C1_witnesses", "W_IIM_feedforward")] is False
+    assert lab[("C1", "H", "IIM", "C1_witnesses", "W_IIM_feedforward")] is False
+    fact = [r for r in plan if r["design"] == "C1_factorial"]
+    assert fact and {r["declaration"] for r in fact} == {"R", "H"}
+    for r in fact:
+        own_bit = r["tags"]["bits"][PRINCIPLES.index("IIM")]
+        assert lab[("C1", r["declaration"], "IIM", "C1_factorial", r["system"])] is (
+            own_bit == 1)
+    assert any(r["tags"]["bits"][PRINCIPLES.index("IIM")] == 1 for r in fact)
+    assert {r["principle"] for r in plan} == {"IIM"}
+    assert {r["family"] for r in plan} == {"C1"}
+
+
+# --------------------------------------------------------------------------
+# family B at the decided bootstrap df
+# --------------------------------------------------------------------------
+def test_family_b_rows_are_judged_at_the_decided_df(tmp_path):
+    """HCv2-11 (c): each stored IIM component is judged again under its
+    family-B protocol at the decided block bootstrap df (a run ABSENT at
+    df 12 is INCONCLUSIVE at df 9 here)."""
+    key = "B-ring_0.45-directional-circular_shift"
+    recs = []
+    for seed in range(400, 440):
+        comp = component("IIM", 0.001, 0.0007, protocol=key, declaration="none")
+        sc = REC.ScoringRecord(
+            scoring_id="none", declaration_id="none", observation_stage="source",
+            view="source", estimator_form="directional", protocol_id=key,
+            protocol_hash=PH, components={"IIM": comp})
+        cell = {"hypothesis": "HCv2-11", "system": "feedforward_star",
+                "params": {"coupling": 0.3}}
+        recs.append(REC.TaskRecord(
+            task_id=f"fb-{seed}", design="family_b", family="B",
+            system="feedforward_star", seed=seed, generator_version="g", status="ok",
+            config={"cell": cell}, scorings=(sc,),
+            simulation={"ts_sha256": f"{seed:064x}", "n_nodes": 3, "n_time": 1000,
+                        "dt": 1.0}))
+    root = tmp_path / "root"
+    write_root(root, "dry_run", "family_b", recs, name=DC.FAMILY_B_JSONL)
+    data = BP.DevData(root)
+    recorded, info = BP.family_b_rows(data)
+    assert recorded["rates"]["UNDEFINED"] == 1.0 and info["se_df"] is None
+    at12, _ = BP.family_b_rows(data, 12.0)
+    at9, info = BP.family_b_rows(data, 9.0)
+    assert at12["pi"] == 1.0 and at12["df"] == pytest.approx(12.0, abs=1e-3)
+    assert at9["pi"] == 0.0 and at9["df"] == pytest.approx(9.0, abs=1e-3)
+    assert at9["rates"]["INCONCLUSIVE"] == 1.0 and info["se_df"] == 9.0
+
+
+# --------------------------------------------------------------------------
+# forward anchors: the quadrant forms' own anchors, replication power
+# --------------------------------------------------------------------------
+def test_the_forward_anchor_design_lists_every_view_with_own_anchors():
+    fwd = set(BP._forward_keys())
+    own = {k for k in BP.anchored_keys() if k in fwd}
+    listed = BP.PRIMARY_PROTOCOLS_OF_ANCHOR_DESIGN[BP.FORWARD_ANCHOR_DESIGN]
+    assert set(listed) == own and len(listed) == len(own)
+    assert set(BP.FORWARD_OWN_ANCHOR_FORMS) <= own
+    assert BP.VALIDITY_ONLY_ANCHOR_DESIGNS == (BP.FORWARD_ANCHOR_DESIGN,)
+
+
+def test_the_quadrant_forms_have_no_inherited_anchors(full_build):
+    ev = full_build["evidence"]
+    blocking = full_build["manifest"]["blocking"]
+    for key in BP.FORWARD_OWN_ANCHOR_FORMS:
+        assert key not in ev["inherited_anchors"] and key in ev["anchors"]
+        assert full_build["protocols"][key].reference["kind"] == E.REFERENCE_PENDING
+        assert f"anchors of {key}: 0 of 40 reference seeds" in blocking
+    rep = ev["replication_power"][BP.FORWARD_ANCHOR_DESIGN]
+    assert rep["validity_only"] is True and rep["anchors"] == {}
+
+
+def test_the_replication_suggestion_waits_for_the_forward_anchors():
+    def design(below, anchors=True):
+        return {"anchors": {"x|IIM": {}} if anchors else {},
+                "suggest_extended": below}
+
+    rep = {"A_anchors": design(True), "C1_anchors": design(False),
+           "RAM160_anchors": design(False),
+           BP.FORWARD_ANCHOR_DESIGN: design(False, anchors=False)}
+    assert BP.replication_suggestion(rep)["value"] == {
+        "A_anchors": True, "C1_anchors": False, "RAM160_anchors": False}
+    rep[BP.FORWARD_ANCHOR_DESIGN] = design(True)
+    assert BP.replication_suggestion(rep)["value"][BP.FORWARD_ANCHOR_DESIGN] is True
+    rep["C1_anchors"] = design(False, anchors=False)
+    assert BP.replication_suggestion(rep) is None
+
+
+def test_released_quadrant_anchors_are_their_own(tmp_path):
+    """The v1 quadrant form of the Hopf EEG view anchors on its own runs of
+    the released reference block (validity only) and enters the forward
+    design's replication power."""
+    key = "hopf-eeg64+iim_v1_quadrants"
+    tags = {"purpose": "reference", "regime": "held_out", "anchor": True,
+            "held_out_release": "r1", "arm": "hopf", "dose": 1.142857}
+    rng = np.random.default_rng(17)
+    recs = []
+    for seed in range(900, 940):
+        comp = dataclasses.replace(
+            component("IIM", 0.02 * (1 + 0.1 * rng.standard_normal()), 0.001,
+                      protocol=key, declaration="none"),
+            observation_stage="sensor")
+        sc = REC.ScoringRecord(
+            scoring_id="eeg64:iim_v1_quadrants", declaration_id="none",
+            observation_stage="sensor", view="eeg64", estimator_form="iim_v1_quadrants",
+            protocol_id=key, protocol_hash=PH, components={"IIM": comp})
+        recs.append(REC.TaskRecord(
+            task_id=f"fwd-ref-hopf_G-s{seed:05d}", design=BP.FORWARD_ANCHOR_DESIGN,
+            family="whole_brain", system="hopf_G1.142857", seed=seed,
+            generator_version="g", status="ok",
+            config={"held_out": False, "tags": tags}, scorings=(sc,),
+            simulation={"ts_sha256": f"{seed:064x}", "n_nodes": 76, "n_time": 100,
+                        "dt": 0.004}))
+    root = tmp_path / "root"
+    write_root(root, "anchors_forward_held_out", "forward_reference", recs)
+    (root / DC.RELEASE_LOG).write_text(json.dumps({"release_id": "r1",
+                                                   "predictions": []}) + "\n")
+    res = BP.build(None, root, keys=[key])
+    ev = res["evidence"]
+    assert key not in ev["inherited_anchors"]
+    assert ev["anchors"][key]["n_reference_seeds"] == 40
+    assert ev["anchors"][key]["status"]["IIM"] == T.ANCHOR_VALID_NONSPECIFIC
+    proto = res["protocols"][key]
+    assert proto.reference["kind"] == "external" and "IIM" in proto.reference["values"]
+    rep = ev["replication_power"][BP.FORWARD_ANCHOR_DESIGN]["anchors"]
+    assert set(rep) == {f"{key}|IIM"}
+    assert rep[f"{key}|IIM"]["development_status"] == BP.VALID
+    assert rep[f"{key}|IIM"]["power"] == {"20": 1.0, "40": 1.0}
+    # the comparator form is no registry view (FM0 reads the primary forms)
+    assert res["files"][BP.FORWARD_ANCHORS]["anchors"] == []
+    assert not any(f"anchors of {key}" in b for b in res["manifest"]["blocking"])
+
+
+def test_the_replication_decision_may_name_the_forward_design():
+    base = {"A_anchors": True, "C1_anchors": False, "RAM160_anchors": False}
+    assert BP._replication_value(base) == base
+    with_fwd = dict(base, **{BP.FORWARD_ANCHOR_DESIGN: True})
+    assert BP._replication_value(with_fwd) == with_fwd
+    for bad in ({"A_anchors": True}, dict(base, other=True),
+                dict(base, A_anchors="yes")):
+        with pytest.raises(BP.BuildError):
+            BP._replication_value(bad)
+    dec = BP.load_decisions({
+        "schema": BP.DECISIONS_SCHEMA, "status": "draft",
+        "decisions": {"replication_extended": {"value": with_fwd}}})
+    rec, _blocking = BP.decisions_record(dec, {})
+    code = BP._replication_code()
+    keys = set(code) | set(with_fwd)
+    assert rec["decisions"]["replication_extended"]["code"]["consistent"] is (
+        {k: code.get(k, False) for k in keys} == {k: with_fwd[k] for k in keys})
+
+
+def test_a_decided_extension_the_code_lacks_is_no_match(monkeypatch):
+    """A switch the code does not carry reads as off: a decided forward
+    extension is inconsistent with code that cannot extend the forward
+    replication block; a decided 'not extended' matches."""
+    code = {"A_anchors": True, "C1_anchors": False, "RAM160_anchors": False}
+    spec = next(s for s in BP.DECISIONS if s.name == "replication_extended")
+    fixed = dataclasses.replace(spec, code=(spec.code[0], lambda: dict(code)))
+    monkeypatch.setattr(BP, "DECISIONS", tuple(fixed if s is spec else s
+                                               for s in BP.DECISIONS))
+
+    def consistent(value):
+        dec = BP.load_decisions({
+            "schema": BP.DECISIONS_SCHEMA, "status": "draft",
+            "decisions": {"replication_extended": {"value": value}}})
+        rec, blocking = BP.decisions_record(dec, {})
+        ok = rec["decisions"]["replication_extended"]["code"]["consistent"]
+        assert ok is not any(b.startswith("decision replication_extended:")
+                             for b in blocking)
+        return ok
+
+    assert consistent(code)
+    assert consistent(dict(code, **{BP.FORWARD_ANCHOR_DESIGN: False}))
+    assert not consistent(dict(code, **{BP.FORWARD_ANCHOR_DESIGN: True}))
+    assert not consistent(dict(code, A_anchors=False))
+    # a mapping that is not all switches is compared on the code's keys
+    assert BP._code_view({"n_low": 32, "reference": "average", "tr_s": None},
+                         {"n_low": 32}) == ({"n_low": 32}, {"n_low": 32})
