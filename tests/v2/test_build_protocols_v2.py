@@ -1762,6 +1762,55 @@ def test_released_quadrant_anchors_are_their_own(tmp_path):
     assert not any(f"anchors of {key}" in b for b in res["manifest"]["blocking"])
 
 
+def _quadrant_reference(root, seeds, value):
+    key = "hopf-eeg64+iim_v1_quadrants"
+    tags = {"purpose": "reference", "regime": "held_out", "anchor": True,
+            "held_out_release": "r1", "arm": "hopf", "dose": 1.142857}
+    recs = []
+    for seed in seeds:
+        comp = dataclasses.replace(
+            component("IIM", value, 0.001, protocol=key, declaration="none"),
+            observation_stage="sensor")
+        sc = REC.ScoringRecord(
+            scoring_id="eeg64:iim_v1_quadrants", declaration_id="none",
+            observation_stage="sensor", view="eeg64", estimator_form="iim_v1_quadrants",
+            protocol_id=key, protocol_hash=PH, components={"IIM": comp})
+        recs.append(REC.TaskRecord(
+            task_id=f"fwd-ref-hopf_G-s{seed:05d}", design=BP.FORWARD_ANCHOR_DESIGN,
+            family="whole_brain", system="hopf_G1.142857", seed=seed,
+            generator_version="g", status="ok",
+            config={"held_out": False, "tags": tags}, scorings=(sc,),
+            simulation={"ts_sha256": f"{seed:064x}", "n_nodes": 76, "n_time": 100,
+                        "dt": 0.004}))
+    write_root(root, "anchors_forward_held_out", "forward_reference", recs)
+    (root / DC.RELEASE_LOG).write_text(json.dumps({"release_id": "r1",
+                                                   "predictions": []}) + "\n")
+    return key
+
+
+def test_a_complete_reference_block_without_a_valid_anchor_is_a_result(tmp_path):
+    """Every anchor invalid on all 40 reference seeds: the protocol has no
+    anchor (each component UNDEFINED) and the build says so in its notes,
+    but nothing is pending; with seeds missing the anchors stay pending."""
+    key = _quadrant_reference(tmp_path / "full", range(900, 940), float("nan"))
+    res = BP.build(None, tmp_path / "full", keys=[key])
+    proto = res["protocols"][key]
+    assert proto.reference["kind"] == E.REFERENCE_PENDING
+    assert "complete development reference block" in proto.reference["note"]
+    assert res["evidence"]["anchors"][key]["no_valid_anchor"] is True
+    blocking = res["manifest"]["blocking"]
+    assert not any(key in b for b in blocking)
+    assert any(key in n and "every anchor is invalid" in n
+               for n in res["manifest"]["notes"])
+
+    _quadrant_reference(tmp_path / "part", range(900, 930), float("nan"))
+    res = BP.build(None, tmp_path / "part", keys=[key])
+    blocking = res["manifest"]["blocking"]
+    assert f"anchors of {key}: 30 of 40 reference seeds" in blocking
+    assert f"protocol {key}: anchors pending" in blocking
+    assert res["evidence"]["anchors"][key]["no_valid_anchor"] is False
+
+
 def test_the_replication_decision_may_name_the_forward_arms():
     base = {"A_anchors": True, "C1_anchors": False, "RAM160_anchors": False}
     assert BP._replication_value(base) == base
@@ -1775,11 +1824,12 @@ def test_the_replication_decision_may_name_the_forward_arms():
                 dict(base, **{BP.FORWARD_ANCHOR_DESIGN: dict(arms, hopf="yes")})):
         with pytest.raises(BP.BuildError):
             BP._replication_value(bad)
+    other = dict(base, **{BP.FORWARD_ANCHOR_DESIGN: dict(arms, forward_a_eeg=True)})
     dec = BP.load_decisions({
         "schema": BP.DECISIONS_SCHEMA, "status": "draft",
-        "decisions": {"replication_extended": {"value": with_fwd}}})
+        "decisions": {"replication_extended": {"value": other}}})
     rec, blocking = BP.decisions_record(dec, {})
-    # the code extends no forward arm
+    # the code does not extend the family-A EEG arm
     assert rec["decisions"]["replication_extended"]["code"]["consistent"] is False
     assert any(b.startswith("decision replication_extended:") for b in blocking)
 
@@ -1791,9 +1841,9 @@ def test_the_replication_code_reads_the_forward_arms(monkeypatch):
     from impact_pipeline.bench.designs_v2 import anchors as AN
 
     family = dict(AN.CALIBRATION_PENDING["replication_extended"]["value"])
+    decided = {arm: arm == FW.ARM_HOPF for arm in FW.ARMS}  # CD-11
     code = BP._replication_code()
-    assert code == dict(family, **{BP.FORWARD_ANCHOR_DESIGN: {
-        arm: False for arm in FW.ARMS}})
+    assert code == dict(family, **{BP.FORWARD_ANCHOR_DESIGN: decided})
     assert BP._replication_value(code) == code
 
     def consistent(value):
@@ -1803,13 +1853,17 @@ def test_the_replication_code_reads_the_forward_arms(monkeypatch):
         rec, _blocking = BP.decisions_record(dec, {})
         return rec["decisions"]["replication_extended"]["code"]["consistent"]
 
+    assert consistent(code)
+    # leaving the forward arms out reads them as not extended
+    assert not consistent(family)
     extended = {arm: arm == FW.ARM_A_EEG for arm in FW.ARMS}
-    assert consistent(family)
     pending = copy.deepcopy(AN.CALIBRATION_PENDING)
     pending["forward_replication_extended"]["value"] = extended
     monkeypatch.setattr(AN, "CALIBRATION_PENDING", pending)
-    assert not consistent(family)
+    assert not consistent(code)
     assert consistent(dict(family, **{BP.FORWARD_ANCHOR_DESIGN: extended}))
+    pending["forward_replication_extended"]["value"] = {a: False for a in FW.ARMS}
+    assert consistent(family)
 
 
 def test_a_decided_extension_the_code_lacks_is_no_match(monkeypatch):

@@ -1014,11 +1014,16 @@ def anchor_entries(series: Mapping, *,
     return entries, {"values": values, "se": ses}
 
 
-def reference_block(ref: Mapping, source: str) -> dict:
+def reference_block(ref: Mapping, source: str, complete: bool = False) -> dict:
+    """The protocol's reference: the valid anchors, or pending without any.
+    A complete reference block on which every anchor is invalid is a result,
+    not a gap: the reference stays pending (no component of the protocol
+    has an anchor, so each is UNDEFINED) and the note says why."""
     if not ref["values"]:
-        return {"kind": E.REFERENCE_PENDING,
-                "note": "no valid anchor on the development reference block "
-                        f"({source})"}
+        what = ("every anchor is invalid on the complete development reference "
+                "block" if complete else
+                "no valid anchor on the development reference block")
+        return {"kind": E.REFERENCE_PENDING, "note": f"{what} ({source})"}
     return {"kind": "external", "scale": "excess", "values": dict(ref["values"]),
             "se": dict(ref["se"]), "source": source}
 
@@ -2231,6 +2236,7 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
     fwd_keys = set(_forward_keys())
     ref_plan = reference_plan()
     series_by_key, entries_by_key, refs, anchor_info = {}, {}, {}, {}
+    complete_refs = set()
     forward_anchor_rows = []
     for key in own_keys:
         forward = key in fwd_keys
@@ -2251,7 +2257,8 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
         anchor_info[key] = {"n_reference_seeds": n_ref,
                             "regime": regime if forward else None,
                             "status": {p: entries[p]["status"] for p in PRINCIPLES}}
-        if n_ref < T.ANCHOR_BLOCK_SIZE:
+        complete = n_ref >= T.ANCHOR_BLOCK_SIZE
+        if not complete:
             blocking.append(f"anchors of {key}: {n_ref} of {T.ANCHOR_BLOCK_SIZE} "
                             "reference seeds")
         if not forward:
@@ -2259,8 +2266,12 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
             anchor_info[key]["n_lesion_seeds"] = cover
             for p, n_les in cover.items():
                 if n_les < T.ANCHOR_BLOCK_SIZE:
+                    complete = False
                     blocking.append(f"anchors of {key}: own lesion of {p} on {n_les} "
                                     f"of {T.ANCHOR_BLOCK_SIZE} reference seeds")
+        if complete:
+            complete_refs.add(key)
+        anchor_info[key]["no_valid_anchor"] = bool(complete and not ref["values"])
         if forward and _split(key)[1] == D.PRIMARY_FORM:
             arm, view = _forward_arm_view_of_key(key)
             for p in _forward_principles(key):
@@ -2293,7 +2304,8 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
 
     def anchored(key, concordance=(), precision=None):
         return assemble(key, draft(key), dec,
-                        reference=reference_block(refs[key], source_text(key)),
+                        reference=reference_block(refs[key], source_text(key),
+                                                  key in complete_refs),
                         anchors=T.anchors_block(entries_by_key[key]),
                         concordance=concordance, precision=precision)
 
@@ -2352,12 +2364,19 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
         inherited[key] = base
     final.update(fb)
     final["B"] = _family_b_carrier(fb_row)
+    no_anchor: List[str] = []
     for key in planned:
         if key not in final:
             blocking.append(f"protocol {key} not built")
         elif final[key].reference.get("kind") == E.REFERENCE_PENDING:
-            blocking.append(f"protocol {key}: anchors pending")
+            if inherited.get(key, key) in complete_refs:
+                no_anchor.append(key)
+            else:
+                blocking.append(f"protocol {key}: anchors pending")
     notes = _report_cut_notes(planned, final)
+    notes += [f"protocol {key}: every anchor is invalid on the complete reference "
+              "block, so each of its components is UNDEFINED and its verdicts are "
+              "UNDETERMINED" for key in no_anchor]
 
     # 5. evidence
     rows_final = judged_rows(data, final, dev_designs, dec=dec)
