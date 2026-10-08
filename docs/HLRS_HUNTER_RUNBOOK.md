@@ -1157,6 +1157,76 @@ application pages)
   localscratch nodes (`IMPACT_HUNTER_PBS_LOCALSCRATCH=1`). The device kernel does
   not use them.
 
+### 15.1 MPC-Bench v2 confirmatory run
+
+The MPC-Bench v2 confirmatory run (preregistration
+[`MPC_BENCH_PREREGISTRATION_V2.md`](preregistration/MPC_BENCH_PREREGISTRATION_V2.md),
+section 11) is **not planned on Hunter**. It is CPU-only (no IIM campaign, no
+GPU kernel) and is planned on the author's workstation, whose environment the v2
+environment lock records (darwin-arm64, Python 3.10.19, numpy 2.2.6, scipy
+1.15.2, numba 0.61.2, pandas 2.3.3; `scripts/v2/env_lock.py --check`). Its size:
+11193 tasks (6933 bench tasks and 4260 family-B tasks) plus the oracle checks
+on 40 seeds, about 131 CPU-h by the development cost model and about 167 CPU-h
+with the family-C1 IIM scorings priced at their measured reference-block rate,
+15-19 h wall time at 12 workers.
+
+A run on Hunter would be a deviation from that plan, to be agreed with the
+author beforehand and reported. It would need:
+
+- HLRS's agreement to CPU-only work on Hunter (open question 3);
+- an environment that matches the lock: the default stack (numpy 1.24.4, scipy
+  1.10.1, Python 3.11, section 5.1) does not, and conda is not documented for
+  Hunter (open question 4);
+- a clean clone of the tag `mpcbench-freeze-v2` (section 4; the tag must have
+  been pushed by the author). The v2 confirmatory guard refuses any checkout
+  whose `src/` and `scripts/` trees differ from the tag, or with untracked files
+  under `src/` or `scripts/`, so keep the venv and the outputs outside the
+  clone;
+- the stored v1 outputs (`outputs/paper1_mpcbench`, the folder holding `c2/`;
+  not versioned) copied to the workspace and named by
+  `MPCBENCH_V1_OUTPUTS`, which the regression gate and the audit's IA-1 read;
+  without them the gate fails with exit status 2;
+- the pre-run checks of preregistration v2, section 11, in the clone:
+  `python scripts/v2/env_lock.py --check`, `python scripts/v2/regression_gate.py
+  --quick`, `git diff --quiet mpcbench-freeze-v2 -- protocols/v2` (the guard
+  compares only `src/` and `scripts/`) and `python scripts/v2/build_protocols_v2.py
+  check`; the plan can be previewed with `python scripts/run_bench_v2.py plan
+  --split confirmatory` and `python scripts/v2/iim_validation_v2.py --split
+  confirmatory --list`;
+- jobs within the 24-h walltime limit. `scripts/v2/mpcbench_confirmatory_v2.sh`
+  runs its steps in a fixed order, resumes each step (completed tasks are
+  skipped, failed tasks run again; a record line cut off by a killed job is
+  dropped before the step continues) and takes a subset of steps with `STEPS`
+  (an unknown step name stops it before anything runs), so the plan can be
+  split into several single-node jobs that each run some steps with `WORKERS`
+  set to the cores used and `OUT` on the workspace. By the workstation cost
+  model (131-167 CPU-h) one 96-core node at `WORKERS=96` would need about 2-3 h
+  of wall time; Hunter's per-core speed and its contention at 96 workers were
+  not measured, so plan with a margin. Per-step CPU hours for packing are in
+  section 5 of
+  [`v2/operating_characteristics.md`](preregistration/v2/operating_characteristics.md#5-confirmatory-cost).
+  A job skeleton:
+
+  ```bash
+  #!/bin/bash
+  #PBS -N mpcbench-v2
+  #PBS -l select=1:node_type=mi300a
+  #PBS -l walltime=24:00:00
+  cd "$PBS_O_WORKDIR"                       # the clean clone of the tag
+  WS=$(ws_find impact)                      # the workspace (section 3)
+  source "$WS/venvs/mpcbench-v2/bin/activate"   # an environment that matches the v2 lock
+  export MPCBENCH_V1_OUTPUTS="$WS/paper1_mpcbench"
+  OUT="$WS/v2_confirmatory" WORKERS=96 PY=python STEPS="anchor_replication A_witnesses" \
+      bash scripts/v2/mpcbench_confirmatory_v2.sh
+  ```
+
+  A mi300a node has 96 CPU cores (section 15). The clone, the venv and the outputs follow the rules above.
+
+When the script exits with 1 it names the steps with task errors; they are run
+once more with `STEPS` set to those steps and the same `OUT`, and that rerun is
+recorded. The registry builder, the integrity audit and the evaluator then run
+from the tag on the outputs, in that order (preregistration v2, section 12).
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause | What to do |

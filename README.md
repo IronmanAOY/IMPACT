@@ -338,6 +338,68 @@ recorded in the outputs). `--n-shards N --pbs-template bench.pbs` writes a PBS
 Pro array script for Hunter (set `BENCH_VENV` and `BENCH_OUT_DIR`; the bench
 is CPU-bound).
 
+## MPC-Bench v2
+
+MPC-Bench v2 is the revision round that followed the v1 confirmatory results
+(prerequisite M and HC1 supported, HC2-HC10 falsified). It revises the
+estimators (NAS v3, IIM v5, RAM-PE v3 and PDI v3; the v1 SRPI under the new
+rule), the status rule (`tost-v2`: absence is a two-sided equivalence test at
+`alpha / 5 = 0.01`, and the undecided cases carry named reasons) and the
+benchmark (declared inputs, twins, staggered hidden drivers, a forward-model
+admission layer for EEG and BOLD), and tests them with the hypotheses HCv2-0 to
+HCv2-24 of the [v2 preregistration](docs/preregistration/MPC_BENCH_PREREGISTRATION_V2.md).
+The v1 code path and the v1 protocols stay byte-identical; v2 lives in
+`src/impact_pipeline/v2/`, the `bench/*_v2` modules, `scripts/v2/` and
+[`protocols/v2/`](protocols/v2/README.md). Development runs use seeds 0-999,
+confirmatory runs seeds 20000 and above; 10000-19999 (v1) are never reused.
+
+Development calibration (development seeds only; each item resumes):
+
+```bash
+python scripts/v2/dev_calibration.py plan             # items, tasks, projected CPU-h
+python scripts/v2/dev_calibration.py run anchors_A --workers 12
+python scripts/v2/dev_calibration.py status
+```
+
+The protocol builder writes `protocols/v2/generated/` from a decisions file and
+the development outputs, and `check` re-reads a build against its manifest:
+
+```bash
+python scripts/v2/build_protocols_v2.py build \
+    --decisions outputs/mpcbench_v2/decisions/calibration_decisions_v2.json \
+    --dev-root outputs/mpcbench_v2/dev_calibration --require-freeze-ready
+python scripts/v2/build_protocols_v2.py check
+```
+
+The confirmatory run needs a clean checkout of the tag `mpcbench-freeze-v2`;
+every step refuses other trees and seeds below 20000. The stored v1 outputs
+(`outputs/paper1_mpcbench`, the folder holding `c2/`) are not versioned: copy
+them to the run machine and point `MPCBENCH_V1_OUTPUTS` at them, or the
+regression gate fails with exit status 2. On the workstation of the development
+runs (12 workers, about 131-167 CPU-h, 15-19 h wall):
+
+```bash
+export MPCBENCH_V1_OUTPUTS=/path/to/outputs/paper1_mpcbench
+python scripts/v2/env_lock.py --check
+python scripts/v2/regression_gate.py --quick
+git diff --quiet mpcbench-freeze-v2 -- protocols/v2 && echo "protocols/v2 equal to the tag"
+python scripts/v2/build_protocols_v2.py check
+python scripts/run_bench_v2.py plan --split confirmatory            # preview: 6933 runner tasks
+python scripts/v2/iim_validation_v2.py --split confirmatory --list  # preview: 4260 family-B tasks
+OUT=<workspace>/v2_confirmatory WORKERS=12 PY=python bash scripts/v2/mpcbench_confirmatory_v2.sh
+```
+
+If the script exits with 1 it names the steps with task errors; run it once
+more with `STEPS="<those steps>"` and the same `OUT` (failed tasks run again,
+completed ones are skipped) and record that rerun. The registry builder
+(`scripts/v2/build_registry_v3.py`), the integrity audit
+(`scripts/v2/integrity_audit.py`, with the registry, the run plans and the
+family-B plan) and the evaluator (`scripts/bench_hypotheses_v2.py`) then run
+from the tag on the outputs, in that order; the commands are in section 12 of
+the v2 preregistration. The run is CPU-only and is not planned
+on HLRS Hunter; the [runbook](docs/HLRS_HUNTER_RUNBOOK.md#151-mpc-bench-v2-confirmatory-run)
+states what a Hunter run would need.
+
 ## Analysis and preregistration
 
 Command-line tools for the paper's analyses (inputs and outputs in each
@@ -360,6 +422,8 @@ files, with `--out` pointing to the manuscript folder.
 | `scripts/bench_hypotheses.py` | the preregistered hypotheses HC1-HC10 on the confirmatory bench runs ([preregistration](docs/preregistration/README.md)) |
 | `scripts/build_applicability_registry.py` | derives `protocols/applicability_registry_v1.json` from the confirmatory bench results with the preregistered entry criteria |
 | `scripts/mpcbench_confirmatory.sh` | the preregistered confirmatory run plan (frozen code only) |
+| `scripts/bench_hypotheses_v2.py` | the MPC-Bench v2 hypotheses HCv2-0 to HCv2-24 on the v2 confirmatory runs ([v2 preregistration](docs/preregistration/MPC_BENCH_PREREGISTRATION_V2.md)) |
+| `scripts/v2/mpcbench_confirmatory_v2.sh` | the MPC-Bench v2 confirmatory run plan (tag `mpcbench-freeze-v2` only) |
 | `scripts/run_predictions.py` | evaluates the hypothesis registry `predictions/registry.yaml` (refuses unregistered estimators, protocol hashes and datasets) |
 | `scripts/figures/fig*.py` | one script per figure (`synthetic_inputs.py` writes test inputs; `render_paper1_figures.py` renders all of them from the confirmatory results with a manifest of code and input hashes) |
 

@@ -258,6 +258,32 @@ python scripts/build_applicability_registry.py --results outputs/paper1_mpcbench
     --evidence-dir outputs/paper1_mpcbench/registry
 ```
 
+## MPC-Bench v2 protocols (`v2/`)
+
+The protocols of the MPC-Bench v2 round are in [`v2/`](v2/README.md). They have
+schema `impact-mpc-protocol/3`, which adds a `status_rule` block (`tost-v2`:
+ABSENT as a two-sided equivalence test at `alpha_A = 0.01`), per-direction NAS
+anchors, an anchors block with the validity and specificity outcome of every
+principle and the anchored necessity set `N_anch`, a hash-covered `precision`
+block (the testability rows) and the admitted PDI concordance cells. A protocol
+without the `status_rule` block is still judged by the v1 rule byte for byte, and
+nothing in this folder's v1 files changes.
+
+| File (`v2/`) | Use |
+|---|---|
+| `hypotheses_v2.json` | the v2 hypotheses HCv2-0 to HCv2-24, read by the v2 evaluator; status `final` at the freeze |
+| `held_out_predictions_v2.json` | the held-out elements and the predicted admission table, committed before the logged release of the held-out forward anchors; never changed afterwards |
+| `seed_map_v2.json` | the v2 seed map (development 0-999, confirmatory from 20000, 10000-19999 never reused) |
+| `mpc_bench_v2_template.json`, `mpc_default_v2.json` | the bench template the builder fills, and the paper-2 default protocol of the v2 rule (not used by `run_pipeline.py` yet) |
+| `generated/` | written only by `scripts/v2/build_protocols_v2.py` from the development calibration and the decisions file: the family protocols `mpc_bench_v2_<key>.json` (`A-R`, `A-H`, `C1-R`, `C1-H`, `A-RAM160`, the held-out declarations, the estimator forms, family B and one protocol per forward view), `testability_table.json`, `forward_anchors.json`, `declared_dependencies.json`, `mechanism_on.json`, `calibration_decisions.json`, `calibration_evidence.json` and `build_manifest.json` |
+
+The protocol hashes and file SHA-256 of `generated/` are listed in the
+[v2 preregistration](../docs/preregistration/MPC_BENCH_PREREGISTRATION_V2.md#13-frozen-files),
+`tests/v2/test_prereg_v2_consistency.py` checks them against the files, and
+`python scripts/v2/build_protocols_v2.py check` checks the files against the
+build manifest. The v2 confirmatory runs read only `generated/`; the evaluator
+refuses records whose family-protocol hash differs from the frozen one.
+
 ## Regenerate the reference
 
 Development seeds only (family C and seeds >= 10000 are refused):

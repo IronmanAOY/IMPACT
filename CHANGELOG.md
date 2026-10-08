@@ -5,6 +5,123 @@ All notable changes to the IMPaCT Synergy Pipeline. The format follows
 [Semantic Versioning](https://semver.org/). Archived versions:
 https://doi.org/10.5281/zenodo.15306740.
 
+## Unreleased: MPC-Bench v2
+
+The MPC-Bench v2 revision round, which follows the v1 confirmatory results
+(prerequisite M and HC1 supported, HC2-HC10 falsified). It adds new estimator
+versions, a new status rule, new benchmark designs and a declarative evaluator
+next to the frozen v1 code; the v1 path, the v1 protocols and the v1 results are
+unchanged, and a regression gate checks this on every change. The hypotheses
+HCv2-0 to HCv2-24 are preregistered in
+[`docs/preregistration/MPC_BENCH_PREREGISTRATION_V2.md`](docs/preregistration/MPC_BENCH_PREREGISTRATION_V2.md),
+frozen by the tag `mpcbench-freeze-v2`. Nothing here changes the empirical
+pipeline (`run_pipeline.py`) yet: it keeps the v1 default protocol.
+
+### Added
+
+- **Status rule `tost-v2` and protocol schema `impact-mpc-protocol/3`**
+  (`impact_pipeline.evidence_v2`). ABSENT is a two-sided equivalence test at
+  `alpha_A = alpha / 5 = 0.01`; undecided components carry
+  `NULL_MODEL_VIOLATED`, `ABSENT_NOT_REACHABLE` or `INCONCLUSIVE`, and the flag
+  `PRESENT_NOT_REACHABLE` marks components that could not reach PRESENT at their
+  precision. NAS is PRESENT only if both directions are and ABSENT if either
+  passes at `alpha_A / 2`. The cutoffs `z = 0.25` and `delta = 0.10` are
+  unchanged. Protocols without the `status_rule` block are judged by the v1 rule
+  byte for byte. Reason codes: `docs/metrics_v2.md`.
+- **Estimators** (new modules; the v1 bodies are untouched): NAS v3
+  (`nas-v3-2026.10`, conditional Geweke causalities between a declared hub and
+  periphery blocks given declared exogenous inputs, per-direction anchors), IIM
+  v5 (`iim-v5-2026.10`, directional cuts, rank gate, occupancy gate, conditioning
+  on recorded drivers, block-bootstrap SE), RAM-PE v3 (`ram-v3-2026.10`, the
+  plasticity channel as a signed cross-validated readout) and PDI v3
+  (`pdi-v3-2026.10`, content bearer, Fisher-axis valley, a concordance route
+  admitted per cell). The v1 SRPI runs unchanged under the v2 rule.
+- **Recording device and declared inputs** (`impact_pipeline.v2.declared_inputs`):
+  the task events, context cues and slow-rhythm phase an experimenter could
+  log, the declarations R, H, P, Q10, Q25, J and none, and one input basis for
+  NAS and IIM.
+- **Benchmark v2**: a runner that scores one simulation under several
+  declarations, views and estimator forms with each estimator in its own try
+  block (`scripts/run_bench_v2.py`, result schema `mpc-bench-result/3`); twin
+  sessions (`replicate = r`); staggered hidden-driver adversaries; new witnesses
+  (PC_half, W_PDI_no_multistability, W_NAS_common_input_control,
+  N_modules_disconnected, C1 N_uncoupled); a RAM-only arm; family-B cells for
+  IIM v5 (`scripts/v2/iim_validation_v2.py`); the null-calibration generator on
+  the v1 null data; a forward-model layer (Hopf model and forward-modelled
+  family A at EEG and BOLD) with the admission procedure and the applicability
+  registry v3 (`scripts/v2/build_registry_v3.py`).
+- **Declarative hypotheses and evaluator**: `protocols/v2/hypotheses_v2.json`,
+  evaluated by `impact_pipeline.v2.hypothesis_engine` through
+  `scripts/bench_hypotheses_v2.py`; the integrity audit
+  `scripts/v2/integrity_audit.py`; operating characteristics
+  `scripts/v2/operating_characteristics.py`.
+- **Development calibration and protocol builder**:
+  `scripts/v2/dev_calibration.py` (development seeds only, held-out conditions
+  refused except discarded smoke tests, a logged release before any
+  held-out-regime anchor) and `scripts/v2/build_protocols_v2.py`, which writes
+  the frozen family protocols, the testability table, the forward anchors, the
+  declared dependencies and the mechanism-on labels into
+  `protocols/v2/generated/` from a decisions file.
+- **Run hygiene**: the v2 seed policy and seed map (development 0-999,
+  confirmatory from 20000; 10000-19999 never reused), the v2 confirmatory guard
+  (git trees of `src/` and `scripts/` against the tag `mpcbench-freeze-v2`),
+  the v1 regression gate `scripts/v2/regression_gate.py` and the environment
+  lock `scripts/v2/env_lock.py`.
+- **Preregistration v2** with its companions (testability table, development
+  expectations, operating characteristics) and a test that keeps it consistent
+  with the hypotheses file, the generated protocols, the seed map and the
+  release of the held-out predictions.
+
+### Changed
+
+- **Calibration decisions applied to the v2 code**: the IIM bootstrap SE takes
+  9 degrees of freedom instead of 12; the family-A null witnesses run on 46
+  confirmatory seeds; the family-A and Hopf anchor replication blocks extend to
+  20900-20939; the three C1 single deficits run on 129 seeds and the c_int
+  sweeps of families A and C1 on 65 seeds per level. Only seeds were resized;
+  no threshold changed.
+- **Design 3.5 realisation checks** (the slow-context preset of the forward
+  BOLD arm, PC_half between off and nominal, the twin hashes) are computed with
+  prerequisite M; only the slow-context check gates rows.
+
+### Fixed
+
+- **SVD fallback.** numpy's divide-and-conquer SVD can raise "SVD did not
+  converge" on an exactly rank-deficient matrix, which the lagged and filtered
+  input basis of NAS and IIM can be; a whole task was then lost. The v2
+  estimators and the forward layer now repeat the computation with SciPy's
+  `gesvd` (`gelsy` for least squares) only when numpy raises, so every result
+  numpy computes is unchanged (`impact_pipeline.v2.numerics`).
+- **IIM rank p-value field.** HCv2-2 and HCv2-13(a) read `p_ind` where only the
+  runner's records carry it; the field now reads the component details, which
+  both the runner and the family-B validation write.
+- **Admitted concordant PDI rows** no longer enter the null kappa of HCv2-3 or
+  the twin kappa of HCv2-4 (they have no sampling SE); both kappa rules report a
+  cell whose SEs are all zero as not evaluable instead of dividing by zero.
+- **Protocol builder**: a complete reference block without a valid anchor is a
+  result (its components are UNDEFINED), not a missing input; the concordance
+  route is attached only to the admitted cell; mechanism-on labels cover every
+  witness; the forward replication extension is decided per arm.
+- **Evaluator**: a part without input rows is reported as such, and the reason
+  ORACLE is kept for parts whose rows prerequisite M dropped. A confirmatory
+  evaluation reads the freeze tag where the runners write it
+  (`provenance.freeze_tag`); it looked only under `provenance.code` and would
+  have refused every confirmatory record. It now stops only for audit failures
+  that no exclusion repairs (`blocking_failures`: the regression gate, protocol
+  mismatches, unreadable lines, seeds outside the policy, planned tasks
+  without a record, the identities); a failure that names its records
+  excludes them and is reported beside the tally, as the design states.
+- **Family-B validation**: every task record carries the run's code identity
+  (git SHA, trees and, for a confirmatory run, the freeze tag); the script
+  writes `iim_validation_v2_plan.json` with the planned task ids for the
+  integrity audit; a resumed run drops a line cut off by an interruption,
+  superseded records and the records of failed tasks instead of stopping on
+  them.
+- **Confirmatory run script**: it names failed steps by their `STEPS` name,
+  refuses an unknown step name before anything runs, stops when the guard
+  refuses prerequisite M (an incomplete check is still only reported), and
+  passes the worker count to prerequisite M.
+
 ## [1.1.0] - 2026-09-28
 
 Release 1.1.0 repositions the pipeline as a measurement framework:

@@ -1,7 +1,7 @@
 {
  "schema": "mpc-bench-hypotheses/2",
  "version": "mpc-bench-hypotheses/2.0.0-draft",
- "status": "draft",
+ "status": "final",
  "design": "Draft v2 hypotheses (design sections 4.9 and 5), Tier A. Thresholds labelled C are not changed at calibration; parts labelled R may be resized (seeds) but their thresholds are not moved; nothing changes after the freeze. Every outcome is evaluated by impact_pipeline.v2.hypothesis_engine.",
  "conventions": {
   "alpha": 0.05,
