@@ -806,7 +806,7 @@ protocol; D12 `conditioning_delta`; D13 the all-events exogeneity sensitivity.
 ## 5. Seed map
 
 The seed map is quoted from `protocols/v2/seed_map_v2.json` (SHA-256
-`ad87ac3ad2990223b88898c540be30322d48735c5badafd4ac89cddbbed2fb68`). Every split label is derived from the seed policy, never
+`c9cf929f24350eca2b9f03a4be208e3844e7e8c7f9a65391c544d550f6cb7626`). Every split label is derived from the seed policy, never
 written by hand, and a run uses one split.
 
 <!-- seed-map:begin -->
@@ -849,18 +849,17 @@ Development seeds used before v2: 0-39, 100-119, 200-279, 300-319, 440-449, 500-
 | confirmatory | `20420-20459` | HCv2-12(b) (part of `20000-20499`) |
 | confirmatory | `20460-20499` | HCv2-12(c, d) (part of `20000-20499`) |
 | confirmatory | `20000-20000` | null-calibration generator seed base |
-| confirmatory | `20900-20919` | anchor replication blocks (extendable to: 20939; extension rule: 20900-20939 where the operating-characteristics check shows replication power < 0.9 at 20 seeds (anchor designs; forward arms after the held-out release); extended: A_anchors to 20939 (CD-11: A-H IIM replication power 0.565 at 20 seeds)) |
+| confirmatory | `20900-20919` | anchor replication blocks (extendable to: 20939; extension rule: 20900-20939 where the operating-characteristics check shows replication power < 0.9 at 20 seeds (anchor designs; forward arms after the held-out release); extended: A_anchors to 20939 (CD-11: A-H IIM replication power 0.565 at 20 seeds); forward_anchor_replication, Hopf arm, to 20939 (CD-11 after the held-out release: Hopf IIM validity-only replication power 0.264 (eeg64_noref), 0.699 (mne_template), 0.862 (eeg64) at 20 seeds)) |
 
 Random streams: structural `SeedSequence(seed): network, oscillator frequencies and every v1 stream (existing draws are never re-ordered)`; twins `SeedSequence([seed, r])` with r = 1-30 (task schedule, process noise and rest; r = 0 reproduces the v1 streams bit for bit); reserved keys label_error 41, cue_jitter 42, staggered_driver 43. Lead-field seeds (regime parameters of the forward model, not task seeds): development regime 20260928, held-out regime 20261001.
 
 <!-- seed-map:end -->
 
-Two assignments decided after the map's entries were written are recorded
-elsewhere: the Hopf arm's forward anchor replication runs on 20900-20939 (CD-11,
-decided after the held-out release; `calibration_decisions.json`,
-`replication_extended.forward_anchor_replication.hopf = true`, and the design
-code), while the map's `extended` list names family A only; the two family-A
-forward arms keep 20900-20919. The run plan of section 4.2 has these seeds.
+The Hopf arm's forward anchor replication runs on 20900-20939 (CD-11, decided
+after the held-out release; `calibration_decisions.json`,
+`replication_extended.forward_anchor_replication.hopf = true`, the design code
+and the map's `extended` list); the two family-A forward arms keep 20900-20919.
+The run plan of section 4.2 has these seeds.
 
 ## 6. Hypotheses
 
@@ -3863,7 +3862,7 @@ Reporting rules:
 | Code | the commit of the annotated tag `mpcbench-freeze-v2` on branch `polish/hlrs-handoff-2026-09`; that commit contains this document and its companions (a document cannot quote its own commit). The v2 confirmatory guard compares the git trees of `src/` and `scripts/` with the tag. |
 | Hypotheses | `protocols/v2/hypotheses_v2.json` (status `final`), SHA-256 `c9486dac60f4083f20ba5c0ce4e6be1bac9ffbf806249fe4c5f03382134fd935`; spec hash `8e37e2c04ae5cb31828d693787ac094f90fce2374a892d795732714ee5dbdefb` (`spec_sha256`: SHA-256 of the canonical sorted-key JSON, which the evaluator and the audit record in their outputs). The file's `version` (`mpc-bench-hypotheses/2.0.0-draft`) and `design` texts still say draft; they name the drafting round, not the status, which is the `status` field. |
 | Held-out predictions | `protocols/v2/held_out_predictions_v2.json`, SHA-256 `a0d291e066406128f5dc67b9e6368f8b33b5df2ee71806008bb2b72951b5f726` (commit `21597fe`; named by release `5af6e074475de23a`) |
-| Seed map | `protocols/v2/seed_map_v2.json`, SHA-256 `ad87ac3ad2990223b88898c540be30322d48735c5badafd4ac89cddbbed2fb68` |
+| Seed map | `protocols/v2/seed_map_v2.json`, SHA-256 `c9cf929f24350eca2b9f03a4be208e3844e7e8c7f9a65391c544d550f6cb7626` |
 | Bench template and paper-2 default protocol | `protocols/v2/mpc_bench_v2_template.json` `8a8ba5b4c05a0a31b3a49897f2988eab2020045a5b174db1767fadddc8559766`; `protocols/v2/mpc_default_v2.json` `98bbd94fb5efcd9c31daa1f1865947636886f92f786b8dd925fa257cdef74c2b` |
 | Generated protocols and tables | `protocols/v2/generated/` (builder `mpc-bench-protocol-builder/1.0.0`; `build_manifest.json` with `freeze_ready` true, no blocking entry, decisions status `final`) |
 | Calibration decisions | `outputs/mpcbench_v2/decisions/calibration_decisions_v2.json`, SHA-256 `d3d5bd5da0043ab750979853f9c73932032b08a3c3e36dac31f14d8b881f1744` (not versioned; copied with its evidence into `protocols/v2/generated/calibration_decisions.json` and `calibration_evidence.json`) |

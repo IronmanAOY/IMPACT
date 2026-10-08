@@ -148,10 +148,15 @@ def test_seed_map_matches_the_design(seed_map):
                      (20280, 20319, "HCv2-11"), (20320, 20419, "HCv2-13"),
                      (20420, 20459, "HCv2-12(b)"), (20460, 20499, "HCv2-12(c, d)")]
     assert conf[(20900, 20919)]["extendable_to"] == 20939
-    # CD-11: the family-A anchor replication block is extended
+    # CD-11: the family-A anchor replication block is extended, and after
+    # the held-out release the Hopf forward arm's
     assert conf[(20900, 20919)]["extended"] == [
         {"design": "A_anchors", "max": 20939,
-         "decided": "CD-11: A-H IIM replication power 0.565 at 20 seeds"}]
+         "decided": "CD-11: A-H IIM replication power 0.565 at 20 seeds"},
+        {"design": "forward_anchor_replication", "arm": "hopf", "max": 20939,
+         "decided": "CD-11 after the held-out release: Hopf IIM validity-only "
+                    "replication power 0.264 (eeg64_noref), 0.699 (mne_template), "
+                    "0.862 (eeg64) at 20 seeds"}]
     for key in [(20000, 20039), (20000, 20019), (20000, 20044), (20000, 20045),
                 (20000, 20128), (20000, 20009), (20000, 20064), (20000, 20060),
                 (20000, 20149)]:

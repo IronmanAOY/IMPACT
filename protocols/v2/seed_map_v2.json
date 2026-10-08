@@ -121,7 +121,8 @@
         "extendable_to": 20939,
         "extension_rule": "20900-20939 where the operating-characteristics check shows replication power < 0.9 at 20 seeds (anchor designs; forward arms after the held-out release)",
         "extended": [
-          {"design": "A_anchors", "max": 20939, "decided": "CD-11: A-H IIM replication power 0.565 at 20 seeds"}
+          {"design": "A_anchors", "max": 20939, "decided": "CD-11: A-H IIM replication power 0.565 at 20 seeds"},
+          {"design": "forward_anchor_replication", "arm": "hopf", "max": 20939, "decided": "CD-11 after the held-out release: Hopf IIM validity-only replication power 0.264 (eeg64_noref), 0.699 (mne_template), 0.862 (eeg64) at 20 seeds"}
         ]
       }
     ]
