@@ -48,7 +48,8 @@ def test_parity_network_exact_tpm_known_answers():
 
 
 def test_parity_grid_has_high_exact_integration_but_is_inert():
-    mm = pytest.importorskip("impact_pipeline.mpc_metrics")
+    from impact_pipeline import mpc_metrics as mm
+
     s = ad.parity_grid_system(seed=1, n=4, config=CFG)
     assert s.meta["substrate"] == "ising_exact" and s.meta["exact_tpm_state"] == 0
     tpm = np.asarray(s.meta["exact_tpm"])

@@ -90,8 +90,8 @@ def test_every_switch_passes_its_preregistered_check(simulate):
 
 def test_design_1_like_family_c_fails_the_checks():
     """Weak coupling against a strong additive-like drive and detuned
-    oscillators (the reviewer's diagnosis of design 1) does not pass the NAS
-    and IIM checks: the checks can fail."""
+    oscillators (the configuration of family-C design 1) does not pass the
+    NAS and IIM checks: the checks can fail."""
     weak = CHECK_CFG.replace(sl_coupling=0.2, sl_input_gain=4.0, sl_freq_hz=(0.5, 1.0))
     rep = mp.manipulation_report(g.simulate_family_c, (0, 1), weak, ("g_b", "c_int"))
     assert not rep["passed"].any()

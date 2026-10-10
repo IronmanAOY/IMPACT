@@ -221,8 +221,7 @@ def test_self_calibrating_modes_record_their_own_null():
     s = g.simulate_family_a(None, SMALL, seed=3)
     res = export.run_in_memory(s, metrics=("PDI", "NAS", "SRPI"), null_surrogates=0)
     modes = res["estimator_modes"]
-    if modes["SRPI"].get("mode") != "agency":
-        pytest.skip("installed compute_SRPI has no agency mode")
+    assert modes["SRPI"]["mode"] == "agency"
     assert modes["SRPI"]["agency_events"] == "bundle"
     assert modes["PDI"] == {"mode": "repertoire"}
     comps = res["components"]
@@ -300,7 +299,6 @@ def test_evidence_verdict_degrades_without_evidence_layer(monkeypatch):
 
 
 def test_evidence_verdict_uses_evidence_layer_when_available():
-    pytest.importorskip("impact_pipeline.evidence")
     s = g.simulate_family_a(None, SMALL, seed=3)
     res = export.run_in_memory(s, metrics=("NAS", "SRPI"), null_surrogates=2)
     out = export.evidence_verdict(res, s.meta)

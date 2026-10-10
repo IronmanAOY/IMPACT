@@ -46,7 +46,6 @@ _ZETA = np.array(
     dtype=float,
 )
 _MOEBIUS = np.linalg.inv(_ZETA)
-ATOM_NAMES = tuple(f"{a}t{b}" for a in LATTICE for b in LATTICE)
 
 
 def _as_system(A, noise_cov):

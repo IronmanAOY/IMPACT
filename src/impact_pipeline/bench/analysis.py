@@ -32,7 +32,6 @@ import pandas as pd
 
 from impact_pipeline.bench.generators import PRINCIPLES  # noqa: F401 (re-exported)
 
-ANALYSIS_VERSION = "mpc-bench-analysis/1.0.0"
 RESULTS_JSONL = "results.jsonl"
 STATUS_PRESENT = "PRESENT"
 STATUS_ABSENT = "ABSENT"

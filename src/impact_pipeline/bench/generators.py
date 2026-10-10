@@ -27,11 +27,10 @@ B  Binary / kinetic-Ising networks with exact transition probability matrices
    (independent, ring, all-to-all, feedforward star, XOR loop, hidden common
    driver) and a trajectory sampler (IIM ground truth).
 C  Stuart-Landau (Hopf) oscillator network with the family-A switch semantics
-   and task (held-out family; run only after the code freeze). Design 2
-   (generator 1.1.0): resonant input drives, coupling near the network's Hopf
-   bifurcation and bifurcation-parameter ignition, validated by the
-   preregistered oracle manipulation checks of
-   :mod:`impact_pipeline.bench.manipulation`.
+   and task (held out in the v1 round; family C1 of MPC-Bench v2). Generator
+   1.1.0: resonant input drives, coupling near the network's Hopf bifurcation
+   and bifurcation-parameter ignition, validated by the preregistered oracle
+   manipulation checks of :mod:`impact_pipeline.bench.manipulation`.
 
 Outputs of families A/C (:class:`BenchSystem`): ``ts`` (nodes x time),
 ``events`` (BIDS events table), ``meta`` (declared information an analyst may
@@ -109,6 +108,8 @@ IMPACT_CHANNEL_AGENCY = "agency"
 DYNAMICS = ("rate", "stuart_landau")
 # Substrate labels of the applicability registry.
 SUBSTRATE_OF_DYNAMICS = {"rate": "synthetic_rate", "stuart_landau": "stuart_landau"}
+# Family-C design recorded in meta["family_c_design"]: design 2 is generator
+# 1.1.0; design 1 was generator 1.0.0, which failed the manipulation checks.
 FAMILY_C_DESIGN = 2
 
 # Module layouts of family A/C in topological (feedforward) order. W is the
@@ -305,7 +306,7 @@ class AgentConfig:
     phase_gap_sec: float = 3.0
     tail_sec: float = 3.0
     rest_sec: float = 0.0
-    # Stuart-Landau (family C, design 2) constants: rate lam (1/s) of the
+    # Stuart-Landau (family C, generator 1.1.0) constants: rate lam (1/s) of the
     # amplitude dynamics, per-node natural frequency ~ U(sl_freq_hz), coupling
     # kappa on the family-A matrix W, bifurcation parameters (sl_a < 0:
     # damped nodes; the resting nominal network sits below the Hopf
@@ -939,7 +940,7 @@ def _simulate_agent(
             gate_trace[t] = knobs.g_b * s_ign
         ts = act
     else:
-        # Family C (design 2): Stuart-Landau oscillators in rate units,
+        # Family C (generator 1.1.0): Stuart-Landau oscillators in rate units,
         #   dz_j = { i w_j z_j + lam [ (a_j(t) - |z_j|^2) z_j + kappa (W z)_j
         #            + I_j(t) e^{i w_j t} ] } dt + lam sigma dB_j,
         # with task and endogenous inputs I_j(t) delivered as resonant drives
@@ -1430,8 +1431,9 @@ def simulate_family_c(
     replicate: int = 0,
 ) -> BenchSystem:
     """
-    Family C (held out; design 2): Stuart-Landau oscillators on the family-A
-    module graph with the same five switches and task. Node ``j`` follows
+    Family C (held out in the v1 round; family C1 of MPC-Bench v2; generator
+    1.1.0): Stuart-Landau oscillators on the family-A module graph with the
+    same five switches and task. Node ``j`` follows
 
         dz_j = { i w_j z_j + lam [ (a_j(t) - |z_j|^2) z_j + kappa (W z)_j
                  + I_j(t) e^{i w_j t} ] } dt + lam sigma dB_j
@@ -1459,8 +1461,8 @@ def simulate_family_c(
     The oracle adds the demodulated envelope ``z_j e^{-i w_j t}``
     (``hidden_envelope``) and the natural frequencies.
 
-    Design 1 (generator 1.0.0: detuned 0.5-1 Hz oscillators, weak coupling
-    0.3 W z against a 4x additive input drive) failed the manipulation checks:
+    Generator 1.0.0 (detuned 0.5-1 Hz oscillators, weak coupling 0.3 W z
+    against a 4x additive input drive) failed the manipulation checks:
     the NAS and IIM switches changed the recorded signal by 3-4 % and ignition
     occurred in < 1 % of samples.
 

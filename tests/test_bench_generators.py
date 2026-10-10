@@ -330,9 +330,9 @@ def test_family_a_coupling_switches_change_the_dynamics():
 
 
 def test_family_c_coupling_switches_change_the_dynamics():
-    """Family C design 2 (formerly a strict xfail): the same check on the
-    recorded oscillations. A lag-2 Granger gain of oscillatory signals needs
-    a longer run than the 16-trial SMALL config, hence 40 trials."""
+    """Family C design 2: the same check on the recorded oscillations. A
+    lag-2 Granger gain of oscillatory signals needs a longer run than the
+    16-trial SMALL config, hence 40 trials."""
     _assert_coupling_switches_act(
         g.simulate_family_c, g.AgentConfig(n_trials=40, n_reafference_pairs=15)
     )
@@ -364,12 +364,12 @@ def test_family_c_ignition_and_plasticity_are_effective():
     assert nom.meta["family_c_design"] == 2 and nom.meta["substrate"] == "stuart_landau"
 
 
-# Summaries of generator 1.0.0 outputs (computed with the sources of
-# polish/hlrs-handoff-2026-09 at f44f539): sum, sum of squares, ts[5, 1000],
-# ts[-1, -1], number of event rows, number of choices of arm 1. Generator
-# 1.1.0 changed family C only; family A (incl. the new reflex / feedback
-# options at their defaults) and the disconnected patchwork must reproduce
-# 1.0.0, so results of the two versions stay comparable.
+# Summaries of generator 1.0.0 outputs (computed with the sources at commit
+# 9c3daa5): sum, sum of squares, ts[5, 1000], ts[-1, -1], number of event
+# rows, number of choices of arm 1. Generator 1.1.0 changed family C only;
+# family A (incl. the new reflex / feedback options at their defaults) and
+# the disconnected patchwork must reproduce 1.0.0, so results of the two
+# versions stay comparable.
 GENERATOR_1_0_0_SUMMARIES = {
     "A_nominal_s0": [
         6129.513953424195,
@@ -449,7 +449,8 @@ def test_exact_tpm_rows_sum_to_one(kind):
 
 
 def test_binary_state_order_matches_iim_kernels():
-    mm = pytest.importorskip("impact_pipeline.mpc_metrics")
+    from impact_pipeline import mpc_metrics as mm
+
     states = g.binary_states(3)
     keys = mm._iim_subset_key_matrix(states, (0, 1, 2), 2)
     assert np.array_equal(keys, np.arange(8))
@@ -699,15 +700,6 @@ def test_sweep_levels_and_tasks():
     assert len(tasks) == 2 * 10 * 2
     k_task = [t for t in tasks if t.sweep_knob == "K"][0]
     assert k_task.knobs["K"] == 1 and g.knobs_from_dict(k_task.knobs).bits()[1] == 0
-    df = pd.DataFrame(
-        {
-            "sweep_knob": ["eta"] * 10,
-            "sweep_level": np.linspace(0, 0.6, 10),
-            "y": 2.0 * np.linspace(0, 1, 10) + 1.0,
-        }
-    )
-    slopes = sweeps.dose_response_slopes(df, ["y"])
-    assert slopes.loc[0, "slope"] == pytest.approx(2.0)
     with pytest.raises(ValueError):
         sweeps.sweep_levels("gain")
 

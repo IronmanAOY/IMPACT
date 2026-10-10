@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from impact_pipeline import evidence as ev
 from impact_pipeline.bench import audit as A
 from impact_pipeline.bench import rules as R
 
@@ -271,11 +272,8 @@ def test_zero_sampling_se_is_undefined_not_absent():
 
 def test_construct_scale_status_matches_the_v2_evidence_layer():
     """Cross-check of the bench's construct-scale rule with the evidence
-    layer's v2 ``component_assessment`` (skipped while a v1 layer is
-    installed): same c, same SE and same status on random evidence."""
-    ev = pytest.importorskip("impact_pipeline.evidence")
-    if not hasattr(ev, "component_assessment"):
-        pytest.skip("installed evidence layer is v1 (null-SD status rule)")
+    layer's ``component_assessment``: same c, same SE and same status on
+    random evidence."""
     rng = np.random.default_rng(12)
     n = 3000
     nu = rng.normal(0.0, 0.3, n)
@@ -314,9 +312,6 @@ def test_construct_scale_status_matches_the_v2_evidence_layer():
 
 
 def test_evidence_layer_rule_agrees_with_impact_c_on_a_v2_layer():
-    ev = pytest.importorskip("impact_pipeline.evidence")
-    if not hasattr(ev, "component_assessment"):
-        pytest.skip("installed evidence layer is v1 (null-SD status rule)")
     res = A.audit(_records(se=0.08), scenarios=A.SCENARIOS, label_noise=(0.0, 0.2))
     dec = res["decisions"].set_index(["task_id", "scenario", "label_noise"])
     a = dec.loc[dec.rule == "impact_c", "decision"].sort_index()
@@ -392,9 +387,7 @@ def test_jackknife_degrees_of_freedom_reach_the_rule_and_the_evidence_layer():
         return float((d["decision"] != R.UNDETERMINED).mean())
 
     assert _cov(res_t, "impact_c") < _cov(res_z, "impact_c")
-    ev = pytest.importorskip("impact_pipeline.evidence")
-    if hasattr(ev, "component_assessment"):
-        dec = res_t["decisions"].set_index(["task_id", "scenario", "label_noise"])
-        a = dec.loc[dec.rule == "impact_c", "decision"].sort_index()
-        b = dec.loc[dec.rule == "evidence_layer", "decision"].sort_index()
-        assert (a == b).all()
+    dec = res_t["decisions"].set_index(["task_id", "scenario", "label_noise"])
+    a = dec.loc[dec.rule == "impact_c", "decision"].sort_index()
+    b = dec.loc[dec.rule == "evidence_layer", "decision"].sort_index()
+    assert (a == b).all()

@@ -6,10 +6,9 @@ knobs at their nominal doses, x seeds.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
-import pandas as pd
 
 from impact_pipeline.bench.factorial import FAMILY_GENERATOR, BenchTask
 from impact_pipeline.bench.generators import NOMINAL_KNOBS, Knobs
@@ -72,32 +71,3 @@ def sweep_tasks(
                     )
                 )
     return tasks
-
-
-def dose_response_slopes(
-    df: pd.DataFrame,
-    value_columns: Sequence[str],
-    knob_column: str = "sweep_knob",
-    level_column: str = "sweep_level",
-) -> pd.DataFrame:
-    """
-    OLS slope of each value column on the dose level, per swept knob (levels
-    rescaled to [0, 1] so slopes are comparable across knobs), with the
-    number of finite points. Rows with NaN values are dropped per column.
-    """
-    rows: List[Dict] = []
-    for knob, sub in df.groupby(knob_column):
-        lv = sub[level_column].astype(float).to_numpy()
-        span = float(np.ptp(lv)) if lv.size else 0.0
-        x = (lv - lv.min()) / span if span > 0 else np.zeros_like(lv)
-        for col in value_columns:
-            y = pd.to_numeric(sub[col], errors="coerce").to_numpy(dtype=float)
-            ok = np.isfinite(y) & np.isfinite(x)
-            if ok.sum() < 3 or np.ptp(x[ok]) == 0:
-                slope = np.nan
-            else:
-                slope = float(np.polyfit(x[ok], y[ok], 1)[0])
-            rows.append(
-                {"knob": knob, "value": col, "slope": slope, "n": int(ok.sum())}
-            )
-    return pd.DataFrame(rows)

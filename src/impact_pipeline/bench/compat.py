@@ -1,6 +1,6 @@
 """
-Compatibility shim between MPC-Bench and the evidence layer
-(``impact_pipeline.evidence``) across its verdict-name revision.
+Verdict names of MPC-Bench and calls into the evidence layer
+(``impact_pipeline.evidence``).
 
 The necessity-only stance renames the verdicts:
 
@@ -10,21 +10,17 @@ The necessity-only stance renames the verdicts:
     NOT_ATTRIBUTED  -> EXCLUDED        (some principle in N is credibly ABSENT)
     UNDETERMINED    -> UNDETERMINED
 
-The bench is written against the v2 names. This module accepts either naming
-from an installed evidence layer (or from older result files and witness
-catalogues) and always returns v2 names. It also builds ``ComponentEvidence``
-items with only the fields the installed dataclass declares, and calls
-``mpc_verdict`` with the v1 keyword interface (``necessity_set=``) or the v2
-protocol interface (``mpc_verdict(evidence, protocol)``), whichever the
-installed module offers.
+The bench is written against the v2 names. This module maps the v1 names of
+older result files and witness catalogues to them and always returns v2
+names. It also builds ``ComponentEvidence`` items with only the fields the
+dataclass declares, and calls ``mpc_verdict`` with a ``Protocol``.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import inspect
 from enum import Enum
-from typing import Dict, Mapping, Optional, Sequence
+from typing import Dict, Mapping, Optional
 
 MPC_CONSISTENT = "MPC_CONSISTENT"
 EXCLUDED = "EXCLUDED"
@@ -54,62 +50,19 @@ def verdict_name(value) -> Optional[str]:
     raise ValueError(f"not an MPC verdict: {value!r}")
 
 
-def verdict_names(values: Sequence) -> list:
-    return [verdict_name(v) for v in values]
-
-
-def _status_name(value) -> Optional[str]:
-    if value is None:
-        return None
-    return value.value if isinstance(value, Enum) else str(value)
-
-
-def evidence_field_names(ev_module) -> tuple:
-    """Field names of the installed ``ComponentEvidence`` dataclass."""
-    cls = ev_module.ComponentEvidence
-    if dataclasses.is_dataclass(cls):
-        return tuple(f.name for f in dataclasses.fields(cls))
-    return tuple(inspect.signature(cls).parameters)
-
-
 def make_component_evidence(ev_module, **fields):
-    """``ComponentEvidence`` with the fields the installed class accepts
-    (others, e.g. ``exact`` or ``reference`` on a v1 layer, are dropped)."""
-    names = set(evidence_field_names(ev_module))
+    """``ComponentEvidence`` with the fields the dataclass declares (others
+    are dropped)."""
+    names = {f.name for f in dataclasses.fields(ev_module.ComponentEvidence)}
     kw = {k: v for k, v in fields.items() if k in names}
     return ev_module.ComponentEvidence(**kw)
 
 
-def _accepted(fn, kwargs: Mapping) -> dict:
-    try:
-        params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return dict(kwargs)
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
-        return dict(kwargs)
-    return {k: v for k, v in kwargs.items() if k in params}
-
-
-def build_protocol(ev_module, necessity_set, channels, **kwargs):
+def call_mpc_verdict(ev_module, items: Mapping, necessity_set=PRINCIPLES):
     """
-    v2 ``Protocol`` of the installed layer with the keywords it accepts, or
-    None on a v1 layer (no ``Protocol`` class).
-    """
-    proto_cls = getattr(ev_module, "Protocol", None)
-    if proto_cls is None:
-        return None
-    kw = {"necessity_set": tuple(necessity_set), "channels": dict(channels)}
-    kw.update(kwargs)
-    return proto_cls(**_accepted(proto_cls, kw))
-
-
-def call_mpc_verdict(
-    ev_module, items: Mapping, necessity_set=PRINCIPLES, protocol_kwargs=None
-):
-    """
-    Run the installed ``mpc_verdict`` on ``items`` (principle -> list of
-    ComponentEvidence): with a v2 protocol object when the layer defines
-    ``Protocol``, else with ``necessity_set=``. Returns the layer's result.
+    Run ``mpc_verdict`` on ``items`` (principle -> list of ComponentEvidence)
+    with a ``Protocol`` of ``necessity_set`` and the channels of the items.
+    Returns the layer's result.
     """
     nset = tuple(necessity_set)
     channels = {
@@ -117,24 +70,8 @@ def call_mpc_verdict(
         for p in nset
         if p in items
     }
-    proto = build_protocol(ev_module, nset, channels, **(protocol_kwargs or {}))
-    if proto is not None:
-        return ev_module.mpc_verdict(items, proto)
-    return ev_module.mpc_verdict(items, necessity_set=nset)
-
-
-def verdict_record(result) -> dict:
-    """Plain dict (v2 names) from a layer's verdict object."""
-    verdict = getattr(result, "verdict", None)
-    return {
-        "verdict": verdict_name(verdict),
-        "reasons": list(getattr(result, "reasons", []) or []),
-        "component_status": {
-            k: _status_name(s)
-            for k, s in (getattr(result, "component_status", {}) or {}).items()
-        },
-        "margins": dict(getattr(result, "margins", {}) or {}),
-    }
+    proto = ev_module.Protocol(necessity_set=nset, channels=channels)
+    return ev_module.mpc_verdict(items, proto)
 
 
 def normalise_counts(counts: Mapping) -> Dict[str, int]:

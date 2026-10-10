@@ -1,7 +1,7 @@
-"""MPC-Bench v2 runner: development / confirmatory split for the held-out
-sets (family C, whole-brain, adversarial), new designs, exact-TPM IIM,
-jackknife SEs, graded patchworks and the evidence-layer compatibility shim
-(v1 and v2 verdict names)."""
+"""MPC-Bench runner 2.0 (round v1): development / confirmatory split for the
+held-out sets (family C, whole-brain, adversarial), new designs, exact-TPM
+IIM, jackknife SEs, graded patchworks and the evidence-layer compatibility
+shim (v1 and v2 verdict names)."""
 
 import json
 from enum import Enum
@@ -166,7 +166,6 @@ def test_nas_capacity_jackknife_measures_the_direction_of_the_estimate(monkeypat
 
 
 def test_exact_iim_of_a_declared_tpm():
-    pytest.importorskip("impact_pipeline.mpc_metrics")
     from impact_pipeline.bench.adversarial import parity_grid_system
 
     s = parity_grid_system(seed=0, n=4, config=SMALL)

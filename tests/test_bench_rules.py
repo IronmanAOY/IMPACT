@@ -169,7 +169,8 @@ def test_status_matches_evidence_layer_when_available():
     component_status_c) equals evidence.component_status on v2 evidence
     (reference anchor, sampling SE, null Monte-Carlo error), also for SEs from
     few replicates (jackknife degrees of freedom -> Student-t quantile)."""
-    ev = pytest.importorskip("impact_pipeline.evidence")
+    from impact_pipeline import evidence as ev
+
     rng = np.random.default_rng(3)
     n = 4000
     nu = rng.normal(0.0, 0.3, n)

@@ -28,10 +28,10 @@ Pipeline (:func:`audit`)
    never scored by a model fitted on its own seed).
 4. Rules: the IMPaCT v2 rule (``impact_c``: construct-scale statuses with
    genuine SEs, strong-Kleene AND), the installed evidence layer's verdict
-   (``evidence_layer``, when importable; v1 or v2 semantics, names mapped to
-   v2), every rival rule of :mod:`impact_pipeline.bench.rules` on the ``c``
-   matrix (presence ``c >= 0.5``), and single-marker comparators (IIM-only,
-   NAS-only, LZc, Gaussian Phi_R, exact-TPM IIM when declared).
+   (``evidence_layer``, when importable), every rival rule of
+   :mod:`impact_pipeline.bench.rules` on the ``c`` matrix (presence
+   ``c >= 0.5``), and single-marker comparators (IIM-only, NAS-only, LZc,
+   Gaussian Phi_R, exact-TPM IIM when declared).
 5. Outputs: per rule, scenario, noise level and class the verdict
    distribution P(verdict | class); coverage (fraction determinate);
    selective risk (error among determinate decisions on systems with a
@@ -58,6 +58,7 @@ import numpy as np
 import pandas as pd
 
 from impact_pipeline.bench import rules as R
+from impact_pipeline.bench.analysis import _f
 from impact_pipeline.bench.compat import verdict_name
 
 AUDIT_VERSION = "mpc-bench-audit/1.0.0"
@@ -161,13 +162,6 @@ def records_to_arrays(
         "se_df": se_df,
         "markers": markers,
     }
-
-
-def _f(v) -> float:
-    try:
-        return float("nan") if v is None else float(v)
-    except (TypeError, ValueError):
-        return float("nan")
 
 
 # ---------------------------------------------------------------------------
