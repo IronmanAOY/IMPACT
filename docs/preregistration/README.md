@@ -37,10 +37,10 @@ preregistration, its frozen protocols and the code that produces and
 evaluates the confirmatory results. The tag message quotes the SHA-256 of the
 frozen files. The confirmatory steps refuse any checkout whose `src/` and
 `scripts/` trees differ from the tag, so the confirmatory runs, the
-integrity checks and the evaluators run from a checkout of the tag;
-documentation-only commits after the tag do not change those trees. Pushing
-the tag to the public repository makes the commit and the tag message
-publicly reachable.
+integrity checks and the evaluators run from a checkout of the tag. The
+commits after the freeze tags do change those trees, so the guards refuse
+the branch head. Pushing the tag to the public repository makes the commit
+and the tag message publicly reachable.
 
 A registration on a public registry (for example OSF) adds an independent,
 time-stamped copy. It attaches the preregistration as it is at the tagged
@@ -92,10 +92,10 @@ preregistration says that the message of the annotated tag
 round: the 46-seed null witnesses of HCv2-1 and the paper-2 regime (CD-12).
 The tag message does not name them; it lists the frozen protocols, the
 hypotheses file, the preregistration, the seed map and the held-out
-predictions with their SHA-256 (`git cat-file -p mpcbench-freeze-v2`). The
-author confirmed both decisions by pushing the tag on 2026-10-09, before the
-confirmatory run started. Neither decision was changed. The frozen
-preregistration is not edited; this note records the difference.
+predictions with their SHA-256 (`git cat-file -p mpcbench-freeze-v2`). How
+the confirmation of the two decisions is recorded is *to be added by the
+author*. The frozen preregistration is not edited; this note records the
+difference.
 
 ## Terms used in the preregistrations
 
@@ -107,6 +107,8 @@ preregistration is not edited; this note records the difference.
 - **`1abff4e`** (v1 preregistration, section 1, and the `source` fields of the
   frozen bench protocols): the pre-edit name of the development commit
   `87654ec`; both have the tree `5396cfd177926f5b2b8a107b48d10022d9bc86e6`.
+  `1abff4e` exists only in the author's local history; the tree can be
+  checked with `git rev-parse 87654ec^{tree}`.
 - **"spec V2-5"**, **"novelty synthesis"** (v1 preregistration): working
   documents of the 1.1.0 development (a design note and the planning document
   in which the hypotheses were first formulated); they are not versioned and

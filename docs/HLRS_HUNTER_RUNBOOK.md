@@ -687,8 +687,9 @@ What happens:
 
 - The build estimates one TPM per run, per surrogate run and per bootstrap
   replicate run. This is far cheaper than the campaign, but it grows with the
-  number of runs and with K and B (the tiny checked build took seconds). If it approaches the login node's 2 h CPU limit,
-  run the same command in an interactive job.
+  number of runs and with K and B (the tiny checked build took seconds). If it
+  approaches the login node's 2 h CPU limit, run the same command in an
+  interactive job.
 - The last log lines name the campaign directory and the submit command:
 
   ```text
@@ -1190,7 +1191,8 @@ with the author beforehand and reported. It would need:
 - the stored v1 outputs (`outputs/paper1_mpcbench`, the folder holding `c2/`;
   not versioned) copied to the workspace and named by
   `MPCBENCH_V1_OUTPUTS`, which the regression gate and the audit's IA-1 read;
-  without them the gate fails with exit status 2;
+  without them the gate fails with exit status 2, and if the variable names a
+  folder without `c2/`, it stops with an error;
 - the pre-run checks of preregistration v2, section 11, in the clone:
   `python scripts/v2/env_lock.py --check`, `python scripts/v2/regression_gate.py
   --quick`, `git diff --quiet mpcbench-freeze-v2 -- protocols/v2` (the guard
@@ -1217,15 +1219,20 @@ with the author beforehand and reported. It would need:
   #PBS -N mpcbench-v2
   #PBS -l select=1:node_type=mi300a
   #PBS -l walltime=24:00:00
+  #PBS -l ws13=True
+  # (resource lines as in the generated scripts, section 9.3)
   cd "$PBS_O_WORKDIR"                       # the clean clone of the tag
   WS=$(ws_find impact)                      # the workspace (section 3)
-  source "$WS/venvs/mpcbench-v2/bin/activate"   # an environment that matches the v2 lock
+  # An environment that matches the v2 lock does not exist on Hunter yet
+  # (open question 4): load its modules here; the path below is a placeholder.
+  source "$WS/venvs/mpcbench-v2/bin/activate"
   export MPCBENCH_V1_OUTPUTS="$WS/paper1_mpcbench"
   OUT="$WS/v2_confirmatory" WORKERS=96 PY=python STEPS="anchor_replication A_witnesses" \
       bash scripts/v2/mpcbench_confirmatory_v2.sh
   ```
 
-  A mi300a node has 96 CPU cores (section 15). The clone, the venv and the outputs follow the rules above.
+  A mi300a node has 96 CPU cores (section 15). The clone, the venv and the
+  outputs follow the rules above.
 
 When the script exits with 1 it names the steps with task errors; they are run
 once more with `STEPS` set to those steps and the same `OUT`, and that rerun is
@@ -1329,9 +1336,9 @@ pass the answers to the author.
    `$ROCM_PATH`? Is `/opt/rocm` present or symlinked? Are hipblas, hipsparse,
    rocsparse, rocrand, hiprand, rocthrust, rocsolver, rocfft, hipfft, hipcub,
    rocprim, rccl and roctracer all included (CuPy build requirements)?
-7. When will `HLRS/2026.2` (CPE 26.03, ROCm 7.0.2, cray-python 3.12.12) become
-   the default? May production jobs use `HLRS/APU/testing-2026.2` now, for
-   example with the `cupy-rocm-7-0` wheel?
+7. When will the 2026.2 stack (now `HLRS/APU/testing-2026.2`: CPE 26.03, ROCm
+   7.0.2, cray-python 3.12.12) become the default? May production jobs use
+   `HLRS/APU/testing-2026.2` now, for example with the `cupy-rocm-7-0` wheel?
 8. HPE's CPE 25.09 notes say `cray-libsci_acc` "may generate wrong numerical
    results on AMD GPUs with ROCm 6.4.0 and 6.4.1" (rocBLAS). Does this affect
    rocBLAS/hipBLAS used by other software such as CuPy on Hunter? Has HLRS

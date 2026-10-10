@@ -93,9 +93,9 @@ The full suite takes 15 to 25 minutes on a workstation. Tests that need
 files outside the repository are skipped where these are missing: the stored
 v1 benchmark outputs (not versioned; found through `MPCBENCH_V1_OUTPUTS` or in
 `outputs/paper1_mpcbench` of the checkout; see [MPC-Bench v2](#mpc-bench-v2)),
-the held-out release log among the v2 development outputs, and the freeze
-tags (in a clone without tags). The full v1 regression gate runs only with
-`MPCBENCH_RUN_SLOW=1`.
+the held-out release log among the v2 development outputs, the freeze tags
+(in a clone without tags) and the legacy commit `4c74466` (in a shallow
+clone). The full v1 regression gate runs only with `MPCBENCH_RUN_SLOW=1`.
 
 ### 2. Synthetic smoke tests (no downloads)
 
@@ -369,7 +369,8 @@ against its manifest:
 
 ```bash
 python scripts/v2/dev_calibration.py plan      # calibration items, tasks, projected CPU-h
-python scripts/v2/dev_calibration.py status    # what a calibration root holds (--root)
+python scripts/v2/dev_calibration.py status    # what a calibration root holds (--root);
+                                               # empty without the development outputs
 python scripts/v2/build_protocols_v2.py check
 ```
 
@@ -397,7 +398,8 @@ checkout of that tag ([Confirmatory runs and the freeze
 tags](#confirmatory-runs-and-the-freeze-tags)); every step refuses other trees
 and seeds below 20000. The stored v1 outputs (`outputs/paper1_mpcbench`, the
 folder holding `c2/`) are not versioned: copy them to the run machine and point
-`MPCBENCH_V1_OUTPUTS` at them, or the regression gate fails with exit status 2.
+`MPCBENCH_V1_OUTPUTS` at them. Without them the regression gate fails with exit
+status 2; if the variable names a folder without `c2/`, it stops with an error.
 On the workstation of the development runs (12 workers, about 131-167 CPU-h,
 15-19 h wall), in the checkout of the tag:
 
@@ -548,7 +550,8 @@ need a git checkout of a freeze tag and are not supported inside the images.
 
 Please cite the software through its concept DOI, which resolves to the latest
 archived version: https://doi.org/10.5281/zenodo.15306740 (metadata in
-`CITATION.cff`; package version 1.1.0).
+`CITATION.cff`; package version 1.1.0). Version 1.1.0 has no release tag and
+no archive yet, so until it has, the DOI leads to an earlier version.
 
 The real-data-derived synthetic smoke-test archive has the reserved DOI
 10.5281/zenodo.20786673. It is **not yet published**; until it is, regenerate the

@@ -118,15 +118,14 @@ hashed and the records carry them; this section says what they mean.
   `impact_pipeline.bench.designs_v2.anchors`. The values are final; the name
   and the phrase "development feasibility work" in its `meaning` text are
   kept because every run manifest records them.
+* **"integration run at commit d3bcb09"** (the `cost_source` of
+  `scripts/v2/dev_calibration.py plan --json`): the CPU seconds per task of
+  the cost model were measured on development seeds at commit `d3bcb09`
+  (see the comment above `COST_SOURCE` in that script).
 * **"decider", "critic", "upheld", "dispute"** (in the `note` texts of
-  `calibration_decisions.json`): each calibration decision was drafted and
-  then reviewed in two separate passes before the freeze. The *decider* pass
-  drafted the value and its note from the development evidence and the
-  written rules; the *critic* pass checked the draft against the same
-  evidence and rules. "Upheld" means the critic accepted the draft; a
-  *dispute* is a disagreement between the two passes, and the note says how
-  it was resolved. Both passes were part of preparing the decisions file,
-  not separate decisions.
+  `calibration_decisions.json`): terms from the preparation of the
+  calibration decisions before the freeze. A description of that
+  preparation is *to be added by the author*.
 * **"BLOCKING: the code constant impact_pipeline.v2.iim_v5.BOOTSTRAP_SE_DF is
   still 12.0 ... (DECISION_LOG follow-up 1)"** (note of CD-3): a follow-up
   recorded when the decision was written, in a working log that is not
@@ -134,5 +133,5 @@ hashed and the records carry them; this section says what they mean.
   tag, as the decision requires.
 * **"to be confirmed by the author with the freeze push"** (note of the
   paper-2 regime, CD-12): one of the two author-level decisions of section
-  10.4 of the preregistration. How the author confirmed them is recorded in
+  10.4 of the preregistration. See the note on these decisions in
   [`docs/preregistration/README.md`](../../docs/preregistration/README.md#status-of-v2).

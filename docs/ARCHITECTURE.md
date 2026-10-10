@@ -60,7 +60,7 @@ calls the public estimators and the evidence layer like any other user.
 | `scripts/run_bench.py`, `bench_reference.py`, `benchmark_attribution_rules.py`, `null_calibration.py`, `calibrate_bench.py`, `iim_validation.py`, `bench_hypotheses.py`, `mpcbench_confirmatory.sh`, `necessity_power.py`, `simulate_rule_recovery.py`, `audit_aggregation.py`, `definedness_audit.py`, `run_predictions.py`, `compute_empirical_reference.py`, `build_example_protocols.py`, `figures/` | MPC-Bench runs, bench reference, rule audit, null calibration, development calibration, family-B IIM validation, the preregistered hypotheses HC1-HC10 and their run plan, power and recovery simulations, aggregation audit, definedness audit, registry evaluation, external empirical reference anchor, example derived protocols (NAS hub), figures |
 | `scripts/live_dashboard.py`, `impact_desktop_app.py` | browser dashboard and desktop launcher |
 | `scripts/generate_real_derived_synth_completed.py`, `inspect_real_sources_for_synth.py` | real-data-derived synthetic smoke-test objects |
-| `scripts/download_data.sh`, `download_atlases.sh`, `fetch_fmriprep*.sh`, `run_all.sh` | data, atlases, fMRIPrep, end-to-end local run |
+| `scripts/download_data.sh`, `download_atlases.sh`, `fetch_fmriprep.sh`, `run_all.sh` | data, atlases, fMRIPrep, end-to-end local run |
 | `scripts/hunter/` | Hunter setup-file template, install notes, smoke-test helper |
 | `scripts/run_bench_v2.py`, `scripts/v2/`, `bench_hypotheses_v2.py` | MPC-Bench v2: runner command line, development calibration, protocol builder, family-B IIM validation, null calibration, operating characteristics, environment lock, v1 regression gate, registry v3, integrity audit, the confirmatory run plan and the evaluator |
 

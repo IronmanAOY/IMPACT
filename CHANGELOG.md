@@ -130,8 +130,8 @@ A clean-up after the freeze is described at the end of this section.
 
 Changes after the tag `mpcbench-freeze-v2` that leave every result as it was:
 the v1 regression gate passes, and the v2 run plans, the development-seed
-records (apart from timing and load fields), the evaluator outputs and the
-operating characteristics are the same as at the tag.
+records (apart from row order and the timing and load fields), the evaluator
+outputs and the operating characteristics are the same as at the tag.
 They change the `src/` and `scripts/` trees, so confirmatory runs, the
 integrity audit and the evaluators still run from a checkout of the freeze
 tags.
@@ -139,8 +139,8 @@ tags.
 - **Removed**: code that nothing calls (helpers and constants in the
   empirical pipeline, the bench support modules, the v2 estimators, registry,
   runner and designs, and several scripts); the v2 file-ownership check,
-  which compared files with a development work plan outside the repository;
-  `scripts/v2/mpcbench_dev_v2.sh` (superseded by
+  which compared files with a planning document that is not part of the
+  repository; `scripts/v2/mpcbench_dev_v2.sh` (superseded by
   `scripts/v2/dev_calibration.py`); `scripts/fetch_fmriprep_ds003171.sh`
   (`fetch_fmriprep.sh --dataset-id ds003171` does the same); two duplicated
   tests.
@@ -153,14 +153,19 @@ tags.
   fresh clone; the package metadata describe the measurement framework; the
   ignore rules are shorter; comments and docstrings cite the v2
   preregistration instead of unpublished design notes.
+- **CI**: flake8 runs with the rules in `.flake8` (line length is not
+  enforced) in CI and pre-commit; the checkout fetches the full history and
+  the tags, which some tests read; every tracked shell script is
+  syntax-checked; the GitHub Actions are on their current major versions.
 - **Documentation**: the README states the outcomes of both rounds and where
   the result files are kept, explains the freeze tags and adds a glossary;
   rebuild examples write to a scratch folder instead of over frozen files;
   `docs/preregistration/README.md` states the status of both freezes as it
-  can be checked today, with a dated note on the author-level decisions of
-  round v2; `protocols/v2/README.md` explains the development terms in the
-  frozen files; the repeated explanations of the default protocol are
-  replaced by pointers to `protocols/README.md`.
+  can be checked today, with a dated note that the tag message of round v2
+  does not name its two author-level decisions; `protocols/v2/README.md`
+  explains the development terms in the frozen files; the repeated
+  explanations of the default protocol are replaced by pointers to
+  `protocols/README.md`.
 
 ## [1.1.0] - 2026-09-28
 
