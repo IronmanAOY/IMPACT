@@ -24,7 +24,7 @@ from impact_pipeline import mpc_metrics as mm
 from impact_pipeline import synergy_ci as sc
 from impact_pipeline.event_parsing import events_table_to_bundle, read_events_table
 from impact_pipeline.run_synergy_ci import RAM_PARAM_PRESETS
-from _helpers import _evoked
+from _helpers import evoked
 from test_hunter_pbs import _tiny_bids_and_prep
 from test_nas_capacity import _hub_network
 from test_srpi_agency import _agency_task
@@ -265,13 +265,13 @@ def test_necessity_set_changes_only_the_verdict(planted_runs):
 # RAM / SRPI event nulls and bootstrap (simple known-answer estimators)
 # --------------------------------------------------------------------------
 def _fake_ram(ts, tr=None, stimulus_onsets=None, return_details=False, **_kw):
-    val = _evoked(ts, tr, (stimulus_onsets or {}).get("onsets", []))
+    val = evoked(ts, tr, (stimulus_onsets or {}).get("onsets", []))
     return {"value": val, "undefined_reason": None} if return_details else val
 
 
 def _fake_srpi(ts, tr=None, self_onsets=(), nonself_onsets=(), return_details=False,
                **_kw):
-    val = _evoked(ts, tr, self_onsets, node=1) - _evoked(ts, tr, nonself_onsets, node=1)
+    val = evoked(ts, tr, self_onsets, node=1) - evoked(ts, tr, nonself_onsets, node=1)
     return {"value": val, "undefined_reason": None} if return_details else val
 
 

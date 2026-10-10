@@ -630,12 +630,8 @@ def montage(reference="average", T=4000, seed=0):
     return x
 
 
-def v1_quadrants(n_sensors=64):
-    return F2.quadrant_clusters(forward.sensor_positions(n_sensors))
-
-
 def test_macro_rank_deficient_on_an_average_referenced_full_montage():
-    quads = v1_quadrants()
+    quads = F2.quadrant_clusters(forward.sensor_positions(64))
     assert sorted(i for v in quads.values() for i in v) == list(range(64))
     x = montage("average")
     rank = IIM.zero_lag_rank(IIM.macro_signals(x, quads))

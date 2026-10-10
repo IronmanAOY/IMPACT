@@ -6,7 +6,7 @@ import types
 import numpy as np
 
 
-def _fake_rocm_cupy():
+def fake_rocm_cupy():
     """A NumPy-backed stand-in for a ROCm CuPy build on an MI300A node."""
     cp = types.ModuleType("cupy")
     cp.__version__ = "13.6.0+fake-rocm"
@@ -24,7 +24,7 @@ def _fake_rocm_cupy():
     return cp
 
 
-def _evoked(ts, tr, onsets, node=0):
+def evoked(ts, tr, onsets, node=0):
     """Known-answer evoked response of ``node``: the mean over onsets of the
     three samples after an onset minus the sample before it; NaN with fewer
     than three usable onsets."""

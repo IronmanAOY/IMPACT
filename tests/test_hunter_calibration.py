@@ -26,7 +26,7 @@ from impact_pipeline.hunter_iim import (
     collect_iim_results_by_path,
     prepare_hunter_campaign,
 )
-from _helpers import _fake_rocm_cupy
+from _helpers import fake_rocm_cupy
 
 K_NULL = 3
 IIM_KW = dict(bins=2, lag_trs=1, n_parts=3, max_nodes=4, max_mechanism_size=2,
@@ -339,7 +339,7 @@ def test_uncalibrated_campaign_keeps_the_null_schema(tmp_path):
 
 @pytest.fixture
 def fake_apu(monkeypatch):
-    monkeypatch.setitem(sys.modules, "cupy", _fake_rocm_cupy())
+    monkeypatch.setitem(sys.modules, "cupy", fake_rocm_cupy())
     monkeypatch.setattr(hb, "_EIGH_DEVICE_STATUS", {})
     monkeypatch.setattr(hb, "_THREAD_LIMITS_APPLIED", True)
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",

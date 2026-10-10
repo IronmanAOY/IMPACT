@@ -27,7 +27,7 @@ import run_pipeline
 from impact_pipeline import evidence as E
 from impact_pipeline import mpc_metrics as mm
 from impact_pipeline import synergy_ci as sc
-from _helpers import _evoked
+from _helpers import evoked
 
 PRINCIPLES = E.PRINCIPLES
 REPO = Path(__file__).resolve().parents[1]
@@ -165,7 +165,7 @@ def install_behavioural_ram(monkeypatch):
             return real(ts, tr=tr, stimulus_onsets=stimulus_onsets,
                         impact_channel=impact_channel,
                         return_details=return_details, **kw)
-        val = _evoked(ts, tr, (stimulus_onsets or {}).get("onsets", []))
+        val = evoked(ts, tr, (stimulus_onsets or {}).get("onsets", []))
         return {"value": val, "undefined_reason": None} if return_details else val
 
     monkeypatch.setattr(sc, "compute_RAM", ram)

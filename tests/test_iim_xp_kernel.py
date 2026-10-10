@@ -21,7 +21,7 @@ import pytest
 from impact_pipeline import hardware_backend as hb
 from impact_pipeline import iim_xp
 from impact_pipeline import mpc_metrics as mm
-from _helpers import _fake_rocm_cupy
+from _helpers import fake_rocm_cupy
 
 TOL = 1e-10
 
@@ -229,7 +229,7 @@ def test_xp_kernel_resumes_a_partial_numba_phase1_checkpoint(tmp_path):
 
 @pytest.fixture
 def fake_apu(monkeypatch):
-    monkeypatch.setitem(sys.modules, "cupy", _fake_rocm_cupy())
+    monkeypatch.setitem(sys.modules, "cupy", fake_rocm_cupy())
     monkeypatch.setattr(hb, "_EIGH_DEVICE_STATUS", {})
     monkeypatch.setattr(hb, "_THREAD_LIMITS_APPLIED", True)
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
