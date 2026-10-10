@@ -2,28 +2,31 @@
 """
 v1 regression gate of MPC-Bench v2 (integrity audit IA-1).
 
-The v2 tree must keep the v1 code path selectable and byte-identical. This
-gate runs on every merge of the v2 work and checks, on the current tree:
+The v2 tree must keep the v1 code path selectable and byte-identical. The
+gate is integrity check IA-1 of the v2 preregistration and checks, on the
+current tree:
 
 ``environment``
     the numerical stack equals the environment lock (``env_lock.py``);
 ``read_only_files``
     every read-only v1 file (estimators, evidence layer, v1 runner, frozen
-    scripts, v1 protocols and registry, v1 docs) has the bytes it had when
-    the v2 work started;
+    scripts, v1 protocols and registry, v1 docs) has the bytes it had at
+    commit e36e2a5, before v2 development began;
 ``v1_protocols``
     the frozen v1 protocol hashes (``evidence.Protocol.hash``) are unchanged
     and the files equal those at tag ``mpcbench-freeze-v1``;
 ``v1_constants``
     the v1 schema, bench, generator and estimator version strings;
 ``rejudge_records``
-    every stored bench record of C1-C3 (``outputs/paper1_mpcbench``) is
-    re-judged from its stored components under its v1 protocol: 0 status,
-    0 verdict and 0 other differences in the verdict block;
+    every stored bench record of the v1 confirmatory outputs (folders
+    ``c1/``-``c3/`` of ``outputs/paper1_mpcbench``) is re-judged from its
+    stored components under its v1 protocol: 0 status, 0 verdict and 0
+    other differences in the verdict block;
 ``rejudge_evaluator``
     the frozen evaluator's component and verdict tables (family protocols
     included) are recomputed from the stored records and compared with the
-    stored tables of C2 and of the verification's single evaluator call;
+    stored tables of ``c2/`` and of the verification's single evaluator
+    call;
 ``rejudge_null_calibration``
     every stored null-calibration row is re-classified under the v1 protocol
     and status rule of the stored run, and the stored rate and verdict
@@ -96,15 +99,15 @@ V1_PROTOCOLS = {
     ),
 }
 # Family-C protocols of the v1 evaluation (the frozen protocols with the
-# family-C reference from reference_C), as recorded in C2.
+# family-C reference from reference_C), as recorded in c2/.
 V1_FAMILY_C_PROTOCOLS = {
     "protocol_hash": "45c9eea3b315f165cd45e2282fc7ce9759803ae8f5fe607821422ae0c38aaf00",
     "anchored_protocol_hash": (
         "18b8b27a8ad8f29245984b86927d7a009a25e1d1044daaae0dd6976c160e86b2"
     ),
 }
-# SHA-256 of every read-only v1 file when the v2 work started (commit
-# e36e2a5); none of them may change during the v2 round.
+# SHA-256 of every read-only v1 file at commit e36e2a5, before v2
+# development began; none of them may change in v2.
 READ_ONLY_V1_SHA256 = {
     "src/impact_pipeline/mpc_metrics.py":
         "673636240b704be507cf356453bdf823dc59738ea0557a768566a13aef1b4794",
@@ -168,7 +171,8 @@ V1_CONSTANTS = {
     },
 }
 
-# Stored bench-format records of C1-C3 (relative to the outputs root).
+# Stored bench-format records of the v1 confirmatory outputs (folders
+# c1/-c3/, relative to the outputs root).
 BENCH_RECORD_FILES = (
     "c1/hc1_full/bench_null_witness_records.jsonl",
     "c2/bench/A/factorial/results.jsonl",
@@ -265,7 +269,7 @@ def locate_v1_outputs(explicit=None, env=None) -> Optional[Path]:
                 raise FileNotFoundError(f"{p} does not hold the v1 outputs (no c2/)")
             return p
     candidates = [REPO_ROOT / V1_OUTPUTS_RELPATH]
-    from impact_pipeline.v2.ownership import main_checkout_root
+    from impact_pipeline.v2.provenance import main_checkout_root
 
     main = main_checkout_root(REPO_ROOT)
     if main is not None:

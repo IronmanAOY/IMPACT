@@ -3,15 +3,16 @@ Run hygiene of MPC-Bench v2.
 
 * **Code identity by tree.** :func:`code_identity` records the commit, the
   dirty state and the git tree SHAs of ``src/``, ``scripts/`` and
-  ``protocols/``. A history rewrite changes commit SHAs but not trees (as
-  happened in v1), so the v2 confirmatory guard (:func:`confirmatory_guard`)
-  compares the trees of ``src/`` and ``scripts/`` with those of the freeze tag
-  ``mpcbench-freeze-v2``; it also refuses a dirty tree and any seed below
-  20000.
+  ``protocols/``. A history rewrite changes commit SHAs but not trees (see
+  ``docs/preregistration/README.md``: the v1 commit messages were edited
+  after the freeze), so the v2 confirmatory guard
+  (:func:`confirmatory_guard`) compares the trees of ``src/`` and
+  ``scripts/`` with those of the freeze tag ``mpcbench-freeze-v2``; it also
+  refuses a dirty tree and any seed below 20000.
 * **Duplicate detector.** :func:`array_sha256` hashes a time series (dtype,
   shape and C-order bytes), recorded as ``sha256(ts)`` and ``sha256(raw_ts)``.
 * **Timing with load.** :func:`timed` measures wall time and records the load
-  average at the end (v1 timings were taken under heavy load).
+  average at the end.
 * **Environment.** :func:`environment_versions` records Python and the
   pinned packages (numpy, scipy, numba, pandas) without importing them;
   ``scripts/v2/env_lock.py`` checks them against the recorded lock.
@@ -102,6 +103,28 @@ def _git(repo_root, *args) -> Optional[str]:
     except Exception:  # noqa: BLE001
         return None
     return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def main_checkout_root(repo_root=REPO_ROOT) -> Optional[Path]:
+    """The main working tree of the repository ``repo_root`` belongs to (the
+    parent of the common git directory), or None outside git."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    common = proc.stdout if proc.returncode == 0 else None
+    if not common:
+        return None
+    path = Path(common.strip())
+    return path.parent if path.name == ".git" else None
 
 
 def tree_shas(repo_root=REPO_ROOT, rev: str = "HEAD",
@@ -260,6 +283,7 @@ __all__ = [
     "environment_versions",
     "file_sha256",
     "load_average",
+    "main_checkout_root",
     "protocol_file_record",
     "run_provenance",
     "timed",

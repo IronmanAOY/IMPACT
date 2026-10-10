@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from impact_pipeline.v2 import hypothesis_engine as HE
-from impact_pipeline.v2 import ownership as own
+from impact_pipeline.v2.provenance import main_checkout_root
 
 REPO = Path(__file__).resolve().parents[2]
 PREREG_DIR = REPO / "docs" / "preregistration"
@@ -286,7 +286,7 @@ def _git(*args) -> str:
 
 def _release_log() -> Path:
     roots = [REPO]
-    main = own.main_checkout_root(REPO)
+    main = main_checkout_root(REPO)
     if main is not None:
         roots.append(main)
     for root in roots:

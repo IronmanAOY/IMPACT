@@ -23,10 +23,6 @@ def test_read_only_v1_files_are_unchanged():
     assert c["details"]["n_files"] == 23
 
 
-def test_the_read_only_manifest_is_the_plans_list(work_plan):
-    assert sorted(G.READ_ONLY_V1_SHA256) == sorted(work_plan["read_only_v1_files"])
-
-
 def test_a_changed_read_only_file_fails_the_gate(monkeypatch):
     table = dict(G.READ_ONLY_V1_SHA256)
     table["src/impact_pipeline/evidence.py"] = "0" * 64

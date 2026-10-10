@@ -4,8 +4,6 @@ Shared fixtures of the v2 tests.
 
 * ``slow`` marker: tests that re-run stored v1 tasks from scratch (the full
   v1 regression gate). They run only with ``MPCBENCH_RUN_SLOW=1``.
-* ``work_plan``: the v2 work plan (``work_packages.json``); the test is
-  skipped where the plan is not available (it is not versioned).
 * ``v1_outputs``: the stored v1 outputs (``outputs/paper1_mpcbench``); the
   test is skipped where they are not available (for example on CI).
 * ``git_repo``: a throw-away git repository for guard tests (identity passed
@@ -36,16 +34,6 @@ def pytest_runtest_setup(item):
 @pytest.fixture(scope="session")
 def repo_root():
     return REPO_ROOT
-
-
-@pytest.fixture(scope="session")
-def work_plan():
-    from impact_pipeline.v2 import ownership as own
-
-    path = own.locate_work_packages(REPO_ROOT)
-    if path is None:
-        pytest.skip("v2 work plan (work_packages.json) not available")
-    return own.load_work_packages(path)
 
 
 @pytest.fixture(scope="session")

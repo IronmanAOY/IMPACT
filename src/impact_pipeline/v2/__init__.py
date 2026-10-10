@@ -21,14 +21,25 @@ Modules of this package (each imported on demand, so importing
 - :mod:`~impact_pipeline.v2.provenance`: run hygiene (code identity by git
   tree, the v2 confirmatory guard, array hashes for the duplicate detector,
   timing with the load average, the environment record).
-- :mod:`~impact_pipeline.v2.ownership`: the file-ownership check of the v2
-  work plan (no path claimed twice, no read-only v1 file edited).
+- :mod:`~impact_pipeline.v2.declared_inputs`: recording device, input
+  declarations and the common input basis of NAS v3 and IIM v5.
+- :mod:`~impact_pipeline.v2.numerics`: SVD-based linear algebra with a
+  fallback driver.
+- :mod:`~impact_pipeline.v2.ram_v3`: the RAM-PE v3 estimator.
+- :mod:`~impact_pipeline.v2.pdi_v3`: the PDI v3 estimator.
+- :mod:`~impact_pipeline.v2.nas_v3`: the NAS v3 estimator.
+- :mod:`~impact_pipeline.v2.iim_v5`: the IIM v5 estimator.
+- :mod:`~impact_pipeline.v2.registry_v3`: applicability registry v3 and the
+  forward-model admission procedure.
+- :mod:`~impact_pipeline.v2.testability`: testability gating, anchors and
+  necessity sets.
+- :mod:`~impact_pipeline.v2.hypothesis_engine`: declarative evaluator of the
+  hypotheses in ``protocols/v2/hypotheses_v2.json``.
 """
 
 from __future__ import annotations
 
 RESULT_SCHEMA = "mpc-bench-result/3"
-V1_RESULT_SCHEMA = "mpc-bench-result/2"
 GENERATOR_VERSION_V2 = "mpc-bench-generators/2.0.0"
 FREEZE_TAG_V1 = "mpcbench-freeze-v1"
 FREEZE_TAG_V2 = "mpcbench-freeze-v2"
@@ -60,8 +71,6 @@ __all__ = [
     "GENERATOR_VERSION_V2",
     "PRINCIPLES",
     "RESULT_SCHEMA",
-    "V1_RESULT_SCHEMA",
-    "ownership",
     "provenance",
     "reasons",
     "records",
