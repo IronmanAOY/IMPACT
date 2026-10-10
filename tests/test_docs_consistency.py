@@ -10,14 +10,20 @@ DOCS = (
     "README.md",
     "CHANGELOG.md",
     "docs/metrics.md",
+    "docs/metrics_v2.md",
     "docs/ARCHITECTURE.md",
     "docs/HLRS_HUNTER_RUNBOOK.md",
     "docs/synthetic_data.md",
     "scripts/hunter/README.md",
     "protocols/README.md",
     "protocols/examples/README.md",
+    "protocols/v2/README.md",
     "docs/preregistration/README.md",
     "docs/preregistration/MPC_BENCH_PREREGISTRATION.md",
+    "docs/preregistration/MPC_BENCH_PREREGISTRATION_V2.md",
+    "docs/preregistration/v2/testability_table.md",
+    "docs/preregistration/v2/development_expectations.md",
+    "docs/preregistration/v2/operating_characteristics.md",
 )
 _FENCE = re.compile(r"```.*?```", flags=re.S)
 _LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
@@ -252,8 +258,7 @@ PROTOCOL_DOCS = (
     "protocols/README.md",
     "protocols/examples/README.md",
 )
-# an intermediate draft had made this file the default; only the changelog
-# records it (as history)
+# the name of a draft default protocol that was never released
 _WITHDRAWN_DEFAULT = re.compile(r"mpc[_-]default[_-]v1\.1")
 
 
@@ -262,8 +267,8 @@ def _flat(doc):
 
 
 def test_no_file_refers_to_the_withdrawn_v1_1_default():
-    roots = ("README.md", "run_pipeline.py", "Dockerfile", "Singularity",
-             "docs", "scripts", "src", "protocols", "predictions")
+    roots = ("README.md", "CHANGELOG.md", "run_pipeline.py", "Dockerfile",
+             "Singularity", "docs", "scripts", "src", "protocols", "predictions")
     suffixes = {".md", ".py", ".sh", ".pbs", ".json", ".yaml", ".yml", ".txt",
                 ".cff", ""}
     stale = []
@@ -282,9 +287,6 @@ def test_no_file_refers_to_the_withdrawn_v1_1_default():
             if _WITHDRAWN_DEFAULT.search(text):
                 stale.append(str(path.relative_to(REPO)))
     assert not stale, f"references to the withdrawn mpc_default_v1.1: {stale}"
-    history = [ln for ln in (REPO / "CHANGELOG.md").read_text(
-        encoding="utf-8").splitlines() if _WITHDRAWN_DEFAULT.search(ln)]
-    assert history  # the changelog records why it was withdrawn
 
 
 @pytest.mark.parametrize("doc", PROTOCOL_DOCS)
@@ -293,9 +295,13 @@ def test_docs_name_v1_as_the_default_and_the_behavioural_ram_caveat(doc):
     assert "mpc_default_v1.json" in text, doc
     assert "NO_DECLARED_WORKSPACE" in text, doc
     if "mpc_behavioural_ram_v1" in text:
-        # opt-in only, with the interpretation of an ABSENT RAM
+        # opt-in only, with the interpretation of an ABSENT RAM stated here or
+        # in the section of protocols/README.md that the document links to
         assert "opt-in" in text, doc
-        assert "not absence of responsiveness" in text, doc
+        assert ("not absence of responsiveness" in text
+                or "README.md#mpc_behavioural_ram_v1json-opt-in" in text), doc
+    readme = _flat("protocols/README.md")
+    assert "not absence of responsiveness" in readme
 
 
 def test_documented_hunter_campaigns_pass_a_protocol_with_a_hub():

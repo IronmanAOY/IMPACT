@@ -55,25 +55,16 @@ of the section below). With
 `test_objects/runs/<dataset>`. With `real`, use a separate `--out-dir` (a copy
 or symlink of `preprocessed/`): finalize overwrites `<out-dir>/cache/step2_*`.
 
-The smoke job runs, in order:
-
-- `python -m impact_pipeline.hardware_selftest`, which prints the device
-  information, the code version and the IIM Ψ kernel selected for the target,
-  and compares CuPy with NumPy for matmul, eigh, `ufunc.at`, bincount, SVD, pinv,
-  the IIM TPM kernels and `iim_psi_xp_parity`: phase-1 Ψ and the
-  bidirectional/directional cut TPMs and their Ψ from the device kernel against
-  the numba/host reference kernel;
-- all shards (each records its wall time and Ψ evaluations in `timing/`);
-- the merged reduce, which also writes `cost_calibration.json`;
-- finalize.
-
-The self-test is the first thing to run on a node (also standalone, in an
-interactive or `-q test` job), from the checkout: `PYTHONPATH=src python3 -m
-impact_pipeline.hardware_selftest --target hunter-apu --json selftest.json`.
-Exit code 0 = all required cases
-passed, 1 = a comparison failed (do not run a campaign), 2 = no accelerator
-visible. A failing `eigh` alone is not fatal (the pipeline then uses the CPU
-eigh).
+The smoke job runs, in order, the hardware self-test
+(`python -m impact_pipeline.hardware_selftest`: device information, code
+version, the IIM Ψ kernel selected for the target, and CuPy against NumPy for
+matmul, eigh, `ufunc.at`, bincount, SVD, pinv, the IIM TPM kernels and
+`iim_psi_xp_parity`, the device Ψ kernel against the numba/host reference
+kernel), all shards (each records its wall time and Ψ evaluations in
+`timing/`), the merged reduce, which also writes `cost_calibration.json`, and
+finalize. How to run the self-test on its own and read its exit codes is in
+[runbook section 7](../../docs/HLRS_HUNTER_RUNBOOK.md#7-hardware-self-test-run-this-first);
+a failing `eigh` alone is not fatal (the pipeline then uses the CPU eigh).
 
 ## IIM cost guard and sizing
 
@@ -137,10 +128,9 @@ bash <OUT>/cache/hunter_iim_campaign/pbs/00_submit_all.sh
   grain (the author gives it; `protocols/examples/` shows the form, e.g.
   `mpc_default_v1_schaefer400_7networks_hub.json` for `schaefer400`). v1
   declares no hub, so without it NAS is UNDEFINED (`NO_DECLARED_WORKSPACE`) in
-  every run. The opt-in `protocols/mpc_behavioural_ram_v1.json` (RAM on its
-  behavioural channel only, so RAM can be ABSENT: an ABSENT RAM then means no
-  responsiveness-and-adaptation above the null in the recorded behaviour, not
-  absence of responsiveness) is used only when the author asks for it.
+  every run. The opt-in
+  [`protocols/mpc_behavioural_ram_v1.json`](../../protocols/README.md#mpc_behavioural_ram_v1json-opt-in)
+  is used only when the author asks for it.
 
 - You can build on a login node. If no APU is visible, the problem is prepared on
   the CPU, which gives numerically identical TPMs. The jobs still request

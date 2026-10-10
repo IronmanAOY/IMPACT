@@ -11,7 +11,10 @@
   has not changed since (skipped where the development outputs are absent,
   for example on a fresh clone);
 * the hypotheses file has status ``final``;
-* the relative links and anchors of the new documents resolve.
+* the companions are flagged as development.
+
+Their links and anchors are checked with the other documents in
+``tests/test_docs_consistency.py``.
 """
 import hashlib
 import json
@@ -333,38 +336,8 @@ def test_the_preregistration_names_the_release(prereg, manifest):
 
 
 # --------------------------------------------------------------------------
-# links
+# companions
 # --------------------------------------------------------------------------
-_FENCE = re.compile(r"```.*?```", flags=re.S)
-_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
-
-
-def _slug(heading: str) -> str:
-    text = re.sub(r"[^\w\- ]", "", heading.strip().lower())
-    return text.replace(" ", "-")
-
-
-def _anchors(path: Path) -> set:
-    text = _FENCE.sub("", path.read_text(encoding="utf-8"))
-    return {_slug(m.group(1)) for m in re.finditer(r"^#+\s+(.*)$", text, flags=re.M)}
-
-
-@pytest.mark.parametrize("doc", (PREREG,) + COMPANIONS, ids=lambda p: p.name)
-def test_relative_links_and_anchors_resolve(doc):
-    text = _FENCE.sub("", doc.read_text(encoding="utf-8"))
-    broken = []
-    for link in _LINK.findall(text):
-        if link.startswith(("http://", "https://", "mailto:")):
-            continue
-        target, _, frag = link.partition("#")
-        dest = (doc.parent / target).resolve() if target else doc
-        if not dest.exists():
-            broken.append(link)
-        elif frag and dest.suffix == ".md" and frag not in _anchors(dest):
-            broken.append(link)
-    assert not broken, f"{doc.name}: broken links {broken}"
-
-
 def test_the_companions_are_flagged_as_development():
     for doc in COMPANIONS:
         assert "DEVELOPMENT - NOT A RESULT" in doc.read_text(encoding="utf-8"), doc.name

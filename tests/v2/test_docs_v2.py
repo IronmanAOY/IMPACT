@@ -4,8 +4,8 @@
 reason and flag of the central vocabulary is documented (and nothing else),
 every SE method with its principles, the status rule block, the order of the
 checks, the implied-precision table and the hashes of the shipped /3
-protocols; links and anchors resolve. The v1 documentation tests are not
-touched.
+protocols. Its links and anchors are checked with the other documents in
+``tests/test_docs_consistency.py``.
 """
 import json
 import re
@@ -19,8 +19,6 @@ from impact_pipeline.v2 import testability as T
 
 REPO = Path(__file__).resolve().parents[2]
 DOC = REPO / "docs" / "metrics_v2.md"
-_FENCE = re.compile(r"```.*?```", flags=re.S)
-_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 
 
 @pytest.fixture(scope="module")
@@ -32,28 +30,6 @@ def section(text, number):
     m = re.search(rf"^## {number}\. .*?(?=^## |\Z)", text, flags=re.M | re.S)
     assert m, f"section {number} missing"
     return m.group(0)
-
-
-def _slug(heading):
-    t = re.sub(r"[^\w\- ]", "", heading.strip().lower())
-    return t.replace(" ", "-")
-
-
-def _anchors(path):
-    t = _FENCE.sub("", path.read_text(encoding="utf-8"))
-    return {_slug(m.group(1)) for m in re.finditer(r"^#+\s+(.*)$", t, flags=re.M)}
-
-
-def test_links_and_anchors_resolve(text):
-    broken = []
-    for link in _LINK.findall(_FENCE.sub("", text)):
-        if link.startswith(("http://", "https://", "mailto:")):
-            continue
-        target, _, frag = link.partition("#")
-        dest = (DOC.parent / target).resolve() if target else DOC
-        if not dest.exists() or (frag and frag not in _anchors(dest)):
-            broken.append(link)
-    assert not broken
 
 
 def _table_codes(block):

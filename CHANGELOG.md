@@ -5,17 +5,19 @@ All notable changes to the IMPaCT Synergy Pipeline. The format follows
 [Semantic Versioning](https://semver.org/). Archived versions:
 https://doi.org/10.5281/zenodo.15306740.
 
-## Unreleased: MPC-Bench v2
+## Unreleased
 
 The MPC-Bench v2 revision round, which follows the v1 confirmatory results
 (prerequisite M and HC1 supported, HC2-HC10 falsified). It adds new estimator
 versions, a new status rule, new benchmark designs and a declarative evaluator
 next to the frozen v1 code; the v1 path, the v1 protocols and the v1 results are
-unchanged, and a regression gate checks this on every change. The hypotheses
+unchanged, and a regression gate checks this. The hypotheses
 HCv2-0 to HCv2-24 are preregistered in
 [`docs/preregistration/MPC_BENCH_PREREGISTRATION_V2.md`](docs/preregistration/MPC_BENCH_PREREGISTRATION_V2.md),
-frozen by the tag `mpcbench-freeze-v2`. Nothing here changes the empirical
-pipeline (`run_pipeline.py`) yet: it keeps the v1 default protocol.
+frozen by the tag `mpcbench-freeze-v2`; the confirmatory run was made on
+2026-10-09 ([outcomes](README.md#status-and-results)). Nothing here changes
+the empirical pipeline (`run_pipeline.py`): it keeps the v1 default protocol.
+A clean-up after the freeze is described at the end of this section.
 
 ### Added
 
@@ -80,9 +82,10 @@ pipeline (`run_pipeline.py`) yet: it keeps the v1 default protocol.
   20900-20939; the three C1 single deficits run on 129 seeds and the c_int
   sweeps of families A and C1 on 65 seeds per level. Only seeds were resized;
   no threshold changed.
-- **Design 3.5 realisation checks** (the slow-context preset of the forward
-  BOLD arm, PC_half between off and nominal, the twin hashes) are computed with
-  prerequisite M; only the slow-context check gates rows.
+- **Realisation checks** (v2 preregistration, section 4.4: the slow-context
+  preset of the forward BOLD arm, PC_half between off and nominal, the twin
+  hashes) are computed with prerequisite M; only the slow-context check gates
+  rows.
 
 ### Fixed
 
@@ -110,7 +113,8 @@ pipeline (`run_pipeline.py`) yet: it keeps the v1 default protocol.
   that no exclusion repairs (`blocking_failures`: the regression gate, protocol
   mismatches, unreadable lines, seeds outside the policy, planned tasks
   without a record, the identities); a failure that names its records
-  excludes them and is reported beside the tally, as the design states.
+  excludes them and is reported beside the tally, as section 4.6 of the v2
+  preregistration states.
 - **Family-B validation**: every task record carries the run's code identity
   (git SHA, trees and, for a confirmatory run, the freeze tag); the script
   writes `iim_validation_v2_plan.json` with the planned task ids for the
@@ -121,6 +125,42 @@ pipeline (`run_pipeline.py`) yet: it keeps the v1 default protocol.
   refuses an unknown step name before anything runs, stops when the guard
   refuses prerequisite M (an incomplete check is still only reported), and
   passes the worker count to prerequisite M.
+
+### Clean-up after the v2 freeze
+
+Changes after the tag `mpcbench-freeze-v2` that leave every result as it was:
+the v1 regression gate passes, and the v2 run plans, the development-seed
+records (apart from timing and load fields), the evaluator outputs and the
+operating characteristics are the same as at the tag.
+They change the `src/` and `scripts/` trees, so confirmatory runs, the
+integrity audit and the evaluators still run from a checkout of the freeze
+tags.
+
+- **Removed**: code that nothing calls (helpers and constants in the
+  empirical pipeline, the bench support modules, the v2 estimators, registry,
+  runner and designs, and several scripts); the v2 file-ownership check,
+  which compared files with a development work plan outside the repository;
+  `scripts/v2/mpcbench_dev_v2.sh` (superseded by
+  `scripts/v2/dev_calibration.py`); `scripts/fetch_fmriprep_ds003171.sh`
+  (`fetch_fmriprep.sh --dataset-id ds003171` does the same); two duplicated
+  tests.
+- **Changed**: repeated code is shared (the NumPy/CuPy dispatcher of the
+  accelerated operations, the release of shared memory, the EEG skip records,
+  the sweep and factorial builders of families A and C1); PyYAML is a runtime
+  dependency, because the v2 system catalogue is YAML;
+  `scripts/audit_aggregation.py` reads the legacy `compute_CI` from the
+  published commit `4c74466` (the same file as before), so its tests run in a
+  fresh clone; the package metadata describe the measurement framework; the
+  ignore rules are shorter; comments and docstrings cite the v2
+  preregistration instead of unpublished design notes.
+- **Documentation**: the README states the outcomes of both rounds and where
+  the result files are kept, explains the freeze tags and adds a glossary;
+  rebuild examples write to a scratch folder instead of over frozen files;
+  `docs/preregistration/README.md` states the status of both freezes as it
+  can be checked today, with a dated note on the author-level decisions of
+  round v2; `protocols/v2/README.md` explains the development terms in the
+  frozen files; the repeated explanations of the default protocol are
+  replaced by pointers to `protocols/README.md`.
 
 ## [1.1.0] - 2026-09-28
 
@@ -255,32 +295,16 @@ decision rules are unchanged. Each change has a regression test.
   for real data (not with `--necessity-set`) and logs its source and hash;
   before, the command line built a protocol from the flags unless
   `--protocol` was given. `--protocol none` builds the protocol from the flags
-  as before, and dummy data always do. Under v1 RAM declares its
-  unimplemented `perturbational` and `endogenous` channels, so RAM can be
-  PRESENT but never ABSENT: behavioural non-response alone never excludes,
-  because covert, perturbational and endogenous responsiveness are not
-  measured (the preregistered stance, confirmed at the freeze). NAS capacity
-  has no hub in v1 and is UNDEFINED (`NO_DECLARED_WORKSPACE`) unless a
-  derived protocol declares one. Tests: `tests/test_protocol_examples.py`,
+  as before, and dummy data always do. Under v1 RAM can be PRESENT but never
+  ABSENT, and NAS capacity has no hub and is UNDEFINED
+  (`NO_DECLARED_WORKSPACE`) unless a derived protocol declares one
+  (`protocols/README.md` gives the reasons). Tests: `tests/test_protocol_examples.py`,
   `tests/test_default_empirical_run.py` (end to end on tiny synthetic
   layouts: under the default, RAM is PRESENT on responsive runs and, on
   behaviourally null runs, its behavioural channel is ABSENT while RAM stays
   UNDEFINED), `tests/test_protocols.py`, `tests/test_docs_consistency.py`
-  (the documents name v1 as the default and the behavioural-RAM caveat,
-  documented Hunter campaigns pass a protocol with a declared hub, and no
-  file outside this changelog refers to the withdrawn draft default).
-- **Why v1 and not a behavioural-only RAM protocol.** An intermediate draft
-  of these fixes had shipped the behavioural-only RAM protocol (see "Added")
-  as `protocols/mpc_default_v1.1.json` (name `mpc-default-v1.1`, hash
-  `4a94a79c…`) and made it the command-line default, on the grounds that
-  under v1 RAM can never contribute an exclusion. That reversed the
-  preregistered, freeze-confirmed stance (preregistration section 4,
-  "Default protocol"; `protocols/README.md`) on which the accompanying
-  papers rest: behavioural non-response is not evidence that responsiveness
-  is absent, and undefined is not absent. It was undone before release: v1
-  is the default, the draft's file was renamed and made opt-in, and the
-  example protocols were re-derived from v1 (the draft's
-  `protocols/examples/mpc_default_v1.1_*` files are removed).
+  (the documents name v1 as the default and the behavioural-RAM caveat, and
+  documented Hunter campaigns pass a protocol with a declared hub).
 - **Stance summary: a FALSIFIED outcome must survive the worst-case
   sensitivity analysis** (`scripts/run_predictions.py`, now
   `run-predictions/1.1.0`). A FALSIFIED outcome of H1 or H3-H7 counts
@@ -339,10 +363,9 @@ decision rules are unchanged. Each change has a regression test.
   name `mpc-behavioural-ram-v1`, hash `531c15b9…`), everything else
   identical. Under it RAM can be ABSENT, so behavioural evidence alone can
   exclude. It is never selected automatically (`--protocol
-  protocols/mpc_behavioural_ram_v1.json`), selecting it is a substantive
-  choice to preregister, and results under it are behavioural-RAM results
-  (an ABSENT RAM means no responsiveness-and-adaptation above the null in
-  the recorded behaviour, not absence of responsiveness). Test:
+  protocols/mpc_behavioural_ram_v1.json`); selecting it is a substantive
+  choice to preregister, and `protocols/README.md` describes how to read
+  results under it. Test:
   `tests/test_default_empirical_run.py` (the behaviourally null runs that
   are RAM UNDEFINED under v1 are RAM ABSENT and EXCLUDED under it).
 - **`scripts/compute_empirical_reference.py`**: an external reference anchor
@@ -431,15 +454,10 @@ decision rules are unchanged. Each change has a regression test.
   confidence in the connectome file name. There are 260 witness tasks per
   family (13 x 20 seeds), not 280. The frozen text itself is unchanged
   (`tests/test_hunter_cost.py` compares it with the tag).
-- `docs/preregistration/README.md`: the OSF steps now say to attach the
-  errata section with the frozen document (or to mention it alongside), and
-  to record that the commit messages up to the freeze were edited on
-  2026-09-29 without any file change: the freeze commit `f2cf249` was
-  `b908ee3` before, and both have the tree `72fcc70`. The README also names
-  the second frozen protocol correctly (`mpc_bench_v1_anchored.json`).
-- Comments, docstrings, tests and documents no longer refer to internal
-  design-note codes; the frozen modules changed in comments and docstrings
-  only.
+- `docs/preregistration/README.md`: how to attach the errata section to a
+  registration, the note on the edited commit identifiers of the freeze
+  commit, and the correct name of the second frozen protocol
+  (`mpc_bench_v1_anchored.json`).
 
 ### Added
 
@@ -498,15 +516,16 @@ decision rules are unchanged. Each change has a regression test.
   data; selected automatically by `run_pipeline.py` since the post-freeze
   fixes) and the MPC-Bench protocols `mpc_bench_v1.json` (all five principles)
   and `mpc_bench_v1_anchored.json` (necessity set NAS, IIM, SRPI), frozen at
-  the local tag `mpcbench-freeze-v1` with their rationale and hashes. The bench
+  the tag `mpcbench-freeze-v1` with their rationale and hashes. The bench
   reference anchor (development positive control, seeds 900-919) follows an
   anchor rule: a principle is anchored only if its mean excess over the null is
   credibly positive (one-sided 95% t bound); RAM and PDI are not, so they are
   `INVALID_ANCHORS` on the bench.
 - **Preregistration of the MPC-Bench hypotheses** (`docs/preregistration/`):
   HC1-HC10 with decision rules, the calibration decisions and development
-  findings, and the confirmatory run plan (`scripts/mpcbench_confirmatory.sh`);
-  not registered publicly yet. `scripts/bench_hypotheses.py` evaluates the
+  findings, and the confirmatory run plan (`scripts/mpcbench_confirmatory.sh`;
+  status in `docs/preregistration/README.md`). `scripts/bench_hypotheses.py`
+  evaluates the
   hypotheses on the confirmatory runs (refuses development records, records
   without the freeze tag and unfrozen protocol hashes);
   `scripts/calibrate_bench.py` produces the development calibration evidence
@@ -561,7 +580,7 @@ decision rules are unchanged. Each change has a regression test.
   confirmatory seed policy with a code-freeze guard, rival decision rules
   (union, count-k, means, weakest link, naive Bayes, product of credences,
   logistic classifier, single markers) and comparators (LZ76, closed-form
-  Gaussian Φ_R for VAR(1)). MPC-Bench v2 adds family C manipulation checks, the
+  Gaussian Φ_R for VAR(1)). Bench 2.0.0 adds family C manipulation checks, the
   whole-brain Hopf generator on the shipped connectome with EEG-like and
   BOLD-like forward models, adversarial constructions, graded patchworks, a
   rule audit on estimated statuses with risk-coverage curves
@@ -608,8 +627,9 @@ decision rules are unchanged. Each change has a regression test.
   ceilings, symmetric three-outcome necessity criteria, verdict-level
   summaries), `scripts/audit_aggregation.py`, `scripts/necessity_power.py`
   (component and verdict level), `scripts/simulate_rule_recovery.py`,
-  `scripts/definedness_audit.py`, `scripts/null_calibration.py` (v2 evidence
-  rule under a protocol), `scripts/run_predictions.py` with the draft
+  `scripts/definedness_audit.py`, `scripts/null_calibration.py` (the
+  construct-scale status rule of protocol schema `/2`, under a protocol),
+  `scripts/run_predictions.py` with the draft
   hypothesis registry `predictions/registry.yaml` (H0-H10) and its schema,
   and one script per figure (`scripts/figures/`).
 - Documentation: `docs/HLRS_HUNTER_RUNBOOK.md`, `docs/ARCHITECTURE.md`, this

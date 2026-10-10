@@ -47,7 +47,7 @@ Notes:
   defined only by the planted level. Its rest baselines are ds003171 rest runs
   from other subjects, because ds002547 has no rest runs.
 
-## What Is Planted (Generator 2.2.0; unchanged since 2.1.0)
+## What Is Planted (Generator 2.2.0)
 
 For node payload `x` (the real recording, z-scored per node):
 
@@ -74,10 +74,7 @@ For node payload `x` (the real recording, z-scored per node):
   window. Trials stay on a 6 s grid, and two self/non-self events (alternating
   order) sit in each inter-trial gap. A run too short for six trials gets fewer
   trials, not compressed ones, and RAM is then undefined
-  (`insufficient_goal_response_pairs`). Generator 2.0.0 compressed short EEG
-  runs to 1.4 s trial spacing and scheduled self/non-self events independently
-  of the trials, so goal cues coincided with the previous feedback and self
-  events with stimuli.
+  (`insufficient_goal_response_pairs`).
 - **Self/non-self (SRPI target).** A pre-event internal state `s ~ N(0,1)` is
   planted in `[onset - pre_window, onset)`. Self responses use a fixed pattern
   with amplitude `g * max(0, 1 + 0.5 s)`. Non-self responses use a fresh random
@@ -174,10 +171,7 @@ things separate.
    that is undefined everywhere with a reason (for example RAM on EEG runs too
    short for six trials, `insufficient_goal_response_pairs`, and hence CI)
    passes the gate; read `undefined_metrics` to see how much of the metric
-   code these objects actually exercised. Up to generator 2.1.0 the gate
-   required every metric and CI to be defined and readiness to be 1.0,
-   which contradicted that contract and failed on correctly undefined
-   values.
+   code these objects actually exercised.
 2. **Generator self-check (`planted_structure_verified`).** It uses simple
    statistics computed without the metric code: participation ratio, directed
    module coupling, directed workspace broadcast, evoked projection and
@@ -200,7 +194,7 @@ things separate.
 The report also has `pipeline_event_resolution`. Metrics are computed from the
 exact events file of each run. This section records whether the pipeline's own
 events resolver (`run_synergy_ci._resolve_events_file`) would pick the same
-file. With the resolver as of this writing, ds005620 `sed` resolves to the
+file. With the resolver of pipeline 1.1.0, ds005620 `sed` resolves to the
 `task-sed2` events and ds002547 `ses-1`/`ses-2` resolve to the `awake` events.
 
 ## Metric Configuration Used
@@ -219,15 +213,14 @@ computation:
 | `iim_max_timepoints` | 80 (arrays are decimated with `ts[:, ::ceil(T/80)]`, no anti-aliasing) |
 | `iim_max_state_space` | 1500 |
 
-This is not the `run_pipeline.py` default. As of this writing, that default uses
+This is not the `run_pipeline.py` default. In pipeline 1.1.0 that default uses
 all mechanism and purview sizes over up to 10 nodes at 2 bins (3 bins requested,
 reduced by the state budget). Use the generator options `--iim-bins`,
 `--iim-max-nodes`, `--iim-max-timepoints`, `--iim-max-mechanism-size` and
 `--iim-max-purview-size` to validate with another configuration; the
 configuration used is recorded. The
 RAM parameters are the pipeline's own modality presets
-(`run_synergy_ci.RAM_PARAM_PRESETS`, the values `run_pipeline.py` uses); up to
-generator 2.0.0 a private copy kept the obsolete `quality_ridge=1e-4`. The PDI,
+(`run_synergy_ci.RAM_PARAM_PRESETS`, the values `run_pipeline.py` uses). The PDI,
 NAS and SRPI parameters for fMRI and EEG are the `*_PARAMS` dictionaries in the
 generator.
 
@@ -298,8 +291,7 @@ for a quick partial run.
 
 ## Regenerating From OpenNeuro Sources
 
-The generator reads four source datasets. ds004295 and ds002336 are no longer
-needed.
+The generator reads four source datasets:
 
 - `ds003171`: fMRI task and rest runs
 - `ds005620`: BrainVision EEG awake, sed and sed2 recordings

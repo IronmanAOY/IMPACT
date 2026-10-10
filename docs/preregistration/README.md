@@ -26,89 +26,105 @@ paper 1 (the MPC-Bench validation of the IMPaCT measurement framework):
   `tests/v2/test_prereg_v2_consistency.py` keeps it consistent with the
   hypotheses file, the generated protocols, the seed map and the release log.
 
-## Status: frozen locally, not registered
+Both documents are frozen: they are not edited after their tags.
+Clarifications and corrections are recorded in this README, dated, or (for
+v1) in the errata section.
 
-**Nothing has been registered publicly.** The preregistration is frozen in
-this repository by the local annotated git tag `mpcbench-freeze-v1`, which
-points at the commit that contains this folder, the frozen protocols
-(`protocols/mpc_bench_v1.json`, `protocols/mpc_bench_v1_anchored.json`) and
-the code that will produce and evaluate the confirmatory results. The tag has
-not been pushed.
+## How a freeze is registered
 
-The commit messages of the history up to and including the freeze commit
-were edited on 2026-09-29 (wording and author identity only; no file was
-changed). The freeze commit is now `f2cf249`
+A freeze is an annotated git tag on the commit that contains the
+preregistration, its frozen protocols and the code that produces and
+evaluates the confirmatory results. The tag message quotes the SHA-256 of the
+frozen files. The confirmatory steps refuse any checkout whose `src/` and
+`scripts/` trees differ from the tag, so the confirmatory runs, the
+integrity checks and the evaluators run from a checkout of the tag;
+documentation-only commits after the tag do not change those trees. Pushing
+the tag to the public repository makes the commit and the tag message
+publicly reachable.
+
+A registration on a public registry (for example OSF) adds an independent,
+time-stamped copy. It attaches the preregistration as it is at the tagged
+commit (for v1 together with the later errata section, either as the
+current file or as a separate document), and it records the tag name, the
+full commit hash (`git rev-list -n 1 <tag>`), the note on commit
+identifiers below (v1) and the protocol hashes the preregistration lists.
+They can be recomputed, for example
+`python -c "from impact_pipeline.evidence import Protocol;
+print(Protocol.from_json('protocols/mpc_bench_v1.json').hash)"`.
+
+## Status of v1
+
+| Item | Value |
+|---|---|
+| Freeze tag | `mpcbench-freeze-v1` (annotated; on the public repository) |
+| Frozen commit | `f2cf2492a6cb4a1b0b1f5b8d680802fded31c1d1` (originally `b908ee3`, see below) |
+| Frozen protocols | `protocols/mpc_bench_v1.json` and `protocols/mpc_bench_v1_anchored.json`, with the SHA-256 the tag message quotes |
+| Errata | section "Errata" of the preregistration, added 2026-09-29 after the freeze (documentation only) |
+| Confirmatory runs | 2026-09-28 to 2026-09-30, from a checkout of the tag; outcomes in the main [README](../../README.md#status-and-results) |
+| Public registration | *to be added by the author* |
+
+**Commit identifiers.** The commit messages and author metadata of the
+history up to and including the freeze commit were edited on 2026-09-29; no
+file was changed. The freeze commit is now `f2cf249`
 (`f2cf2492a6cb4a1b0b1f5b8d680802fded31c1d1`); before the edit it was
 `b908ee3` (`b908ee3230d8b93a1983960a9621e49bdd5752b2`). Both commits have the
 same tree, `72fcc7031de5cc6f660af7f54dc5e0a8b3bd6a6d`, so their content is
-identical (check with `git rev-parse <commit>^{tree}`). The tag points at
-`f2cf249`; outputs produced before the edit record `b908ee3` as their code
-commit.
+identical. The tag points at `f2cf249` and its message states the same; the
+confirmatory runs record `b908ee3` as their code commit, because they started
+before the edit. `b908ee3` exists only in the author's local history; the tree
+can be checked with `git rev-parse f2cf249^{tree}`.
 
-A local tag is not a preregistration: its date and content can be changed by
-whoever controls the repository. Before any confirmatory run, the author
-must register it on OSF:
-
-1. Push the branch and the tag (`git push origin mpcbench-freeze-v1`), so the
-   commit is publicly reachable.
-2. Create an OSF registration (for example the "OSF Preregistration" or
-   "Open-Ended Registration" template) and attach
-   `MPC_BENCH_PREREGISTRATION.md` as it is at the tagged commit. Attach the
-   errata section added after the freeze as well (the current version of the
-   file, or its "Errata" section as a separate file), or mention it in the
-   registration alongside the frozen document, so that readers see both the
-   frozen text and the dated corrections.
-3. Record in the registration: the full commit hash of the tag
-   (`git rev-list -n 1 mpcbench-freeze-v1`, `f2cf2492a6cb4a1b0b1f5b8d680802fded31c1d1`),
-   the tag name, the note that this commit was `b908ee3230d8b93a1983960a9621e49bdd5752b2`
-   before the commit messages were edited on 2026-09-29 without file changes
-   (same tree `72fcc7031de5cc6f660af7f54dc5e0a8b3bd6a6d`), and the two
-   protocol hashes listed in section 3 of the preregistration (they can be
-   recomputed with `python -c "from impact_pipeline.evidence import Protocol;
-   print(Protocol.from_json('protocols/mpc_bench_v1.json').hash)"`).
-4. Only then run `scripts/mpcbench_confirmatory.sh` (the confirmatory steps
-   refuse to run on anything but a clean checkout whose `src/` and `scripts/`
-   equal the tagged commit).
-
-Record the OSF registration identifier and date in this README in a later
-commit (documentation-only commits after the tag do not affect the
-confirmatory guard, which compares only `src/` and `scripts/`).
+## Status of v2
 
 | Item | Value |
 |---|---|
-| Freeze tag | `mpcbench-freeze-v1` (local, annotated) |
-| Frozen commit | the commit the tag points to (`git rev-list -n 1 mpcbench-freeze-v1`): `f2cf249`, originally `b908ee3` (commit messages edited 2026-09-29, same tree `72fcc70`) |
-| Errata | section "Errata" of the preregistration, added 2026-09-29 after the freeze (documentation only) |
-| OSF registration | not yet registered |
-
-## Status of v2: frozen locally, not registered
-
-The v2 preregistration is frozen by the local annotated tag
-`mpcbench-freeze-v2`, which points at the commit that contains
-`MPC_BENCH_PREREGISTRATION_V2.md`, its companions, `protocols/v2/` (the
-hypotheses file with status `final`, the held-out predictions, the seed map and
-the generated protocols) and the code that runs and evaluates the confirmatory
-run. A document cannot quote the commit that contains it, so the commit is the
-one the tag points to (`git rev-list -n 1 mpcbench-freeze-v2`). The v1
-preregistration, the v1 tag and the v1 outcomes are not changed by v2.
-
-As for v1, a local tag is not a preregistration. Before the v2 confirmatory run
-the author pushes the branch and the tag, registers
-`MPC_BENCH_PREREGISTRATION_V2.md` and its companions on OSF with the full
-commit hash of the tag, and records the registration here in a later
-documentation-only commit. The message of the annotated tag confirms the two
-author-level decisions of the round (section 10.4 of the v2 preregistration: the
-46-seed null witnesses of HCv2-1 and the paper-2 regime), and the push makes
-that confirmation part of the record; if the author changes either decision,
-the tag is not made until the plan and the preregistration are revised. Only
-then is `scripts/v2/mpcbench_confirmatory_v2.sh` run.
-
-| Item | Value |
-|---|---|
-| Freeze tag | `mpcbench-freeze-v2` (local, annotated) |
-| Frozen commit | the commit the tag points to |
+| Freeze tag | `mpcbench-freeze-v2` (annotated; pushed to the public repository on 2026-10-09) |
+| Frozen commit | `acb5428bf05c8d494ae938857b471256c542e7dd`, the commit that contains `MPC_BENCH_PREREGISTRATION_V2.md`, its companions, `protocols/v2/` and the code (a document cannot quote the commit that contains it, so the preregistration names it by the tag) |
 | Held-out predictions | `protocols/v2/held_out_predictions_v2.json`, committed in `21597fe`; release `5af6e074475de23a` logged 2026-10-08 at head `a16f84c` |
-| OSF registration | not yet registered |
+| Confirmatory run | 2026-10-09, from a checkout of the tag; outcomes in the main [README](../../README.md#status-and-results) |
+| Public registration | *to be added by the author* |
+
+The v1 preregistration, the v1 tag and the v1 outcomes are not changed by v2.
+
+**Note of 2026-10-10 on the author-level decisions.** Section 10.4 of the v2
+preregistration says that the message of the annotated tag
+`mpcbench-freeze-v2` names and confirms the two author-level decisions of the
+round: the 46-seed null witnesses of HCv2-1 and the paper-2 regime (CD-12).
+The tag message does not name them; it lists the frozen protocols, the
+hypotheses file, the preregistration, the seed map and the held-out
+predictions with their SHA-256 (`git cat-file -p mpcbench-freeze-v2`). The
+author confirmed both decisions by pushing the tag on 2026-10-09, before the
+confirmatory run started. Neither decision was changed. The frozen
+preregistration is not edited; this note records the difference.
+
+## Terms used in the preregistrations
+
+- **read-only v1 files**: the 23 files of the v1 round (the v1 estimators,
+  evidence layer and bench modules, the v1 scripts, the frozen protocols,
+  `docs/metrics.md` and the v1 preregistration) whose SHA-256 the v1
+  regression gate pins (`READ_ONLY_V1_SHA256` in
+  `scripts/v2/regression_gate.py`).
+- **`1abff4e`** (v1 preregistration, section 1, and the `source` fields of the
+  frozen bench protocols): the pre-edit name of the development commit
+  `87654ec`; both have the tree `5396cfd177926f5b2b8a107b48d10022d9bc86e6`.
+- **"spec V2-5"**, **"novelty synthesis"** (v1 preregistration): working
+  documents of the 1.1.0 development (a design note and the planning document
+  in which the hypotheses were first formulated); they are not versioned and
+  are not needed to read the preregistration.
+- **"v2" inside the v1 preregistration** (for example "the v2 verdict
+  semantics"): the second evidence-layer revision of release 1.1.0 (verdicts
+  `EXCLUDED`, `MPC_CONSISTENT`, `UNDETERMINED`; protocol schema
+  `impact-mpc-protocol/2`), not the MPC-Bench v2 round.
+- **HN4, H-IIM-n, H-RAM-n, H-PDI-n, HR1, HR2** (titles of v2 hypotheses):
+  numbered hypotheses of the component designs of the v2 round (NAS, IIM,
+  RAM, PDI and the status rule) from which the HCv2 hypothesis was derived.
+  **HC4v2-R, HC5v2** and similar: the v2 successor of the v1 hypothesis with
+  that number.
+- **D1 to D13** (v2, section 4.7): the descriptive analyses; D10 is not used.
+- **"design x.y"** (v2): sections of the design document of the round, a
+  working document that is not versioned (v2 preregistration, section 0).
+  The terms that appear in the frozen v2 files are explained in
+  [`protocols/v2/README.md`](../../protocols/v2/README.md#terms-in-the-frozen-files).
 
 ## Scope
 

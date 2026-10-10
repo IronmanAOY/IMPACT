@@ -1,4 +1,4 @@
-[![DOI](https://zenodo.org/badge/975114052.svg)](https://doi.org/10.5281/zenodo.15306740)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15306740.svg)](https://doi.org/10.5281/zenodo.15306740)
 
 # IMPaCT Synergy Pipeline
 
@@ -40,9 +40,11 @@ kept for backward compatibility. It is deprecated and is not a gate. The
 exploratory HypergraphSynergy statistic `S` is reported separately and never
 enters CI or the verdict.
 
-Definitions: [`docs/metrics.md`](docs/metrics.md). Code structure:
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Changes in 1.1.0:
-[`CHANGELOG.md`](CHANGELOG.md).
+Definitions: [`docs/metrics.md`](docs/metrics.md) (MPC-Bench v2:
+[`docs/metrics_v2.md`](docs/metrics_v2.md)). Code structure:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Changes:
+[`CHANGELOG.md`](CHANGELOG.md). Terms such as v1, v2 and the version
+suffixes are explained in the [glossary](#glossary).
 
 ## Installation
 
@@ -60,6 +62,10 @@ Or with pip into any Python >= 3.10 environment (dependency ranges from
 ```bash
 python -m pip install -e ".[dev]"
 ```
+
+The pre-commit hooks (`.pre-commit-config.yaml`) are optional. `pre-commit`
+is not part of the locked conda environment; install it separately
+(`python -m pip install pre-commit`, then `pre-commit install`).
 
 `run_pipeline.py` checks that it runs in the conda env `impact-synergy-clean`
 (override the name with `IMPACT_CONDA_ENV`, or skip the check with
@@ -83,6 +89,14 @@ External tools for some workflows:
 python -m pytest -q
 ```
 
+The full suite takes 15 to 25 minutes on a workstation. Tests that need
+files outside the repository are skipped where these are missing: the stored
+v1 benchmark outputs (not versioned; found through `MPCBENCH_V1_OUTPUTS` or in
+`outputs/paper1_mpcbench` of the checkout; see [MPC-Bench v2](#mpc-bench-v2)),
+the held-out release log among the v2 development outputs, and the freeze
+tags (in a clone without tags). The full v1 regression gate runs only with
+`MPCBENCH_RUN_SLOW=1`.
+
 ### 2. Synthetic smoke tests (no downloads)
 
 MPC-Bench simulates white-box systems with switchable mechanisms and scores them
@@ -102,9 +116,10 @@ with the estimates, null moments, z-scores, the verdict and its reasons. The
 verdicts use the bench protocol (`protocols/mpc_bench_v1.json`, whose reference
 anchor is the positive control on development seeds). With only three of the
 five principles computed, RAM and SRPI have no evidence
-(`MISSING_CHANNEL:RAM:default`, since the protocol declares the channels), and
-without `--se-groups` the components have no sampling SE (`NO_SAMPLING_SE`),
-so every verdict is `UNDETERMINED`.
+(`MISSING_CHANNEL:RAM:default`, since the protocol declares the channels), PDI
+has no bench anchor (`INVALID_ANCHORS:PDI`), and without `--se-groups` the
+components have no sampling SE (`NO_SAMPLING_SE`), so every verdict is
+`UNDETERMINED`.
 
 ### 3. Real-data-derived synthetic objects
 
@@ -139,22 +154,19 @@ component (default 0: `NO_SAMPLING_SE:<P>`); with either at 0 every verdict is
 On empirical data the pipeline uses the preregistered
 `protocols/mpc_default_v1.json` unless `--protocol` says otherwise: the
 declared estimator modes (RAM prediction-error update, PDI repertoire, NAS
-capacity, SRPI agency, each with its declared fallback). RAM also declares its
-unimplemented `perturbational` and `endogenous` channels, so RAM can be
-PRESENT but never ABSENT: behavioural non-response alone never excludes,
-because covert, perturbational and endogenous responsiveness are not measured
-([why](protocols/README.md#mpc_default_v1json-default-for-empirical-data)).
-NAS capacity needs a declared hub; without one NAS is UNDEFINED in every run
-(`UNDEFINED:NAS:NO_DECLARED_WORKSPACE`), so pass a protocol derived from v1
-that declares the hub for your grain:
-[`protocols/examples/`](protocols/examples/README.md) has two (examples, to be
-preregistered before confirmatory use). `--protocol
-protocols/mpc_behavioural_ram_v1.json` is an opt-in alternative that declares
-RAM on its behavioural channel only (a choice to preregister; RAM can then be
-ABSENT, and results under it are behavioural-RAM results: an ABSENT RAM means
-no responsiveness-and-adaptation above the null in the recorded behaviour, not
-absence of responsiveness); `--protocol none` builds the protocol from the
-flags. Use `--iim-max-nodes` to bound the IIM subsystem on a workstation.
+capacity, SRPI agency, each with its declared fallback). Under it RAM can be
+PRESENT but never ABSENT, and NAS is UNDEFINED in every run
+(`UNDEFINED:NAS:NO_DECLARED_WORKSPACE`) unless a protocol derived from v1
+declares the hub for your grain;
+[`protocols/README.md`](protocols/README.md#mpc_default_v1json-default-for-empirical-data)
+explains both, and [`protocols/examples/`](protocols/examples/README.md) has
+two derived protocols with a hub (examples, to be preregistered before
+confirmatory use). The opt-in alternative `--protocol
+protocols/mpc_behavioural_ram_v1.json` and how to read results under it are
+described in
+[`protocols/README.md`](protocols/README.md#mpc_behavioural_ram_v1json-opt-in);
+`--protocol none` builds the protocol from the flags. Use `--iim-max-nodes` to
+bound the IIM subsystem on a workstation.
 
 fMRI (ds003171, propofol sedation; sessions `awake` and `deep`):
 
@@ -252,9 +264,10 @@ Main columns of `step2_df.csv` (full list: `docs/metrics.md`, section 11):
 on HLRS Hunter (AMD MI300A APUs, 4 shards per node, Ψ kernels on the APU) and
 then runs the other estimators, the evidence layer, the statistics and the report
 in one job. The complete procedure (account, workspace, cray-python venv, CuPy
-for ROCm, hardware self-test, data staging, smoke test on the `test` queue,
-submission, monitoring, troubleshooting, hand-back, open questions for HLRS) is
-in [`docs/HLRS_HUNTER_RUNBOOK.md`](docs/HLRS_HUNTER_RUNBOOK.md). The helper
+for ROCm, hardware self-test, data staging, sizing of the IIM configuration,
+smoke test on the `test` queue, submission, monitoring, troubleshooting,
+hand-back, open questions for HLRS) is in
+[`docs/HLRS_HUNTER_RUNBOOK.md`](docs/HLRS_HUNTER_RUNBOOK.md). The helper
 scripts and the configuration variables are described in
 [`scripts/hunter/README.md`](scripts/hunter/README.md).
 
@@ -274,19 +287,9 @@ declares the NAS hub for the dataset's grain (the author gives it; for
 `protocols/examples/mpc_default_v1_schaefer400_7networks_hub.json` shows the
 form). Without `--protocol` the campaign uses `mpc_default_v1.json`, which
 declares no hub, and NAS is UNDEFINED (`NO_DECLARED_WORKSPACE`) in every run.
-
-`--hunter-iim-null-surrogates K` adds K surrogate runs and
-`--hunter-iim-bootstrap-se B` B block-bootstrap replicate runs per real run to
-the campaign (drawn exactly as the local pipeline draws them), so the IIM
-evidence has a null family and a sampling SE; without them Hunter IIM evidence
-is `NO_NULL_CALIBRATION:IIM` / `NO_SAMPLING_SE:IIM`. The campaign computes IIM
-with the protocol's IIM options, and the finalize job uses the evidence
-options of the build.
-
-Check a GPU/APU node first with
-`PYTHONPATH=src python3 -m impact_pipeline.hardware_selftest --target hunter-apu`
-from the checkout (the package is not pip-installed on Hunter; runbook,
-section 7).
+`--hunter-iim-null-surrogates K` and `--hunter-iim-bootstrap-se B` add the
+surrogate and bootstrap replicate runs that give the IIM evidence a null family
+and a sampling SE (runbook, section 9.1).
 
 ## MPC-Bench
 
@@ -332,11 +335,14 @@ Development / confirmatory split: development runs use seeds 0-999 and
 families A/B (factorial, sweeps, witnesses, rate patchworks; reference seeds
 900-999 by convention); seeds >= 10000 (1000-9999 are refused), family C, the
 whole-brain and the adversarial sets are confirmatory and run only with
-`--confirmatory --freeze-tag <tag>` on a clean checkout that descends from the
-code-freeze tag and has the same `src/` and `scripts/` as the tag (the tag is
-recorded in the outputs). `--n-shards N --pbs-template bench.pbs` writes a PBS
-Pro array script for Hunter (set `BENCH_VENV` and `BENCH_OUT_DIR`; the bench
-is CPU-bound).
+`--confirmatory --freeze-tag mpcbench-freeze-v1` on a clean checkout of that
+tag: the guard requires a checkout that descends from the tag and has the same
+`src/` and `scripts/` trees, and it records the tag in the outputs (see
+[Confirmatory runs and the freeze tags](#confirmatory-runs-and-the-freeze-tags)).
+The v1 confirmatory runs used the seed block 10000-19999, which is not reused;
+MPC-Bench v2 confirmatory seeds start at 20000. `--n-shards N --pbs-template
+bench.pbs` writes a PBS Pro array script for Hunter (set `BENCH_VENV` and
+`BENCH_OUT_DIR`; the bench is CPU-bound).
 
 ## MPC-Bench v2
 
@@ -352,31 +358,48 @@ The v1 code path and the v1 protocols stay byte-identical; v2 lives in
 `src/impact_pipeline/v2/`, the `bench/*_v2` modules, `scripts/v2/` and
 [`protocols/v2/`](protocols/v2/README.md). Development runs use seeds 0-999,
 confirmatory runs seeds 20000 and above; 10000-19999 (v1) are never reused.
+The estimator and rule definitions are in
+[`docs/metrics_v2.md`](docs/metrics_v2.md).
 
-Development calibration (development seeds only; each item resumes):
-
-```bash
-python scripts/v2/dev_calibration.py plan             # items, tasks, projected CPU-h
-python scripts/v2/dev_calibration.py run anchors_A --workers 12
-python scripts/v2/dev_calibration.py status
-```
-
-The protocol builder writes `protocols/v2/generated/` from a decisions file and
-the development outputs, and `check` re-reads a build against its manifest:
+The frozen protocols in `protocols/v2/generated/` were built from the
+development calibration (development seeds only) and a decisions file. The
+commands below document how; the development outputs they read
+(`outputs/mpcbench_v2/`) are not versioned. `check` verifies the shipped build
+against its manifest:
 
 ```bash
-python scripts/v2/build_protocols_v2.py build \
-    --decisions outputs/mpcbench_v2/decisions/calibration_decisions_v2.json \
-    --dev-root outputs/mpcbench_v2/dev_calibration --require-freeze-ready
+python scripts/v2/dev_calibration.py plan      # calibration items, tasks, projected CPU-h
+python scripts/v2/dev_calibration.py status    # what a calibration root holds (--root)
 python scripts/v2/build_protocols_v2.py check
 ```
 
-The confirmatory run needs a clean checkout of the tag `mpcbench-freeze-v2`;
-every step refuses other trees and seeds below 20000. The stored v1 outputs
-(`outputs/paper1_mpcbench`, the folder holding `c2/`) are not versioned: copy
-them to the run machine and point `MPCBENCH_V1_OUTPUTS` at them, or the
-regression gate fails with exit status 2. On the workstation of the development
-runs (12 workers, about 131-167 CPU-h, 15-19 h wall):
+`build` writes to `protocols/v2/generated/` unless `--out` says otherwise, and
+that folder is frozen. To rebuild from the stored development outputs, write to
+a scratch folder and compare:
+
+```bash
+python scripts/v2/build_protocols_v2.py build \
+    --decisions <stored>/mpcbench_v2/decisions/calibration_decisions_v2.json \
+    --dev-root <stored>/mpcbench_v2/dev_calibration \
+    --require-freeze-ready --out <scratch>/generated
+python scripts/v2/build_protocols_v2.py check --dir <scratch>/generated
+diff -r <scratch>/generated protocols/v2/generated
+```
+
+Every protocol and table of the rebuild equals the shipped one. The two
+`build_manifest.json` differ in one line of the `downstream` list: the shipped
+build was written before `protocols/v2/hypotheses_v2.json` received its final
+status, so it still names that step.
+
+The confirmatory run was made on 2026-10-09 from the tag `mpcbench-freeze-v2`
+(see [Status and results](#status-and-results)). Repeating it needs a clean
+checkout of that tag ([Confirmatory runs and the freeze
+tags](#confirmatory-runs-and-the-freeze-tags)); every step refuses other trees
+and seeds below 20000. The stored v1 outputs (`outputs/paper1_mpcbench`, the
+folder holding `c2/`) are not versioned: copy them to the run machine and point
+`MPCBENCH_V1_OUTPUTS` at them, or the regression gate fails with exit status 2.
+On the workstation of the development runs (12 workers, about 131-167 CPU-h,
+15-19 h wall), in the checkout of the tag:
 
 ```bash
 export MPCBENCH_V1_OUTPUTS=/path/to/outputs/paper1_mpcbench
@@ -396,15 +419,58 @@ completed ones are skipped) and record that rerun. The registry builder
 (`scripts/v2/integrity_audit.py`, with the registry, the run plans and the
 family-B plan) and the evaluator (`scripts/bench_hypotheses_v2.py`) then run
 from the tag on the outputs, in that order; the commands are in section 12 of
-the v2 preregistration. The run is CPU-only and is not planned
-on HLRS Hunter; the [runbook](docs/HLRS_HUNTER_RUNBOOK.md#151-mpc-bench-v2-confirmatory-run)
-states what a Hunter run would need.
+the v2 preregistration. The run is CPU-only and was not made on HLRS Hunter;
+the [runbook](docs/HLRS_HUNTER_RUNBOOK.md#151-mpc-bench-v2-confirmatory-run)
+states what a rerun on Hunter would need.
+
+## Confirmatory runs and the freeze tags
+
+The confirmatory steps of both rounds run only from a checkout of their freeze
+tag: `mpcbench-freeze-v1` for the v1 run plan (`scripts/mpcbench_confirmatory.sh`
+and the `--confirmatory` modes of `run_bench.py` and `null_calibration.py`), and
+`mpcbench-freeze-v2` for the v2 run plan, the registry builder, the integrity
+audit and the evaluator. Their guards compare the git trees of `src/` and
+`scripts/` with the tag. Commits after the tags change comments,
+documentation and tests, and remove or consolidate code without changing
+results (the v1 regression gate and the test suite check this), but they
+change those trees, so the guards refuse a checkout of the branch head. Both
+tags are on the public repository:
+
+```bash
+git clone --branch mpcbench-freeze-v2 https://github.com/IronmanAOY/IMPACT.git impact-freeze-v2
+```
+
+(`--branch mpcbench-freeze-v1` for round v1.) Keep virtual environments and
+outputs outside the clone: the guards also refuse untracked files under `src/`
+or `scripts/`.
+
+## Status and results
+
+Both rounds are frozen and their confirmatory runs are complete.
+
+| Round | Freeze tag (commit) | Preregistration | Confirmatory runs | Outcomes |
+|---|---|---|---|---|
+| v1 | `mpcbench-freeze-v1` (`f2cf249`) | [`MPC_BENCH_PREREGISTRATION.md`](docs/preregistration/MPC_BENCH_PREREGISTRATION.md) | 2026-09-28 to 2026-09-30 | prerequisite M and HC1 SUPPORTED; HC2 to HC10 FALSIFIED |
+| v2 | `mpcbench-freeze-v2` (`acb5428`) | [`MPC_BENCH_PREREGISTRATION_V2.md`](docs/preregistration/MPC_BENCH_PREREGISTRATION_V2.md) | 2026-10-09 | of the 25 Tier-A hypotheses HCv2-0 to HCv2-24, 11 SUPPORTED, 10 FALSIFIED and 4 INDETERMINATE; the 8 Tier-B hypotheses were not run |
+
+In round v2 the integrity audit reported one failure that does not block the
+evaluation (IA-5, section 4.6 of the v2 preregistration); the 50 records it
+names were left out of every hypothesis, as that section prescribes. The status
+of both freezes and the registration notes are in
+[`docs/preregistration/README.md`](docs/preregistration/README.md).
+
+The result files are not part of this repository. They are kept, unversioned,
+in the folder `outputs/paper1_mpcbench/` of the author's working copy: `c1/` to
+`c4/` for round v1 (each with a `README.md`) and `v2_confirmatory/` and
+`v2_evaluation/` for round v2. The same folder is what `MPCBENCH_V1_OUTPUTS`
+names for the v1 regression gate. The applicability registry built from the v1
+results is versioned (`protocols/applicability_registry_v1.json`).
 
 ## Analysis and preregistration
 
 Command-line tools for the paper's analyses (inputs and outputs in each
-script's docstring). Paper figures must be rendered from frozen-code result
-files, with `--out` pointing to the manuscript folder.
+script's docstring). Paper figures are rendered from result files of the
+frozen code, with `--out` pointing to an output folder of your choice.
 
 | Script | Purpose |
 |---|---|
@@ -422,6 +488,14 @@ files, with `--out` pointing to the manuscript folder.
 | `scripts/bench_hypotheses.py` | the preregistered hypotheses HC1-HC10 on the confirmatory bench runs ([preregistration](docs/preregistration/README.md)) |
 | `scripts/build_applicability_registry.py` | derives `protocols/applicability_registry_v1.json` from the confirmatory bench results with the preregistered entry criteria |
 | `scripts/mpcbench_confirmatory.sh` | the preregistered confirmatory run plan (frozen code only) |
+| `scripts/run_bench_v2.py` | the MPC-Bench v2 runner (`plan`, `designs`, `run`; records of schema `mpc-bench-result/3`) |
+| `scripts/v2/iim_validation_v2.py` | IIM v5 on the family-B cells of the v2 hypotheses |
+| `scripts/v2/null_calibration_v2.py` | the v2 null-calibration design, reported in the tables of the v1 calibration |
+| `scripts/v2/dev_calibration.py` | development calibration of MPC-Bench v2 (development seeds only) |
+| `scripts/v2/build_protocols_v2.py` | builds and checks the frozen protocols in `protocols/v2/generated/` |
+| `scripts/v2/operating_characteristics.py` | operating characteristics of the v2 decision rules |
+| `scripts/v2/env_lock.py`, `scripts/v2/regression_gate.py` | the v2 environment lock and the v1 regression gate (integrity check IA-1) |
+| `scripts/v2/build_registry_v3.py`, `scripts/v2/integrity_audit.py` | the applicability registry v3 from the forward-model arms; the integrity audit IA-1 to IA-10 of the v2 records |
 | `scripts/bench_hypotheses_v2.py` | the MPC-Bench v2 hypotheses HCv2-0 to HCv2-24 on the v2 confirmatory runs ([v2 preregistration](docs/preregistration/MPC_BENCH_PREREGISTRATION_V2.md)) |
 | `scripts/v2/mpcbench_confirmatory_v2.sh` | the MPC-Bench v2 confirmatory run plan (tag `mpcbench-freeze-v2` only) |
 | `scripts/run_predictions.py` | evaluates the hypothesis registry `predictions/registry.yaml` (refuses unregistered estimators, protocol hashes and datasets) |
@@ -447,27 +521,61 @@ on macOS, `scripts/start_impact_desktop.bat` on Windows).
 run_pipeline.py            command-line entry point (local and Hunter modes)
 src/impact_pipeline/       package: estimators, evidence layer, nulls, assembly, statistics,
                            preprocessing, Hunter backend, MPC-Bench (bench/)
-protocols/                 MPC protocols (default and MPC-Bench) with their rationale
+src/impact_pipeline/v2/    MPC-Bench v2: estimators, declared inputs, records, seeds, hypothesis engine
+protocols/                 MPC protocols (default and MPC-Bench) with their rationale;
+                           v2/ holds the MPC-Bench v2 hypotheses, seed map and generated protocols
 predictions/               paper-2 hypothesis registry and its schema
 scripts/                   downloads, fMRIPrep, run_all, dashboard, synthetic objects, run_bench,
-                           hunter/ (setup, install, smoke test)
-tests/                     regression, ground-truth and property tests
+                           analysis tools, figures/, hunter/ (setup, install, smoke test)
+scripts/v2/                MPC-Bench v2: calibration, protocol builder, run plan, audit, gate
+tests/                     regression, ground-truth and property tests; tests/v2/ for MPC-Bench v2
 docs/                      metrics, architecture, Hunter runbook, synthetic data
+docs/preregistration/      the MPC-Bench preregistrations (v1; v2 with companions) and their status
 data/managed/              small versioned reference files (dataset inventory, structural connectome)
 atlases/                   atlas files (scripts/download_atlases.sh)
+licenses/                  third-party notices and the FreeSurfer license template
+test_objects/              synthetic validation data and runs (generated locally, not versioned)
+environment.yml            reference conda environment (pyproject.toml has the pip ranges)
+Dockerfile, Singularity    container definitions for the empirical pipeline
+CITATION.cff               citation metadata
 ```
+
+Containers: `Dockerfile` and `Singularity` build an image for the empirical
+pipeline (`run_pipeline.py`), protocols included. MPC-Bench confirmatory runs
+need a git checkout of a freeze tag and are not supported inside the images.
 
 ## Citation
 
 Please cite the software through its concept DOI, which resolves to the latest
 archived version: https://doi.org/10.5281/zenodo.15306740 (metadata in
-`CITATION.cff`; this release is version 1.1.0).
+`CITATION.cff`; package version 1.1.0).
 
 The real-data-derived synthetic smoke-test archive has the reserved DOI
 10.5281/zenodo.20786673. It is **not yet published**; until it is, regenerate the
 objects from the OpenNeuro sources (`docs/synthetic_data.md`).
 
+## Glossary
+
+- **v1, v2**: the two freeze rounds of MPC-Bench, each with its own
+  preregistration, freeze tag (`mpcbench-freeze-v1`, `mpcbench-freeze-v2`)
+  and confirmatory run.
+- **bench 2.0.0** (`impact_pipeline.bench.BENCH_VERSION`, with generator
+  revision 1.1.0) and the construct-scale status rule of protocol schema
+  `impact-mpc-protocol/2` belong to round v1. Older commit subjects call them
+  "MPC-Bench 2.0" and "evidence layer v2", and some docstrings and comments of
+  the v1 code still say "evidence layer v2" for that rule.
+- **`tost-v2`**, protocol schema `impact-mpc-protocol/3` and result schema
+  `mpc-bench-result/3` belong to round v2, as do the module
+  `impact_pipeline.evidence_v2` and every other `_v2` module or `v2/` folder.
+- **`_v3`, `_v5`** on an estimator (NAS v3, IIM v5, RAM-PE v3, PDI v3) number
+  the revision of that estimator, not the round; the version strings (for
+  example `nas-v3-2026.10`) are recorded with every component.
+- **paper 1, paper 2**: the MPC-Bench validation of the measurement framework
+  (computational hypotheses, `docs/preregistration/`) and the empirical study
+  (hypothesis registry `predictions/registry.yaml`).
+
 ## License
 
-MIT (`LICENSE`). Atlas files are covered by their own licenses
-(`licenses/THIRD_PARTY_NOTICES.md`).
+MIT (`LICENSE`). The atlas files under `atlases/` and the structural
+connectome under `data/managed/structural/` are third-party data under their
+own terms (`licenses/THIRD_PARTY_NOTICES.md`).

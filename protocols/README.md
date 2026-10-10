@@ -55,28 +55,18 @@ dummy/synthetic data always do). It is the empirical default protocol of the
 cites, byte-for-byte as at tag `mpcbench-freeze-v1` (hash above;
 `tests/test_protocol_examples.py` checks the hash and the file's SHA-256).
 
-Why this default. RAM declares its implemented untyped `default` channel
-(behavioural events) **and** `perturbational` and `endogenous`, which have no
-estimator yet. A declared channel without an estimator is UNDEFINED
-(`NOT_IMPLEMENTED:RAM:<channel>`), and a principle is ABSENT only when every
-declared channel is ABSENT (strong-Kleene OR), so under v1 RAM can be PRESENT
-but never ABSENT. That is the preregistered stance, confirmed at the freeze:
-behavioural non-response alone must never exclude, because covert,
-perturbational and endogenous responsiveness (covert command following,
-dreaming, paralysis) are not measured. Undefined is not absent. The price is
-that RAM cannot contribute an exclusion on empirical data, and a necessity
-test of RAM cannot be falsified by RAM evidence, until those channels are
-measured.
+Two consequences matter for every empirical run (the declarations behind
+them are listed [below](#mpc_default_v1json-declarations-unchanged-since-the-freeze)):
 
-NAS. v1 declares NAS `mode='capacity'` without a hub, because the hub depends
-on the grain (atlas or montage). Without a declared hub NAS is UNDEFINED in
-every run (`UNDEFINED:NAS:NO_DECLARED_WORKSPACE`, 1.1.0 post-freeze; the
-frozen code raised instead), so a run that is meant to measure NAS (e.g. a
-Hunter campaign) needs a protocol derived from v1 that declares the hub:
-[`examples/`](examples/README.md) has two worked examples (derived from v1,
-to be preregistered before confirmatory use).
-
-The declarations of v1 are listed in the next section.
+- RAM can be PRESENT but never ABSENT under v1, because RAM also declares two
+  channels that have no estimator yet (see **Channels** there). Behavioural
+  non-response alone never excludes.
+- v1 declares NAS `mode='capacity'` without a hub, because the hub depends on
+  the grain (atlas or montage). Without a declared hub NAS is UNDEFINED in
+  every run (`UNDEFINED:NAS:NO_DECLARED_WORKSPACE`), so a run that is meant to
+  measure NAS (e.g. a Hunter campaign) needs a protocol derived from v1 that
+  declares the hub: [`examples/`](examples/README.md) has two worked examples
+  (derived from v1, to be preregistered before confirmatory use).
 
 ## `mpc_behavioural_ram_v1.json` (opt-in)
 
@@ -102,11 +92,6 @@ ABSENT only when every measured channel is. `scripts/build_example_protocols.py
 --base protocols/mpc_behavioural_ram_v1.json --out-dir <dir>` derives the
 example hub protocols from it (their sidecars carry this caveat).
 
-History: an intermediate draft of the 1.1.0 post-freeze fixes had made this
-protocol the command-line default under another name; that reversed the
-preregistered stance above and was undone (see the
-[changelog](../CHANGELOG.md)).
-
 ## `mpc_default_v1.json`: declarations (unchanged since the freeze)
 
 - **Necessity set**: all five principles (RAM, PDI, NAS, IIM, SRPI).
@@ -116,14 +101,15 @@ preregistered stance above and was undone (see the
   A declared channel that is not implemented is UNDEFINED
   (`NOT_IMPLEMENTED:RAM:<channel>`), and a principle is ABSENT only when every
   declared channel is ABSENT (strong-Kleene OR), so under this protocol RAM
-  can be PRESENT (through `default`) but never ABSENT: an unresponsive
-  behavioural record cannot exclude consciousness while perturbational and
-  endogenous responsiveness are unmeasured. This stance was
-  confirmed at the freeze: behavioural non-response does not establish the
-  absence of responsiveness and adaptation (covert responsiveness,
-  dreaming, paralysis), so a necessity-only rule must not exclude on it.
-  Dropping these channels (as `mpc_behavioural_ram_v1.json` does) is a
-  substantive decision that has to be justified and preregistered.
+  can be PRESENT (through `default`) but never ABSENT. This is the
+  preregistered stance, confirmed at the freeze: behavioural non-response does
+  not establish the absence of responsiveness and adaptation (covert command
+  following, dreaming, paralysis), so a necessity-only rule must not exclude
+  on it; undefined is not absent. The price is that RAM cannot contribute an
+  exclusion on empirical data, and a necessity test of RAM cannot be
+  falsified by RAM evidence, until those channels are measured. Dropping
+  these channels (as `mpc_behavioural_ram_v1.json` does) is a substantive
+  decision that has to be justified and preregistered.
 - **Cutoffs**: `(z, delta) = (0.25, 0.10)` for every principle, `alpha =
   0.05`, as the bench protocol.
 - **Null families**: RAM `onset_jitter` (rigid event-train shift), PDI
@@ -252,10 +238,17 @@ No entry covers a forward-modelled substrate, so with this registry every
 component of human EEG or fMRI data is UNDEFINED
 (`ESTIMATOR_NOT_VALIDATED`) and every empirical verdict is UNDETERMINED.
 
+It was built from the stored confirmatory outputs (`outputs/paper1_mpcbench`,
+not versioned). To rebuild it, write to a scratch file, not over the
+versioned one, and compare; run from the checkout that holds the stored
+outputs, because the file records its source paths relative to the
+repository:
+
 ```bash
 python scripts/build_applicability_registry.py --results outputs/paper1_mpcbench \
-    --out protocols/applicability_registry_v1.json \
-    --evidence-dir outputs/paper1_mpcbench/registry
+    --out outputs/registry_rebuild/applicability_registry_v1.json \
+    --evidence-dir outputs/registry_rebuild/evidence
+cmp outputs/registry_rebuild/applicability_registry_v1.json protocols/applicability_registry_v1.json
 ```
 
 ## MPC-Bench v2 protocols (`v2/`)
@@ -274,7 +267,7 @@ nothing in this folder's v1 files changes.
 | `hypotheses_v2.json` | the v2 hypotheses HCv2-0 to HCv2-24, read by the v2 evaluator; status `final` at the freeze |
 | `held_out_predictions_v2.json` | the held-out elements and the predicted admission table, committed before the logged release of the held-out forward anchors; never changed afterwards |
 | `seed_map_v2.json` | the v2 seed map (development 0-999, confirmatory from 20000, 10000-19999 never reused) |
-| `mpc_bench_v2_template.json`, `mpc_default_v2.json` | the bench template the builder fills, and the paper-2 default protocol of the v2 rule (not used by `run_pipeline.py` yet) |
+| `mpc_bench_v2_template.json`, `mpc_default_v2.json` | the bench template the builder fills, and the paper-2 default protocol of the v2 rule (not used by `run_pipeline.py`) |
 | `generated/` | written only by `scripts/v2/build_protocols_v2.py` from the development calibration and the decisions file: the family protocols `mpc_bench_v2_<key>.json` (`A-R`, `A-H`, `C1-R`, `C1-H`, `A-RAM160`, the held-out declarations, the estimator forms, family B and one protocol per forward view), `testability_table.json`, `forward_anchors.json`, `declared_dependencies.json`, `mechanism_on.json`, `calibration_decisions.json`, `calibration_evidence.json` and `build_manifest.json` |
 
 The protocol hashes and file SHA-256 of `generated/` are listed in the
@@ -286,13 +279,17 @@ refuses records whose family-protocol hash differs from the frozen one.
 
 ## Regenerate the reference
 
-Development seeds only (family C and seeds >= 10000 are refused):
+The bench reference of `mpc_bench_v1.json` was computed on development seeds
+(family C and seeds >= 10000 are refused). `mpc_bench_v1.json` is frozen, so a
+recomputation writes a new protocol file; compare its `reference` values with
+those of the frozen file (the `source` text of the new file names the commit
+it ran on):
 
 ```bash
 python scripts/bench_reference.py --run --family A --seeds 900-919 \
     --null-surrogates 19 --se-groups 10 --workers 4 \
-    --work-dir outputs/paper1_mpcbench/dev/reference_A/run \
-    --template protocols/mpc_bench_v1.json --out protocols/mpc_bench_v1.json \
+    --work-dir outputs/bench_reference/reference_A \
+    --template protocols/mpc_bench_v1.json --out outputs/bench_reference/mpc_bench_v1.json \
     --name mpc-bench-v1
 ```
 
@@ -318,7 +315,7 @@ python scripts/compute_empirical_reference.py \
     --write-protocol outputs/ds003171_reference/mpc_default_v1_hub_external.json
 python scripts/run_bench.py factorial --seeds 0-19 --null-surrogates 19 \
     --se-groups 10 --protocol protocols/mpc_bench_v1.json --out outputs/bench/factorial_A
-python scripts/null_calibration.py --protocol protocols/mpc_bench_v1.json --out out/null
+python scripts/null_calibration.py --protocol protocols/mpc_bench_v1.json --out outputs/null_calibration
 ```
 
 The paper-2 registry (`predictions/registry.yaml`) stays a draft; its

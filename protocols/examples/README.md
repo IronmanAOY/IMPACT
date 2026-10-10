@@ -113,8 +113,6 @@ names follow the base protocol's name (`mpc_behavioural_ram_v1_*.json`,
 `EXAMPLE-mpc-behavioural-ram-v1-*`), and such a build needs `--out-dir` (this
 directory holds the examples derived from the default protocol only). Under
 [`mpc_behavioural_ram_v1.json`](../README.md#mpc_behavioural_ram_v1json-opt-in)
-RAM declares only its behavioural channel and can be ABSENT: an ABSENT RAM then
-means no responsiveness-and-adaptation above the null in the recorded
-behaviour, not absence of responsiveness. Choosing it is a substantive
-decision to preregister, and results under it are behavioural-RAM results;
-the derivation sidecars carry this caveat (`ram_channel_caveat`).
+an ABSENT RAM means no responsiveness-and-adaptation above the null in the
+recorded behaviour, not absence of responsiveness; the derivation sidecars
+carry this caveat (`ram_channel_caveat`).

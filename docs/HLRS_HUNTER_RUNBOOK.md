@@ -7,8 +7,8 @@ researchers who run their own campaigns.
 
 - Pipeline: IMPaCT Synergy Pipeline 1.1.0 (`run_pipeline.py`, package
   `impact_pipeline`).
-- Written: 2026-09-28. HLRS facts are taken from the HLRS knowledge base
-  (kb.hlrs.de) and vendor documentation as read on 2026-09-27.
+- Written: 2026-09-28, updated 2026-10-10. HLRS facts are taken from the HLRS
+  knowledge base (kb.hlrs.de) and vendor documentation as read on 2026-09-27.
 - Contact for scientific questions: the author (see `CITATION.cff`). Contact
   for Hunter questions: `rt-platform-hunter@hlrs.de` or the HLRS
   trouble-ticket form. HLRS asks users not to contact staff individually.
@@ -149,9 +149,10 @@ Notes:
 - 2FA is mandatory, and HLRS's planned 2FA-free workflow hosts explicitly
   forbid scripts that generate and submit jobs. So `00_submit_all.sh` must be
   run by a person on a normal login node.
-- HLRS guidance for AI agents (kb `AI_Agents_on_hww_clusters`, 2026-09-01):
-  loading modules, submitting and cancelling jobs stay under direct human
-  control. Do not give an agent a persistent SSH session.
+- HLRS policy for automated tools, including AI assistants (kb
+  `AI_Agents_on_hww_clusters`, 2026-09-01): loading modules, submitting and
+  cancelling jobs stay under direct human control. Do not give such a tool a
+  persistent SSH session.
 
 ## 3. Workspace (never HOME)
 
@@ -197,8 +198,10 @@ $WS/
 Compute nodes have no internet. Login nodes reach the internet only through a
 reverse SOCKS tunnel that **you** open from your own machine.
 
-The release to run is tagged by the author. At the time of writing the planned
-tag is `v1.1.0`; use the tag the author gives you.
+The author gives you the tag (or branch and commit) to run; `<tag>` below
+stands for it. No release tag of 1.1.0 exists yet. The repository's two tags,
+`mpcbench-freeze-v1` and `mpcbench-freeze-v2`, freeze the MPC-Bench code and
+are not the version for an IIM campaign unless the author says so.
 
 ### 4.1 Option A: clone on a login node through the SOCKS tunnel
 
@@ -212,7 +215,7 @@ ssh -R localhost:$MY_PROXY_PORT hunter
 # on the Hunter login node, in that SSH session
 export https_proxy=socks5://localhost:<port> http_proxy=socks5://localhost:<port>
 cd "$WS"
-git clone --branch v1.1.0 --depth 1 https://github.com/IronmanAOY/IMPACT.git impact-synergy-pipeline
+git clone --branch <tag> --depth 1 https://github.com/IronmanAOY/IMPACT.git impact-synergy-pipeline
 ```
 
 Caveats:
@@ -231,7 +234,7 @@ provenance records the exact commit.
 
 ```bash
 # on your machine (the tag must have been pushed by the author)
-git clone --branch v1.1.0 https://github.com/IronmanAOY/IMPACT.git impact-synergy-pipeline
+git clone --branch <tag> https://github.com/IronmanAOY/IMPACT.git impact-synergy-pipeline
 rsync -a impact-synergy-pipeline/ hunter:<WS path>/impact-synergy-pipeline/
 ```
 
@@ -364,7 +367,7 @@ use `HLRS/APU/testing-2026.2` (open question 7):
 ## 6. CuPy for ROCm
 
 `--hardware-target hunter-apu` requires CuPy built for ROCm/HIP. HLRS provides
-no CuPy module that we know of (open question 5). HLRS states that using the
+no CuPy module in its documentation (open question 5). HLRS states that using the
 GPU cores is mandatory on Hunter, so the campaign's Ψ kernels run on the APUs.
 
 ### 6.1 Default stack 2026.1 (ROCm 6.4.1): CuPy 13.6.0 from source
@@ -454,7 +457,7 @@ NumPy):
 ```text
 $ PYTHONPATH=src python -m impact_pipeline.hardware_selftest --target cpu --size 64
 IMPaCT hardware self-test: cpu->cpu
-  code version: 1.1.0+gf44f5390f393aa5a29ef5d223c48c9a0fded99dd; IIM Psi kernel for this target: numba
+  code version: 1.1.0+g9c3daa53ae950931e5cbedec1ee892ff5747c772; IIM Psi kernel for this target: numba
   matmul             OK   rel_err=0.00e+00 t=0.000s
   eigh               OK   rel_err=0.00e+00 t=0.001s
   ufunc_add_at       OK   rel_err=0.00e+00 t=0.000s
@@ -610,7 +613,7 @@ guess IIM sizes: the cost of IIM grows steeply with the number of nodes.
 | IIM cut sample | `--iim-n-parts` | unset = exhaustive |
 | IIM mechanism/purview sizes | `--iim-max-mechanism-size`, `--iim-max-purview-size` | unset = all |
 | Size guard | `--hunter-max-psi-evals`, `--hunter-allow-large`, `--hunter-seconds-per-psi-eval` | default ceiling 1e11 Ψ evaluations; the measured rate from the calibration smoke test (section 10a) |
-| MPC protocol | `--protocol` | the protocol file the author gives you: `protocols/mpc_default_v1.json` (the preregistered default for real data, used when `--protocol` is not given: estimator modes, cutoffs, null families, reference) with the NAS hub declared for the dataset's grain, e.g. `protocols/examples/mpc_default_v1_schaefer400_7networks_hub.json` for `schaefer400` (an example; the hub has to be preregistered before confirmatory use). v1 itself declares no hub: without a derived protocol NAS is UNDEFINED (`NO_DECLARED_WORKSPACE`) in every run. The hash is recorded, and the campaign computes IIM with the protocol's IIM options. Do not use `protocols/mpc_behavioural_ram_v1.json` (opt-in: RAM can be ABSENT on behavioural evidence alone; an ABSENT RAM then means no responsiveness-and-adaptation above the null in the recorded behaviour, not absence of responsiveness) unless the author asks for it |
+| MPC protocol | `--protocol` | the protocol file the author gives you: `protocols/mpc_default_v1.json` (the preregistered default for real data, used when `--protocol` is not given: estimator modes, cutoffs, null families, reference) with the NAS hub declared for the dataset's grain, e.g. `protocols/examples/mpc_default_v1_schaefer400_7networks_hub.json` for `schaefer400` (an example; the hub has to be preregistered before confirmatory use). v1 itself declares no hub: without a derived protocol NAS is UNDEFINED (`NO_DECLARED_WORKSPACE`) in every run. The hash is recorded, and the campaign computes IIM with the protocol's IIM options. Do not use the opt-in [`protocols/mpc_behavioural_ram_v1.json`](../protocols/README.md#mpc_behavioural_ram_v1json-opt-in) unless the author asks for it |
 | IIM surrogate runs per real run | `--hunter-iim-null-surrogates K` | e.g. 19 (for `IIM_null_p`, K >= 19) |
 | IIM bootstrap replicate runs per real run | `--hunter-iim-bootstrap-se B` | as given by the author (e.g. the same B as `--bootstrap-se`); 0 = IIM has no sampling SE |
 | Null surrogates for the evidence layer | `--null-surrogates K` | e.g. 19; 0 = every legacy-mode component `NO_NULL_CALIBRATION` |
@@ -1161,24 +1164,26 @@ application pages)
 
 The MPC-Bench v2 confirmatory run (preregistration
 [`MPC_BENCH_PREREGISTRATION_V2.md`](preregistration/MPC_BENCH_PREREGISTRATION_V2.md),
-section 11) is **not planned on Hunter**. It is CPU-only (no IIM campaign, no
-GPU kernel) and is planned on the author's workstation, whose environment the v2
-environment lock records (darwin-arm64, Python 3.10.19, numpy 2.2.6, scipy
-1.15.2, numba 0.61.2, pandas 2.3.3; `scripts/v2/env_lock.py --check`). Its size:
-11193 tasks (6933 bench tasks and 4260 family-B tasks) plus the oracle checks
-on 40 seeds, about 131 CPU-h by the development cost model and about 167 CPU-h
-with the family-C1 IIM scorings priced at their measured reference-block rate,
-15-19 h wall time at 12 workers.
+section 11) was not run on Hunter. It is CPU-only (no IIM campaign, no GPU
+kernel) and was run on 2026-10-09 on the author's workstation, whose
+environment the v2 environment lock records (darwin-arm64, Python 3.10.19,
+numpy 2.2.6, scipy 1.15.2, numba 0.61.2, pandas 2.3.3;
+`scripts/v2/env_lock.py --check`). Its size: 11193 tasks (6933 bench tasks
+and 4260 family-B tasks) plus the oracle checks on 40 seeds, about 131 CPU-h
+by the development cost model and about 167 CPU-h with the family-C1 IIM
+scorings priced at their measured reference-block rate, 15-19 h wall time at
+12 workers.
 
-A run on Hunter would be a deviation from that plan, to be agreed with the
-author beforehand and reported. It would need:
+The rest of this section describes how the run could be reproduced on Hunter.
+A rerun on Hunter would differ from the registered plan, so it is agreed
+with the author beforehand and reported. It would need:
 
 - HLRS's agreement to CPU-only work on Hunter (open question 3);
 - an environment that matches the lock: the default stack (numpy 1.24.4, scipy
   1.10.1, Python 3.11, section 5.1) does not, and conda is not documented for
   Hunter (open question 4);
-- a clean clone of the tag `mpcbench-freeze-v2` (section 4; the tag must have
-  been pushed by the author). The v2 confirmatory guard refuses any checkout
+- a clean clone of the tag `mpcbench-freeze-v2` (section 4 with
+  `<tag>` = `mpcbench-freeze-v2`). The v2 confirmatory guard refuses any checkout
   whose `src/` and `scripts/` trees differ from the tag, or with untracked files
   under `src/` or `scripts/`, so keep the venv and the outputs outside the
   clone;
@@ -1313,8 +1318,8 @@ pass the answers to the author.
    phases?
 4. Is conda, miniforge or micromamba permitted or supported on Hunter (installed
    in a workspace)? Is there a micromamba module as on Vulcan? Does conda work
-   through the SSH SOCKS5 tunnel? Or should we strictly use cray-python plus
-   `venv --system-site-packages`?
+   through the SSH SOCKS5 tunnel? Or should the setup strictly use
+   cray-python plus `venv --system-site-packages`?
 5. Is there an HLRS-provided CuPy for ROCm, for example under
    `/opt/hlrs/stack/ai-frameworks/modulefiles`, or a recommended recipe? Is
    building CuPy 13.6.0 from source on a login node acceptable given the 2 h CPU
@@ -1344,10 +1349,10 @@ pass the answers to the author.
     page warns that scp via frontends fails due to CPU limits), UFTP
     (`gridftp-fr1:9000`, SSH key via ticket) or GridFTP? Are datalad/git-annex
     available or usable through the tunnel?
-12. What are our project's ws13 capacity and file-count quotas (`ws_quota`)? Is a
-    Python venv with tens of thousands of files, plus per-shard outputs,
-    acceptable on Lustre, or should we use an Apptainer SIF or a conda-pack
-    tarball instead?
+12. What are the project's ws13 capacity and file-count quotas (`ws_quota`)? Is
+    a Python venv with tens of thousands of files, plus per-shard outputs,
+    acceptable on Lustre, or is an Apptainer SIF or a conda-pack tarball
+    preferred?
 13. Is Lmod's `module load` safe in job scripts that run `set -euo pipefail`
     (nounset)? Or should modules be loaded before `set -u` (as the generated
     scripts currently do)?
@@ -1355,9 +1360,10 @@ pass the answers to the author.
     release notes list only numpy, scipy, mpi4py and dask. Is shadowing the
     LibSci-linked numpy/scipy in a `--system-site-packages` venv, when newer
     packages force upgrades, acceptable or discouraged?
-15. Would the HLRS colleague run the jobs under their own account and our project
-    group, or under ours? We need to know whether to use `-W group_list=<group>`,
-    `ws_share` for read access, and who registers IPs and SSH keys.
+15. Would the HLRS colleague run the jobs under their own account and the
+    author's project group, or under the author's account? The answer decides
+    whether to use `-W group_list=<group>`, `ws_share` for read access, and
+    who registers IPs and SSH keys.
 16. Can the 20 mi300a localscratch nodes (`node_type_storage=localscratch`) be
     used to stage datasets per job, and is there any limit on requesting them?
 

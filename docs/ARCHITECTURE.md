@@ -1,9 +1,10 @@
 # Architecture
 
 This document describes how the IMPaCT Synergy Pipeline 1.1.0 is organised:
-the layers, the data flow of a run, the HLRS Hunter campaign, MPC-Bench and the
-design rules the code follows. Definitions of the estimators and of the evidence
-layer are in [`metrics.md`](metrics.md); the Hunter procedure is in
+the layers, the data flow of a run, the HLRS Hunter campaign, MPC-Bench and its
+v2 round, and the design rules the code follows. Definitions of the estimators
+and of the evidence layer are in [`metrics.md`](metrics.md) (v2:
+[`metrics_v2.md`](metrics_v2.md)); the Hunter procedure is in
 [`HLRS_HUNTER_RUNBOOK.md`](HLRS_HUNTER_RUNBOOK.md).
 
 ## 1. Layers
@@ -51,13 +52,17 @@ calls the public estimators and the evidence layer like any other user.
 | `impact_pipeline.provenance` | data origin (`real`/`dummy`) and output routing, code version, runtime versions, repository root |
 | `impact_pipeline.utils` | HypergraphSynergy (the exploratory statistic S) and helpers |
 | `impact_pipeline.bench.*` | MPC-Bench: generators (families A, B, C), patchwork, whole-brain Hopf model and forward models, adversarial constructions, manipulation checks, witnesses, export and in-memory runner, factorial, sweeps, runner, reference anchor (`reference`), rival rules, rule audit, LZ76, Gaussian Φ_R |
-| `impact_pipeline.necessity` | NCA ceilings, symmetric three-outcome necessity criteria, verdict-level summaries (paper-2 hypotheses) |
-| `protocols/`, `predictions/` | declared MPC protocols (JSON, hashed): `mpc_default_v1.json` (the preregistered default of empirical runs; RAM keeps its unimplemented channels, so behavioural non-response never excludes; no NAS hub, so NAS is UNDEFINED, `NO_DECLARED_WORKSPACE`, unless a derived protocol declares one), the opt-in `mpc_behavioural_ram_v1.json` (RAM on its behavioural channel only, so RAM can be ABSENT: behavioural-RAM results, where ABSENT means none above null in the recorded behaviour, not absence of responsiveness), the frozen bench protocols and `examples/` (derived from v1 with a declared NAS hub); the paper-2 hypothesis registry and its schema |
+| `impact_pipeline.necessity` | symmetric three-outcome necessity criteria, verdict-level summaries and Clopper-Pearson bounds (paper-2 hypotheses, bench evaluators); NCA ceilings and fsQCA necessity, which no script calls yet, are kept for the planned paper-2 analysis |
+| `protocols/`, `predictions/` | declared MPC protocols (JSON, hashed): `mpc_default_v1.json` (the preregistered default of empirical runs; RAM is never ABSENT under it; no NAS hub, so NAS is UNDEFINED, `NO_DECLARED_WORKSPACE`, unless a derived protocol declares one), the opt-in [`mpc_behavioural_ram_v1.json`](../protocols/README.md#mpc_behavioural_ram_v1json-opt-in), the frozen bench protocols, `examples/` (derived from v1 with a declared NAS hub) and `v2/`; [`protocols/README.md`](../protocols/README.md) gives the reasons for each declaration. The paper-2 hypothesis registry and its schema |
+| `impact_pipeline.evidence_v2` | MPC-Bench v2: the status rule `tost-v2`, protocol schema `impact-mpc-protocol/3` (`ProtocolV3`) and the dispatch between the v1 and the v2 layer (a protocol without a `status_rule` block goes to the v1 layer unchanged) |
+| `impact_pipeline.v2.*` | MPC-Bench v2: estimators `nas_v3`, `iim_v5`, `ram_v3`, `pdi_v3`; `declared_inputs` (recording device, input declarations, common input basis); `records` (result schema `mpc-bench-result/3`), `reasons` (UNDEFINED vocabulary), `seeds` (v2 seed policy and seed map), `provenance` (code identity by git tree, confirmatory guard); `testability`, `registry_v3` (applicability registry v3, forward-model admission), `hypothesis_engine` (declarative evaluator), `numerics` |
+| `impact_pipeline.bench.run_bench_v2`, `designs_v2`, `forward_v2`, `adversarial_v2`, `manipulation_v2` | the v2 runner (one simulation, several scorings, each estimator in its own try block), the v2 designs and run plans, the forward-model views, the v2 witnesses and adversaries (`witnesses_v2.yaml`) and the realisation checks |
 | `scripts/run_bench.py`, `bench_reference.py`, `benchmark_attribution_rules.py`, `null_calibration.py`, `calibrate_bench.py`, `iim_validation.py`, `bench_hypotheses.py`, `mpcbench_confirmatory.sh`, `necessity_power.py`, `simulate_rule_recovery.py`, `audit_aggregation.py`, `definedness_audit.py`, `run_predictions.py`, `compute_empirical_reference.py`, `build_example_protocols.py`, `figures/` | MPC-Bench runs, bench reference, rule audit, null calibration, development calibration, family-B IIM validation, the preregistered hypotheses HC1-HC10 and their run plan, power and recovery simulations, aggregation audit, definedness audit, registry evaluation, external empirical reference anchor, example derived protocols (NAS hub), figures |
 | `scripts/live_dashboard.py`, `impact_desktop_app.py` | browser dashboard and desktop launcher |
 | `scripts/generate_real_derived_synth_completed.py`, `inspect_real_sources_for_synth.py` | real-data-derived synthetic smoke-test objects |
 | `scripts/download_data.sh`, `download_atlases.sh`, `fetch_fmriprep*.sh`, `run_all.sh` | data, atlases, fMRIPrep, end-to-end local run |
 | `scripts/hunter/` | Hunter setup-file template, install notes, smoke-test helper |
+| `scripts/run_bench_v2.py`, `scripts/v2/`, `bench_hypotheses_v2.py` | MPC-Bench v2: runner command line, development calibration, protocol builder, family-B IIM validation, null calibration, operating characteristics, environment lock, v1 regression gate, registry v3, integrity audit, the confirmatory run plan and the evaluator |
 
 ## 3. A local run
 
@@ -180,12 +185,48 @@ Design points:
  rules.py + audit.py: rival decision rules and the rule audit on estimated statuses
 ```
 
-Seed policy: development seeds 0-999 (1000-9999 are refused); confirmatory
-seeds from 10000 and family C only with `--confirmatory --freeze-tag <tag>`,
-which requires a clean checkout that descends from the code-freeze tag with
-unchanged `src/` and `scripts/`, and records the tag and commit.
+Seed policy (round v1): development seeds 0-999 (1000-9999 are refused);
+confirmatory seeds from 10000 and family C only with `--confirmatory
+--freeze-tag mpcbench-freeze-v1`, which requires a clean checkout that
+descends from the code-freeze tag with unchanged `src/` and `scripts/`, and
+records the tag and commit.
 
-## 7. Design rules
+## 7. MPC-Bench v2
+
+The v2 round adds new modules next to the frozen v1 code and never edits a v1
+code path, protocol or result ([`metrics_v2.md`](metrics_v2.md), the
+[v2 preregistration](preregistration/MPC_BENCH_PREREGISTRATION_V2.md)):
+
+```text
+ declared inputs (v2.declared_inputs) ──► estimators NAS v3, IIM v5, RAM-PE v3, PDI v3 (+ v1 SRPI)
+ designs_v2 / adversarial_v2 / forward_v2 ──► run_bench_v2: one simulation per task, scored under
+                                               several declarations, views and estimator forms
+                                             ─► evidence_v2 (tost-v2, protocols /3 from
+                                                protocols/v2/generated/) ─► records mpc-bench-result/3
+ dev_calibration.py (development seeds) + decisions ──► build_protocols_v2.py ──► protocols/v2/generated/
+ confirmatory run plan ──► build_registry_v3.py ──► integrity_audit.py ──► bench_hypotheses_v2.py
+                                                                         (hypothesis_engine)
+```
+
+- **Seed policy (round v2)**: development seeds 0-999, confirmatory seeds from
+  20000; the v1 block 10000-19999 is never reused (`v2.seeds`,
+  `protocols/v2/seed_map_v2.json`).
+- **Confirmatory guard**: `v2.provenance.confirmatory_guard` refuses a dirty
+  tree, a missing tag `mpcbench-freeze-v2`, and `src/` or `scripts/` trees
+  that differ from the tag. Commits after the tag change those trees, so a
+  confirmatory run, the integrity audit and the evaluator run from a checkout
+  of the tag.
+- **v1 regression gate**: `scripts/v2/regression_gate.py` pins the read-only
+  v1 files by SHA-256 and re-judges and re-runs stored v1 records (it needs
+  the stored v1 outputs, which are not versioned).
+
+**Naming.** v1 and v2 are the two freeze rounds of MPC-Bench. Within round
+v1, "v2" also names the second evidence-layer revision of 1.1.0 (protocol
+schema `/2`), and bench 2.0.0 is the v1 benchmark; the `_v2` modules and
+`v2/` folders belong to round v2. A suffix such as `_v3` or `_v5` on an
+estimator numbers that estimator's revision, not the round.
+
+## 8. Design rules
 
 1. **Measured inputs only.** No silent fallbacks (TR, events, baselines,
    feedback). A quantity that cannot be measured is NaN with a reason string; a
@@ -205,10 +246,11 @@ unchanged `src/` and `scripts/`, and records the tag and commit.
 7. **Local and HPC parity.** Hunter results equal the local computation up to
    rounding; the hardware self-test checks the device kernels against NumPy.
 
-## 8. Tests
+## 9. Tests
 
 `tests/` holds regression, ground-truth, null and property tests (run with
-`python -m pytest -q`). Some groups:
+`python -m pytest -q`); `tests/v2/` holds the tests of the v2 round. Some
+groups:
 
 | Area | Test files (examples) |
 |---|---|
@@ -221,3 +263,4 @@ unchanged `src/` and `scripts/`, and records the tag and commit.
 | protocols, analysis and registry | `test_protocols.py`, `test_protocol_examples.py`, `test_nas_declared_workspace.py`, `test_estimator_version_columns.py`, `test_empirical_reference.py`, `test_default_empirical_run.py`, `test_analysis_scripts.py`, `test_necessity.py`, `test_predictions_registry.py`, `test_definedness_audit.py`, `test_figures.py` |
 | preprocessing, events, orchestration | `test_preprocessing_fmri.py`, `test_preprocessing_eeg.py`, `test_event_parsing.py`, `test_run_pipeline_orchestration.py`, `test_tr_fallback.py` |
 | dashboard, packaging, synthetic objects | `test_dashboard_security.py`, `test_dashboard_run_plan.py`, `test_packaging_infra.py`, `test_synthetic_generator.py` |
+| MPC-Bench v2 (`tests/v2/`) | `test_status_rule_v2.py`, `test_nas_v3.py`, `test_iim_v5.py`, `test_ram_v3.py`, `test_pdi_v3.py`, `test_run_bench_v2.py`, `test_designs_v2.py`, `test_seed_policy_v2.py`, `test_build_protocols_v2.py`, `test_hypothesis_engine.py`, `test_integrity_audit.py`, `test_v1_regression_gate.py`, `test_prereg_v2_consistency.py`, `test_docs_v2.py` |
