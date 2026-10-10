@@ -1166,8 +1166,8 @@ class ModuleScorer(Scorer):
         except ModuleNotFoundError as exc:
             if exc.name == self.module:
                 raise EstimatorUnavailableError(
-                    f"{self.version}: module {self.module} is not part of this "
-                    "release") from None
+                    f"{self.version}: module {self.module} is "
+                    f"{D.NOT_INCLUDED}") from None
             raise
 
     def score(self, ctx):
@@ -2196,7 +2196,7 @@ def check_plan(tasks: Sequence[D.TaskSpec], protocols: Mapping[str, ResolvedProt
                     unavailable.add(sc.version)
     if unavailable and not settings.allow_unavailable_estimators:
         raise RunPolicyError(
-            "estimator modules not part of this release: "
+            f"estimator modules {D.NOT_INCLUDED}: "
             + ", ".join(sorted(unavailable))
             + " (restrict the principles, or allow them to be recorded as "
               "estimator errors)")

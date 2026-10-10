@@ -6,8 +6,9 @@ in the tables of the v1 calibration.
 The design (cells, seeds, hub partition, the declaration ``none`` under the
 A-R classification) lives in ``impact_pipeline.bench.designs_v2.
 null_calibration``; its tasks run through the v2 runner like every other
-design (``scripts/run_bench_v2.py run null_calibration``, which the
-confirmatory run script calls). This script adds:
+design (``scripts/run_bench_v2.py run null_calibration``, which
+``scripts/v2/dev_calibration.py`` and the confirmatory run script call).
+This script adds:
 
 ``plan``
     the cell grid of a split: tasks per cell, the seed base and the

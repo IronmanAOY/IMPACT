@@ -38,13 +38,13 @@ confirmatory replication block 20900-20919 at the held-out regime (the
 forward views' anchor replication, HCv2-6), extended to 20939 for an arm
 that the CD-11 rule extends (:func:`replication_seeds`; decided after the
 held-out release: the Hopf arm). ``dry_run`` (seeds 384-399) and
-``dev_regime`` (804-819): the same conditions at about 15 % scale, at the development
-regime. ``reference`` (900-939): the anchor conditions (``G_nom``,
-PC_nominal) at the held-out regime, computed only after the held-out
-predictions are committed; ``reference_development``: the same seeds at the
-development regime. ``smoke`` (980-984): the anchor conditions at the
-held-out regime, outputs discarded unread. No other development task may
-use the held-out regime (:func:`check_regime_policy`).
+``dev_regime`` (804-819): the same conditions at about 15 % scale, at the
+development regime. ``reference`` (900-939): the anchor conditions
+(``G_nom``, PC_nominal) at the held-out regime, computed only after the
+held-out predictions are committed; ``reference_development``: the same
+seeds at the development regime. ``smoke`` (980-984): the anchor conditions
+at the held-out regime, outputs discarded unread. No other development task
+may use the held-out regime (:func:`check_regime_policy`).
 
 Record contract (what the registry builder and the hypotheses read)
 -------------------------------------------------------------------

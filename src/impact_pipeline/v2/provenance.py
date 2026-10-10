@@ -90,13 +90,13 @@ def protocol_file_record(path) -> dict:
 # --------------------------------------------------------------------------
 # git
 # --------------------------------------------------------------------------
-def _git(repo_root, *args) -> Optional[str]:
+def _git(repo_root, *args, timeout=30) -> Optional[str]:
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo_root), *args],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
             check=False,
             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         )
@@ -108,22 +108,11 @@ def _git(repo_root, *args) -> Optional[str]:
 def main_checkout_root(repo_root=REPO_ROOT) -> Optional[Path]:
     """The main working tree of the repository ``repo_root`` belongs to (the
     parent of the common git directory), or None outside git."""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute",
-             "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
-        )
-    except Exception:  # noqa: BLE001
-        return None
-    common = proc.stdout if proc.returncode == 0 else None
+    common = _git(repo_root, "rev-parse", "--path-format=absolute",
+                  "--git-common-dir", timeout=60)
     if not common:
         return None
-    path = Path(common.strip())
+    path = Path(common)
     return path.parent if path.name == ".git" else None
 
 

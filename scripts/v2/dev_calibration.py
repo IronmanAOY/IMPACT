@@ -175,8 +175,6 @@ BATTERY_CLASS_IDS = tuple(c[0] for c in BATTERY_CLASSES)
 # existed: 450 content-on and 360 no-content runs, which leaves room for
 # runs without an estimator output.
 CONCORDANCE_MIN_RUNS = 300
-N_CONTENT_ON_CLASSES = sum(c[1] == CONTENT_ON for c in BATTERY_CLASSES)
-N_NO_CONTENT_CLASSES = len(BATTERY_CLASSES) - N_CONTENT_ON_CLASSES
 # Family-B cells of the held-out non-monotone regime (HO-5): no v2 estimator
 # output before the freeze. (system, parameter, values)
 FAMILY_B_HELD_OUT = (("ring", "coupling", (0.9, 1.5)),)

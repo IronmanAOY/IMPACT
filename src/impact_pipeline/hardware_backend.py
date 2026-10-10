@@ -139,7 +139,7 @@ def _load_cupy_backend(requested: str, *, require_rocm: bool, strict: bool) -> H
         props = cp.cuda.runtime.getDeviceProperties(0)
         raw_name = props.get("name", b"") if isinstance(props, dict) else b""
         if isinstance(raw_name, bytes):
-            device_name = _prop_text(raw_name)
+            device_name = raw_name.decode("utf-8", errors="replace")
         else:
             device_name = str(raw_name or "GPU/APU")
     except Exception:
