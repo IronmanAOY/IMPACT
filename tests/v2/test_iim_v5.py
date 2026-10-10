@@ -15,6 +15,7 @@ from impact_pipeline import evidence_v2 as EV
 from impact_pipeline import iim_xp
 from impact_pipeline import mpc_metrics as mm
 from impact_pipeline.bench import forward
+from impact_pipeline.bench import forward_v2 as F2
 from impact_pipeline.bench.generators import (
     family_b_network,
     make_system,
@@ -630,12 +631,7 @@ def montage(reference="average", T=4000, seed=0):
 
 
 def v1_quadrants(n_sensors=64):
-    s = forward.sensor_positions(n_sensors)
-    out = {}
-    for name, sx, sy in IIM.QUADRANTS:
-        out[name] = [i for i in range(n_sensors)
-                     if np.sign(s[i, 0]) == sx and np.sign(s[i, 1]) == sy]
-    return out
+    return F2.quadrant_clusters(forward.sensor_positions(n_sensors))
 
 
 def test_macro_rank_deficient_on_an_average_referenced_full_montage():
@@ -650,34 +646,34 @@ def test_macro_rank_deficient_on_an_average_referenced_full_montage():
     r = IIM.compute_iim_v5(montage("none"), lag=2, macro_nodes=quads, params=NO_SE,
                            observation_stage="sensor", observation_admitted=True)
     assert r["details"]["rank_condition"]["ok"]
-    clusters = IIM.rank_safe_clusters(forward.sensor_positions(64))
+    clusters = F2.rank_safe_clusters(forward.sensor_positions(64))
     members = [i for v in clusters.values() for i in v]
     assert [len(v) for v in clusters.values()] == [8, 8, 8, 8]
     assert len(set(members)) == 32  # disjoint, and they leave half the montage out
     assert IIM.zero_lag_rank(IIM.macro_signals(x, clusters))["ok"]
-    assert [len(v) for v in IIM.rank_safe_clusters(
+    assert [len(v) for v in F2.rank_safe_clusters(
         forward.sensor_positions(32)).values()] == [4, 4, 4, 4]
 
 
 def test_rank_safe_clusters_skip_midline_electrodes():
     """Electrodes on a midline (a zero coordinate) belong to no quadrant;
-    each cluster holds the k electrodes nearest its quadrant's centroid, and
-    a quadrant with fewer than k electrodes is refused."""
+    each cluster holds the k = min(8, floor(n / 8)) electrodes nearest its
+    quadrant's centroid, and a montage without four quadrants or with too
+    few electrodes for k >= 1 is refused."""
     grid = np.array([(x, y) for x in (-2, -1, 0, 1, 2) for y in (-2, -1, 0, 1, 2)],
                     dtype=float)
-    clusters = IIM.rank_safe_clusters(grid, n_per_cluster=4)
+    clusters = F2.rank_safe_clusters(grid)
     members = [i for v in clusters.values() for i in v]
-    assert len(members) == len(set(members)) == 16
+    assert len(members) == len(set(members)) == 12  # k = 3 on 25 electrodes
     assert not any(grid[i, 0] == 0 or grid[i, 1] == 0 for i in members)
-    for name, sx, sy in IIM.QUADRANTS:
-        assert all(np.sign(grid[i, 0]) == sx and np.sign(grid[i, 1]) == sy
-                   for i in clusters[name])
-    # one electrode per quadrant nearest its centroid at (+-1.5, +-1.5)
-    assert len(IIM.rank_safe_clusters(grid, n_per_cluster=1)["R_ant"]) == 1
-    with pytest.raises(ValueError):
-        IIM.rank_safe_clusters(grid, n_per_cluster=5)
-    with pytest.raises(ValueError):
-        IIM.rank_safe_clusters(grid[:, :1])
+    quadrants = F2.quadrant_clusters(grid)
+    assert list(clusters) == list(quadrants)
+    for name, idx in clusters.items():
+        assert set(idx) <= set(quadrants[name])
+    with pytest.raises(F2.ForwardV2Error):
+        F2.rank_safe_clusters(grid[grid[:, 0] >= 0])  # two quadrants only
+    with pytest.raises(F2.ForwardV2Error):
+        F2.rank_safe_clusters(grid[np.all(np.abs(grid) == 1, axis=1)])  # k = 0
 
 
 def test_v1_quadrant_montage_on_hopf_sources_is_rank_deficient():
@@ -689,7 +685,7 @@ def test_v1_quadrant_montage_on_hopf_sources_is_rank_deficient():
 
 def test_zca_orthogonalisation():
     x = montage("average", T=3000, seed=4)
-    y = IIM.macro_signals(x, IIM.rank_safe_clusters(forward.sensor_positions(64)))
+    y = IIM.macro_signals(x, F2.rank_safe_clusters(forward.sensor_positions(64)))
     yt, w = IIM.zca(y)
     np.testing.assert_allclose(w, w.T, atol=1e-12)
     np.testing.assert_allclose(yt @ yt.T / yt.shape[1], np.eye(4), atol=1e-9)
@@ -714,7 +710,7 @@ def test_zca_orthogonalisation():
 
 def test_observation_gate():
     x = montage("average", T=3000, seed=5)
-    y = IIM.macro_signals(x, IIM.rank_safe_clusters(forward.sensor_positions(64)))
+    y = IIM.macro_signals(x, F2.rank_safe_clusters(forward.sensor_positions(64)))
     fast = {"n_null": 0, "se_method": None, "preprocess": "zca"}
     for stage in ("sensor", "source_estimate"):
         r = IIM.compute_iim_v5(y, lag=2, params=fast, observation_stage=stage)

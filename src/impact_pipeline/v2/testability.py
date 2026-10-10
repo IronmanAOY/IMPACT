@@ -7,10 +7,10 @@ the ``impact-mpc-protocol/3`` family protocols. They never read a
 confirmatory seed and never read the construct value ``c`` of a target: the
 gate reads statuses and precision only.
 
-**Testability gating** (design 4.5). For every ABSENT-type hypothesis part
-(target ABSENT on an own-lesion or construct-null witness) the development
-rate ``pi0`` is the empirical ABSENT rate of the target on the witness under
-the frozen v2 rule (n >= 40 runs); the analytic
+**Testability gating** (preregistration v2, section 3.7). For every
+ABSENT-type hypothesis part (target ABSENT on an own-lesion or construct-null
+witness) the development rate ``pi0`` is the empirical ABSENT rate of the
+target on the witness under the frozen v2 rule (n >= 40 runs); the analytic
 ``mean max(0, 2 Phi(delta / se_c - q_A) - 1)`` is reported beside it. For
 every "PRESENT in >= 80 %" part, ``pi1`` is the empirical PRESENT rate on the
 positive control (analytic ``mean Phi((1 - z) / se_c - q_P)`` beside it). A
@@ -21,22 +21,23 @@ positive control for PRESENT parts), and its predicted
 ``ABSENT_NOT_REACHABLE`` rate is written down. The rows form the protocol's
 ``precision`` block (:func:`precision_block`).
 
-**Anchors and necessity sets** (design 4.6). On the development reference
-block (seeds 900-939) a principle's anchor is valid iff at least 36 of the
-40 excesses of PC_nominal are finite and the one-sided 95 % Student-t lower
-bound of their mean is > 0 (:func:`anchor_validity`); it is specific iff the
-mean paired contrast PC minus own lesion on the same seeds is >= 0.5 x the
-anchor and its one-sided 95 % lower bound is > 0 (:func:`anchor_specificity`;
-otherwise ``NONSPECIFIC_ANCHOR``). ``N_anch`` = the declared principles that
-are valid and specific; the fallback is F0 (all declared principles
-anchored), F1 (two or more but not all), F2 (one) or F3 (none). The block is
-the protocol's ``anchors`` field (:func:`anchors_block`); ``alpha_A`` does not
-depend on ``N_anch``.
+**Anchors and necessity sets** (preregistration v2, section 3.6). On the
+development reference block (seeds 900-939) a principle's anchor is valid
+iff at least 36 of the 40 excesses of PC_nominal are finite and the one-sided
+95 % Student-t lower bound of their mean is > 0 (:func:`anchor_validity`);
+it is specific iff the mean paired contrast PC minus own lesion on the same
+seeds is >= 0.5 x the anchor and its one-sided 95 % lower bound is > 0
+(:func:`anchor_specificity`; otherwise ``NONSPECIFIC_ANCHOR``). ``N_anch`` =
+the declared principles that are valid and specific; the fallback is F0 (all
+declared principles anchored), F1 (two or more but not all), F2 (one) or F3
+(none). The block is the protocol's ``anchors`` field
+(:func:`anchors_block`); ``alpha_A`` does not depend on ``N_anch``.
 
-**Mechanism on** (design 4.7). A sweep dose counts as "mechanism on" for a
-principle and protocol only if it is at least 0.5 x the nominal dose and the
-development median ``c`` at that dose is at least ``2 delta``
-(:func:`mechanism_on`); only such rows enter the false-exclusion checks.
+**Mechanism on** (preregistration v2, section 6.4). A sweep dose counts as
+"mechanism on" for a principle and protocol only if it is at least 0.5 x the
+nominal dose and the development median ``c`` at that dose is at least
+``2 delta`` (:func:`mechanism_on`); only such rows enter the false-exclusion
+checks.
 
 **Implied precision.** ``s_A = delta / q_A`` is the largest ``se_c`` at which
 the TOST can pass at ``c = 0`` (:func:`absent_precision`), ``s_P = (1 - z) /
@@ -82,7 +83,6 @@ ANCHOR_VALID_SPECIFIC = "valid_specific"
 ANCHOR_VALID_NONSPECIFIC = "valid_nonspecific"
 ANCHOR_INVALID = "invalid"
 ANCHOR_STATUSES = (ANCHOR_VALID_SPECIFIC, ANCHOR_VALID_NONSPECIFIC, ANCHOR_INVALID)
-FALLBACKS = ("F0", "F1", "F2", "F3")
 ANCHOR_RULE = {
     "block_size": ANCHOR_BLOCK_SIZE,
     "min_finite": ANCHOR_MIN_FINITE,
@@ -628,7 +628,6 @@ __all__ = [
     "ANCHOR_VALID_SPECIFIC",
     "DECISIVE",
     "DECISIVE_THRESHOLD",
-    "FALLBACKS",
     "KINDS",
     "MECHANISM_ON_C_RATIO",
     "MECHANISM_ON_DOSE_RATIO",

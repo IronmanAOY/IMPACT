@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 Monte-Carlo check of the error-control argument E1-E4 of the status rule
-``tost-v2`` (design 4.3) on synthetic (c, se) drawn under its assumption
-(A-SE): ``(c - theta) / se_c ~ t_df``. A draw is ``c = theta + sigma Z`` and
-``se_c = sigma sqrt(X / df)`` with ``Z ~ N(0, 1)`` and ``X ~ chi2(df)``
-independent, so the pivot is exactly Student t with ``df`` degrees of
-freedom.
+``tost-v2`` (preregistration v2, section 3.5) on synthetic (c, se) drawn
+under its assumption (A-SE): ``(c - theta) / se_c ~ t_df``. A draw is
+``c = theta + sigma Z`` and ``se_c = sigma sqrt(X / df)`` with
+``Z ~ N(0, 1)`` and ``X ~ chi2(df)`` independent, so the pivot is exactly
+Student t with ``df`` degrees of freedom.
 
 * E1: theta <= z gives P(PRESENT) <= alpha; for NAS, the intersection-union
   over the directions (one direction at the boundary).

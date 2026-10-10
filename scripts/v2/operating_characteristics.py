@@ -5,16 +5,16 @@ Operating characteristics of the MPC-Bench v2 decision rules.
 Two uses:
 
 ``--reproduce-synth-oc``
-    recomputes every number of the design's synthesis check
-    (``scratch/SYNTH/synth_oc.py`` / ``synth_oc.log``): (A) seeds needed for
-    demonstrated bounds with 0 events, (B) TOST quantiles and reachability
-    at ``alpha_A = 0.01``, (C) the restated HR1 rule, (D) twin SE
-    calibration, (E) the three-zone rule, (F) the RAM-PE PRESENT rule, (G)
-    the any-event bound, (H) the H0 cell rule for rates near alpha. The
-    Monte-Carlo sections draw from ``default_rng(20260930)`` in the same
-    order as the synthesis script (C, then D, then H), so the printed lines
-    equal the log line for line; the Clopper-Pearson decisions are looked up
-    from precomputed thresholds instead of being recomputed per draw.
+    recomputes every number of the synthesis check of the v2 decision
+    rules: (A) seeds needed for demonstrated bounds with 0 events, (B) TOST
+    quantiles and reachability at ``alpha_A = 0.01``, (C) the restated HR1
+    rule, (D) twin SE calibration, (E) the three-zone rule, (F) the RAM-PE
+    PRESENT rule, (G) the any-event bound, (H) the H0 cell rule for rates
+    near alpha. The Monte-Carlo sections draw from ``default_rng(20260930)``
+    in a fixed order (C, then D, then H), so the printed lines equal the
+    check's original log (``synth_oc.log``, see ``--compare-log``) line for
+    line; the Clopper-Pearson decisions are looked up from precomputed
+    thresholds instead of being recomputed per draw.
 
 ``--rates RATES.json``
     the operating characteristics of hypothesis parts from development
@@ -363,7 +363,7 @@ def evaluate_rates(entries: Sequence[Mapping], *, n_max=400) -> List[dict]:
 
 
 # --------------------------------------------------------------------------
-# reproduction of the synthesis check (synth_oc.log)
+# reproduction of the synthesis check
 # --------------------------------------------------------------------------
 def section_a() -> List[dict]:
     rows = []
@@ -567,7 +567,7 @@ def reproduce_synth_oc(seed: int = SYNTH_OC_SEED) -> dict:
 
 
 def format_synth_oc(r: Mapping) -> List[str]:
-    """The lines of ``synth_oc.log`` from computed sections."""
+    """The printed lines of the synthesis check from computed sections."""
     lines = ["== A. seeds needed for 'demonstrated' bounds with 0 events"]
     for a in r["A"]:
         lines.append(

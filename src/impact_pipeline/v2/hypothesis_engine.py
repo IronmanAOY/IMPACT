@@ -26,8 +26,8 @@ NOT_EVALUABLE when no decisive part is evaluable (NOT_TESTABLE_BY_DESIGN
 when every decisive part is gated). NOT_EVALUABLE and
 NOT_TESTABLE_BY_DESIGN parts are listed, never dropped.
 
-Decision rules (design section 4.9)
------------------------------------
+Decision rules (preregistration v2, section 6.1)
+------------------------------------------------
 Rates are counted over clusters: every re-scoring of one simulation (the R
 and H declarations, cut modes, views, estimator forms) is one cluster, and a
 cluster contributes the share of its rows with the event, so a cell has the
@@ -179,7 +179,6 @@ DECISIVE, REPORTED_ROLE = "decisive", "reported"
 ROLES = (DECISIVE, REPORTED_ROLE)
 ACTIVE, REMOVED_STATUS = "active", "removed"
 PART_STATUSES = (ACTIVE, REMOVED_STATUS)
-LABELS = ("C", "R", "HO")
 DEVELOPMENT_FLAG = "DEVELOPMENT - NOT A RESULT"
 SIDE_CONSERVATIVE, SIDE_ANTI = "conservative", "anti_conservative"
 _TOL = 1e-12
@@ -2467,10 +2466,6 @@ class Fields:
 
 
 _PLAIN_FIELDS = Fields()
-
-
-def _get(row, path, fields: Fields = None):
-    return (fields or _PLAIN_FIELDS).get(row, path)
 
 
 # --------------------------------------------------------------------------

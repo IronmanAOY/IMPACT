@@ -100,7 +100,6 @@ _CODE_TO_VERDICT = {
 }
 
 # v1 helpers re-exported for v2 callers (verdict decomposition is unchanged).
-parse_verdict_reason = v1.parse_reason
 verdict_from_reasons = v1.verdict_from_reasons
 kleene_verdict_codes = v1.kleene_verdict_codes
 
@@ -147,7 +146,6 @@ DF_FIXED = "fixed"
 DF_N_NULL_MINUS_1 = "n_null_minus_1"
 DF_WELCH_SATTERTHWAITE = "welch_satterthwaite"
 DF_NONE = "none"
-DF_RULES = (DF_FIXED, DF_N_NULL_MINUS_1, DF_WELCH_SATTERTHWAITE, DF_NONE)
 
 
 @dataclass(frozen=True)
@@ -1115,7 +1113,8 @@ _V3_FIELDS = tuple(v1._PROTOCOL_FIELDS) + _V3_EXTRA_FIELDS
 SHARED_INPUT_LEVELS = _records.SHARED_INPUTS
 KNOWN_DECLARATIONS = _records.KNOWN_DECLARATIONS
 OBSERVATION_STAGES = _records.OBSERVATION_STAGES
-# Declarations of the bench and their identifiability level (design 2.0.1).
+# Declarations of the bench and their identifiability level (preregistration
+# v2, section 3.2).
 DECLARATION_LEVELS = MappingProxyType({
     "R": "complete", "H": "partial", "P": "partial", "Q10": "partial",
     "Q25": "partial", "J": "partial", "none": "none",

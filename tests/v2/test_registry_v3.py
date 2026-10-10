@@ -42,7 +42,9 @@ P_, A_, U_ = "PRESENT", "ABSENT", "UNDEFINED"
     (0.05, 0.05, 59), (0.01, 0.05, 299), (0.07, 0.05 / 6, 66),
 ])
 def test_minimum_runs_for_a_demonstration(bound, level, n):
-    """The seed numbers of design 3.6 and 4.9 (synth_oc A)."""
+    """The seed numbers of the registry criteria (preregistration v2, section
+    4.5) and of section A of the synthesis check
+    (operating_characteristics.py --reproduce-synth-oc)."""
     assert RV.min_runs_for_demonstration(bound, level) == n
     assert RV.cp_upper(0, n, level) < bound <= RV.cp_upper(0, n - 1, level)
     assert RV.demonstration(0, n, bound, level)["demonstrated"]

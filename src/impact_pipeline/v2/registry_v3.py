@@ -32,8 +32,10 @@ admitted in either direction. When several entries match, each direction
 takes the most restrictive value (``not_observable`` > ``no`` > ``vacuous`` >
 ``yes``), as the v1 registry lets a not-validated entry win.
 
-Criteria (design 3.6; levels in :data:`DEFAULT_ADMISSION_CRITERIA`)
--------------------------------------------------------------------
+Criteria (preregistration v2, section 4.5)
+------------------------------------------
+Levels in :data:`DEFAULT_ADMISSION_CRITERIA`.
+
 * **FM0** anchor: the view's anchor is valid on its reference block.
 * **FMa** specificity: on every declared null class, false PRESENT with a
   one-sided Clopper-Pearson upper bound < 0.07 at level ``0.05 / m``
@@ -88,7 +90,6 @@ class, not on human heads.
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import math
@@ -105,7 +106,6 @@ from impact_pipeline.v2 import reasons as R
 
 REGISTRY_SCHEMA_V3 = "impact-mpc-registry/3"
 REGISTRY_SCHEMA_V2 = v1.REGISTRY_SCHEMA
-REGISTRY_SCHEMAS = (REGISTRY_SCHEMA_V2, REGISTRY_SCHEMA_V3)
 
 YES, NO, VACUOUS, NOT_OBSERVABLE = "yes", "no", "vacuous", "not_observable"
 ADMISSION_VALUES = (YES, NO, VACUOUS, NOT_OBSERVABLE)
@@ -301,9 +301,7 @@ def curtailed_demonstration(events_in_order: Iterable, n_planned, bound,
     order); the result lists how many runs were evaluated before it
     stopped."""
     cur = Curtailment(n_planned, bound, level)
-    n_given = 0
     for ev in events_in_order:
-        n_given += 1
         if cur.update(ev):
             break
     out = cur.result()
@@ -735,15 +733,9 @@ def _check_constraints(regime, legacy=False) -> dict:
     return dict(regime)
 
 
-def _match_field(pattern, value) -> bool:
-    if isinstance(pattern, (list, tuple)):
-        return any(_match_field(p, value) for p in pattern)
-    pat = str(pattern)
-    if pat == "*":
-        return True
-    if value is None:
-        return False
-    return fnmatch.fnmatchcase(str(value).lower(), pat.lower())
+# Entry fields match as in the v1 registry: ``*``, a list of alternatives or
+# a case-insensitive glob.
+_match_field = v1._match_field
 
 
 # --------------------------------------------------------------------------

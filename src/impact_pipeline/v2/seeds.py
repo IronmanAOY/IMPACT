@@ -16,10 +16,9 @@ draws are never re-ordered): the structural stream and every v1 stream stay
 schedule, process noise and rest from ``SeedSequence([seed, r])`` with
 ``1 <= r <= 30``; label errors, cue-onset jitter and the staggered driver use
 the reserved keys 41, 42 and 43 (``SeedSequence([seed, key])``), which a twin
-index can therefore never collide with. Keys 31-40 stay free for further
-named streams (the benchmark design names 31 and 32 for its substrate
-nulls), so a twin index stops at 30; the largest twin set has 8 sessions
-per network.
+index can therefore never collide with. Keys 31-40 are reserved for further
+named streams, so a twin index stops at 30; the largest twin set has 8
+sessions per network.
 
 The seed map (``protocols/v2/seed_map_v2.json``) records the use of every
 block; :func:`load_seed_map` validates it against this policy.

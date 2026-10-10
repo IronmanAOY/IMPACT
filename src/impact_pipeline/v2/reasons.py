@@ -87,7 +87,7 @@ class Flag:
 # --------------------------------------------------------------------------
 # reason codes
 # --------------------------------------------------------------------------
-# v1, unchanged (design 2.0.4, first row)
+# v1, unchanged
 INVALID_ANCHORS = "INVALID_ANCHORS"
 INCONCLUSIVE = "INCONCLUSIVE"
 NO_SAMPLING_SE = "NO_SAMPLING_SE"
@@ -162,7 +162,7 @@ _REASON_LIST = (
     ),
     Reason(
         NO_NULL_CALIBRATION,
-        "v1 evidence layer; IIM C1",
+        "v1 evidence layer; IIM v5 independence null",
         "no null mean, or fewer than 19 finite null draws",
         v1=True,
     ),
@@ -218,45 +218,45 @@ _REASON_LIST = (
     ),
     Reason(
         SAMPLING_UNRESOLVED,
-        "NAS N2",
+        "NAS v3 resolvability gate",
         "dt > tau_c / 2: the sampling does not resolve the coupling time scale",
     ),
     Reason(
         OBSERVATION_MIXED_NOT_ADMITTED,
-        "NAS N10, IIM C7",
+        "observation gates of NAS v3 and IIM v5",
         "sensor or source-estimate observation without an admitting registry "
         "entry",
     ),
     Reason(
         INSUFFICIENT_OCCUPANCY,
-        "IIM C4",
+        "IIM v5 occupancy gate",
         "a macro state unvisited, or the rarest visited row has fewer than "
         "N_min transition pairs",
     ),
     Reason(
         MACRO_RANK_DEFICIENT,
-        "IIM C7",
+        "IIM v5 rank condition of the macro signals",
         "zero-lag correlation of the cluster means with "
         "lambda_min / lambda_max < 1e-6",
     ),
     Reason(
         NOT_APPLICABLE_OBSERVATION_MODEL,
-        "SRPI S6, RAM R-8, PDI P-7",
+        "SRPI, RAM-PE v3 and PDI v3 on family C1",
         "declared inapplicable to the observation model (C1 carrier recording)",
     ),
     Reason(
         INSUFFICIENT_TIMEPOINTS,
-        "NAS N8 secondary",
+        "NAS v3 secondary representation",
         "T - l_max < 10 n_par at every allowed block dimension",
     ),
     Reason(
         INSUFFICIENT_UPDATES,
-        "RAM R-3",
+        "RAM-PE v3",
         "fewer than 30 updates or fewer than two options",
     ),
     Reason(
         ESTIMATOR_ERROR,
-        "v2 runner N13",
+        "v2 runner",
         "the estimator raised; detail: the exception type; other components "
         "are unaffected",
         detail=DETAIL_REQUIRED,

@@ -138,7 +138,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from dataclasses import dataclass
-from typing import Dict, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -193,7 +193,6 @@ BOOTSTRAP_REPLICATES = 50
 BOOTSTRAP_SE_DF = 9.0
 BOOTSTRAP_SE_DF_ALLOWED = (12.0, 9.0)
 JACKKNIFE_GROUPS = 10
-JACKKNIFE_SE_DF = 9.0
 
 # Observation stages (records vocabulary) whose observation mixes sources.
 MIXED_OBSERVATION_STAGES = ("sensor", "source_estimate")
@@ -472,7 +471,7 @@ def shrinkage_intensity(curr, nxt) -> np.ndarray:
         self_counts = np.zeros((BINS, BINS))
         np.add.at(self_counts, (curr[:, i], nxt[:, i]), 1.0)
         self_p = (self_counts + TPM_ALPHA) / (self_counts.sum(axis=1, keepdims=True)
-                                             + TPM_ALPHA * BINS)
+                                              + TPM_ALPHA * BINS)
         target = self_p[states[:, i]]
         with np.errstate(divide="ignore", invalid="ignore"):
             theta = np.where(n_obs[:, None] > 0, counts / np.maximum(n_obs[:, None], 1.0),
@@ -1222,38 +1221,6 @@ def compute_iim_v5_system(system, *, basis=None, strata=None, params=None,
 
 
 # --------------------------------------------------------------------------
-# sensor clusters
-# --------------------------------------------------------------------------
-QUADRANTS = (("L_ant", -1, 1), ("R_ant", 1, 1), ("L_post", -1, -1), ("R_post", 1, -1))
-
-
-def rank_safe_clusters(positions, n_per_cluster: Optional[int] = None) -> Dict[str, list]:
-    """Default sensor clusters of the v2 sensor pipeline: the ``k = min(8,
-    floor(n_sensors / 8))`` electrodes nearest the centroid of each quadrant
-    (by the signs of the left-right and anterior-posterior coordinates).
-    The clusters are disjoint and leave the other electrodes out, so they do
-    not partition the montage (no linear constraint under the average
-    reference)."""
-    pos = np.asarray(positions, dtype=float)
-    if pos.ndim != 2 or pos.shape[1] < 2:
-        raise ValueError("positions must be n_sensors x (2 or 3)")
-    n_sensors = pos.shape[0]
-    k = min(8, n_sensors // 8) if n_per_cluster is None else int(n_per_cluster)
-    if k < 1:
-        raise ValueError("too few sensors for four clusters")
-    out = {}
-    for name, sx, sy in QUADRANTS:
-        idx = [i for i in range(n_sensors)
-               if np.sign(pos[i, 0]) == sx and np.sign(pos[i, 1]) == sy]
-        if len(idx) < k:
-            raise ValueError(f"quadrant {name} has fewer than {k} electrodes")
-        cen = pos[idx].mean(axis=0)
-        d = np.linalg.norm(pos[idx] - cen, axis=1)
-        out[name] = sorted(int(idx[j]) for j in np.argsort(d, kind="stable")[:k])
-    return out
-
-
-# --------------------------------------------------------------------------
 # record fields and evidence items
 # --------------------------------------------------------------------------
 def _cut_view(result: Mapping, cut_mode: Optional[str]) -> dict:
@@ -1363,7 +1330,6 @@ __all__ = [
     "ESTIMATOR_VERSION",
     "IIMParams",
     "JACKKNIFE_GROUPS",
-    "JACKKNIFE_SE_DF",
     "MAX_STRATA",
     "MIN_NULL_DRAWS",
     "MIXED_OBSERVATION_STAGES",
@@ -1412,7 +1378,6 @@ __all__ = [
     "null_min_shift",
     "occupancy",
     "rank_p_value",
-    "rank_safe_clusters",
     "residualise",
     "select_cut_modes",
     "shrinkage_intensity",

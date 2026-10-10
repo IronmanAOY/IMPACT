@@ -46,14 +46,14 @@ TASK_ERROR = "error"
 TASK_STATUSES = (TASK_OK, TASK_OK_WITH_COMPONENT_ERRORS, TASK_ERROR)
 
 VERDICTS = ("MPC_CONSISTENT", "EXCLUDED", "UNDETERMINED")
-# Declarations of the bench (design 2.0.1); family B declares its drivers as
-# recorded, hidden or label-error drivers.
+# Declarations of the bench (preregistration v2, section 3.2); family B
+# declares its drivers as recorded, hidden or label-error drivers.
 KNOWN_DECLARATIONS = (
     "R", "H", "P", "Q10", "Q25", "J", "none", "recorded", "hidden", "label_error",
 )
 # Observation stages (registry v3 regime key ``observation_stage``).
 OBSERVATION_STAGES = ("source", "sensor", "source_estimate", "bold")
-# Identifiability record (NAS N7; registry v3 vocabulary).
+# Identifiability record (registry v3 vocabulary).
 SHARED_INPUTS = ("complete", "partial", "none")
 OBSERVATIONS = ("direct", "source_estimate", "sensor_mixing", "hemodynamic")
 HUB_PRIVILEGED = (True, False, "not_tested")

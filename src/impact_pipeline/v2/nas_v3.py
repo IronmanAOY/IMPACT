@@ -130,8 +130,8 @@ protocol's ``estimators.NAS`` block are the field names).
 10. *Descriptors* (reported, never gating; each in its own ``try`` block and
     computed after the gated value, so a descriptor can never abort it):
     the frozen v1 statistic (``pooled_v1``), the rank-1 pooled statistic
-    (``pooled_rank1``: one leading component per pooled block, the v1
-    diagnosis' rank variant), ``conditioning_delta`` (per-direction excess
+    (``pooled_rank1``: one leading component per pooled block, a rank
+    variant of the v1 statistic), ``conditioning_delta`` (per-direction excess
     with ``U`` minus without, same null shifts), ``zero_lag_coupling``
     (first canonical correlation of the full-model residuals of the hub and
     the stacked periphery), ``bic_order`` (BIC-optimal number of leading
@@ -200,7 +200,7 @@ NULL_MIN_SHIFT_FRACTION = 0.1
 NULL_SEED_FACTOR = 1000
 NULL_SEED_OFFSET = 17
 
-# Block representations (design N8).
+# Block representations (preregistration v2, section 3.3).
 REPRESENTATION_BLOCK_MEAN = "block_mean"  # primary
 REPRESENTATION_ALL_UNITS = "all_units"  # secondary (preregistered)
 REPRESENTATIONS = (REPRESENTATION_BLOCK_MEAN, REPRESENTATION_ALL_UNITS)
@@ -223,7 +223,8 @@ _SD_FLOOR = 1e-12
 # magnitude rather than with exact zero.
 NULL_SD_RTOL = 1e-10
 
-# SE methods (section 2.0.5; the evidence layer's SE-method contract).
+# SE methods (preregistration v2, section 7.1; the evidence layer's SE-method
+# contract).
 SE_CONTIGUOUS, SE_INTERLEAVED = "contiguous", "interleaved"
 SE_SCHEMES = (SE_CONTIGUOUS, SE_INTERLEAVED)
 SE_GROUPS = (10, 20)
@@ -253,7 +254,7 @@ _OBSERVATION_OF_SUBSTRATE = {
     "bold_like_forward": "hemodynamic",
 }
 
-# Descriptors (design 3.11).
+# Descriptors (step 10 of the module docstring).
 DESCRIPTOR_POOLED_V1 = "pooled_v1"
 DESCRIPTOR_POOLED_RANK1 = "pooled_rank1"
 DESCRIPTOR_CONDITIONING_DELTA = "conditioning_delta"

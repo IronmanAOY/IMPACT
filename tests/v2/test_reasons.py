@@ -6,7 +6,8 @@ import pytest
 from impact_pipeline import evidence as E
 from impact_pipeline.v2 import reasons as R
 
-# Every reason and flag of the design's vocabulary table (2.0.4).
+# Every reason and flag that preregistration v2, section 3.2, names, and the
+# HUB_NOT_PRIVILEGED flag of docs/metrics_v2.md.
 DESIGN_REASONS = (
     "INVALID_ANCHORS", "INCONCLUSIVE", "NO_SAMPLING_SE", "NULL_FAMILY_MISMATCH",
     "MISSING_CHANNEL", "ABSENT_NOT_REACHABLE", "NULL_MODEL_VIOLATED",

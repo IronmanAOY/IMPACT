@@ -51,8 +51,9 @@ def test_clopper_pearson_inverts_the_binomial_and_matches_v1(k, n):
 
 
 def test_seeds_needed_for_a_demonstration_match_the_design():
-    # design 4.9 / synth_oc A: 42 / 51 / 61 / 66 seeds for 0.07 at m = 1/2/4/6,
-    # 59 for 0.05, 149 for 0.02, 299 for 0.01
+    # preregistration v2, sections 4.5 and 6.1, and section A of the synthesis
+    # check (operating_characteristics.py --reproduce-synth-oc): 42 / 51 / 61 /
+    # 66 seeds for 0.07 at m = 1/2/4/6, 59 for 0.05, 149 for 0.02, 299 for 0.01
     for bound, level, n in [
         (0.07, 0.05, 42),
         (0.07, 0.025, 51),
@@ -1102,8 +1103,9 @@ def test_protocol_names_map_to_the_estimator_names():
 # ==========================================================================
 # operating characteristics (CD-11) and the synthesis check
 # ==========================================================================
-# the lines of the synthesis check's log (scratch/SYNTH/synth_oc.log),
-# verbatim; long lines are split by implicit string concatenation
+# the lines of the synthesis check's original log, verbatim, which
+# operating_characteristics.py --reproduce-synth-oc must print; long lines are
+# split by implicit string concatenation
 SYNTH_OC_LOG = (
     "== A. seeds needed for 'demonstrated' bounds with 0 events",
     '  bound 0.07 level 0.0500 (m=1): n >= 42',
@@ -1273,14 +1275,15 @@ def test_operating_characteristics_reproduce_the_synthesis_log(oc):
 
 def test_exact_operating_characteristics(oc):
     # three-zone at a true rate of 0.9: P(SUPPORTED) 0.957 (20) and 0.988 (45);
-    # at 0.8, P(FALSIFIED) <= 0.043 (design 4.9)
+    # at 0.8, P(FALSIFIED) <= 0.043 (section E of the synthesis check)
     assert round(oc.oc_three_zone(20, 0.9)["supported"], 3) == 0.957
     assert round(oc.oc_three_zone(45, 0.9)["supported"], 3) == 0.988
     assert oc.oc_three_zone(40, 0.8)["falsified"] <= 0.043 + 5e-4
     # RAM-PE PRESENT rule: P(SUPPORTED) 0.99 at 0.8 and 0.81 at 0.7 with 40 seeds
     assert round(oc.oc_rate_lower_bound(40, 0.8)["supported"], 2) == 0.99
     assert round(oc.oc_rate_lower_bound(40, 0.7)["supported"], 2) == 0.81
-    # the analytic SE-calibration OC agrees with the simulated synthesis values
+    # the analytic SE-calibration OC agrees with the simulated values of
+    # section D of the synthesis check
     k = oc.oc_kappa(60, 1.0)
     assert k["supported"] == pytest.approx(0.983, abs=0.002)
     assert oc.oc_kappa(60, 1.5)["falsified"] == pytest.approx(0.662, abs=0.005)
@@ -3860,12 +3863,6 @@ def test_operating_characteristics_of_a_part_with_several_cells(oc):
 # the record names of the file are those the v2 runner and the family-B
 # validation script write
 # ==========================================================================
-# vocabulary values bound to records that no merged producer writes yet
-# (none: the forward arms and the null-calibration generator run through the
-# v2 runner)
-PENDING_VOCABULARY: set = set()
-
-
 def _values(v):
     return list(v) if isinstance(v, list) else [v]
 
@@ -3887,8 +3884,6 @@ def test_vocabulary_names_the_designs_forms_and_views_of_the_producers():
     views = {v for vs in FW.VIEWS_OF_ARM.values() for v in vs} | {D.SOURCE_VIEW}
     assert set(views) <= set(F2.VIEWS) | {D.SOURCE_VIEW}
     for key, val in vocab.items():
-        if key in PENDING_VOCABULARY:
-            continue
         kind = key.split(".")[0]
         want = {"design": designs, "family": families, "form": forms,
                 "view": views, "arm": set(FW.ARMS)}.get(kind)

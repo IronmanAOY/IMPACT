@@ -1,6 +1,6 @@
 """
 Recording device, input declarations and the common input basis of
-MPC-Bench v2 (design sections 2.0.1-2.0.3).
+MPC-Bench v2 (preregistration v2, section 3.2).
 
 NAS v3 and IIM v5 condition on the same declared exogenous inputs, built here
 in three steps.
@@ -139,7 +139,7 @@ COMMON_DRIVER = "common_driver"
 RECORDABLE_STATES_KEY = "recordable_states"
 RECORDABLE_CHANNELS_KEY = "recordable_channels"
 
-# Exogeneity rule (design 2.0.1; NAS N3).
+# Exogeneity rule (preregistration v2, section 3.2).
 EXOGENOUS_TASK_EVENT_TYPES = ("goal_cue", "stimulus", "other_caused")
 ENDOGENOUS_EVENT_TYPES = ("response", "feedback", "action", "self_caused")
 EXOGENOUS_INPUTS = EXOGENOUS_TASK_EVENT_TYPES + (CONTEXT_CUE, SLOW_PHASE)
@@ -154,7 +154,7 @@ CUE_JITTER_HALF_WIDTH_SEC = 0.25
 LABEL_ERROR_STREAM = "label_error"  # SeedSequence([seed, 41])
 CUE_JITTER_STREAM = "cue_jitter"  # SeedSequence([seed, 42])
 
-# Coupling time scale and lags (design 2.0.3).
+# Coupling time scale and lags (preregistration v2, section 3.2).
 TAU_C_DEFAULT_SEC = 0.1  # human-EEG default; bench substrates derive theirs
 TAU_C_SENSITIVITY_SEC = (0.05, 0.2)  # reported on the bench, never chosen after
 BASIS_TAU_MULTIPLIERS = (1.0, 3.0, 10.0)

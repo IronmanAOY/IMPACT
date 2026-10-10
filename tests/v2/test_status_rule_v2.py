@@ -101,7 +101,8 @@ def test_quantiles_match_the_t_table():
     (9, 2, 0.031), (19, 2, 0.035),
 ])
 def test_implied_precision_of_the_design(df, members, s_a):
-    """s_A = delta / q_A (design 4.1), NAS per direction at alpha_A / 2."""
+    """s_A = delta / q_A (preregistration v2, section 3.4), NAS per direction
+    at alpha_A / 2."""
     assert round(T.absent_precision(df, members=members), 3) == s_a
 
 
@@ -953,7 +954,8 @@ def test_amplitude_rejudging_of_quadratic_absents():
 # testability gating (precision table)
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("se, df, members, pi0", [
-    # design 4.8: pi0 at c = 0 from the development precision
+    # preregistration v2, section 3.7: pi0 at c = 0 from the development
+    # precision
     (0.020, 9, 2, 0.92), (0.025, 9, 2, 0.55), (0.030, 9, 2, 0.07),
     (0.023, 9, 2, 0.73), (0.050, 12, 1, 0.00), (0.32, 9, 1, 0.00),
     (0.021, 54, 1, 0.98), (0.10, 9, 1, 0.00),
