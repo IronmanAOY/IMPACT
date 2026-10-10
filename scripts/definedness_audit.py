@@ -128,17 +128,6 @@ SKIP_DIRS = {"derivatives", "sourcedata", "code", "stimuli", ".git", ".datalad",
 REST_TASK_RE = re.compile(r"rest|baseline", re.I)
 MAX_HEADER_BYTES = 65536
 
-CHANNELS = (
-    ("RAM", "untyped"),
-    *(("RAM", c) for c in IMPACT_CHANNELS),
-    ("PDI", "repertoire"),
-    ("PDI", "legacy_baseline"),
-    ("NAS", "capacity"),
-    ("IIM", "default"),
-    ("SRPI", "legacy_self_other"),
-    ("SRPI", "agency"),
-)
-
 
 class MetadataReader:
     """Opens only metadata files, read-only, and logs every access."""

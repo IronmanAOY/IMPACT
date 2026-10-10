@@ -79,8 +79,6 @@ from impact_pipeline import evidence as E  # noqa: E402
 # the preregistered default protocol (hash 383eb310..., unchanged since the
 # freeze); the shipped examples are derived from it
 BASE_PROTOCOL = REPO_ROOT / "protocols" / "mpc_default_v1.json"
-# opt-in alternative base (--base): RAM declared on its behavioural channel only
-BEHAVIOURAL_RAM_PROTOCOL = REPO_ROOT / "protocols" / "mpc_behavioural_ram_v1.json"
 EXAMPLES_DIR = REPO_ROOT / "protocols" / "examples"
 SCHAEFER_ORDER = (
     REPO_ROOT / "atlases" / "schaefer_2018"

@@ -104,8 +104,8 @@ def _extract_first_power_w(text: str, patterns: list[str]) -> float | None:
 
 def _parse_powermetrics_output(raw: str) -> dict[str, Any]:
     # CPU die temperature only: a bare "Die temperature" line counts, but GPU or
-    # ANE die temperatures are reported separately (ANE was previously
-    # mislabelled as the CPU temperature).
+    # ANE die temperatures are reported separately and are never taken as the
+    # CPU temperature.
     cpu_temp_c = _extract_first_float(
         raw,
         [

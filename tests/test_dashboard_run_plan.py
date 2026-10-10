@@ -871,7 +871,7 @@ def test_history_is_bounded_and_deduplicated(tmp_path, monkeypatch):
         {"t": state.history[-1]["t"] + 0.2}
     )  # a second tab polling
     assert len(state.history) == n
-    for _ in range(50):  # idle polls no longer grow the timeline without bound
+    for _ in range(50):  # idle polls do not grow the timeline
         state.snapshot()
     assert len(state.history) <= 100
 

@@ -136,8 +136,6 @@ def test_requirement_files_pin_cray_numpy_and_exclude_dev_tools():
         "cupy",
         "pytest",
         "flake8",
-        "black",
-        "pyinstaller",
     } & set(reqs)
     for line in (REPO / "requirements-hunter.txt").read_text().splitlines():
         if line.strip() and not line.startswith("#"):

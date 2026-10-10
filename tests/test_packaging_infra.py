@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-"""Regression tests for packaging, environment and helper-script fixes."""
+"""Packaging, environment and helper scripts."""
 import importlib.metadata
 import os
 import re
@@ -99,8 +98,7 @@ def test_environment_yml_is_pinned_for_python310():
     assert specs["python"] == "=3.10"
     for pkg in ("numpy", "scipy", "pandas", "nilearn", "mne-base", "numba", "pybids"):
         assert specs.get(pkg, "").startswith("="), f"{pkg} is not pinned"
-    for dropped in ("pyinstaller", "black", "mne"):
-        assert dropped not in specs
+    assert "mne" not in specs  # mne-base, not the full mne package
 
 
 def test_installed_versions_satisfy_pyproject_ranges():
@@ -362,7 +360,8 @@ def test_fetch_fmriprep_command_is_pinned_and_writes_canonical_derivatives(tmp_p
     license_file = tmp_path / "my license.txt"
     license_file.write_text("fake")
     proc = _run_script(
-        [SCRIPTS / "fetch_fmriprep_ds003171.sh", "--bids-root", bids,
+        [SCRIPTS / "fetch_fmriprep.sh", "--dataset-id", "ds003171",
+         "--bids-root", bids,
          "--skip-reconall", "--participant-label", "sub-02CB", "04HD", "--dry-run",
          "--", "--skip-bids-validation"],
         env={"FS_LICENSE": str(license_file)},

@@ -1,5 +1,5 @@
 """Tests of scripts/audit_aggregation.py: the legacy compute_CI is loaded from
-git commit 21ce76a and its compensation / definedness failures are reproduced."""
+git commit 4c74466 and its compensation / definedness failures are reproduced."""
 import json
 import math
 import subprocess
@@ -22,14 +22,15 @@ def _has_legacy_commit():
     return proc.returncode == 0
 
 
-needs_git = pytest.mark.skipif(not _has_legacy_commit(),
-                               reason="legacy commit 21ce76a not in this checkout")
+needs_git = pytest.mark.skipif(
+    not _has_legacy_commit(),
+    reason=f"legacy commit {aa.LEGACY_COMMIT} not in this checkout")
 
 
 @pytest.fixture(scope="module")
 def legacy():
     if not _has_legacy_commit():
-        pytest.skip("legacy commit 21ce76a not in this checkout")
+        pytest.skip(f"legacy commit {aa.LEGACY_COMMIT} not in this checkout")
     return aa.load_legacy_compute_ci(mode="module")
 
 

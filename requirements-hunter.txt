@@ -8,7 +8,7 @@
 # CuPy for ROCm is NOT listed: it must match the ROCm stack and is installed separately
 # (install_hunter_env.sh --cupy source-13.6 | wheel-rocm7). fastrlock is CuPy's runtime dependency,
 # pinned here so a locally built CuPy wheel can be installed with --no-deps.
-# Developer tools (pytest, flake8, black, pyinstaller, bids-validator CLI, node) are not needed on Hunter.
+# Test and lint tools (pytest, flake8) are not needed on Hunter.
 pandas==2.3.3
 scikit-learn==1.7.2
 threadpoolctl==3.6.0

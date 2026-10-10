@@ -327,46 +327,6 @@ def json_ready(value: Any) -> Any:
     return value
 
 
-RUN_PRESETS: dict[str, dict[str, Any]] = {
-    "full_suite": {
-        "label": "Full Suite (Recommended)",
-        "metrics": ["RAM", "PDI", "NAS", "IIM", "SRPI"],
-        "run_preprocessing": True,
-        "run_fmriprep": False,
-        "run_replication": False,
-        "reuse_step2": False,
-        "no_ci": False,
-    },
-    "pdi_only": {
-        "label": "PDI Only",
-        "metrics": ["PDI"],
-        "run_preprocessing": True,
-        "run_fmriprep": False,
-        "run_replication": False,
-        "reuse_step2": False,
-        "no_ci": True,
-    },
-    "nas_only": {
-        "label": "NAS Only",
-        "metrics": ["NAS"],
-        "run_preprocessing": True,
-        "run_fmriprep": False,
-        "run_replication": False,
-        "reuse_step2": False,
-        "no_ci": True,
-    },
-    "quick_sanity": {
-        "label": "Quick Sanity Run",
-        "metrics": ["RAM", "PDI", "NAS"],
-        "run_preprocessing": True,
-        "run_fmriprep": False,
-        "run_replication": False,
-        "reuse_step2": True,
-        "no_ci": True,
-    },
-}
-
-
 HTML_PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -4483,8 +4443,8 @@ HTML_PAGE = """<!doctype html>
       const active = ctl.active_selection || {};
       // Intake fields follow the server only when its active selection actually
       // changes (not on every 2 s poll), and never overwrite fields the user
-      // edited. Previously the poll reverted a newly typed dataset ID within
-      // 2 s, so register/upload went to the wrong dataset.
+      // edited; otherwise a poll would revert a newly typed dataset ID and
+      // register/upload would go to the wrong dataset.
       const selectionSig = JSON.stringify([
         active.dataset_id, active.data_origin, active.out_dir, active.bids_root,
         active.modality_profile, ctl.base_out_dir,
@@ -4833,8 +4793,8 @@ HTML_PAGE = """<!doctype html>
           setText("datasetSetupStatus", "Choose an archive file first.");
           return;
         }
-        // The visible Dataset ID field is the upload target (the hidden mirror
-        // used to be overwritten by the status poll).
+        // The visible Dataset ID field is the upload target, not the hidden
+        // mirror, which the status poll can overwrite.
         const targetDatasetId = txt(
           document.getElementById("datasetId")?.value, ""
         ).trim();
@@ -6557,8 +6517,8 @@ class DashboardState:
             ]
 
         # Reviews must not touch the active selection or the monitoring paths
-        # (dataset_wizard(activate=False)); previously a multi-dataset preview
-        # left the checkpoint/step2/report paths pointing at the last dataset.
+        # (dataset_wizard(activate=False)), so a multi-dataset preview does not
+        # leave the checkpoint/step2/report paths pointing at the last dataset.
         reviews: list[dict[str, Any]] = []
         for base in selected_datasets:
             review_payload = dict(payload)

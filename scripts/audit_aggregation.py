@@ -2,8 +2,8 @@
 """
 Audit of the legacy Consciousness Index (CI) aggregation.
 
-The legacy ``compute_CI`` is loaded *verbatim* from git commit ``21ce76a``
-(``git show 21ce76a:src/impact_pipeline/mpc_metrics.py``) into an in-memory
+The legacy ``compute_CI`` is loaded *verbatim* from git commit ``4c74466``
+(``git show 4c74466:src/impact_pipeline/mpc_metrics.py``) into an in-memory
 module, so the audit reproduces what the released code computed, not a
 re-implementation. Imports the legacy module needs but the current
 environment lacks are replaced by inert stubs (recorded in the output); the
@@ -68,7 +68,7 @@ if str(SRC_ROOT) not in sys.path:
 from impact_pipeline.bench.rules import power_mean  # noqa: E402
 
 AUDIT_VERSION = "audit-aggregation/1.0.0"
-LEGACY_COMMIT = "21ce76a"
+LEGACY_COMMIT = "4c74466"
 LEGACY_PATH = "src/impact_pipeline/mpc_metrics.py"
 # git blob id of LEGACY_PATH at LEGACY_COMMIT (verifies --legacy-source copies).
 LEGACY_BLOB_SHA1 = "26c106b4c5c8fa9e1bf1890fa0b85defdcd941d9"

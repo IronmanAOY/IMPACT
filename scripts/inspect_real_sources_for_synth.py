@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -56,9 +55,6 @@ DEFAULT_SOURCE_ROOT = os.environ.get("IMPACT_SOURCE_ROOT")
 
 FMRI_EXTS = (".nii", ".nii.gz")
 EEG_EXTS = (".vhdr", ".set")
-RAW_BINARY_EXTS = (".eeg", ".fdt")
-TEXT_META_EXTS = (".tsv", ".json", ".bval", ".bvec", ".txt", ".md", ".csv")
-ATLAS_NODES = 64
 _SUBJECT_LABEL_RE = re.compile(r"sub-[A-Za-z0-9]+")
 
 
@@ -158,16 +154,6 @@ def _safe_stat(path: Path) -> dict[str, Any]:
         return {"size": int(st.st_size), "exists": True, "placeholder": _is_annex_placeholder(path)}
     except OSError:
         return {"size": 0, "exists": False, "placeholder": True}
-
-
-def _hash_file_sample(path: Path, n_bytes: int = 1024 * 1024) -> str | None:
-    try:
-        h = hashlib.sha256()
-        with path.open("rb") as f:
-            h.update(f.read(n_bytes))
-        return h.hexdigest()
-    except OSError:
-        return None
 
 
 def _list_files(root: Path) -> list[Path]:
@@ -321,7 +307,7 @@ def _cov_eig_summary(ts: np.ndarray, max_nodes: int = 128) -> dict[str, Any]:
     return out
 
 
-def _nifti_stats(path: Path, dataset_id: str, sample_stride: int = 17) -> dict[str, Any]:
+def _nifti_stats(path: Path, dataset_id: str) -> dict[str, Any]:
     row: dict[str, Any] = {
         "path": str(path),
         "name": path.name,

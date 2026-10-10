@@ -16,7 +16,7 @@ Example::
 
     python scripts/figures/render_paper1_figures.py \\
         --results outputs/paper1_mpcbench \\
-        --out docs/manuscript/paper_1_minimal_principles_ncon/manuscript/figures
+        --out outputs/paper1_figures
 """
 from __future__ import annotations
 

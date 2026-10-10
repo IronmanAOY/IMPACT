@@ -85,7 +85,7 @@ esac
 echo "# 7. Import and CPU self-test on the login node (the APU test must run on a compute node)"
 step "PYTHONPATH=\"${repo_root}/src\" python3 -m impact_pipeline.hardware_selftest --target cpu --size 64"
 cat <<EOF
-# 8. Next steps (run by a person; job submission stays under human control):
+# 8. Next steps, run by hand (HLRS requires jobs to be submitted by a person; runbook section 2):
 #    cp "${repo_root}/scripts/hunter/hunter_pbs_setup.sh" "\$WS/hunter_pbs_setup.sh"
 #    export IMPACT_HUNTER_SETUP_FILE="\$WS/hunter_pbs_setup.sh"; source "\$IMPACT_HUNTER_SETUP_FILE"
 #    bash "${repo_root}/scripts/hunter/hunter_smoke_test.sh" --bids-root <BIDS> --out-dir <OUT> --subjects <1-2 IDs> --submit
