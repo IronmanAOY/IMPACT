@@ -687,10 +687,11 @@ def test_se_calibration_on_twins(built, tmp_path, se_factor, inside, outside):
 
 def test_se_calibration_at_the_development_twin_size(built, tmp_path):
     """5 networks x 7 sessions (df 30): the 90 % interval of a calibrated SE
-    spans a factor of about 1.54, so the literal reading of design 2.1
-    (interval inside [0.8, 1.25]) fails where the HCv2-4 (a) statement
-    holds; both are reported, the rule's suggestion follows the HCv2-4 (a)
-    statement (PRE_DATA_COMMITMENTS section 2)."""
+    spans a factor of about 1.54, so the replaced literal wording (interval
+    inside [0.8, 1.25]; preregistration v2 section 7.1) fails where the
+    HCv2-4 (a) statement holds; both are reported, the rule's suggestion
+    follows the HCv2-4 (a) statement (preregistration v2 section 7.6 item
+    2)."""
     root = tmp_path / "root"
     write_root(root, "twins", "A_twins",
                _twins(np.random.default_rng(11), 1.0, n_networks=5))
@@ -1345,9 +1346,9 @@ def _se_cell(p, method, cls, good=True, eligible=True, tails_ok=True):
     ("IIM", "circular_block_bootstrap_10pct_B50", DC.IIM_SE_FALLBACK),
     ("RAM", "shift_null_sd", DC.RAM_SE_FALLBACK)])
 def test_the_se_fallback_needs_calibration_in_every_class(p, default, fallback):
-    """CD-3 and CD-4 (PRE_DATA_COMMITMENTS section 2): the fallback replaces
-    the default only where the default fails to be calibrated in some class
-    and the fallback is calibrated in every class."""
+    """CD-3 and CD-4 (preregistration v2 section 7.6 item 2): the fallback
+    replaces the default only where the default fails to be calibrated in
+    some class and the fallback is calibrated in every class."""
     name = {"IIM": "iim_se_method", "RAM": "ram_se_method"}[p]
 
     def value(cells):

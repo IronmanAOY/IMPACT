@@ -1,6 +1,6 @@
 """
-Twin sessions of MPC-Bench v2 (design 2.0.5, 3.2; SE calibration against
-white-box twins, integrity audit IA-10).
+Twin sessions of MPC-Bench v2 (preregistration v2 section 4.2; SE
+calibration against white-box twins, HCv2-4; integrity audit IA-10).
 
 A twin is the same network in a new session: replicate ``r >= 1`` keeps the
 structural stream ``SeedSequence(seed)`` and draws the task schedule,

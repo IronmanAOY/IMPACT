@@ -246,22 +246,6 @@ def test_other_module_layouts(n_modules):
     assert rows[1]["passed"]
 
 
-# --------------------------------------------------------------------------
-# dispatcher
-# --------------------------------------------------------------------------
-def test_the_v2_dispatcher_and_the_reserved_tier_b_names():
-    s = A2.make_adversarial_v2("staggered_driver", {"n_trials": 8}, 2,
-                               variant="saturating")
-    assert s.meta["staggered_variant"] == "saturating"
-    assert s.meta["config"]["n_trials"] == 8
-    for kind in A2.DEFERRED_GENERATORS:
-        with pytest.raises(NotImplementedError, match="not part of this round"):
-            A2.make_adversarial_v2(kind, None, 0)
-    with pytest.raises(ValueError):
-        A2.make_adversarial_v2("common_driver", None, 0)
-    assert A2.DEFERRED_GENERATORS == ("transient_echo", "slow_drift")
-
-
 @pytest.mark.parametrize("sid,variants", sorted(A2.STAGGERED_SYSTEM_VARIANTS.items()))
 def test_catalogue_builds_every_staggered_variant(sid, variants):
     for v in variants:

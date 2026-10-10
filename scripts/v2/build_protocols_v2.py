@@ -203,7 +203,7 @@ MECHANISM_EXCLUDED_GENERATORS = ("patchwork",)
 DOSE_ONLY_MECHANISM_CELLS = (("C1", "IIM"),)
 # substrate of a record's source view (the evidence item's substrate)
 FAMILY_SUBSTRATE = {"A": "synthetic_rate", "C1": "stuart_landau"}
-# the concordance-route admission rule (design 2.4 item 4, CD-5)
+# the concordance-route admission rule (preregistration v2 section 7.2, CD-5)
 CONCORDANCE_MIN_RUNS = DC.CONCORDANCE_MIN_RUNS
 FORWARD_SUBSTRATES = ("eeg_like_forward", "bold_like_forward")
 # The admitted cell is the family-A battery's (A-R, source view, the
@@ -213,7 +213,7 @@ FORWARD_SUBSTRATES = ("eeg_like_forward", "bold_like_forward")
 # slow-context agents and longer windows are another regime than the
 # battery's even on the source view.
 NO_CONCORDANCE_ROUTE_PREFIXES = ("fwdA_bold-",)
-# the SE calibration rules (design 2.1 item 9, 2.2 item 5, 2.3 item 4)
+# the SE calibration rules (preregistration v2 section 7.1)
 KAPPA_BOUNDS = (0.8, 1.25)
 KAPPA_LEVEL = 0.90
 TAIL_MAX = 0.02
@@ -1033,7 +1033,7 @@ def reference_block(ref: Mapping, source: str, complete: bool = False) -> dict:
 # --------------------------------------------------------------------------
 def confirmatory_plan_principles() -> Dict[str, set]:
     """``{protocol key: principles scored}`` over every scoring of the
-    confirmatory runner plan (all merged design modules)."""
+    confirmatory runner plan (every design module in this tree)."""
     tasks = D.build_plan(list(D.designs()), S.CONFIRMATORY)
     for t in tasks:
         RB.load_design_module(t.design_module)
@@ -1046,7 +1046,7 @@ def confirmatory_plan_principles() -> Dict[str, set]:
 
 def confirmatory_protocol_keys() -> List[str]:
     """Every protocol key a record of the confirmatory run names: the runner
-    plan of every merged design module and the family-B keys."""
+    plan of every design module in this tree and the family-B keys."""
     keys = set(confirmatory_plan_principles())
     keys.update(family_b_protocols())
     return sorted(keys)
@@ -1538,8 +1538,8 @@ def _admit_method(proto, principle, method):
 
 
 def calibrated(cell: Mapping) -> bool:
-    """A method calibrated in a class (PRE_DATA_COMMITMENTS section 2, the
-    binding reading of CD-2 to CD-4): the HCv2-4 (a) statement holds (kappa
+    """A method calibrated in a class (preregistration v2 section 7.6 item 2,
+    the binding reading of CD-2 to CD-4): the HCv2-4 (a) statement holds (kappa
     point in [0.8, 1.25], its 90 % interval inside [0.67, 1.5]) and both
     one-sided ``q_A`` tail rates are <= 0.02."""
     return bool(cell["hcv2_4_a"] and cell["tails_ok"])
@@ -2242,7 +2242,7 @@ def build(decisions=None, dev_root=DC.DEFAULT_ROOT, *, files: Optional[Sequence]
         forward = key in fwd_keys
         pairs = fwd_pairs if forward else ref_pairs
         # the forward views anchor on their anchor condition only (PC_nominal
-        # or G_nom; design 3.6), validity only
+        # or G_nom; preregistration v2 section 3.6), validity only
         positive = _is_forward_anchor if forward else _is_positive_control
         series = anchor_series(
             pairs, key, positive=positive,

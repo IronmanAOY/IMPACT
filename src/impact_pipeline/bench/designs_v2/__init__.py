@@ -10,25 +10,25 @@ estimator form, the principles scored and the family protocol that judges
 them. The v2 runner (:mod:`impact_pipeline.bench.run_bench_v2`) runs exactly
 the task specs a builder returns, and the run-plan tables of the
 preregistration are generated from the same builders (:func:`plan_table`),
-so plan and builders cannot drift apart (design 3.8, generated run plans).
+so plan and builders cannot drift apart (preregistration v2 section 4.2).
 
 Registry
 --------
-:data:`DESIGN_MODULES` pre-declares every design module of the v2 round,
-including the modules that other parts of the work add (family B, the
-forward-model arms, the null-calibration generator and the Tier-B arms).
-:func:`load_module` imports one; a module that is not in the tree yet raises
-:class:`DesignNotAvailableError` ("not merged yet") instead of an
+:data:`DESIGN_MODULES` declares every design module of the v2 round,
+including the three Tier-B modules (``srpi_only``, ``patchwork_v2``,
+``tier_b_arms``), which are not part of this release and are not run.
+:func:`load_module` imports one; a module that is not in the tree raises
+:class:`DesignNotAvailableError` (:data:`NOT_INCLUDED`) instead of an
 ``ImportError`` from deep inside the runner. A module that is in the tree
 but defines no ``DESIGNS`` raises :class:`DesignNotRunnableError`: family B
 has its own task model and runs through its validation script
 (:data:`RUN_ELSEWHERE`), and a module whose runner adapter is not written
-yet is reported as such, so that a run plan never skips it silently.
+is reported as such, so that a run plan never skips it silently.
 
 Module contract. A design module defines
 
-* ``DESIGNS``: a tuple of :class:`Design` (name, family, builder, the task
-  counts the design document states per split, the ADEMP statement);
+* ``DESIGNS``: a tuple of :class:`Design` (name, family, builder, the
+  expected task counts per split, the ADEMP statement);
 * optionally ``SYSTEM_BUILDERS``: ``{name: builder(task) -> system}`` for
   systems that the runner's built-in builders (``catalogue`` and ``agent``)
   do not cover (a builder may return a :class:`MultiViewSystem` when one
@@ -80,8 +80,8 @@ DESIGN_SCHEMA = "mpc-bench-design/1"
 SPLITS = S.SPLITS
 DEVELOPMENT, CONFIRMATORY = S.DEVELOPMENT, S.CONFIRMATORY
 
-# Every design module of the v2 round (Tier A, then Tier B), pre-declared so
-# that a missing module is reported as "not merged yet".
+# Every design module of the v2 round (Tier A, then Tier B), declared so that
+# a module that is not in the tree is reported as NOT_INCLUDED.
 DESIGN_MODULES: Mapping[str, str] = {
     "family_a": "family A (v1 routing with the recording device): witnesses, "
                 "sweeps, factorial, adversaries and held-out conditions",
@@ -100,7 +100,9 @@ DESIGN_MODULES: Mapping[str, str] = {
     "tier_b_arms": "Tier-B arms: zero-mean broadcast, slow drift, forward "
                    "RAM-PE and SRPI arms, IIM comparator and long arm",
 }
-TIER_B_MODULES = ("srpi_only", "patchwork_v2", "tier_b_arms")
+# What the registry reports for a declared module that is not in the tree
+# (the Tier-B modules, which this release does not run).
+NOT_INCLUDED = "not part of this release"
 # Pre-declared modules whose tasks another script runs (their own task model
 # and records): {module: the script}. They define no DESIGNS for this runner.
 RUN_ELSEWHERE: Mapping[str, str] = {
@@ -122,13 +124,13 @@ class DesignError(ValueError):
 
 
 class DesignNotAvailableError(ImportError):
-    """A pre-declared design module that is not in the tree yet."""
+    """A pre-declared design module that is not in the tree."""
 
 
 class DesignNotRunnableError(DesignError):
     """A pre-declared design module in the tree that defines no designs for
     this runner: another script runs it (:data:`RUN_ELSEWHERE`), or its
-    runner adapter is not written yet."""
+    runner adapter is not written."""
 
 
 # --------------------------------------------------------------------------
@@ -411,10 +413,10 @@ class Design:
     """
     One design: its ``name`` (unique over every module), the record
     ``family``, a description, the ``build(split, **options)`` function, the
-    task counts the design document states for each split
-    (``expected_tasks``; the plan test compares them with the builder) and
-    its ADEMP statement (``ademp``: one text per :data:`ADEMP_KEYS`), which
-    the run-plan tables carry beside the counts.
+    expected task counts per split (``expected_tasks``; the plan test
+    compares them with the builder) and its ADEMP statement (``ademp``: one
+    text per :data:`ADEMP_KEYS`), which the run-plan tables carry beside the
+    counts.
     """
 
     name: str
@@ -458,7 +460,7 @@ _MODULE_CACHE: Dict[str, object] = {}
 
 def load_module(name: str):
     """Import a pre-declared design module; :class:`DesignNotAvailableError`
-    when it is not in the tree yet, :class:`DesignError` for an undeclared
+    when it is not in the tree, :class:`DesignError` for an undeclared
     name."""
     if name not in DESIGN_MODULES:
         raise DesignError(f"unknown design module {name!r}; one of "
@@ -471,13 +473,13 @@ def load_module(name: str):
     except ModuleNotFoundError as exc:
         if exc.name == full:
             raise DesignNotAvailableError(
-                f"design module {name!r} ({DESIGN_MODULES[name]}) is not merged "
-                "yet") from None
+                f"design module {name!r} ({DESIGN_MODULES[name]}) is "
+                f"{NOT_INCLUDED}") from None
         raise
     if not hasattr(mod, "DESIGNS"):
         where = RUN_ELSEWHERE.get(name)
         why = (f"its tasks run through {where}" if where is not None else
-               "its runner adapter is not written yet")
+               "its runner adapter is not written")
         raise DesignNotRunnableError(
             f"design module {name!r} ({DESIGN_MODULES[name]}) is in the tree but "
             f"defines no designs for this runner: {why}")
@@ -492,13 +494,13 @@ def load_module(name: str):
 
 def _module_states() -> Dict[str, Optional[str]]:
     """``{module: None}`` for the runnable modules, else the reason
-    (``not merged yet`` or the :class:`DesignNotRunnableError` message)."""
+    (:data:`NOT_INCLUDED` or the :class:`DesignNotRunnableError` message)."""
     out: Dict[str, Optional[str]] = {}
     for name in DESIGN_MODULES:
         try:
             load_module(name)
         except DesignNotAvailableError:
-            out[name] = "not merged yet"
+            out[name] = NOT_INCLUDED
             continue
         except DesignNotRunnableError as exc:
             out[name] = str(exc)
@@ -514,15 +516,15 @@ def available_modules() -> Tuple[str, ...]:
 
 
 def missing_modules() -> Tuple[str, ...]:
-    """The pre-declared design modules that are not merged yet."""
-    return tuple(n for n, why in _module_states().items() if why == "not merged yet")
+    """The pre-declared design modules that are not in the tree."""
+    return tuple(n for n, why in _module_states().items() if why == NOT_INCLUDED)
 
 
 def unrunnable_modules() -> Dict[str, str]:
-    """``{module: reason}`` of the merged modules that define no designs for
-    this runner (:class:`DesignNotRunnableError`)."""
+    """``{module: reason}`` of the modules in the tree that define no designs
+    for this runner (:class:`DesignNotRunnableError`)."""
     return {n: why for n, why in _module_states().items()
-            if why is not None and why != "not merged yet"}
+            if why is not None and why != NOT_INCLUDED}
 
 
 def designs(modules: Optional[Iterable[str]] = None) -> Dict[str, Design]:
@@ -540,13 +542,13 @@ def designs(modules: Optional[Iterable[str]] = None) -> Dict[str, Design]:
 
 def get_design(name: str) -> Design:
     """A design by name, searched in every available module; the error names
-    the modules that are not merged yet and those this runner does not run."""
+    the modules that are not included and those this runner does not run."""
     found = designs().get(name)
     if found is None:
         missing = missing_modules()
         elsewhere = sorted(unrunnable_modules())
         hint = "".join([
-            f" (not merged yet: {', '.join(missing)})" if missing else "",
+            f" ({NOT_INCLUDED}: {', '.join(missing)})" if missing else "",
             f" (no designs for this runner: {', '.join(elsewhere)})" if elsewhere
             else ""])
         raise DesignError(f"unknown design {name!r}{hint}")
@@ -583,9 +585,9 @@ def plan_table(split: str, names: Optional[Sequence[str]] = None) -> List[dict]:
     """
     One row per design of the split (generated from the builders): tasks,
     scorings, held-out tasks and scorings, smoke tasks, distinct systems and
-    seeds, seed range, and the task count the design document states
-    (``expected``; None where it states none) with ``matches``, and the
-    design's ADEMP statement (``ademp``).
+    seeds, seed range, and the expected task count (``expected``; None
+    where none is stated) with ``matches``, and the design's ADEMP
+    statement (``ademp``).
     """
     ds = designs()
     rows = []
@@ -656,8 +658,7 @@ class EstimatorForm:
 
 
 # The estimator forms of the bench. The primary form is the protocol itself;
-# every other form is reported beside it (design 2.1 items 5 and 8, 2.0.3,
-# 2.2 item 4, 2.4 item 2).
+# every other form is reported beside it.
 ESTIMATOR_FORMS: Mapping[str, EstimatorForm] = {
     f.name: f for f in (
         EstimatorForm(PRIMARY_FORM, PRINCIPLES, {},
@@ -770,13 +771,13 @@ __all__ = [
     "ESTIMATOR_FORMS",
     "EstimatorForm",
     "MultiViewSystem",
+    "NOT_INCLUDED",
     "PRIMARY_FORM",
     "RUN_ELSEWHERE",
     "SOURCE",
     "SOURCE_VIEW",
     "SPLITS",
     "ScoringSpec",
-    "TIER_B_MODULES",
     "TaskSpec",
     "ViewSpec",
     "available_modules",

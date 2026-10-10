@@ -1,5 +1,5 @@
 """
-RAM-only arm of MPC-Bench v2 (design 2.3 item 6, 3.1, 3.2).
+RAM-only arm of MPC-Bench v2 (preregistration v2 sections 4.1 and 4.2).
 
 The RAM-PE hypotheses run on family-A agents with 160 bandit trials
 (configuration preset ``ram_only_160``; the joint bench stays at the v1
@@ -39,7 +39,6 @@ PRESET = "ram_only_160"
 PROTOCOLS = {"R": "A-RAM160"}
 PRINCIPLES_SCORED = ("RAM",)
 ETA_LEVELS = (0.0, 0.1, 0.2, 0.3, 0.6)
-NOMINAL_ETA = 0.3
 
 # (class id, builder, catalogue id or knobs)
 CLASSES = (

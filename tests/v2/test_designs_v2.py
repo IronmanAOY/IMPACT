@@ -24,7 +24,8 @@ OWN_MODULES = ("family_a", "family_c1", "ram_only", "twins", "anchors", "forward
 CONF, DEV = D.CONFIRMATORY, D.DEVELOPMENT
 P5 = ("RAM", "PDI", "NAS", "IIM", "SRPI")
 
-# Task counts of the design document (3.2 and 3.7), per design and split.
+# Expected task counts (preregistration v2 sections 4.2 and 5), per design and
+# split.
 DOCUMENT_COUNTS = {
     CONF: {
         # the two null witnesses on 46 seeds (the HCv2-1 resize), the family-A
@@ -71,7 +72,7 @@ def test_every_design_module_is_pre_declared_and_ours_are_available():
     assert set(DOCUMENT_COUNTS[CONF]) <= names
 
 
-def test_a_missing_module_is_not_merged_yet(monkeypatch):
+def test_a_module_not_in_the_tree_is_reported_as_not_included(monkeypatch):
     real = D.importlib.import_module
 
     def fake(name, *a, **k):
@@ -81,18 +82,18 @@ def test_a_missing_module_is_not_merged_yet(monkeypatch):
 
     monkeypatch.setattr(D.importlib, "import_module", fake)
     monkeypatch.delitem(D._MODULE_CACHE, "forward", raising=False)
-    with pytest.raises(D.DesignNotAvailableError, match="not merged yet"):
+    with pytest.raises(D.DesignNotAvailableError, match=D.NOT_INCLUDED):
         D.load_module("forward")
     with pytest.raises(D.DesignError, match="unknown design module"):
         D.load_module("family_z")
-    with pytest.raises(D.DesignError, match="not merged yet: .*forward"):
+    with pytest.raises(D.DesignError, match=f"{D.NOT_INCLUDED}: .*forward"):
         D.get_design("F_eeg64")
 
 
-def test_merged_modules_without_runner_designs_are_reported_not_skipped(
+def test_modules_without_runner_designs_are_reported_not_skipped(
         capsys, monkeypatch):
-    # family B runs through its own validation script; a merged module whose
-    # runner adapter is not written yet is reported as such (a stand-in for
+    # family B runs through its own validation script; a module in the tree
+    # whose runner adapter is not written is reported as such (a stand-in for
     # a Tier-B module here), and the forward arms run through the runner
     import types
 
@@ -154,7 +155,7 @@ def test_design_names_are_unique_and_designs_know_their_module():
 
 
 # --------------------------------------------------------------------------
-# run plan equals the builders, counts equal the design document
+# run plan equals the builders, counts equal the expected ones
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("split", D.SPLITS)
 def test_plan_table_is_generated_from_the_builders(plans, split):
@@ -275,7 +276,7 @@ def test_family_a_witnesses_extended_seeds_and_order(plans):
     # a seed restriction replaces every block, the extensions included
     only = FA.witnesses(CONF, seeds=[20030], systems=list(FA.NULL_WITNESSES))
     assert [(t.system, t.seed) for t in only] == [("N_independent_noise", 20030),
-                                                   ("N_ar1", 20030)]
+                                                  ("N_ar1", 20030)]
 
 
 def test_the_null_witnesses_are_sized_for_one_tolerated_event(repo_root):
@@ -377,7 +378,7 @@ def test_family_a_scorings_declarations_forms_and_protocols(plans):
         base, form = D.split_protocol_key(s.protocol_key)
         assert form == s.estimator_form
         assert RB.FAMILY_PROTOCOLS[base] == ("A", s.declaration_id)
-    # the patchwork is recorded in the principle-bearer mode only (design 3.2):
+    # the patchwork is recorded in the principle-bearer mode only:
     # its system grain would give IIM five macro nodes, which no Tier-A
     # hypothesis reads
     for name in ("A_witnesses", "C1_witnesses"):

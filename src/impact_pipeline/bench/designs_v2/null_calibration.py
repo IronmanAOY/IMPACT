@@ -1,6 +1,6 @@
 """
-Null-calibration generator v2 of MPC-Bench v2 (design 3.1, 3.2, 3.7;
-HCv2-1, HCv2-3, HCv2-18).
+Null-calibration generator v2 of MPC-Bench v2 (preregistration v2 sections
+4.1 and 4.2; HCv2-1, HCv2-3, HCv2-18).
 
 The null data are those of the v1 calibration: the generator functions of
 ``scripts/null_calibration.py`` (``null_system`` with ``null_timeseries``
@@ -109,11 +109,8 @@ DESIGN = "null_calibration"
 FAMILY = "null"
 BUILDER = "null_calibration"
 NULL_CALIBRATION_VERSION = "null-calibration/3.0.0"
-# the meta family of the v1 null systems (the recording device takes the
-# family-A coupling time scale for it)
-META_FAMILY = "null_calibration"
 
-# the cell grid (design 3.2)
+# the cell grid (preregistration v2 section 4.2)
 KINDS = ("ar1", "pink", "surrogate_iid", "surrogate_linear")
 N_TIMES = (1200, 2400)
 N_NODES = (8, 16)

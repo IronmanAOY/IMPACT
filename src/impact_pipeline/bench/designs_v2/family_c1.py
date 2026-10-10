@@ -1,5 +1,5 @@
 """
-Family-C1 designs of MPC-Bench v2 (design 3.1, 3.2 and 3.7).
+Family-C1 designs of MPC-Bench v2 (preregistration v2 sections 4.1 and 4.2).
 
 C1 is the v1 family C (Stuart-Landau units recorded as Re z at 20 Hz),
 unchanged, scored under R and H from the same simulation (protocols
@@ -24,9 +24,8 @@ C1_sweeps       g_b and c_int (10 levels each)                   20000-20009  37
 C1_factorial    the 2^5 cells                                    20000-20009  376-379
 ==============  ===============================================  ===========  =======
 
-Task counts (confirmatory): 13 x 20 + 4 x 25 + 3 x 84 = 612 (the design
-table says "about 14 x 20"; the catalogue defines 13 family-C witnesses),
-20 x 10 + 10 x 55 = 750 and 320.
+Task counts (confirmatory): 13 x 20 + 4 x 25 + 3 x 84 = 612 (the catalogue
+defines 13 family-C witnesses), 20 x 10 + 10 x 55 = 750 and 320.
 
 Verdict specificity. HCv2-23 pools the MPC_CONSISTENT verdicts of the A
 and C1 single deficits whose target is in N_anch into seed clusters keyed
@@ -135,43 +134,20 @@ def sweeps(split: str, *, seeds: Optional[Sequence[int]] = None,
            forms: Optional[Sequence[str]] = None) -> List[TaskSpec]:
     """``C1_sweeps``: g_b and c_int at the v1 levels, the c_int levels also
     on the extended sweep seeds (as in family A)."""
-    from impact_pipeline.bench.generators import NOMINAL_KNOBS
-
     forms = FORMS["default"] if forms is None else tuple(forms)
-    out = []
-    for knob in FA._select(SWEEP_KNOBS, knobs, "sweep knobs"):
-        for li, level in enumerate(FA.sweep_levels(knob)):
-            kn = NOMINAL_KNOBS.replace(**{knob: level})
-            tags = {"sweep_knob": knob, "sweep_level": float(level),
-                    "bits": list(kn.bits())}
-            for seed in FA.sweep_seeds(SEEDS, knob, split, seeds):
-                out.append(FA.agent_task("C1_sweeps", FAMILY, CATALOGUE_FAMILY,
-                                         f"sweep_{knob}_l{li:02d}", seed,
-                                         kn.to_dict(), _scorings(split, forms),
-                                         tags=tags, module=MODULE))
-    return out
+    return FA._agent_sweeps("C1_sweeps", FAMILY, CATALOGUE_FAMILY, SWEEP_KNOBS,
+                            SEEDS, split, lambda: _scorings(split, forms),
+                            seeds=seeds, knobs=knobs, module=MODULE)
 
 
 def factorial(split: str, *, seeds: Optional[Sequence[int]] = None,
               cells: Optional[Sequence[str]] = None,
               forms: Optional[Sequence[str]] = None) -> List[TaskSpec]:
     """``C1_factorial``: the 2^5 cells."""
-    from impact_pipeline.bench.factorial import factorial_cells
-
     forms = FORMS["default"] if forms is None else tuple(forms)
-    all_cells = factorial_cells()
-    wanted = FA._select([c["cell_id"] for c in all_cells], cells, "factorial cells")
-    out = []
-    for cell in all_cells:
-        if cell["cell_id"] not in wanted:
-            continue
-        for seed in FA._seeds(SEEDS["factorial"], split, seeds):
-            out.append(FA.agent_task("C1_factorial", FAMILY, CATALOGUE_FAMILY,
-                                     cell["cell_id"], seed, cell["knobs"],
-                                     _scorings(split, forms),
-                                     tags={"bits": list(cell["bits"])},
-                                     module=MODULE))
-    return out
+    return FA._agent_factorial("C1_factorial", FAMILY, CATALOGUE_FAMILY, SEEDS,
+                               split, lambda: _scorings(split, forms),
+                               seeds=seeds, cells=cells, module=MODULE)
 
 
 # The methods of every C1 scoring (also used by the C1 twins and anchors).

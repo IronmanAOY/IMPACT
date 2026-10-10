@@ -93,8 +93,8 @@ LEADFIELD_FAMILY = "spherical_gauss"
 DEVELOPMENT_LEADFIELD_SEED = 20260928
 HELD_OUT_LEADFIELD_SEED = 20261001
 N_PARENT_SENSORS = 64
-# CD-12 replaces this by the smallest channel count of the paper-2 EEG
-# datasets (from their BIDS metadata) before the freeze.
+# CD-12 (paper-2 regime): the smallest channel count of the paper-2 EEG
+# datasets; none publishes BIDS EEG metadata, so the fallback 32 applies.
 N_LOW_DEFAULT = 32
 # Reserved stream key of the template electrode jitter (41-43: label errors,
 # cue jitter, staggered driver).
@@ -235,7 +235,6 @@ class ForwardRegime:
 
 DEVELOPMENT_REGIME = ForwardRegime("development", DEVELOPMENT_LEADFIELD_SEED, 0.5)
 HELD_OUT_REGIME = ForwardRegime("held_out", HELD_OUT_LEADFIELD_SEED, 0.6, held_out=True)
-REGIMES = {r.name: r for r in (DEVELOPMENT_REGIME, HELD_OUT_REGIME)}
 
 
 @dataclass(frozen=True)
@@ -861,7 +860,6 @@ __all__ = [
     "N_LOW_DEFAULT",
     "N_PARENT_SENSORS",
     "OBSERVATION_OF_STAGE",
-    "REGIMES",
     "REGIME_KEYS",
     "SUBSTRATE_OF_STAGE",
     "TEMPLATE_STREAM_KEY",

@@ -141,7 +141,8 @@ KINDS = (RUNNER, BATTERY, FAMILY_B, MANIPULATION, CONSTANTS, EVALUATE)
 # --------------------------------------------------------------------------
 # declared constants of the calibration (one place each)
 # --------------------------------------------------------------------------
-# The seeds of the development blocks (design 3.7; protocols/v2/seed_map_v2.json).
+# The seeds of the development blocks (preregistration v2 section 5;
+# protocols/v2/seed_map_v2.json).
 ORACLE_SEEDS = tuple(range(320, 360))
 ORACLE_FAMILIES = ("A", "C")
 # The PDI concordance battery runs on 850-899 and 940-979 (90 seeds); see
@@ -176,12 +177,12 @@ BATTERY_CLASS_IDS = tuple(c[0] for c in BATTERY_CLASSES)
 CONCORDANCE_MIN_RUNS = 300
 N_CONTENT_ON_CLASSES = sum(c[1] == CONTENT_ON for c in BATTERY_CLASSES)
 N_NO_CONTENT_CLASSES = len(BATTERY_CLASSES) - N_CONTENT_ON_CLASSES
-# Family-B cells of the held-out non-monotone regime (design 1.4, HO-5): no
-# v2 estimator output before the freeze. (system, parameter, values)
+# Family-B cells of the held-out non-monotone regime (HO-5): no v2 estimator
+# output before the freeze. (system, parameter, values)
 FAMILY_B_HELD_OUT = (("ring", "coupling", (0.9, 1.5)),)
-# IIM's sensitivity to the Hopf coupling at sensor level (design 1.4, HO-6):
-# the G sweep of the v2 sensor pipeline, read by HCv2-15 (e) (FMb1 and FMd on
-# the sensor views), is held out at every regime. The forward design runs its
+# IIM's sensitivity to the Hopf coupling at sensor level (HO-6): the G sweep
+# of the v2 sensor pipeline, read by HCv2-15 (e) (FMb1 and FMd on the sensor
+# views), is held out at every regime. The forward design runs its
 # development purposes at the development regime with every G level; the
 # calibration keeps IIM on these views only at G = 0 (HCv2-15 (a), a
 # replication of development results) and leaves it out of the scorings at
@@ -209,15 +210,15 @@ OCCUPANCY_N_MIN_ALTERNATIVES = (50, 100)
 # development adversary seeds as well.
 ADVERSARY_SEEDS = D.seeds_of(FA.SEEDS["adversaries"], DEVELOPMENT)
 EVALUATION_RECORDS = "development_records.jsonl"
-# Wall time of a run: CPU-h x contention / workers (design 7.2: x 1.39 measured
-# with 12 workers).
+# Wall time of a run: CPU-h x contention / workers (preregistration v2
+# section 11: x 1.39 measured with 12 workers).
 CONTENTION = 1.39
 DEFAULT_WORKERS = 12
 
 # Cost model of the plan: CPU seconds per task (process time of the worker,
 # one BLAS thread), measured on one development seed of every runner design
-# by the integration run at commit d3bcb09 (two lanes of 5 workers on 12
-# performance cores; development seeds only) and, for the family-B
+# at commit d3bcb09 with two concurrent runner processes (5 workers each on
+# 12 performance cores; development seeds only) and, for the family-B
 # validation, one development seed per seed block. A projection, not a
 # measurement of these runs: one seed per system, seed-to-seed spread not
 # measured.
@@ -232,7 +233,7 @@ CPU_S_PER_TASK = {
     "forward_anchor_replication": 118.83, "forward_family_a": 127.00,
     "forward_family_a_bold": 40.77, "null_calibration": 34.83,
     "whole_brain": 107.97, "family_b": 13.19,
-    # held-out smoke tasks (status lines of the integration run)
+    # held-out smoke tasks (status lines of the same measurement)
     "A_heldout": 93.77,
 }
 # Runs restricted to some principles: the components' own seconds of a

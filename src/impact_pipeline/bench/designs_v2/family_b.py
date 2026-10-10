@@ -84,7 +84,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -149,7 +149,8 @@ ANCHORS = {
 }
 PRIMARY_ANCHOR = "ring_0.45"
 SECOND_ANCHOR = "all_to_all_0.4"
-# the design's values of the primary anchor (bits), to four significant digits
+# the preregistered values of the primary anchor (bits; preregistration v2
+# section 7.5), to four significant digits
 ANCHOR_DESIGN_VALUES = {("ring_0.45", "bidirectional"): 0.04513,
                         ("ring_0.45", "directional"): 0.02909}
 

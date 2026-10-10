@@ -1,5 +1,5 @@
 """
-Family-A designs of MPC-Bench v2 (design 3.1, 3.2 and 3.7).
+Family-A designs of MPC-Bench v2 (preregistration v2 sections 4.1 and 4.2).
 
 Family A is the v1 routing with the recording device: the v1 dynamics,
 scored under the complete declaration R (task events, context cues, slow
@@ -57,12 +57,12 @@ with module S declared as the access node. On the development split the
 held-out conditions exist only as the smoke tasks of ``A_heldout`` (seeds
 980-984, outputs discarded unread by the runner).
 
-Patchwork. PW_patchwork is recorded in the principle-bearer mode (design
-3.2 and 3.3: every principle on its own module, IIM on the IIM module's
-three sub-groups), the data of the Tier-B single-source test. Its
-system-bearer grain, one macro node per module, gives IIM five macro nodes,
-about thirty times the cost of a four-node run for every statistic of the
-null and the bootstrap, and no Tier-A hypothesis reads it.
+Patchwork. PW_patchwork is recorded in the principle-bearer mode (every
+principle on its own module, IIM on the IIM module's three sub-groups), the
+data of the Tier-B single-source test. Its system-bearer grain, one macro
+node per module, gives IIM five macro nodes, about thirty times the cost of
+a four-node run for every statistic of the null and the bootstrap, and no
+Tier-A hypothesis reads it.
 
 Forms. The primary scoring of every task of the joint bench (witnesses,
 sweeps, factorial, adversaries) carries all five principles and the
@@ -79,7 +79,7 @@ oracle ignition gate.
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 from impact_pipeline.bench import adversarial_v2 as A2
 from impact_pipeline.bench.designs_v2 import (
@@ -304,48 +304,70 @@ def witnesses(split: str, *, seeds: Optional[Sequence[int]] = None,
     return out
 
 
-def sweeps(split: str, *, seeds: Optional[Sequence[int]] = None,
-           knobs: Optional[Sequence[str]] = None,
-           forms: Optional[Sequence[str]] = None) -> List[TaskSpec]:
-    """``A_sweeps``: g_b, c_int and K dose levels, the other knobs nominal;
-    the c_int levels also on the extended sweep seeds."""
+def _agent_sweeps(design: str, family: str, catalogue_family: str,
+                  sweep_knobs: Sequence[str], seed_table, split: str,
+                  scorings: Callable[[], tuple], *, seeds=None, knobs=None,
+                  module: str = MODULE) -> List[TaskSpec]:
+    """The sweep tasks of a family's agent (families A and C1): every dose
+    level of each knob in ``sweep_knobs``, the other knobs nominal, on the
+    knob's seeds (:func:`sweep_seeds` of ``seed_table``); ``scorings()``
+    gives the scorings of one task."""
     from impact_pipeline.bench.generators import NOMINAL_KNOBS
 
-    forms = FORMS["default"] if forms is None else tuple(forms)
     out = []
-    for knob in _select(SWEEP_KNOBS, knobs, "sweep knobs"):
+    for knob in _select(sweep_knobs, knobs, "sweep knobs"):
         for li, level in enumerate(sweep_levels(knob)):
             kn = NOMINAL_KNOBS.replace(**{knob: level})
             system = f"sweep_{knob}_l{li:02d}"
             tags = {"sweep_knob": knob, "sweep_level": float(level),
                     "bits": list(kn.bits())}
-            for seed in sweep_seeds(SEEDS, knob, split, seeds):
-                out.append(agent_task("A_sweeps", FAMILY, CATALOGUE_FAMILY, system,
-                                      seed, kn.to_dict(),
-                                      make_scorings(PROTOCOLS, PRINCIPLES, forms),
-                                      tags=tags))
+            for seed in sweep_seeds(seed_table, knob, split, seeds):
+                out.append(agent_task(design, family, catalogue_family, system,
+                                      seed, kn.to_dict(), scorings(), tags=tags,
+                                      module=module))
     return out
 
 
-def factorial(split: str, *, seeds: Optional[Sequence[int]] = None,
-              cells: Optional[Sequence[str]] = None,
-              forms: Optional[Sequence[str]] = None) -> List[TaskSpec]:
-    """``A_factorial``: the 2^5 cells (a 1 keeps the nominal dose)."""
+def _agent_factorial(design: str, family: str, catalogue_family: str,
+                     seed_table, split: str, scorings: Callable[[], tuple], *,
+                     seeds=None, cells=None, module: str = MODULE) -> List[TaskSpec]:
+    """The 2^5 factorial cells of a family's agent (families A and C1; a 1
+    keeps the nominal dose) on the seeds of ``seed_table['factorial']``;
+    ``scorings()`` gives the scorings of one task."""
     from impact_pipeline.bench.factorial import factorial_cells
 
-    forms = FORMS["default"] if forms is None else tuple(forms)
     all_cells = factorial_cells()
     wanted = _select([c["cell_id"] for c in all_cells], cells, "factorial cells")
     out = []
     for cell in all_cells:
         if cell["cell_id"] not in wanted:
             continue
-        for seed in _seeds(SEEDS["factorial"], split, seeds):
-            out.append(agent_task("A_factorial", FAMILY, CATALOGUE_FAMILY,
-                                  cell["cell_id"], seed, cell["knobs"],
-                                  make_scorings(PROTOCOLS, PRINCIPLES, forms),
-                                  tags={"bits": list(cell["bits"])}))
+        for seed in _seeds(seed_table["factorial"], split, seeds):
+            out.append(agent_task(design, family, catalogue_family,
+                                  cell["cell_id"], seed, cell["knobs"], scorings(),
+                                  tags={"bits": list(cell["bits"])}, module=module))
     return out
+
+
+def sweeps(split: str, *, seeds: Optional[Sequence[int]] = None,
+           knobs: Optional[Sequence[str]] = None,
+           forms: Optional[Sequence[str]] = None) -> List[TaskSpec]:
+    """``A_sweeps``: g_b, c_int and K dose levels, the other knobs nominal;
+    the c_int levels also on the extended sweep seeds."""
+    forms = FORMS["default"] if forms is None else tuple(forms)
+    return _agent_sweeps("A_sweeps", FAMILY, CATALOGUE_FAMILY, SWEEP_KNOBS, SEEDS,
+                         split, lambda: make_scorings(PROTOCOLS, PRINCIPLES, forms),
+                         seeds=seeds, knobs=knobs)
+
+
+def factorial(split: str, *, seeds: Optional[Sequence[int]] = None,
+              cells: Optional[Sequence[str]] = None,
+              forms: Optional[Sequence[str]] = None) -> List[TaskSpec]:
+    """``A_factorial``: the 2^5 cells (a 1 keeps the nominal dose)."""
+    forms = FORMS["default"] if forms is None else tuple(forms)
+    return _agent_factorial("A_factorial", FAMILY, CATALOGUE_FAMILY, SEEDS, split,
+                            lambda: make_scorings(PROTOCOLS, PRINCIPLES, forms),
+                            seeds=seeds, cells=cells)
 
 
 def adversaries(split: str, *, seeds: Optional[Sequence[int]] = None,

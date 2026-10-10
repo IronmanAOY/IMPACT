@@ -1,6 +1,6 @@
 """
-Reference blocks and anchor replication blocks of MPC-Bench v2 (design 4.6,
-3.7; HCv2-6).
+Reference blocks and anchor replication blocks of MPC-Bench v2
+(preregistration v2 section 3.6; HCv2-6).
 
 Anchors are computed on development seeds only: the reference block 900-939
 holds PC_nominal and the own-lesion witnesses of every family protocol, on
@@ -26,7 +26,7 @@ RAM160_anchors  PC_nominal and W_RAM_no_plasticity at 160       900-939    20900
 
 Task counts: 280, 160 and 80 (development); 280, 80 and 40 (confirmatory).
 Where the operating-characteristics check of the development calibration
-shows replication power below 0.9 at 20 seeds, a design's replication block
+showed replication power below 0.9 at 20 seeds, a design's replication block
 extends to 20939 (:data:`REPLICATION_SEEDS_EXTENDED`). That decision is
 declared once, in :data:`CALIBRATION_PENDING`; the builders and the task
 counts read it, and the run manifest records it. CD-11 extended family A
@@ -36,10 +36,9 @@ The anchors of the forward views (``forward_anchor_replication``,
 :mod:`impact_pipeline.bench.designs_v2.forward`) follow the same rule per
 forward arm: the arm's anchor condition serves every view of the arm, so a
 view below 0.9 extends the runs of its arm and every view of the arm reads
-the extension (as A-R reads the family-A one). Their power is computed from
-the held-out-regime reference anchors, after the held-out release, so this
-part of the decision is declared here too and stays provisional (no arm
-extended) until then.
+the extension (as A-R reads the family-A one). Their power was computed from
+the held-out-regime reference anchors after the held-out release; CD-11
+then extended the Hopf arm and neither family-A arm.
 """
 
 from __future__ import annotations
@@ -64,7 +63,7 @@ REFERENCE_SEEDS = tuple(S.REFERENCE_BLOCK)
 REPLICATION_SEEDS = tuple(range(20900, 20920))
 REPLICATION_SEEDS_EXTENDED = tuple(range(20900, 20940))
 
-# Own-lesion witness of each principle (design 4.6; BENCH B6).
+# Own-lesion witness of each principle (preregistration v2 section 3.6).
 OWN_LESION = {
     "NAS": "W_NAS_no_workspace",
     "IIM": "W_IIM_feedforward",
@@ -81,9 +80,10 @@ ANCHOR_DESIGNS = ("A_anchors", "C1_anchors", "RAM160_anchors")
 # forward layer; a test keeps the two equal).
 FORWARD_ARMS = ("hopf", "forward_a_eeg", "forward_a_bold")
 
-# Decisions of the development calibration (operating characteristics),
-# declared here once and made there, not here: the anchor designs, and the
-# forward arms, whose confirmatory replication block extends to 20900-20939.
+# The CD-11 decisions of the development calibration (operating
+# characteristics), declared here once: the anchor designs and the forward
+# arms whose confirmatory replication block extends to 20900-20939. Every
+# run manifest records them; the name is kept because the manifests use it.
 CALIBRATION_PENDING = {
     "replication_extended": {
         "value": {"A_anchors": True, "C1_anchors": False, "RAM160_anchors": False},

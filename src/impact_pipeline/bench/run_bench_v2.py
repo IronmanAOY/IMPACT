@@ -73,13 +73,14 @@ Estimator dispatch (:data:`SCORERS`, by estimator version)
   forward-arm admission run (NAS v3 ``override_observation_gate``, IIM v5
   ``observation_admitted``), and IIM's ``macro_nodes`` picks the view's
   declared grain, the rank-safe electrode clusters or the v1 quadrants.
-* The Tier-B ``srpi-v3-2026.10``: the estimator module, through its hook
-  ``score_bench_v2(context)`` when it defines one, otherwise through its
-  ``compute_<p>_v<n>`` function called with the keyword arguments of
-  :meth:`ScoringContext.candidates` that its signature names, the result
-  mapped like the merged v3 modules' (``component_fields``; per-direction
-  results under ``directions``). A module that is not in the tree yet is
-  reported as unavailable before any task runs.
+* The Tier-B ``srpi-v3-2026.10`` (not part of this release, not run): the
+  estimator module, through its hook ``score_bench_v2(context)`` when it
+  defines one, otherwise through its ``compute_<p>_v<n>`` function called
+  with the keyword arguments of :meth:`ScoringContext.candidates` that its
+  signature names, the result mapped like the other v3 modules'
+  (``component_fields``; per-direction results under ``directions``). A
+  module that is not in the tree is reported as unavailable before any task
+  runs.
 
 Protocols (:func:`resolve_protocols`)
 -------------------------------------
@@ -103,8 +104,8 @@ audit load the frozen files by
 (:func:`impact_pipeline.v2.hypothesis_engine.load_protocol_files`).
 Confirmatory runs use generated protocols only.
 
-Run hygiene (design 3.8)
-------------------------
+Run hygiene
+-----------
 Development runs use seeds 0-999 only, confirmatory runs seeds >= 20000 only
 and only through :func:`impact_pipeline.v2.provenance.confirmatory_guard`
 (clean tree, the freeze tag's ``src/`` and ``scripts/`` trees), with the
@@ -172,8 +173,6 @@ PLAN_JSON = "run_plan.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_PATH = REPO_ROOT / "protocols" / "v2" / "mpc_bench_v2_template.json"
 GENERATED_DIR = REPO_ROOT / "protocols" / "v2" / "generated"
-# the file-name convention of protocol keys (hypothesis_engine.protocol_file_name)
-PROTOCOL_FILE = _names.PROTOCOL_FILE_PREFIX + "{key}" + _names.PROTOCOL_FILE_SUFFIX
 
 # The v1 in-memory path: null size and jackknife groups of the v1 bench.
 V1_NULL_SURROGATES = 19
@@ -185,11 +184,12 @@ V1_SE_METHODS = {
     "PDI": "jackknife_contiguous_10",
 }
 
-# Parameters that development calibration fixes before the freeze. Each is
-# declared once: the runner's here (recorded in every task through the run
-# settings), the designs' in their module (the anchor replication blocks in
-# designs_v2.anchors); every run manifest records all of them
-# (:func:`calibration_pending`).
+# The calibration decisions (CD-n) that fix runner and design parameters.
+# Each is declared once: the runner's here (recorded in every task through
+# the run settings), the designs' in their module (the anchor replication
+# blocks in designs_v2.anchors); every run manifest records all of them
+# (:func:`calibration_pending`). The name is kept because the manifests use
+# it.
 CALIBRATION_PENDING = {
     "pdi_kmeans_seed": {
         "value": 0,
@@ -298,7 +298,7 @@ class ProtocolOptionError(ValueError):
 
 
 class EstimatorUnavailableError(ImportError):
-    """An estimator module the protocol dispatches is not in the tree yet."""
+    """An estimator module the protocol dispatches is not in the tree."""
 
 
 # --------------------------------------------------------------------------
@@ -349,7 +349,7 @@ DEFAULT_SETTINGS = RunSettings()
 
 
 def calibration_pending() -> dict:
-    """Every pending calibration parameter, by name: the runner's
+    """Every calibration decision, by name: the runner's
     (:data:`CALIBRATION_PENDING`) and the designs' (``anchors.<name>``)."""
     from impact_pipeline.bench.designs_v2 import anchors as AN
 
@@ -1166,7 +1166,8 @@ class ModuleScorer(Scorer):
         except ModuleNotFoundError as exc:
             if exc.name == self.module:
                 raise EstimatorUnavailableError(
-                    f"{self.version}: module {self.module} is not merged yet") from None
+                    f"{self.version}: module {self.module} is not part of this "
+                    "release") from None
             raise
 
     def score(self, ctx):
@@ -2142,7 +2143,7 @@ def check_plan(tasks: Sequence[D.TaskSpec], protocols: Mapping[str, ResolvedProt
     if not tasks:
         raise RunPolicyError("no tasks")
     if confirmatory and settings != DEFAULT_SETTINGS:
-        # every principle of the plan, merged estimators only, the frozen v1
+        # every principle of the plan, available estimators only, the frozen v1
         # null size and jackknife groups and the frozen calibration values
         raise RunPolicyError("a confirmatory run uses the default runner settings, "
                              f"not {settings.to_dict()}")
@@ -2195,7 +2196,8 @@ def check_plan(tasks: Sequence[D.TaskSpec], protocols: Mapping[str, ResolvedProt
                     unavailable.add(sc.version)
     if unavailable and not settings.allow_unavailable_estimators:
         raise RunPolicyError(
-            "estimator modules not merged yet: " + ", ".join(sorted(unavailable))
+            "estimator modules not part of this release: "
+            + ", ".join(sorted(unavailable))
             + " (restrict the principles, or allow them to be recorded as "
               "estimator errors)")
     return {"split": split, "n_tasks": len(tasks),
@@ -2731,8 +2733,9 @@ def build_parser() -> argparse.ArgumentParser:
     dz = sub.add_parser("designs", help="list the design modules and designs")
     dz.add_argument("--module", default=None,
                     help="print the comma-separated designs of one module (empty "
-                         "when it is not merged yet; exit status 3 when it is "
-                         "merged but defines no designs for this runner)")
+                         "when it is not part of this release; exit status 3 "
+                         "when it is in the tree but defines no designs for "
+                         "this runner)")
     mp = sub.add_parser("manipulation",
                         help="prerequisite M: switch and realisation checks (oracle "
                              "only, no estimator)")
@@ -2898,7 +2901,8 @@ def _main(args) -> int:
         except D.DesignNotAvailableError:
             print("")
         except D.DesignNotRunnableError as exc:
-            # merged, but not run here: a plan step must not skip it silently
+            # in the tree, but not run here: a plan step must not skip it
+            # silently
             print(f"run_bench_v2: {exc}", file=sys.stderr)
             return 3
         return 0
@@ -2909,7 +2913,7 @@ def _main(args) -> int:
                 names = ", ".join(d.name for d in mod.DESIGNS)
                 print(f"{m}: {names}")
             except D.DesignNotAvailableError:
-                print(f"{m}: not merged yet ({desc})")
+                print(f"{m}: {D.NOT_INCLUDED} ({desc})")
             except D.DesignNotRunnableError as exc:
                 print(f"{m}: {exc}")
         return 0
@@ -2919,7 +2923,7 @@ def _main(args) -> int:
             Path(args.json).write_text(json.dumps(rows, indent=1), encoding="utf-8")
         for r in rows:
             exp = ("" if r["expected"] is None
-                   else f" (design document: {r['expected']})")
+                   else f" (expected: {r['expected']})")
             print(f"{r['design']:16s} {r['split']:12s} tasks {r['n_tasks']:5d}{exp} "
                   f"scorings {r['n_scorings']:6d} held-out scorings "
                   f"{r['n_held_out_scorings']:4d} "

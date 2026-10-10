@@ -547,7 +547,7 @@ def test_a_module_estimator_is_called_with_the_inputs_its_signature_names(monkey
     assert "mystery_input" in nas.details["error"]
 
 
-def test_an_estimator_module_not_merged_yet_is_refused_or_recorded():
+def test_an_estimator_module_not_in_the_tree_is_refused_or_recorded():
     scorer = RB.ModuleScorer("NAS", "nas-v3-2026.10",
                              "impact_pipeline.v2._no_such_estimator_for_tests",
                              "compute_nas_v3", uses_declaration=True,
@@ -556,7 +556,8 @@ def test_an_estimator_module_not_merged_yet_is_refused_or_recorded():
                                scorings=D.make_scorings({"R": "A-R"}, ("NAS", "RAM")))
     protos = protocols_for([task])
     with RB.scorer_override(scorer):
-        with pytest.raises(RB.RunPolicyError, match="not merged yet: nas-v3"):
+        with pytest.raises(RB.RunPolicyError,
+                           match="not part of this release: nas-v3"):
             RB.check_plan([task], protos)
         allow = RB.RunSettings(allow_unavailable_estimators=True)
         assert RB.check_plan([task], protos, settings=allow)[
@@ -566,7 +567,7 @@ def test_an_estimator_module_not_merged_yet_is_refused_or_recorded():
         rec = RB.run_task(task, protos, allow)
     nas = scoring(rec, "R").components["NAS"]
     assert nas.reason == "ESTIMATOR_ERROR:EstimatorUnavailableError"
-    assert "not merged yet" in nas.details["error"]
+    assert "not part of this release" in nas.details["error"]
     assert scoring(rec, "R").components["RAM"].status in ("PRESENT", "UNDEFINED")
     assert not scoring(rec, "R").components["RAM"].is_estimator_error
 
@@ -606,7 +607,7 @@ def test_a_tau_c_form_varies_the_lags_and_keeps_the_gate_time_scale(monkeypatch)
 
 
 def test_nas_v3_runs_through_the_runner_in_every_nas_form():
-    # the merged estimator on a family-A witness: the primary scoring, the
+    # NAS v3 on a family-A witness: the primary scoring, the
     # secondary representation and both tau_c sensitivity forms are defined;
     # the 0.05 s form changes the lags, not the resolvability gate
     forms = ("nas_secondary", "nas_tau_0.05", "nas_tau_0.2")
@@ -961,8 +962,8 @@ def test_the_confirmatory_guard_refuses_a_dirty_tree_a_wrong_tag_or_early_seeds(
         RB.run_task(conf[0], protocols_for(conf))
     with pytest.raises(ValueError, match="development run uses seeds"):
         RB.check_plan(conf, protocols_for(conf))
-    # a confirmatory run scores every principle with merged estimators and the
-    # frozen runner settings
+    # a confirmatory run scores every principle with available estimators and
+    # the frozen runner settings
     for settings in (RB.RunSettings(principles=("RAM", "PDI")),
                      RB.RunSettings(allow_unavailable_estimators=True),
                      RB.RunSettings(pdi_kmeans_seed=None)):

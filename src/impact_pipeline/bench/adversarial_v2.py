@@ -62,10 +62,6 @@ for a family, seed, configuration preset and twin replicate. A v1 witness
 built at ``replicate = 0`` is the system of the v1 witness builder bit for
 bit; a v1 adversary is the v1 system with its v2 labels added.
 
-Tier-B constructions (``transient_echo``, ``slow_drift``) are not part of
-this round; their generator names are reserved (:data:`DEFERRED_GENERATORS`)
-and building them raises.
-
 This module must not import ``impact_pipeline.mpc_metrics``.
 """
 
@@ -130,11 +126,6 @@ STAGGERED_SYSTEM_VARIANTS = {
 }
 STAGGERED_INTENDED_PATTERN = (0, None, 0, 0, 0)
 STAGGERED_EXPECTED_VERDICT = "EXCLUDED"
-
-# Generators of this module, and the Tier-B generator names reserved for a
-# later round (building them raises).
-V2_GENERATORS = (STAGGERED_GENERATOR,)
-DEFERRED_GENERATORS = ("transient_echo", "slow_drift")
 
 
 def staggered_module_taus(variant: str, module_order: Sequence[str],
@@ -310,19 +301,6 @@ def staggered_driver_system(
         "template_seed": like.meta.get("seed"),
     }
     return BenchSystem(ts=ts, events=like.events.copy(), meta=meta, oracle=oracle)
-
-
-def make_adversarial_v2(kind: str, config=None, seed: int = 0, **kwargs) -> BenchSystem:
-    """Build one v2 adversarial system by generator name (``config``:
-    AgentConfig or dict). Tier-B names raise ``NotImplementedError``."""
-    if kind in DEFERRED_GENERATORS:
-        raise NotImplementedError(
-            f"{kind!r} is a Tier-B construction that is not part of this round")
-    if kind not in V2_GENERATORS:
-        raise ValueError(f"kind must be one of {V2_GENERATORS}, got {kind!r}")
-    cfg = config if isinstance(config, AgentConfig) or config is None else (
-        config_from_dict(config))
-    return staggered_driver_system(seed=seed, config=cfg, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -806,18 +784,15 @@ def lesion_conditions_g_nom(
 __all__ = [
     "ADVERSARIAL_V2_VERSION",
     "CATALOGUE_V2_PATH",
-    "DEFERRED_GENERATORS",
     "RECORDABLE_CHANNELS",
     "STAGGERED_SYSTEM_VARIANTS",
     "STAGGERED_VARIANTS",
-    "V2_GENERATORS",
     "build_system",
     "config_preset",
     "g_nom",
     "get_entry",
     "lesion_conditions_g_nom",
     "load_catalogue_v2",
-    "make_adversarial_v2",
     "recorded_channels",
     "resolve_catalogue",
     "staggered_drive_input",

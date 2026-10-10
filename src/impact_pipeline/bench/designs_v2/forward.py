@@ -3,8 +3,8 @@ Forward-model arms of MPC-Bench v2: the task builders of the Hopf arm and of
 the forward-modelled family-A arms, their views and scorings, and the
 admission designs the registry v3 builder applies to their records.
 
-Arms (design 3.2, 3.6)
-----------------------
+Arms (preregistration v2 sections 4.2 and 4.5)
+----------------------------------------------
 ``hopf``
     the v1 whole-brain Hopf model (76 regions, 250 Hz). G sweep: the eight v1
     levels 0-4 x 20 seeds; hub lesion and its size-matched random-edge
@@ -37,9 +37,8 @@ Purposes and regimes
 confirmatory replication block 20900-20919 at the held-out regime (the
 forward views' anchor replication, HCv2-6), extended to 20939 for an arm
 that the CD-11 rule extends (:func:`replication_seeds`; decided after the
-held-out release, none so far). ``dry_run`` (seeds 384-399) and
-``dev_regime``
-(804-819): the same conditions at about 15 % scale, at the development
+held-out release: the Hopf arm). ``dry_run`` (seeds 384-399) and
+``dev_regime`` (804-819): the same conditions at about 15 % scale, at the development
 regime. ``reference`` (900-939): the anchor conditions (``G_nom``,
 PC_nominal) at the held-out regime, computed only after the held-out
 predictions are committed; ``reference_development``: the same seeds at the
@@ -66,10 +65,10 @@ scoring has ``view`` = the view name, ``estimator_form`` from
 registry regime keys). Components are scored under the view's family
 protocol without a registry (the admission run decides the registry);
 sensor and source-estimate scorings carry the observation-gate label
-``admission_run`` (NAS N10, IIM C7), which the runner maps onto NAS v3's
-``override_observation_gate`` and IIM v5's ``observation_admitted``, and
-IIM's ``macro_nodes`` option picks the rank-safe clusters or the v1
-quadrants of a sensor view.
+``admission_run`` (the observation gates of NAS v3 and IIM v5), which the
+runner maps onto NAS v3's ``override_observation_gate`` and IIM v5's
+``observation_admitted``, and IIM's ``macro_nodes`` option picks the
+rank-safe clusters or the v1 quadrants of a sensor view.
 
 A run carries what some criterion, hypothesis or anchor reads on it
 (:func:`scoring_plan`): the v1 quadrant comparator at ``G = 0``
@@ -78,11 +77,10 @@ held-out-regime anchor runs (reference, replication and their smoke test),
 where its two protocols get their own validity-only anchors (HCv2-6(b));
 not on the development-regime reference runs, because IIM on the sensor
 views above ``G = 0`` is held out (HO-6) and the released held-out-regime
-reference anchors are the design's only exception; on the lesion
-conditions only NAS (FMb2 is the
-only lesion criterion); the source view of a family-A arm, which is no
-admission view, only on the runs whose source contrast FMd reads; and IIM
-on the family-A arms, which is descriptive (design 3.1), as its value and
+reference anchors are the only exception; on the lesion conditions only
+NAS (FMb2 is the only lesion criterion); the source view of a family-A arm,
+which is no admission view, only on the runs whose source contrast FMd
+reads; and IIM on the family-A arms, which is descriptive, as its value and
 null without the bootstrap SE that only a status needs. Every forward
 protocol scores IIM's primary (directional) cut only (``report_cut_modes``
 empty): no forward scoring reports another cut.
@@ -96,8 +94,8 @@ their planned runs.
 Options in :func:`scoring_plan` use the protocol vocabulary (for example
 ``pdi_bearer``); the runner maps them onto the estimators' parameter names.
 ``n_low`` (the low-density montage) is a parameter of every builder with the
-default :data:`impact_pipeline.bench.forward_v2.N_LOW_DEFAULT` (32); the
-development calibration replaces it by the paper-2 value (CD-12).
+default :data:`impact_pipeline.bench.forward_v2.N_LOW_DEFAULT` (32), the
+paper-2 value that CD-12 declared (the fallback of its rule).
 
 This module must not import ``impact_pipeline.mpc_metrics``.
 """
@@ -149,7 +147,8 @@ DEVELOPMENT_SEED_BLOCKS = MappingProxyType({
 })
 DRY_RUN_FRACTION = 0.15
 CONFIRMATORY_SEED_BASE = S.CONFIRMATORY_SEED_MIN
-# the anchor replication block of the forward views (HCv2-6; seed map 3.7)
+# the anchor replication block of the forward views (HCv2-6;
+# protocols/v2/seed_map_v2.json)
 # and its extension, which the CD-11 rule declares per arm
 # (designs_v2.anchors.CALIBRATION_PENDING['forward_replication_extended'];
 # :func:`replication_seeds`)
@@ -615,7 +614,7 @@ _IIM_SENSOR = {"preprocess": "zca", "macro_nodes": "rank_safe_clusters", **_GATE
 # condition and ZCA) on the source model's declared macro nodes (HCv2-15).
 _IIM_SOURCE_ESTIMATE = {"preprocess": "zca", **_GATE}
 _IIM_V1 = {"preprocess": "none", "macro_nodes": "v1_quadrants", **_GATE}
-# IIM on the family-A arms is descriptive (design 3.1): its value and null,
+# IIM on the family-A arms is descriptive: its value and null,
 # without the bootstrap SE that only a status needs (a status is never read)
 _IIM_DESCRIPTIVE = {"se_method": None}
 # The forward views score the primary (directional) cut only: no admission
@@ -828,7 +827,6 @@ RECORD_DESIGN_OF_ARM = MappingProxyType({
 ANCHOR_REPLICATION_DESIGN = "forward_anchor_replication"
 # the records an admission reads (the anchor design's never enter a registry)
 ADMISSION_RECORD_DESIGNS = frozenset(RECORD_DESIGN_OF_ARM.values())
-RECORD_DESIGNS = ADMISSION_RECORD_DESIGNS | {ANCHOR_REPLICATION_DESIGN}
 # purposes of the arm designs and of the anchor design
 ARM_PURPOSES = (CONFIRMATORY, DRY_RUN, DEV_REGIME, SMOKE)
 ANCHOR_PURPOSES = (REPLICATION, REFERENCE, REFERENCE_DEVELOPMENT)
@@ -1088,8 +1086,8 @@ def _design(name: str, build, confirmatory_tasks: int, description: str):
                      {DV.CONFIRMATORY: confirmatory_tasks}, ademp=ADEMP[name])
 
 
-# Confirmatory task counts of the design document (3.2; the BOLD arm's 271 is
-# the planned maximum before curtailment) and of the replication block (20
+# Confirmatory task counts (preregistration v2 section 4.2; the BOLD arm's 271
+# is the planned maximum before curtailment) and of the replication block (20
 # seeds per arm, 40 for an arm the CD-11 rule extends).
 DOCUMENT_TASKS = MappingProxyType({
     "whole_brain": 371, "forward_family_a": 332, "forward_family_a_bold": 271,
@@ -1119,16 +1117,17 @@ DESIGNS = _designs()
 
 class RunnerCurtailment:
     """
-    The curtailed sampling of the forward arms in the v2 runner (design 3.6):
-    the on-runs of an arm's curtailment group are evaluated in seed order
-    (:func:`curtailment_order`), and once the false ABSENTs among them make
-    the FMabs demonstration impossible at the planned on-run count, in every
-    admission view of the group, the group's remaining :func:`curtailable`
-    runs are skipped. A demonstration that is impossible before any event
-    (a development dry run plans too few on-runs) stops at its first event,
-    as the confirmatory plan does. The decision for a run depends only on
-    the records of the runs before it in that order, so the kept records do
-    not depend on the number of workers. Controller contract:
+    The curtailed sampling of the forward arms in the v2 runner
+    (preregistration v2 section 4.5): the on-runs of an arm's curtailment
+    group are evaluated in seed order (:func:`curtailment_order`), and once
+    the false ABSENTs among them make the FMabs demonstration impossible at
+    the planned on-run count, in every admission view of the group, the
+    group's remaining :func:`curtailable` runs are skipped. A demonstration
+    that is impossible before any event (a development dry run plans too
+    few on-runs) stops at its first event, as the confirmatory plan does.
+    The decision for a run depends only on the records of the runs before
+    it in that order, so the kept records do not depend on the number of
+    workers. Controller contract:
     :func:`impact_pipeline.bench.run_bench_v2.curtailment_controllers`.
     """
 
@@ -1305,7 +1304,6 @@ __all__ = [
     "PROTOCOL_DRAFTS",
     "PROTOCOL_PREFIX_OF_ARM",
     "RECORD_CONFIG",
-    "RECORD_DESIGNS",
     "RECORD_DESIGN_OF_ARM",
     "REPLICATION",
     "REPLICATION_SEEDS",

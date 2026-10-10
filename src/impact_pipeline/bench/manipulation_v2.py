@@ -42,11 +42,11 @@ slow_context_dwell           PC_nominal under the     every complete context
 ===========================  =======================  =======================
 
 The slow-context check is the realisation check of the slow-context BOLD
-agents (design 3.4). Design 3.5 does not list it; it is a gate because a
-failed realisation means that the condition of the forward BOLD arm was
-not produced. Its check id is
-``PC_nominal:slow_context_bold/slow_context_dwell``, and the hypotheses
-file requires it only for the rows of that arm (``oracle_checks``).
+agents (preregistration v2 section 4.4); it is a gate because a failed
+realisation means that the condition of the forward BOLD arm was not
+produced. Its check id is ``PC_nominal:slow_context_bold/slow_context_dwell``,
+and the hypotheses file requires it only for the rows of that arm
+(``oracle_checks``).
 
 :func:`prerequisite_m` collects the data of the prerequisite M: the frozen
 1.0.0 switch checks on families A and C1 together with these checks, and
@@ -119,7 +119,8 @@ SLOW_CONTEXT_CHECK = "slow_context_dwell"
 SLOW_CONTEXT_FAMILIES = ("A",)
 SLOW_CONTEXT_CHECK_ID = (f"{SLOW_CONTEXT_SYSTEM}:{SLOW_CONTEXT_PRESET}/"
                          f"{SLOW_CONTEXT_CHECK}")
-# the confirmatory twin replicates of families A and C1 (design 3.2)
+# the confirmatory twin replicates of families A and C1 (preregistration v2
+# section 4.2)
 TWIN_REPLICATES = tuple(range(1, 7))
 TWIN_CHECK = "twin_hashes"
 PC_HALF_SYSTEM = "PC_half"
