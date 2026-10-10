@@ -124,8 +124,12 @@ hashed and the records carry them; this section says what they mean.
   (see the comment above `COST_SOURCE` in that script).
 * **"decider", "critic", "upheld", "dispute"** (in the `note` texts of
   `calibration_decisions.json`): terms from the preparation of the
-  calibration decisions before the freeze. A description of that
-  preparation is *to be added by the author*.
+  calibration decisions before the freeze. Each decision was first drafted
+  from the development outputs under the rules of the preregistration (the
+  "decider" pass) and then checked in a separate pass that tried to refute
+  it (the "critic" pass). "Upheld" means the check found no error;
+  "dispute" marks a point on which the two passes disagreed, followed by
+  how it was resolved. The values in the file are the resolved decisions.
 * **"BLOCKING: the code constant impact_pipeline.v2.iim_v5.BOOTSTRAP_SE_DF is
   still 12.0 ... (DECISION_LOG follow-up 1)"** (note of CD-3): a follow-up
   recorded when the decision was written, in a working log that is not

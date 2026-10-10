@@ -61,7 +61,7 @@ print(Protocol.from_json('protocols/mpc_bench_v1.json').hash)"`.
 | Frozen protocols | `protocols/mpc_bench_v1.json` and `protocols/mpc_bench_v1_anchored.json`, with the SHA-256 the tag message quotes |
 | Errata | section "Errata" of the preregistration, added 2026-09-29 after the freeze (documentation only) |
 | Confirmatory runs | 2026-09-28 to 2026-09-30, from a checkout of the tag; outcomes in the main [README](../../README.md#status-and-results) |
-| Public registration | *to be added by the author* |
+| Public registration | none yet; an OSF registration of the frozen plan is planned |
 
 **Commit identifiers.** The commit messages and author metadata of the
 history up to and including the freeze commit were edited on 2026-09-29; no
@@ -82,7 +82,7 @@ can be checked with `git rev-parse f2cf249^{tree}`.
 | Frozen commit | `acb5428bf05c8d494ae938857b471256c542e7dd`, the commit that contains `MPC_BENCH_PREREGISTRATION_V2.md`, its companions, `protocols/v2/` and the code (a document cannot quote the commit that contains it, so the preregistration names it by the tag) |
 | Held-out predictions | `protocols/v2/held_out_predictions_v2.json`, committed in `21597fe`; release `5af6e074475de23a` logged 2026-10-08 at head `a16f84c` |
 | Confirmatory run | 2026-10-09, from a checkout of the tag; outcomes in the main [README](../../README.md#status-and-results) |
-| Public registration | *to be added by the author* |
+| Public registration | none yet; an OSF registration of the frozen plan is planned |
 
 The v1 preregistration, the v1 tag and the v1 outcomes are not changed by v2.
 
@@ -92,10 +92,10 @@ preregistration says that the message of the annotated tag
 round: the 46-seed null witnesses of HCv2-1 and the paper-2 regime (CD-12).
 The tag message does not name them; it lists the frozen protocols, the
 hypotheses file, the preregistration, the seed map and the held-out
-predictions with their SHA-256 (`git cat-file -p mpcbench-freeze-v2`). How
-the confirmation of the two decisions is recorded is *to be added by the
-author*. The frozen preregistration is not edited; this note records the
-difference.
+predictions with their SHA-256 (`git cat-file -p mpcbench-freeze-v2`). The
+author confirmed both decisions on 2026-10-09 by pushing the tag to the
+public repository, shortly before the confirmatory run started at 00:51 CEST.
+The frozen preregistration is not edited; this note records the difference.
 
 ## Terms used in the preregistrations
 
