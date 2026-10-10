@@ -24,4 +24,5 @@ matplotlib==3.10.8
 python-docx==1.2.0
 pybids==0.21.0
 psutil==7.2.2
+pyyaml==6.0.3
 fastrlock==0.8.3

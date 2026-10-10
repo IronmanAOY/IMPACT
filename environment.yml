@@ -40,8 +40,9 @@ dependencies:
   - python-docx=1.2.*
   - matplotlib-base=3.10.*
   - psutil>=5.9
-  # Test and lint tooling (used by CI; the packaging tests read YAML)
+  # MPC-Bench v2 system catalogue (witnesses_v2.yaml)
+  - pyyaml>=6
+  # Test and lint tooling (used by CI)
   - pytest>=7
   - pytest-timeout>=2.1
-  - pyyaml>=6
   - flake8=7.3.*
