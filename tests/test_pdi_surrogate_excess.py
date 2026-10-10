@@ -83,7 +83,7 @@ def test_repertoire_entropy_of_pattern_switching_falls_below_linear_gaussian():
 
 def test_negative_result_surrogate_excess_is_not_a_differentiation_score():
     """
-    Documented negative result (formerly a strict xfail).
+    Documented negative result.
 
     The v1 design expected multistable pattern switching to exceed
     spectrum-matched linear Gaussian surrogates. It cannot: for fixed auto-

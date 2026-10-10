@@ -253,7 +253,7 @@ def test_inspection_counts_top_level_subjects_and_respects_source_root(
     _description(repo / "data" / "scratch" / "ds004295")
     row = inspect_mod.inspect_dataset("ds002547", repo, 1, 1, source)
     assert row["available"] is True
-    # derivatives/fmriprep/sub-01.html used to inflate the subject count.
+    # derivatives/fmriprep/sub-01.html must not count as another subject.
     assert row["subjects"] == ["sub-01", "sub-14"]
     assert row["n_subjects"] == 2
     assert row["derivative_subjects"] == {"fmriprep": 2}
@@ -365,8 +365,8 @@ def test_ds002547_pseudo_sessions_distinct_or_flagged_and_rest_not_tiled(generat
     sub14 = [r for r in runs if r["subject"] == "14"]
     assert sum(r["task_source"]["reused"] for r in sub14) == 2
     for r in runs:
-        # ds003171 donor rest runs have 90 volumes; they are no longer tiled to
-        # the task length.
+        # ds003171 donor rest runs have 90 volumes; they are not tiled to the
+        # task length.
         assert r["rest_shape"][0] == 90 and r["task_shape"][0] == 130
         sidecar = json.loads((generated["synth"] / r["bids_sidecar"]).read_text())
         assert "ds003171" in sidecar["SourcesInspected"]
@@ -828,7 +828,7 @@ def test_validate_only_accepts_legacy_manifest_with_foreign_absolute_paths(
     shutil.copytree(generated["synth"], moved)
     reports = moved / "test_objects" / "real_derived_synth_completed" / "reports"
     v2 = generated["manifests"]["ds003171"]
-    foreign = Path("/Volumes/OTHER_MACHINE/impact-synergy-pipeline")
+    foreign = Path("/mnt/other_machine/impact-synergy-pipeline")
     legacy = {
         "dataset_id": "ds003171",
         "bids_root": str(foreign / v2["bids_root"]),

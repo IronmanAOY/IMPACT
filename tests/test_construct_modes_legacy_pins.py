@@ -5,7 +5,7 @@ revisions.
 The construct revisions add opt-in modes and keywords; every
 default must keep the old behaviour. Comparing ``mode='legacy'`` with the
 default inside the same code base cannot detect a changed default, so these
-values were produced by the code at commit 0d0e441 (before those revisions) on
+values were produced by the code at commit c565a23 (before those revisions) on
 the inputs below and are pinned here.
 """
 
@@ -45,7 +45,7 @@ def _inputs():
     return tr, ram_ts, bundle, pdi_ts, pdi_base, nas_ts, srpi_ts, on
 
 
-def test_legacy_defaults_match_pre_b1_code():
+def test_legacy_defaults_match_the_pre_revision_code():
     tr, ram_ts, bundle, pdi_ts, pdi_base, nas_ts, srpi_ts, on = _inputs()
     ram = mm.compute_RAM(
         ram_ts,

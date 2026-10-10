@@ -82,7 +82,7 @@ def test_task_run_is_never_its_own_baseline(tmp_path):
         )
     df = _run(tmp_path, endpoint="task").set_index("session")
     for ses in ("awake", "deep"):
-        # Old code: PDI_task == 0.0 exactly (a spurious measured zero).
+        # Undefined, not PDI_task == 0.0 exactly (a spurious measured zero).
         assert np.isnan(df.loc[ses, "PDI_task"])
         assert df.loc[ses, "PDI_task_reason"] == "state_baseline_identical_to_task_run"
     assert (

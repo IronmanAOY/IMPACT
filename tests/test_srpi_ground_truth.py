@@ -22,7 +22,7 @@ def test_pre_event_window_lies_strictly_before_onset():
     pre, delta, used = mm._event_locked_state_deltas(
         ramp, np.array([50, 120]), lag_samples=4, pre_samples=2, post_samples=3
     )
-    # Pre window [e-2, e): mean index e-1.5 (old code: e+lag-1.5, after onset).
+    # Pre window [e-2, e): mean index e-1.5 (not e+lag-1.5, after onset).
     assert pre[:, 0].tolist() == pytest.approx([48.5, 118.5])
     # Response window [e+4, e+7): mean index e+5.
     assert (pre[:, 0] + delta[:, 0]).tolist() == pytest.approx([55.0, 125.0])
@@ -72,7 +72,7 @@ def test_separability_does_not_saturate_with_random_labels():
         seps.append(d["components_raw"]["representational_separability"])
         aucs.append(d["separability_cv_auc"])
         vals.append(d["value"])
-    # Old estimator: 1 - exp(-d^2/2) = 1.0 in every null run (p >> n).
+    # Guards against 1 - exp(-d^2/2) = 1.0 in every null run (p >> n).
     assert np.median(seps) < 0.1
     assert np.mean(seps) < 0.25
     assert abs(np.mean(aucs) - 0.5) < 0.1

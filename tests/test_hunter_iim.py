@@ -1,6 +1,5 @@
 import dataclasses
 import json
-import os
 
 import numpy as np
 import pytest
@@ -18,12 +17,7 @@ from impact_pipeline.hunter_iim import (
 from impact_pipeline import mpc_metrics as mm
 
 
-@pytest.fixture(autouse=True)
-def clean_hunter_env(monkeypatch, tmp_path):
-    for name in list(os.environ):
-        if name.startswith(("IMPACT_HUNTER_", "IMPACT_IIM_", "PMI_LOCAL_RANK", "PBS_")):
-            monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("IMPACT_IIM_CACHE_DIR", str(tmp_path / "node_local"))
+pytestmark = pytest.mark.usefixtures("clean_hunter_env")
 
 
 def test_hunter_iim_matches_direct_compute(tmp_path):

@@ -1,9 +1,9 @@
 """
 ds003171 task handling and atlas naming.
 
-sub-10JR's awake audio run is labelled task-audio. Before the fix fMRI
-preprocessing silently skipped it (and every 'light' run), so run-spec
-building later aborted with "No time-series for 10JR/awake".
+sub-10JR's awake audio run is labelled task-audio. fMRI preprocessing must
+not skip it (or any 'light' run); otherwise run-spec building aborts later
+with "No time-series for 10JR/awake".
 """
 
 import json

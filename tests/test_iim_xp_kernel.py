@@ -14,7 +14,6 @@ import json
 import os
 import sys
 import tempfile
-import types
 
 import numpy as np
 import pytest
@@ -22,6 +21,7 @@ import pytest
 from impact_pipeline import hardware_backend as hb
 from impact_pipeline import iim_xp
 from impact_pipeline import mpc_metrics as mm
+from _helpers import _fake_rocm_cupy
 
 TOL = 1e-10
 
@@ -225,23 +225,6 @@ def test_xp_kernel_resumes_a_partial_numba_phase1_checkpoint(tmp_path):
 # ---------------------------------------------------------------------------
 # Kernel selection by hardware backend
 # ---------------------------------------------------------------------------
-
-
-def _fake_rocm_cupy():
-    cp = types.ModuleType("cupy")
-    cp.__version__ = "13.6.0+fake-rocm"
-    cp.__getattr__ = lambda name: getattr(np, name)
-    cp.asnumpy = np.asarray
-    cp.linalg = np.linalg
-    cp.add = np.add
-    cp.cuda = types.SimpleNamespace(
-        runtime=types.SimpleNamespace(
-            is_hip=lambda: True,
-            getDeviceCount=lambda: 4,
-            getDeviceProperties=lambda i: {"name": b"AMD Instinct MI300A"},
-        )
-    )
-    return cp
 
 
 @pytest.fixture

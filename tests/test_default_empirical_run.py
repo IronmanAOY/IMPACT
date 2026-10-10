@@ -27,6 +27,7 @@ import run_pipeline
 from impact_pipeline import evidence as E
 from impact_pipeline import mpc_metrics as mm
 from impact_pipeline import synergy_ci as sc
+from _helpers import _evoked
 
 PRINCIPLES = E.PRINCIPLES
 REPO = Path(__file__).resolve().parents[1]
@@ -142,15 +143,6 @@ def _behavioural_layout(tmp_path, amp=2.0, noise=0.2, subjects=("01", "02", "03"
     (bids / "dataset_description.json").write_text(
         json.dumps({"Name": "tiny-behavioural", "BIDSVersion": "1.8.0"}))
     return bids, out
-
-
-def _evoked(ts, tr, onsets, node=0):
-    idx = np.rint(np.asarray(onsets, dtype=float) / tr).astype(int)
-    idx = idx[(idx >= 1) & (idx + 4 < ts.shape[1])]
-    if idx.size < 3:
-        return float("nan")
-    return float(np.mean([ts[node, k + 1:k + 4].mean() - ts[node, k - 1]
-                          for k in idx]))
 
 
 def install_behavioural_ram(monkeypatch):

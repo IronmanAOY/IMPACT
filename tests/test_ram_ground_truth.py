@@ -82,7 +82,7 @@ def test_fmri_magnitude_and_latency_recovered_on_true_time_axis(tr):
     }
     d = mm.compute_RAM(ts, tr=tr, stimulus_onsets=bundle, magnitude_scale=1.0,
                        return_details=True, **FAST)
-    # Old code: latency = argmax(50x-oversampled HRF) * tr ~ 250 s for every TR.
+    # Guards against latency = argmax(50x-oversampled HRF) * tr (~250 s at any TR).
     assert d["latency_seconds"] == pytest.approx(mm.canonical_hrf_peak()[0], abs=1e-9)
     assert 4.5 <= d["latency_seconds"] <= 6.0
     assert d["magnitude_term"] == pytest.approx(amp, rel=0.05)
@@ -154,7 +154,7 @@ def test_goal_alignment_null_and_coupled_fmri_with_overlapping_responses():
 
 
 def test_goal_alignment_does_not_saturate_on_high_dimensional_noise():
-    # Old estimator: in-sample ridge CCA, G ~ 0.99 on pure noise for every run.
+    # An in-sample ridge CCA would give G ~ 0.99 on pure noise for every run.
     gs, r_cv = [], []
     for seed in range(12):
         rng = np.random.RandomState(100 + seed)
@@ -241,8 +241,8 @@ def test_eeg_latency_measured_and_speed_not_dominated_by_epsilon():
     ts, tr, b = _eeg_task(0)
     d = mm.compute_RAM(ts, tr=tr, stimulus_onsets=b, return_details=True,
                        quality_null_samples=10, **EEG_KW)
-    # Old code: argmax |avg| over +-0.8 s picked the -0.4 s deflection -> T
-    # clipped to 0 and speed = M / 0.004 s.
+    # Guards against argmax |avg| over +-0.8 s picking the -0.4 s deflection
+    # (T clipped to 0 and speed = M / 0.004 s).
     assert d["latency_seconds"] == pytest.approx(0.30, abs=0.03)
     assert d["epsilon"] == pytest.approx(tr)
     assert d["latency_term"] > 50 * d["epsilon"]
@@ -384,7 +384,7 @@ def test_ram_is_undefined_without_goal_or_feedback_structure():
         "feedback_values": [1.0, 2.0],
     }
     d = mm.compute_RAM(ts, tr=tr, stimulus_onsets=few, **kw)
-    # Previously a silent, defined RAM = 0.0.
+    # Undefined with a reason, not a silent, defined RAM = 0.0.
     assert np.isnan(d["value"])
     assert d["undefined_reason"] == "insufficient_goal_response_pairs"
 
@@ -445,6 +445,6 @@ def test_non_finite_timeseries_is_undefined_with_reason():
     ts = ts.copy()
     ts[3, 10] = np.nan
     d = mm.compute_RAM(ts, tr=tr, stimulus_onsets=bundle, **kw)
-    # Previously NaN (via M) with undefined_reason None.
+    # A named reason, not NaN (via M) with undefined_reason None.
     assert np.isnan(d["value"])
     assert d["undefined_reason"] == "non_finite_timeseries"

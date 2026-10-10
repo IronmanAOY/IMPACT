@@ -1,7 +1,9 @@
 """
 Randomised property tests of the three-valued MPC verdict under the v2
-semantics (exclusion rule, construct-scale status, declared channels): P1,
-P2', P3', veto, permutation symmetry, channel disjunction, reason-code
+semantics (exclusion rule, construct-scale status, declared channels):
+missingness safety (P1), resolving UNDEFINED never reverses a determinate
+verdict (P2'), a verdict is determinate iff all completions agree (P3'),
+veto, permutation symmetry, channel disjunction, reason-code
 decomposability, plus "a declared channel without an item is never ABSENT"
 and "a missing sampling SE gives UNDEFINED".
 

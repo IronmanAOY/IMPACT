@@ -6,7 +6,6 @@ and exact targets, the label-error and driver constructions, and the
 validation script end to end on development seeds (confirmatory runs are
 refused before anything is simulated)."""
 import json
-import math
 import re
 
 import numpy as np
@@ -449,7 +448,8 @@ def test_confirmatory_run_is_guarded_before_anything_runs(tmp_path, monkeypatch)
     conf = FB.tasks(S.CONFIRMATORY, hypotheses=["HCv2-12"], seeds=[20460])
     out = tmp_path / "conf"
     with pytest.raises(PV.ConfirmatoryGuardError):
-        V.run(out, split=S.CONFIRMATORY, task_list=conf)
+        V.run(out, split=S.CONFIRMATORY, task_list=conf,
+              freeze_tag="mpcbench-no-such-tag")
     assert not out.exists()
     with pytest.raises(S.SeedPolicyError):
         V.run(out, split=S.DEVELOPMENT, task_list=conf)

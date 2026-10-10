@@ -1,9 +1,9 @@
 """
 scripts/run_all.sh decides which subjects still need fMRIPrep with the same
 rule as run_pipeline._fmriprep_subject_complete: the report sub-<label>.html
-AND at least one sub-<label>/**/func/*desc-preproc_bold.nii.gz. It used to
-check the report only, so a run that stopped after writing the report was
-skipped by run_all.sh but not by run_pipeline.
+AND at least one sub-<label>/**/func/*desc-preproc_bold.nii.gz. Checking
+the report alone would make run_all.sh skip a run that stopped after
+writing the report, while run_pipeline processes it again.
 """
 
 import os

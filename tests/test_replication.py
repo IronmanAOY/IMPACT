@@ -87,12 +87,12 @@ def test_run_replication_wiring_and_paired_statistics(tmp_path, monkeypatch):
         ("awake", "deep"),
         n_boot=500,
     )
-    # run_preprocessing gets all required arguments (old code omitted out_root).
+    # run_preprocessing gets all required arguments, out_root included.
     assert calls["prep"]["out_root"].endswith("preprocessed")
     assert calls["prep"]["fmriprep_deriv"].endswith("derivatives/fmriprep")
-    # Only S is needed: no MPC metrics (old code raised on missing SRPI params).
+    # Only S is needed: no MPC metrics, so missing SRPI params cannot raise.
     assert calls["ci"]["compute_mpc"] is False and calls["ci"]["tr"] == 2.0
-    # 'ci' is now the CI of the paired mean difference, and cohend is dz.
+    # 'ci' is the CI of the paired mean difference, and cohend is dz.
     assert res["ci"][0] < res["delta_S"] < res["ci"][1]
     assert res["delta_S"] == pytest.approx(1.0, abs=0.15)
     assert res["cohend"] > 3 and res["n_pairs"] == 12
@@ -169,7 +169,7 @@ def test_run_preprocessing_is_called_with_its_real_signature(tmp_path, monkeypat
     seen = {}
 
     def fake_prep(**kw):
-        # Old bug: run_preprocessing(data_root, prep) -> TypeError at runtime.
+        # Guards against run_preprocessing(data_root, prep) -> TypeError at runtime.
         inspect.signature(preprocessing.run_preprocessing).bind(**kw)
         seen.update(kw)
         return {

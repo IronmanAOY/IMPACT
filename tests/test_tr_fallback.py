@@ -1,10 +1,10 @@
 """
 TR resolution in fMRI preprocessing (no silent TR fallback).
 
-Before the fix an implausible header TR (e.g. 20 s) was silently replaced by
-2.0 s. The TR now comes from measured metadata (BIDS sidecar, then NIfTI
-header); without a plausible value preprocessing raises unless --assume-tr
-is given explicitly.
+The TR comes from measured metadata (BIDS sidecar, then NIfTI header); an
+implausible header TR (e.g. 20 s) is never silently replaced by 2.0 s.
+Without a plausible value preprocessing raises unless --assume-tr is given
+explicitly.
 """
 
 import json

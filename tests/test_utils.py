@@ -37,7 +37,7 @@ def test_fast_delong():
     y_score = np.array([0.9, 0.1, 0.8, 0.2])
     auc, var = fast_delong(y_true, y_score)
     assert 0 <= auc <= 1
-    # Perfect separation: AUC must be exactly 1 (the old code returned 0.5).
+    # Perfect separation: AUC must be exactly 1 (not 0.5).
     assert auc == pytest.approx(1.0)
 
 
@@ -51,7 +51,7 @@ def test_fast_delong_matches_sklearn_and_bruteforce_with_ties(seed):
     assert auc == pytest.approx(roc_auc_score(y, s), abs=1e-12)
     assert auc == pytest.approx(ref_auc[0], abs=1e-12)
     assert var == pytest.approx(ref_cov[0, 0], rel=1e-10)
-    # Order invariance (the old variance changed when rows were shuffled).
+    # Order invariance: shuffling the rows changes neither AUC nor variance.
     perm = rng.permutation(40)
     auc_p, var_p = fast_delong(y[perm], s[perm])
     assert auc_p == pytest.approx(auc, abs=1e-12)
@@ -103,7 +103,7 @@ def test_delong_null_calibration_and_power():
 
 
 def test_delong_requires_finite_scores_and_two_cases_per_class():
-    # The old compute_midrank looped forever on NaN (NaN != NaN never closes a tie).
+    # NaN is refused: in compute_midrank NaN != NaN would never close a tie.
     with pytest.raises(ValueError):
         compute_midrank([0.1, np.nan, 0.3])
     with pytest.raises(ValueError):

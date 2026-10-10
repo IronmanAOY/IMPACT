@@ -219,7 +219,7 @@ def test_checkpoint_kernel_cache_removed_on_completion_and_explicit_cache_kept(
 def test_explicit_kernel_cache_is_not_reused_across_different_data(tmp_path):
     # Kernel-cache keys do not identify the data, so a caller-provided cache
     # written for one run must be invalidated (signature check) before another
-    # run uses it; previously stale cut-kernel values changed Psi^kappa.
+    # run uses it; stale cut-kernel values would otherwise change Psi^kappa.
     shared = str(tmp_path / "shared_cache.sqlite3")
     a, b = _ts(seed=0, t=150), _ts(seed=1, t=150)
     mm.compute_IIM(a, bins=2, return_details=True, kernel_cache_path=shared)

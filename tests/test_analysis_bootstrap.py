@@ -38,7 +38,7 @@ def _paired_frame(n_subj, effect, between_sd=1.0, within_sd=0.3, seed=0, col="S"
 
 
 def test_permutation_two_sided_detects_awake_greater_than_deep():
-    # Old code: one-sided in the wrong direction -> AUC 0.13, p ~ 1.0 for this effect.
+    # Guards against a one-sided test in the wrong direction (AUC 0.13, p ~ 1.0).
     df = _paired_frame(15, effect=2.0, seed=1)
     auc, p = permutation_test_auc(df, "S", n_perm=5000)
     assert auc < 0.5  # AUC = P(S_deep > S_awake)
@@ -105,7 +105,7 @@ def test_undefined_rows_and_extra_sessions_are_excluded():
     extra = pd.DataFrame([{"subject": "s01", "session": "recovery", "S": 99.0}])
     df = pd.concat([df, extra], ignore_index=True)
     det = permutation_test_auc(df, "S", n_perm=2000, return_details=True)
-    assert np.isfinite(det["p"])  # old code: ValueError on NaN
+    assert np.isfinite(det["p"])  # NaN rows are dropped, not a ValueError
     assert det["n_rows_excluded_undefined"] == 1
     assert det["n_subjects_excluded_incomplete"] == 1
     assert det["n_subjects_used"] == 9

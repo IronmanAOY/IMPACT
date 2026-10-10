@@ -25,12 +25,7 @@ from impact_pipeline.execution_profiles import get_execution_profile
 REPO = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture(autouse=True)
-def clean_hunter_env(monkeypatch, tmp_path):
-    for name in list(os.environ):
-        if name.startswith(("IMPACT_HUNTER_", "IMPACT_IIM_", "PMI_LOCAL_RANK", "PBS_")):
-            monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("IMPACT_IIM_CACHE_DIR", str(tmp_path / "node_local"))
+pytestmark = pytest.mark.usefixtures("clean_hunter_env")
 
 
 # ---------------------------------------------------------------------------

@@ -116,8 +116,8 @@ def test_invalid_hub_declarations_still_raise(tmp_path):
 
 
 def test_default_protocol_runs_all_five_principles_through_the_pipeline(tmp_path):
-    """Before the fix the default protocol could only be run without NAS
-    (tests/test_protocols.py excluded it); now all five run."""
+    """The default protocol runs through the pipeline with all five
+    principles, NAS included."""
     from test_verdict_wiring import _layout, _run
 
     from impact_pipeline.run_synergy_ci import RAM_PARAM_PRESETS

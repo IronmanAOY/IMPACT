@@ -5,6 +5,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # The tests must exercise this checkout's src/. If impact_pipeline is not
 # importable, or resolves to another copy (a different checkout or worktree
 # installed into the same env, or a stale site-packages install), put this
@@ -24,3 +26,14 @@ if os.environ.get("IMPACT_TEST_INSTALLED_PACKAGE") != "1" and (
 # Unit tests import and call run_pipeline.main() directly from arbitrary
 # interpreters. Skip strict runtime env checks in test context.
 os.environ.setdefault("IMPACT_SKIP_ENV_CHECK", "1")
+
+
+@pytest.fixture
+def clean_hunter_env(monkeypatch, tmp_path):
+    """Hide the caller's Hunter, IIM and PBS environment from a test and give
+    it a private IIM cache directory."""
+    for name in list(os.environ):
+        if name.startswith(("IMPACT_HUNTER_", "IMPACT_IIM_", "PMI_LOCAL_RANK", "PBS_")):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("IMPACT_REPO_ROOT", raising=False)
+    monkeypatch.setenv("IMPACT_IIM_CACHE_DIR", str(tmp_path / "node_local"))

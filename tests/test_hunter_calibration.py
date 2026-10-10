@@ -13,9 +13,7 @@ array-module kernel (a NumPy-backed fake ROCm CuPy stands in for the MI300A).
 import csv
 import dataclasses
 import json
-import os
 import sys
-import types
 
 import numpy as np
 import pytest
@@ -28,6 +26,7 @@ from impact_pipeline.hunter_iim import (
     collect_iim_results_by_path,
     prepare_hunter_campaign,
 )
+from _helpers import _fake_rocm_cupy
 
 K_NULL = 3
 IIM_KW = dict(bins=2, lag_trs=1, n_parts=3, max_nodes=4, max_mechanism_size=2,
@@ -52,13 +51,7 @@ NULL_FIELDS = (
 )
 
 
-@pytest.fixture(autouse=True)
-def clean_hunter_env(monkeypatch, tmp_path):
-    for name in list(os.environ):
-        if name.startswith(("IMPACT_HUNTER_", "IMPACT_IIM_", "PMI_LOCAL_RANK", "PBS_")):
-            monkeypatch.delenv(name, raising=False)
-    monkeypatch.delenv("IMPACT_REPO_ROOT", raising=False)
-    monkeypatch.setenv("IMPACT_IIM_CACHE_DIR", str(tmp_path / "node_local"))
+pytestmark = pytest.mark.usefixtures("clean_hunter_env")
 
 
 def _coupled_run(t, seed):
@@ -342,23 +335,6 @@ def test_uncalibrated_campaign_keeps_the_null_schema(tmp_path):
 # ---------------------------------------------------------------------------
 # Accelerator targets: the shards' Psi runs through the array-module kernel
 # ---------------------------------------------------------------------------
-
-
-def _fake_rocm_cupy():
-    cp = types.ModuleType("cupy")
-    cp.__version__ = "13.6.0+fake-rocm"
-    cp.__getattr__ = lambda name: getattr(np, name)  # NumPy stands in for HIP
-    cp.asnumpy = np.asarray
-    cp.linalg = np.linalg
-    cp.add = np.add
-    cp.cuda = types.SimpleNamespace(
-        runtime=types.SimpleNamespace(
-            is_hip=lambda: True,
-            getDeviceCount=lambda: 4,
-            getDeviceProperties=lambda i: {"name": b"AMD Instinct MI300A"},
-        )
-    )
-    return cp
 
 
 @pytest.fixture

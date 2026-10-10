@@ -26,7 +26,7 @@ def _cond(root, subj, ses, cond, fd, n_time, n_regions=7):
 def test_fd_is_weighted_by_timepoints_not_regions(tmp_path):
     _cond(tmp_path, "s1", "awake", "audio", 1.0, n_time=300)
     _cond(tmp_path, "s1", "awake", "rest", 0.0, n_time=100)
-    # (1.0*300 + 0.0*100) / 400 = 0.75 ; the old code weighted by n_regions -> 0.5
+    # (1.0*300 + 0.0*100) / 400 = 0.75; weighting by n_regions would give 0.5
     root = str(tmp_path)
     fd_all = _weighted_session_fd(root, "s1", "awake", "schaefer400")
     assert fd_all == pytest.approx(0.75)
@@ -52,7 +52,7 @@ def test_missing_fd_and_undefined_ci_are_excluded_and_counted(tmp_path):
     )
     assert isinstance(res, pd.DataFrame)
     r = res.iloc[0]
-    assert r["n_subject_sessions_missing_fd"] == 1  # old code: FileNotFoundError
+    assert r["n_subject_sessions_missing_fd"] == 1  # counted, no FileNotFoundError
     assert r["n_rows_undefined_score"] == 1
     assert r["n_awake"] + r["n_deep"] == 14
     assert r["n_pairs"] == 6

@@ -32,7 +32,7 @@ def test_ci_measured_zero_component_is_zero_not_undefined():
 
 
 def test_ci_zero_weight_component_may_be_undefined():
-    # Previously 0*log(NaN) made CI NaN; a zero-weight component is now ignored.
+    # A zero-weight component is ignored, so 0*log(NaN) cannot make CI NaN.
     w = {"RAM": 1, "PDI": 1, "NAS": 1, "IIM": 1}
     val = mm.compute_CI(0.5, 0.03, 0.2, 0.1, float("nan"), weights=w)
     expected = float(np.exp(np.mean(np.log([0.5, 0.03, 0.2, 0.1]))))
@@ -62,7 +62,7 @@ def test_ci_invalid_reference_is_undefined_without_floor(bad_ref):
 
 
 def test_ci_reference_dict_missing_component_is_not_silently_one():
-    # Old code silently used 1.0 for a component absent from the reference dict.
+    # A component absent from the reference dict must not silently count as 1.0.
     refs = {"RAM": 1.0, "PDI": 1.0, "NAS": 1.0, "IIM": 1.0}
     out = mm.compute_CI(1.0, 1.0, 1.0, 1.0, 1.0, references=refs, return_details=True)
     assert math.isnan(out["value"]) and out["missing"] == ["SRPI_reference"]
