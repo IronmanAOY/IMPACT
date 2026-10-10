@@ -3,9 +3,13 @@ message: "If you use this software, please cite it as below."
 type: software
 title: "IMPaCT Synergy Pipeline"
 abstract: >-
-  Python pipeline that computes the IMPaCT minimal-principle metrics (RAM, PDI,
-  NAS, IIM, SRPI) and the composite Consciousness Index (CI) from EEG and fMRI
-  data, with local and HPC (HLRS Hunter) execution modes.
+  Measurement framework for the Minimal Principles for Consciousness (MPC) of
+  IMPaCT. The Python pipeline computes five null-anchored estimators (RAM,
+  PDI, NAS, IIM, SRPI) from EEG, fMRI and simulated data and combines them
+  under a declared protocol into a three-valued, missingness-safe exclusion
+  verdict (EXCLUDED, MPC_CONSISTENT, UNDETERMINED). It includes MPC-Bench,
+  white-box simulated systems for validating the estimators and the verdict,
+  and runs locally or on HPC (HLRS Hunter).
 authors:
   - family-names: Obiri-Yeboah
     given-names: Anthony

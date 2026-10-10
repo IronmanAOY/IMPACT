@@ -1,7 +1,7 @@
 # Allowlist build context: the image needs only the code, the environment
 # spec, the MPC protocols, the atlases and the license texts. Everything else
-# (hundreds of GB of raw data, synthetic archives, outputs, manuscripts, Drive
-# staging) stays out.
+# stays out: hundreds of GB of raw data, synthetic archives, outputs,
+# manuscripts and cloud-sync staging folders (.tmp.drive*).
 *
 !environment.yml
 !pyproject.toml

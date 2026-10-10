@@ -3,6 +3,8 @@ From: condaforge/miniforge3:26.7.2-0@sha256:eeb947cc87d61d46820b123bd7c26e1cbdc4
 
 # IMPaCT Synergy Pipeline, Apptainer/Singularity image. Same content as the
 # Dockerfile: pinned conda environment + code + protocols + atlases, no data.
+# MPC-Bench confirmatory runs need a git checkout of the freeze tags and are
+# not supported in the image.
 #
 # Build from the repository root:
 #   apptainer build impact-synergy-pipeline_1.1.0.sif Singularity
@@ -33,8 +35,10 @@ From: condaforge/miniforge3:26.7.2-0@sha256:eeb947cc87d61d46820b123bd7c26e1cbdc4
 
 %post
   set -eu
-  # Drop bytecode/numba caches copied from the build host.
+  # Drop bytecode/numba caches and macOS .DS_Store files copied from the build
+  # host (the Dockerfile build context excludes them via .dockerignore).
   find /opt/impact -name __pycache__ -type d -prune -exec rm -rf {} +
+  find /opt/impact -name .DS_Store -type f -delete
   /opt/conda/bin/conda env create -f /opt/impact/environment.yml
   /opt/conda/bin/conda clean -afy
   /opt/conda/envs/impact-synergy-clean/bin/python -m pip install \
@@ -55,7 +59,8 @@ From: condaforge/miniforge3:26.7.2-0@sha256:eeb947cc87d61d46820b123bd7c26e1cbdc4
   export PATH="/opt/conda/envs/impact-synergy-clean/bin:${PATH}"
 
 %runscript
-  # fMRI preprocessing resolves atlases/ relative to the working directory.
+  # Same working directory as the Docker image (WORKDIR). fMRI preprocessing
+  # reads atlases/ next to pyproject.toml (or $IMPACT_ATLAS_DIR) regardless.
   cd /opt/impact
   exec python /opt/impact/run_pipeline.py "$@"
 

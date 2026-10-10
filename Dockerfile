@@ -2,7 +2,8 @@
 #
 # IMPaCT Synergy Pipeline runtime image: run_pipeline.py with the pinned conda
 # environment. It contains no data and does not run fMRIPrep (fMRIPrep is its
-# own container, see scripts/fetch_fmriprep.sh).
+# own container, see scripts/fetch_fmriprep.sh). MPC-Bench confirmatory runs
+# need a git checkout of the freeze tags and are not supported in the image.
 #
 # Build from the repository root (.dockerignore keeps data/, outputs/,
 # test_objects/, dist/ and manuscripts out of the build context):
@@ -50,7 +51,7 @@ ENV CONDA_DEFAULT_ENV=impact-synergy-clean \
     CONDA_PREFIX=/opt/conda/envs/impact-synergy-clean \
     PATH=/opt/conda/envs/impact-synergy-clean/bin:${PATH}
 
-# fMRI preprocessing resolves atlases/ relative to the working directory.
+# fMRI preprocessing reads atlases/ next to pyproject.toml (or $IMPACT_ATLAS_DIR).
 WORKDIR /opt/impact
 COPY pyproject.toml environment.yml README.md LICENSE CITATION.cff run_pipeline.py ./
 COPY licenses/ licenses/
