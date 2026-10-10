@@ -130,7 +130,7 @@ def atlas_check(
             f"{','.join(missing)}."
         )
     # ``synergy_kwargs`` (e.g. condition, hardware_target, step-2 iim_* settings)
-    # are accepted from the orchestration layer; explicit arguments win.
+    # are accepted from run_pipeline.py; explicit arguments win.
     synergy_kwargs = dict(synergy_kwargs)
     condition = synergy_kwargs.pop("condition", condition)
     ci_reference = synergy_kwargs.pop("ci_reference", ci_reference)

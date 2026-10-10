@@ -126,7 +126,7 @@ def test_nas_capacity_with_a_declared_hub_is_ready(tmp_path):
     df, _ = _check(prep, bids, ses,
                    nas_params={"mode": "capacity", "workspace_nodes": [0, 1]})
     assert bool(df.iloc[0]["NAS_ready"])
-    # without a protocol NAS is checked in its legacy mode, as before
+    # without a protocol NAS is checked in its legacy mode
     df, summary = _check(prep, bids, ses)
     assert bool(df.iloc[0]["NAS_ready"])
     assert summary["settings"]["nas_mode"] == "legacy"

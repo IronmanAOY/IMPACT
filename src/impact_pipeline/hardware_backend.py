@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -74,6 +74,13 @@ def normalize_hardware_target(target: str | None) -> str:
     return key
 
 
+def _prop_text(value):
+    """CuPy device properties hold strings as bytes; decode them."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def _cupy_runtime_name(cp) -> str:
     is_hip = getattr(cp.cuda.runtime, "is_hip", None)
     try:
@@ -132,7 +139,7 @@ def _load_cupy_backend(requested: str, *, require_rocm: bool, strict: bool) -> H
         props = cp.cuda.runtime.getDeviceProperties(0)
         raw_name = props.get("name", b"") if isinstance(props, dict) else b""
         if isinstance(raw_name, bytes):
-            device_name = raw_name.decode("utf-8", errors="replace")
+            device_name = _prop_text(raw_name)
         else:
             device_name = str(raw_name or "GPU/APU")
     except Exception:
@@ -164,16 +171,7 @@ def resolve_hardware_backend(target: str | HardwareBackend | dict | None = None)
         try:
             return _load_cupy_backend("auto", require_rocm=False, strict=False)
         except HardwareBackendError:
-            return HardwareBackend(
-                requested="auto",
-                target="cpu",
-                accelerator=False,
-                array_module="numpy",
-                runtime="cpu",
-                device_count=0,
-                device_name="CPU",
-                strict=False,
-            )
+            return replace(CPU_BACKEND, requested="auto")
     if normalized == "gpu":
         return _load_cupy_backend("gpu", require_rocm=False, strict=True)
     if normalized == "hunter-apu":
@@ -226,10 +224,6 @@ def get_array_module(backend: str | HardwareBackend | dict | None):
     return importlib.import_module("cupy")
 
 
-def is_accelerator_backend(backend: str | HardwareBackend | dict | None) -> bool:
-    return bool(resolve_hardware_backend(backend).accelerator)
-
-
 def backend_summary(backend: str | HardwareBackend | dict | None) -> str:
     resolved = resolve_hardware_backend(backend)
     if not resolved.accelerator:
@@ -250,80 +244,57 @@ def to_numpy(value):
     return np.asarray(value)
 
 
-def _xp_array(value, backend):
-    xp = get_array_module(backend)
-    if xp is np:
-        return np.asarray(value)
-    return xp.asarray(value)
+def _on_backend(backend, op):
+    """
+    Run ``op(xp)`` with NumPy on the CPU backend, otherwise with CuPy, and
+    return a NumPy array in both cases.
+    """
+    resolved = resolve_hardware_backend(backend)
+    if not resolved.accelerator:
+        return op(np)
+    xp = get_array_module(resolved)
+    return xp.asnumpy(op(xp))
 
 
 def accelerated_dot(a, b, backend=None):
-    resolved = resolve_hardware_backend(backend)
-    if not resolved.accelerator:
-        return np.asarray(a).dot(np.asarray(b))
-    xp = get_array_module(resolved)
-    out = xp.asarray(a).dot(xp.asarray(b))
-    return xp.asnumpy(out)
+    return _on_backend(backend, lambda xp: xp.asarray(a).dot(xp.asarray(b)))
 
 
 def accelerated_pinv_dot(a, b, backend=None):
-    resolved = resolve_hardware_backend(backend)
-    if not resolved.accelerator:
-        return np.linalg.pinv(np.asarray(a)).dot(np.asarray(b))
-    xp = get_array_module(resolved)
-    out = xp.linalg.pinv(xp.asarray(a)).dot(xp.asarray(b))
-    return xp.asnumpy(out)
+    return _on_backend(
+        backend, lambda xp: xp.linalg.pinv(xp.asarray(a)).dot(xp.asarray(b))
+    )
 
 
 def accelerated_corrcoef(a, backend=None):
-    resolved = resolve_hardware_backend(backend)
-    if not resolved.accelerator:
-        return np.corrcoef(np.asarray(a))
-    xp = get_array_module(resolved)
-    out = xp.corrcoef(xp.asarray(a))
-    return xp.asnumpy(out)
+    return _on_backend(backend, lambda xp: xp.corrcoef(xp.asarray(a)))
 
 
 def accelerated_svd_values(a, backend=None):
-    resolved = resolve_hardware_backend(backend)
-    if not resolved.accelerator:
-        return np.linalg.svd(np.asarray(a), full_matrices=False, compute_uv=False)
-    xp = get_array_module(resolved)
-    out = xp.linalg.svd(xp.asarray(a), full_matrices=False, compute_uv=False)
-    return xp.asnumpy(out)
+    return _on_backend(
+        backend,
+        lambda xp: xp.linalg.svd(xp.asarray(a), full_matrices=False, compute_uv=False),
+    )
 
 
 def accelerated_solve(a, b, backend=None):
-    resolved = resolve_hardware_backend(backend)
-    if not resolved.accelerator:
-        return np.linalg.solve(np.asarray(a), np.asarray(b))
-    xp = get_array_module(resolved)
-    out = xp.linalg.solve(xp.asarray(a), xp.asarray(b))
-    return xp.asnumpy(out)
+    return _on_backend(
+        backend, lambda xp: xp.linalg.solve(xp.asarray(a), xp.asarray(b))
+    )
 
 
 def accelerated_zscore(a, axis=0, backend=None, eps=1e-12):
-    resolved = resolve_hardware_backend(backend)
-    if not resolved.accelerator:
-        x = np.asarray(a, dtype=float)
-        mean = np.nanmean(x, axis=axis, keepdims=True)
-        std = np.nanstd(x, axis=axis, ddof=0, keepdims=True) + float(eps)
-        return np.nan_to_num((x - mean) / std, nan=0.0, posinf=0.0, neginf=0.0)
-    xp = get_array_module(resolved)
-    x = xp.asarray(a, dtype=xp.float64)
-    mean = xp.nanmean(x, axis=axis, keepdims=True)
-    std = xp.nanstd(x, axis=axis, ddof=0, keepdims=True) + float(eps)
-    out = xp.nan_to_num((x - mean) / std, nan=0.0, posinf=0.0, neginf=0.0)
-    return xp.asnumpy(out)
+    def op(xp):
+        x = xp.asarray(a, dtype=xp.float64)
+        mean = xp.nanmean(x, axis=axis, keepdims=True)
+        std = xp.nanstd(x, axis=axis, ddof=0, keepdims=True) + float(eps)
+        return xp.nan_to_num((x - mean) / std, nan=0.0, posinf=0.0, neginf=0.0)
+
+    return _on_backend(backend, op)
 
 
 def accelerated_row_norm(a, axis=1, backend=None):
-    resolved = resolve_hardware_backend(backend)
-    if not resolved.accelerator:
-        return np.linalg.norm(np.asarray(a), axis=axis)
-    xp = get_array_module(resolved)
-    out = xp.linalg.norm(xp.asarray(a), axis=axis)
-    return xp.asnumpy(out)
+    return _on_backend(backend, lambda xp: xp.linalg.norm(xp.asarray(a), axis=axis))
 
 
 def _eigh_status_key(resolved: HardwareBackend) -> tuple:
@@ -527,11 +498,7 @@ def device_info(backend=None) -> dict:
         try:
             props = runtime.getDeviceProperties(idx)
             name = props.get("name", b"") if isinstance(props, dict) else b""
-            rec["name"] = (
-                name.decode("utf-8", errors="replace")
-                if isinstance(name, bytes)
-                else str(name)
-            )
+            rec["name"] = str(_prop_text(name))
             if isinstance(props, dict):
                 for key in (
                     "totalGlobalMem",
@@ -540,9 +507,7 @@ def device_info(backend=None) -> dict:
                     "major",
                     "minor",
                 ):
-                    val = props.get(key)
-                    if isinstance(val, bytes):
-                        val = val.decode("utf-8", errors="replace")
+                    val = _prop_text(props.get(key))
                     if val is not None:
                         rec[key] = val
         except Exception as exc:

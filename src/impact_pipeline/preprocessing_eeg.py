@@ -104,6 +104,17 @@ def _collect_runs_for_rule(
     return sorted(files)
 
 
+def _missing_file_record(subject, session, task, acquisition, file, reason):
+    return {
+        "subject": subject,
+        "session": session,
+        "task": task,
+        "acquisition": acquisition,
+        "file": file,
+        "reason": reason,
+    }
+
+
 def _existing_files(
     files: Sequence[str],
     subject: str,
@@ -119,14 +130,9 @@ def _existing_files(
         else:
             log.warning("Skipping missing EEG file referenced by BIDS index: %s", fn)
             missing_files.append(
-                {
-                    "subject": subject,
-                    "session": session,
-                    "task": task,
-                    "acquisition": acquisition,
-                    "file": fn,
-                    "reason": "missing_on_disk",
-                }
+                _missing_file_record(
+                    subject, session, task, acquisition, fn, "missing_on_disk"
+                )
             )
     return keep
 
@@ -173,18 +179,6 @@ def _build_session_runs_with_rules(
                 matched[session] = (task, acq, selector)
                 break
     return out, matched
-
-
-def _build_session_runs(
-    layout: BIDSLayout,
-    subject: str,
-    session_rules: Dict[str, Sequence[Tuple[str, ...]]],
-    missing_files: List[Dict[str, Any]],
-) -> Dict[str, List[str]]:
-    out, _matched = _build_session_runs_with_rules(
-        layout, subject, session_rules, missing_files
-    )
-    return out
 
 
 def _channels_tsv_for(vhdr_path: str) -> Optional[str]:
@@ -354,6 +348,17 @@ def run_preprocessing_eeg(
         ),
     }
 
+    def _missing(session, fn, reason):
+        summary["missing_files"].append(
+            _missing_file_record(subj, session, None, None, fn, reason)
+        )
+
+    def _skip(reason, detail, msg, *args):
+        log.warning("Skipping sub-%s: " + msg, subj, *args)
+        summary["skipped_subjects"].append(
+            {"subject": subj, "reason": reason, "detail": detail}
+        )
+
     def _read_header(fn, session):
         try:
             return mne.io.read_raw_brainvision(fn, preload=False, verbose="ERROR")
@@ -368,16 +373,7 @@ def run_preprocessing_eeg(
         except Exception as exc:
             log.warning("Unreadable EEG file %s (%s)", fn, type(exc).__name__)
             reason = f"header_read_error:{type(exc).__name__}"
-        summary["missing_files"].append(
-            {
-                "subject": subj,
-                "session": session,
-                "task": None,
-                "acquisition": None,
-                "file": fn,
-                "reason": reason,
-            }
-        )
+        _missing(session, fn, reason)
         return None
 
     for subj in subjects:
@@ -391,18 +387,9 @@ def run_preprocessing_eeg(
         # Skip subjects without both comparison sessions.
         missing_sessions = [s for s, files in run_map.items() if len(files) == 0]
         if missing_sessions:
-            log.warning(
-                "Skipping sub-%s: missing EEG runs for sessions=%s",
-                subj,
-                ",".join(missing_sessions),
-            )
-            summary["skipped_subjects"].append(
-                {
-                    "subject": subj,
-                    "reason": "missing_sessions",
-                    "detail": ",".join(missing_sessions),
-                }
-            )
+            detail = ",".join(missing_sessions)
+            _skip("missing_sessions", detail,
+                  "missing EEG runs for sessions=%s", detail)
             continue
 
         rest_map: Dict[str, List[str]] = {}
@@ -440,35 +427,16 @@ def run_preprocessing_eeg(
 
         missing_sessions = [s for s, files in usable_map.items() if len(files) == 0]
         if missing_sessions:
-            log.warning(
-                "Skipping sub-%s: no readable EEG runs for sessions=%s",
-                subj,
-                ",".join(missing_sessions),
-            )
-            summary["skipped_subjects"].append(
-                {
-                    "subject": subj,
-                    "reason": "no_readable_runs",
-                    "detail": ",".join(missing_sessions),
-                }
-            )
+            detail = ",".join(missing_sessions)
+            _skip("no_readable_runs", detail,
+                  "no readable EEG runs for sessions=%s", detail)
             continue
 
         common_channels = sorted(set.intersection(*eeg_sets)) if eeg_sets else []
         if len(common_channels) < int(min_common_channels):
-            log.warning(
-                "Skipping sub-%s: only %d common EEG channels (<%d).",
-                subj,
-                len(common_channels),
-                min_common_channels,
-            )
-            summary["skipped_subjects"].append(
-                {
-                    "subject": subj,
-                    "reason": "insufficient_common_channels",
-                    "detail": str(len(common_channels)),
-                }
-            )
+            _skip("insufficient_common_channels", str(len(common_channels)),
+                  "only %d common EEG channels (<%d).",
+                  len(common_channels), min_common_channels)
             continue
 
         # Rest/baseline recordings must provide every analysed channel so the
@@ -532,16 +500,7 @@ def run_preprocessing_eeg(
                     log.warning(
                         "Skipping run due read failure %s (%s)", fn, type(exc).__name__
                     )
-                    summary["missing_files"].append(
-                        {
-                            "subject": subj,
-                            "session": session,
-                            "task": None,
-                            "acquisition": None,
-                            "file": fn,
-                            "reason": f"run_read_error:{type(exc).__name__}",
-                        }
-                    )
+                    _missing(session, fn, f"run_read_error:{type(exc).__name__}")
                     continue
 
                 raw.pick(common_channels)

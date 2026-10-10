@@ -39,7 +39,8 @@ def test_roughness_is_within_subject(monkeypatch):
         "dummy", atlases=("aal90",), mpc_metrics=("NAS",), condition="rest",
         iim_kwargs={"iim_max_nodes": 4}, compute_kwargs={"dataset_id": "dsX"},
     )["aal90"]
-    # Old code sorted all subjects' rows together -> roughness 10 for flat curves.
+    # Roughness is computed per subject (sorting all subjects' rows together
+    # would give roughness 10 for these flat curves).
     assert res["roughness"]["awake"] == pytest.approx(0.0)
     assert res["roughness_n_subjects"]["awake"] == 2
     assert calls["condition"] == "rest" and calls["iim_max_nodes"] == 4

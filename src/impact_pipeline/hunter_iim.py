@@ -76,7 +76,11 @@ from impact_pipeline.provenance import (
     resolve_repo_root,
 )
 from impact_pipeline import nulls
-from impact_pipeline.synergy_ci import _run_null_key, build_ci_run_specs
+from impact_pipeline.synergy_ci import (
+    _release_shared_memory,
+    _run_null_key,
+    build_ci_run_specs,
+)
 
 log = logging.getLogger(__name__)
 
@@ -774,15 +778,7 @@ def _mk_readonly_array_spec(label, arr, use_shared_memory, tmp_dir, owner_shms, 
 
 
 def _cleanup_specs(owner_shms, owner_files, tmp_dir):
-    for shm in owner_shms:
-        try:
-            shm.close()
-        except Exception:
-            pass
-        try:
-            shm.unlink()
-        except Exception:
-            pass
+    _release_shared_memory(owner_shms)
     for path in owner_files:
         try:
             Path(path).unlink()

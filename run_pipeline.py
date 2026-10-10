@@ -81,12 +81,6 @@ from impact_pipeline.provenance import (  # noqa: E402
 )
 from impact_pipeline.dataset_catalog import get_report_dataset  # noqa: E402
 
-# ---------------------------------------------------------------------
-# ── TOGGLE FULL-RUN STEPS ──────────────────────────────────────────────
-RUN_FMRIPREP = False   # set True to run step 0 (fMRIPrep)
-RUN_PREPROCESSING = False   # set True to run step 1 (preprocessing)
-RUN_REPLICATION = False   # set True to run step 7 (replication)
-
 random.seed(42)
 np.random.seed(42)
 STATS_SEED = 42  # explicit seed for all resampling statistics (steps 4 and 8)
@@ -830,7 +824,6 @@ def ensure_fmriprep(
             "--fs-subjects-dir", "/out_freesurfer",
             "--bids-database-dir", cache_cont,
             "--work-dir", "/work",
-            # "--clean-workdir",  # final full-dataset runs only (discards work)
             "--skip-bids-validation",
             "--nthreads", str(nthreads),
             "--omp-nthreads", str(omp_nthreads),
@@ -3301,9 +3294,9 @@ if __name__ == '__main__':
         data_origin=args.data_origin,
         dataset_id=args.dataset_id,
         bids_root_override=args.bids_root,
-        run_fmriprep=args.run_fmriprep or RUN_FMRIPREP,
-        run_preprocessing_flag=args.run_preprocessing or RUN_PREPROCESSING,
-        run_replication_flag=args.run_replication or RUN_REPLICATION,
+        run_fmriprep=args.run_fmriprep,
+        run_preprocessing_flag=args.run_preprocessing,
+        run_replication_flag=args.run_replication,
         replication_root=args.replication_root,
         atlas_override=args.atlas,
         sessions_override=args.sessions,

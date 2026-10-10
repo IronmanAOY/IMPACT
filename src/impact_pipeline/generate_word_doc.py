@@ -28,74 +28,6 @@ def fmt(x, decimals=3, sci_below=1e-4, sci_above=1e5):
     return f"{x:.{decimals}f}"
 
 
-def fmt_pm(mean, err, decimals=3):
-    return f"{fmt(mean, decimals)} ± {fmt(err, decimals)}"
-
-
-def safe_pct(num, den, decimals=1):
-    if den is None or not np.isfinite(den) or den == 0:
-        return "na"
-    return f"{(num/den*100):.{decimals}f}%"
-
-# ---------- stats ----------
-
-
-def _paired_stats(pivot_a, pivot_b):
-    df_pair = pd.DataFrame({'a': pivot_a, 'b': pivot_b}).dropna()
-    x = df_pair['a'].values
-    y = df_pair['b'].values
-    n = len(df_pair)
-    if n < 2:
-        return np.nan, np.nan, np.nan, 0
-    diff = x - y
-    mean_diff = diff.mean()
-    sd_diff = diff.std(ddof=1)
-    t = mean_diff / (sd_diff / np.sqrt(n)) if sd_diff > 0 else np.nan
-    try:
-        from scipy import stats
-        p = 2 * stats.t.sf(np.abs(t), df=n-1) if np.isfinite(t) else np.nan
-    except Exception:
-        p = np.nan
-    d = mean_diff / sd_diff if sd_diff > 0 else np.nan
-    return float(t), float(p), float(d), n - 1
-
-
-def _group_descriptives(series):
-    n = series.notna().sum()
-    mean = series.mean()
-    sd = series.std(ddof=1) if n > 1 else np.nan
-    sem = sd / np.sqrt(n) if n > 0 and np.isfinite(sd) else np.nan
-    return n, mean, sd, sem
-
-
-def _safe_row_by_theta(df_stats_by_theta, target_theta, tol=1e-6):
-    if df_stats_by_theta is None or df_stats_by_theta.empty:
-        return None
-    idx = df_stats_by_theta.index.to_numpy(dtype=float)
-    nearest = float(idx[np.argmin(np.abs(idx - target_theta))])
-    if abs(nearest - target_theta) <= max(tol, 1e-9):
-        return df_stats_by_theta.loc[nearest]
-    return None
-
-
-def _best_theta_from_stats(df_stats_by_theta: Optional[pd.DataFrame]) -> float:
-    """
-    θ with the largest |mean_diff_S| (descriptive only).
-
-    Not used for inference: selecting θ by the observed effect and reporting its
-    uncorrected p-value inflates false positives (report all θ with Holm instead).
-    """
-    if df_stats_by_theta is None or df_stats_by_theta.empty:
-        return np.nan
-    if "mean_diff_S" not in df_stats_by_theta.columns:
-        return np.nan
-    vals = df_stats_by_theta["mean_diff_S"].to_numpy(dtype=float)
-    if not np.isfinite(vals).any():
-        return np.nan
-    idx = df_stats_by_theta.index.to_numpy(dtype=float)
-    return float(idx[int(np.nanargmax(np.abs(vals)))])
-
-
 def _save_paired_metric_plot(
     agg: pd.DataFrame,
     metric: str,
@@ -544,7 +476,8 @@ def create_doc(
     # Generate per-metric session plots for the report when a figure directory
     # is provided. These are data-driven and use subject-level paired values.
     # Only figures drawn by this call are embedded, so a stale file from an earlier
-    # run (e.g. the step-2 θ plot that marks a selected θ) is never reported.
+    # run (e.g. the θ plot of run_s_ci, which marks the θ of the largest absolute
+    # paired difference) is never reported.
     made_figs = set()
     if fig_dir:
         os.makedirs(fig_dir, exist_ok=True)

@@ -40,15 +40,12 @@ def _text(path):
     return "\n".join(p.text for p in Document(str(path)).paragraphs)
 
 
-def test_label_from_scale_and_safe_row_helpers():
-    # Old output: 'S×10³3' and 'CI×10⁹9'.
+def test_label_from_scale():
+    # The exponent appears once, as a superscript (not 'S×10³3').
     assert gwd._label_from_scale("S", 1e3) == "S×10³"
     assert gwd._label_from_scale("CI", 1e9) == "CI×10⁹"
     assert gwd._label_from_scale("CI", 1e-9) == "CI×10⁻⁹"
     assert gwd._label_from_scale("X", 2.5) == "X×2.5"
-    tab = pd.DataFrame({"t_S": [1.0, 2.0]}, index=pd.Index([0.1, 0.9], name="theta"))
-    assert gwd._safe_row_by_theta(tab, 0.5) is None  # old code returned the 0.1 row
-    assert float(gwd._safe_row_by_theta(tab, 0.9)["t_S"]) == 2.0
 
 
 def test_iim_plot_spec_matches_available_column():
@@ -142,7 +139,7 @@ def test_report_has_no_post_hoc_theta_and_reports_exclusions(tmp_path):
     assert "Runs with defined CI: 19/20" in text
     assert "undefined runs excluded: 1" in text
     assert "1 subject(s) without a defined value in both sessions excluded" in text
-    # Motion DataFrame is rendered (old code silently dropped it).
+    # The motion DataFrame is rendered.
     assert "FD-adjusted state contrast" in text and "Motion (FD) within awake" in text
     assert "Atlas shen268: skipped (missing time series)" in text
     assert "S vs mean_conn: signed ΔAUC=0.100" in text and "p_Holm=0.1200" in text

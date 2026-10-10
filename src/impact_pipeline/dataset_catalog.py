@@ -390,11 +390,6 @@ def resolve_representative_payload_paths(
     return tuple(local_root / rel for rel in entry.representative_payload_paths)
 
 
-def is_pipeline_enabled_dataset(dataset_id: str | None) -> bool:
-    ds = str(dataset_id or "").strip()
-    return ds in PIPELINE_ENABLED_DATASET_IDS
-
-
 def _safe_load_json(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))

@@ -3,6 +3,7 @@ import glob
 import json
 import logging
 import concurrent.futures
+import contextlib
 import subprocess
 import hashlib
 import gc
@@ -19,7 +20,7 @@ from impact_pipeline.hardware_backend import (
     backend_summary,
     configure_process_for_hardware,
 )
-from impact_pipeline.mpc_metrics import (  # noqa: F401 (compute_CI re-exported)
+from impact_pipeline.mpc_metrics import (
     ESTIMATOR_VERSIONS,
     SURROGATE_METHODS,
     compute_RAM,
@@ -27,7 +28,6 @@ from impact_pipeline.mpc_metrics import (  # noqa: F401 (compute_CI re-exported)
     compute_NAS,
     compute_IIM,
     compute_SRPI,
-    compute_CI,
     _compute_ci_legacy,
 )
 from impact_pipeline.provenance import (
@@ -128,7 +128,6 @@ CI_COMPONENTS = ("RAM", "PDI", "NAS", "IIM", "SRPI")
 # (awake) session, computed from the same call's rows and recorded per row.
 CI_REFERENCE_COHORT_HIGH_STATE = "cohort_high_state"
 CI_STATUS_COLUMNS = ("CI_defined", "CI_missing", "CI_reference")
-CI_NORM_COLUMNS = tuple(f"{k}_norm" for k in CI_COMPONENTS)
 
 # MPC evidence layer (see impact_pipeline.evidence). Null families of the
 # legacy estimator modes (run when null_surrogates > 0): PDI, NAS and IIM use
@@ -1341,7 +1340,8 @@ def _memory_snapshot_bytes():
         spec = float(p.get("Pages speculative", 0))
         wired = float(p.get("Pages wired down", 0))
         comp = float(p.get("Pages occupied by compressor", 0))
-        # Same accounting already used in this project for rough used/free tracking.
+        # macOS vm_stat: used = active + inactive + speculative + wired +
+        # compressor pages, total = used + free (a rough figure for logging).
         used_pages = active + inactive + spec + wired + comp
         total_pages = used_pages + free
         if total_pages <= 0:
@@ -1481,6 +1481,15 @@ def _iim_worker_from_path(
         if shm is not None:
             shm.close()
     return ts_path, iim_info
+
+
+def _release_shared_memory(handles):
+    """Close and unlink shared-memory segments this process created."""
+    for shm in handles:
+        with contextlib.suppress(Exception):
+            shm.close()
+        with contextlib.suppress(Exception):
+            shm.unlink()
 
 
 def _iim_bootstrap(iim_info, ts_iim, common, n_boot, seed, block_len, step=1):
@@ -2021,9 +2030,6 @@ def compute_synergy_ci(
         pattern = os.path.join(rest_dir, f"{subj}_*_{atlas}_ts.npy")
         return sorted(set(glob.glob(pattern)))
 
-    def _select_pdi_state_rest_runs(subj, session_name):
-        return _select_pdi_rest_runs(subj, session_name)
-
     def _select_pdi_anchor_rest_runs(subj):
         return _select_pdi_rest_runs(subj, pdi_anchor_session)
 
@@ -2035,7 +2041,7 @@ def compute_synergy_ci(
           2) any subject-level rest
           3) surrogate baseline inside compute_PDI (None)
         """
-        same_session_rest = _select_pdi_state_rest_runs(subj, session_name)
+        same_session_rest = _select_pdi_rest_runs(subj, session_name)
         if same_session_rest:
             return same_session_rest
         subj_root = os.path.join(data_dir, subj)
@@ -2195,15 +2201,7 @@ def compute_synergy_ci(
                     "IIM shared-memory staging failed (%s). Falling back to direct file loads.",
                     exc,
                 )
-                for shm in shared_handles:
-                    try:
-                        shm.close()
-                    except Exception:
-                        pass
-                    try:
-                        shm.unlink()
-                    except Exception:
-                        pass
+                _release_shared_memory(shared_handles)
                 shared_handles = []
                 ts_source_by_path = {p: p for p in unique_paths}
 
@@ -2366,15 +2364,7 @@ def compute_synergy_ci(
                             if (done == total) or (done % max(1, total // 20) == 0):
                                 log.info("IIM progress: %d/%d completed", done, total)
         finally:
-            for shm in shared_handles:
-                try:
-                    shm.close()
-                except Exception:
-                    pass
-                try:
-                    shm.unlink()
-                except Exception:
-                    pass
+            _release_shared_memory(shared_handles)
             if shared_handles:
                 log.info("IIM shared-memory staging: cleaned up %d segments", len(shared_handles))
 
@@ -2513,7 +2503,7 @@ def compute_synergy_ci(
             elif do_pdi:
                 pdi_bearer = _bearer_kw("PDI")
                 deep_rest_cands = _select_pdi_anchor_rest_runs(subj)
-                state_rest_cands = _select_pdi_state_rest_runs(subj, ses)
+                state_rest_cands = _select_pdi_rest_runs(subj, ses)
                 (
                     deep_rest_ts, deep_rest_paths, anchor_load_reason
                 ) = _load_pdi_baseline_ts(

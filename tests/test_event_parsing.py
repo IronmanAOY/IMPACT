@@ -18,11 +18,6 @@ def _write(path, rows):
     return path
 
 
-def test_self_nonself_patterns_have_a_single_source():
-    assert rd._SELF_RE is ep.SELF_RE and rs._SELF_RE is ep.SELF_RE
-    assert rd._NONSELF_RE is ep.NONSELF_RE and rs._NONSELF_RE is ep.NONSELF_RE
-
-
 @pytest.mark.parametrize(
     "label,expected",
     [
@@ -62,7 +57,7 @@ def test_camel_case_self_and_other_labels_are_both_classified(tmp_path):
     ]
     fn = _write(tmp_path / "ev.tsv", rows)
     compute = rs._events_to_ram_bundle(fn)
-    ready_self, ready_non = rd._events_to_srpi_onsets(rd._read_events_table(fn))
+    ready_self, ready_non = rd._events_to_srpi_onsets(ep.read_events_table(fn))
     assert compute["self_onsets"] == ready_self == [1.0, 5.0, 9.0]
     assert compute["nonself_onsets"] == ready_non == [3.0, 7.0, 11.0]
 
@@ -81,7 +76,7 @@ def test_readiness_and_compute_parse_the_same_events_identically(tmp_path):
         ],
     )
     compute = rs._events_to_ram_bundle(fn)
-    df = rd._read_events_table(fn)
+    df = ep.read_events_table(fn)
     ready_self, ready_non = rd._events_to_srpi_onsets(df)
     ready_ram = rd._events_to_ram_bundle(df)
     assert compute["self_onsets"] == ready_self == [1.0]
@@ -129,7 +124,8 @@ def test_feedback_values_stay_aligned_with_their_events():
         }
     )
     b = ep.events_table_to_bundle(df)
-    # Old parser: onsets [1, 2, 3, 4] with values [1, 3, 4] (shifted pairing).
+    # The feedback row without a value is dropped together with its onset, so
+    # onsets and values stay paired (not onsets [1, 2, 3, 4], values [1, 3, 4]).
     assert b["feedback_onsets"] == [1.0, 3.0, 4.0]
     assert b["feedback_values"] == [1.0, 3.0, 4.0]
 
@@ -167,7 +163,7 @@ def test_fmri_resolution_has_no_cross_session_fallback(tmp_path):
     awake = _touch(func / "sub-01_task-audioawake_run-01_events.tsv")
     _touch(func / "sub-01_task-audio_run-01_events.tsv")  # ds003171 sub-10JR style
     assert ep.resolve_events_file(tmp_path, "01", "awake") == awake
-    # Old code fell back to task-audio* and returned another session's file.
+    # No fallback to task-audio*, which would return another session's file.
     assert ep.resolve_events_file(tmp_path, "01", "deep") is None
     assert rs._resolve_events_file(tmp_path, "01", "deep") is None
 
@@ -180,7 +176,6 @@ def test_explicit_task_alias_only_for_the_listed_subject_and_state(tmp_path):
     assert ep.resolve_events_file(tmp_path, "10JR", "awake") == audio
     scoped = ep.resolve_events_file(tmp_path, "10JR", "awake", dataset_id="ds003171")
     assert scoped == audio
-    assert rd._resolve_events_file(tmp_path, "10JR", "awake") == audio
     # Scoped to its dataset, and never a cross-session fallback.
     other = ep.resolve_events_file(tmp_path, "10JR", "awake", dataset_id="ds002547")
     assert other is None

@@ -7,16 +7,11 @@ import numpy as np
 import pandas as pd
 
 from impact_pipeline.event_parsing import (
-    FEEDBACK_RE,
-    GOAL_RE,
     IMPACT_CHANNELS,
     IMPLEMENTED_RAM_CHANNELS,
-    NONSELF_RE,
     RAM_MIN_FEEDBACK_EVENTS,
     RAM_MIN_GOAL_RESPONSE_PAIRS,
-    SELF_RE,
     SRPI_MIN_EVENTS_PER_CLASS,
-    STIM_RE,
     events_table_to_bundle,
     extract_run_id_from_name,
     read_events_table,
@@ -40,31 +35,6 @@ NAS_INVALID_WORKSPACE = "INVALID_WORKSPACE"
 DEFAULT_EMPIRICAL_PROTOCOL = (
     Path(__file__).resolve().parents[2] / "protocols" / "mpc_default_v1.json"
 )
-_STIM_RE = STIM_RE
-_GOAL_RE = GOAL_RE
-_FEEDBACK_RE = FEEDBACK_RE
-_SELF_RE = SELF_RE
-_NONSELF_RE = NONSELF_RE
-
-
-def _extract_run_id_from_name(fname: str) -> Optional[str]:
-    return extract_run_id_from_name(fname)
-
-
-def _resolve_events_file(
-    bids_root: Path,
-    subject: str,
-    session: str,
-    condition: str = "audio",
-    dataset_id: Optional[str] = None,
-) -> Optional[Path]:
-    return resolve_events_file(
-        bids_root, subject, session, condition=condition, dataset_id=dataset_id
-    )
-
-
-def _read_events_table(events_file: Path) -> Optional[pd.DataFrame]:
-    return read_events_table(events_file)
 
 
 def _events_to_ram_bundle(df: Optional[pd.DataFrame]) -> Dict[str, object]:
@@ -402,12 +372,16 @@ def check_mpc_readiness(
     for subj in use_subjects:
         for ses in sessions:
             events_file = (
-                _resolve_events_file(bids, subj, ses, condition=condition)
+                resolve_events_file(bids, subj, ses, condition=condition)
                 if bids is not None
                 else None
             )
-            run_id = _extract_run_id_from_name(events_file.name) if events_file is not None else None
-            df_events = _read_events_table(events_file)
+            run_id = (
+                extract_run_id_from_name(events_file.name)
+                if events_file is not None
+                else None
+            )
+            df_events = read_events_table(events_file)
             ram_bundle = _events_to_ram_bundle(df_events)
             self_onsets, nonself_onsets = _events_to_srpi_onsets(df_events)
             full_bundle = events_table_to_bundle(df_events)

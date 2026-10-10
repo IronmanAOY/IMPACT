@@ -5,7 +5,7 @@ them so the strict PDI anchor can be defined (otherwise it stays undefined
 with a reason).
 
 ds005620 declares VEOG, HEOG and EMG as type EEG in both the BrainVision
-header and channels.tsv; before the fix they were kept as network nodes.
+header and channels.tsv; they must still not become network nodes.
 """
 
 import json

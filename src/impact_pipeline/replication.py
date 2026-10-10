@@ -14,7 +14,7 @@ from impact_pipeline.analysis_bootstrap import (
 )
 
 # The Melbourne propofol fMRI dataset used by the replication step has no
-# public source any more: its repository returns HTTP 404 (checked 2026-09).
+# public source any more: its repository returns HTTP 404.
 # Replication therefore runs only on a local copy that the user supplies.
 MELBOURNE_SOURCE_URL = "https://github.com/MelbourneHci/MelbournePropofolData"
 REPLICATION_ROOT_ENV = "IMPACT_REPLICATION_ROOT"
@@ -123,7 +123,7 @@ def _infer_tr_from_bold_sidecar(bids_root):
     )
     if not sidecars:
         raise ValueError(
-            "No *_bold.json sidecar found; explicit TR is required for NAS computation."
+            "No *_bold.json sidecar found; explicit TR is required."
         )
     with open(sidecars[0], "r", encoding="utf-8") as f:
         sidecar = json.load(f)
@@ -136,36 +136,6 @@ def _infer_tr_from_bold_sidecar(bids_root):
     if tr <= 0:
         raise ValueError(f"Invalid RepetitionTime={tr} in '{sidecars[0]}'.")
     return tr
-
-
-def _replication_nas_params():
-    return {
-        "zthr": 1.0,
-        "eps": 0.2,
-        "tau": 0.2,
-        "lambda_phase": 0.5,
-        "alpha": 0.20,
-        "beta": 0.16,
-        "gamma": 0.14,
-        "delta": 0.12,
-        "eta": 0.16,
-        "zeta": 0.12,
-        "rho": 0.10,
-        "bands": ((0.01, 0.10),),
-        "band_weights": (1.0,),
-        "window_len": 30,
-        "step_len": 15,
-        "max_triads": 5000,
-        "random_state": 0,
-        "workspace_nodes": None,
-        "workspace_quantile": 0.2,
-        "workspace_min_size": 4,
-        "directed_lag": 1,
-        "reverberation_lags": (2, 3, 4),
-        "baseline_ts": None,
-        "boost_against_baseline": False,
-        "normalize": True,
-    }
 
 
 REPLICATION_THETA = 0.5  # pre-declared theta for the exploratory S replication

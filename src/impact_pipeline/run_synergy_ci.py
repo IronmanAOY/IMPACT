@@ -10,8 +10,6 @@ import scipy.stats as stats
 
 from bids import BIDSLayout
 from impact_pipeline.event_parsing import (
-    NONSELF_RE,
-    SELF_RE,
     empty_event_bundle,
     events_table_to_bundle,
     extract_run_id_from_name,
@@ -26,10 +24,6 @@ from impact_pipeline.synergy_ci import RAM_PARAM_DEFAULTS, compute_synergy_ci
 from pathlib import Path
 
 log = logging.getLogger("pipeline")
-# Label patterns live in impact_pipeline.event_parsing (single source shared
-# with mpc_readiness); the private aliases are kept for backward compatibility.
-_SELF_RE = SELF_RE
-_NONSELF_RE = NONSELF_RE
 
 
 def _infer_sample_interval_seconds(bids_root):
@@ -115,10 +109,6 @@ def resolve_ram_params(ram_params=None, modality=None):
     return dict(RAM_PARAM_PRESETS[mode])
 
 
-def _extract_run_id_from_name(fname: str):
-    return extract_run_id_from_name(fname)
-
-
 def _resolve_events_file(
     bids_root, subject, session, condition="audio", dataset_id=None
 ):
@@ -182,7 +172,7 @@ def load_onsets(
         allow_implicit_stimuli=allow_implicit_stimuli,
         allow_response_time_feedback=allow_response_time_feedback,
     )
-    run_id = _extract_run_id_from_name(fn.name)
+    run_id = extract_run_id_from_name(fn.name)
     return bundle, run_id
 
 

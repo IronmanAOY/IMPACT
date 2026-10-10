@@ -1,5 +1,5 @@
 """
-Orchestration fixes in run_pipeline.py: fMRIPrep hand-off, step-6 atlas
+Orchestration in run_pipeline.py: fMRIPrep hand-off, step-6 atlas
 robustness, replication guard, synthetic/real separation, provenance and CLI.
 """
 
@@ -211,10 +211,9 @@ def test_atlas_check_records_missing_robustness_timeseries_instead_of_crashing(
     tmp_path,
 ):
     """
-    Original bug: absent atlas files made compute_synergy_ci raise
-    FileNotFoundError out of step 6. Besides the run_pipeline pre-check above,
-    atlas_check itself (step 6) now records the atlas as skipped
-    (real compute_synergy_ci, nothing mocked).
+    Absent atlas files must not raise FileNotFoundError out of step 6.
+    Besides the run_pipeline pre-check above, atlas_check itself (step 6)
+    records the atlas as skipped (real compute_synergy_ci, nothing mocked).
     """
     from impact_pipeline.atlas_robustness import atlas_check
 
