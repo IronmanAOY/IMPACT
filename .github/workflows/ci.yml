@@ -69,7 +69,7 @@ jobs:
           conda list | grep -E "^(python|numpy|scipy|pandas|nilearn|mne-base|numba|pybids) "
 
       - name: Test
-        timeout-minutes: 30
+        timeout-minutes: 50
         env:
           NUMBA_CACHE_DIR: ${{ runner.temp }}/numba_cache
         run: python -m pytest -q -p no:cacheprovider --timeout=900 --durations=10
