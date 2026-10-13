@@ -1,0 +1,19 @@
+[flake8]
+# Used as is by CI and pre-commit. Line length (E501) is not enforced: long
+# lines remain in many modules, among them mpc_metrics.py.
+max-line-length = 88
+extend-ignore = E203,W503,E501
+# Never crawl data, generated outputs, release artefacts or local documents.
+extend-exclude =
+    .git,
+    .tmp.*,
+    __pycache__,
+    build,
+    dist,
+    data,
+    outputs,
+    test_objects,
+    atlases,
+    docs,
+    .venv,
+    venv

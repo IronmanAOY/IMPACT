@@ -1,0 +1,20 @@
+# Install once with `pre-commit install`; run on everything with
+# `pre-commit run --all-files`. Only check-type hooks are used, so hooks never
+# rewrite files. flake8 reads .flake8, as the CI lint job does. black is
+# intentionally not enabled: the code base has never been black-formatted and
+# a mass reformat would bury real diffs.
+exclude: ^(data|outputs|test_objects|dist|atlases)/
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: detect-private-key
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.3.0
+    hooks:
+      - id: flake8

@@ -1,0 +1,59 @@
+# Python bytecode, builds and tool caches
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# Local environments
+.env
+.env.*
+.venv/
+venv/
+
+# Operating-system files, Office lock files and cloud-sync staging folders
+# (.tmp.*/ covers the two Google Drive folders named below)
+.DS_Store
+~$*.docx
+.tmp.*/
+.tmp.driveupload/
+.tmp.drivedownload/
+
+# Data, generated outputs and container images (never versioned).
+# Dataset-derived run inputs can contain participant-level data.
+/data/scratch/
+/data/ds*/
+/data/melbourne*/
+/outputs/
+*.sif
+*.simg
+
+# FreeSurfer licenses under any of the usual names (never commit them)
+licenses/fs_license*.txt
+licenses/license.txt
+
+# LaTeX build products
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex.gz
+*.toc
+*.xdv

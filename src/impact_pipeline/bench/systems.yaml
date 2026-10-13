@@ -1,0 +1,616 @@
+# MPC-Bench system catalogue: the witnesses and adversaries of the benchmark,
+# defined by mechanism (generator, knobs and configuration), never by metric
+# values.
+#
+# * Witnesses with generator family_a are the family-A agent in family A and
+#   the family-C oscillator network (generator family_c) in family C. Knobs
+#   and configuration overrides apply to the generator defaults.
+# * intended_pattern lists, in `principles` order, whether a principle's
+#   mechanism is present (1), absent (0) or not specified (null). The
+#   non-consciousness of a witness is a stipulated premise: the benchmark
+#   tests irredundancy and estimator validity, not consciousness.
+# * twin_families: the families whose twin set (replicate r >= 1, the same
+#   network in a new session) belongs to the SE calibration against twins.
+# * recorded_inputs: what an experimenter logs for the complete declaration
+#   R beyond the task events (context_cue: the active context or driver
+#   level, oracle `context_state`; slow_phase: the slow-rhythm phase, oracle
+#   `slow_phase`; driver: a continuous driver, oracle `driver`).
+# * held_out: a held-out condition (built for the confirmatory split and as
+#   smoke tests only).
+#
+# Loader, validator and builder: impact_pipeline.bench.catalogue.
+schema_version: 1
+catalogue_version: mpc-bench-systems/1.0.0
+generator_version: mpc-bench-generators/1.0.0
+principles: [RAM, PDI, NAS, IIM, SRPI]
+verdicts: [MPC_CONSISTENT, EXCLUDED, UNDETERMINED]
+
+references:
+  borsboom2004concept: 10.1037/0033-295X.111.4.1061
+  dehaene2011experimental: 10.1016/j.neuron.2011.03.018
+  eichler2012graphical: 10.1007/s00440-011-0345-8
+  geweke1984measures: 10.1080/01621459.1984.10477110
+  murray2014hierarchy: 10.1038/nn.3862
+  runge2018causal: 10.1063/1.5025050
+  stokes2017study: 10.1073/pnas.1704663114
+  tononi1998consciousness: 10.1126/science.282.5395.1846
+
+# Agent configurations of the bench arms (applied on top of the configuration
+# defaults; a system's own configuration overrides may not contradict them).
+config_presets:
+  ram_only_160:
+    description: >-
+      RAM-only arm: 160 bandit trials (RAM-PE power at 160 trials); the joint
+      bench stays at the default length of 80 trials and 30 reafference pairs.
+    config: {n_trials: 160}
+  slow_context_bold:
+    description: >-
+      Slow-context agents of the forward BOLD view (TR 2 s, window 5 TR):
+      context dwell 30-60 s, with the trial length and ITI jitter of the
+      development runs of the BOLD-like forward arm (trial 12 s, jitter 2 s).
+    config: {ctx_dwell: [30.0, 60.0], trial_sec: 12.0, iti_jitter_sec: 2.0}
+
+# Whole-brain (Hopf) conditions: lesions at a level of the G sweep.
+whole_brain_presets:
+  lesions_g_nom:
+    description: >-
+      Hub lesion and its size-matched random-edge lesion at G_nom, the third
+      level of the G sweep (8 levels 0-4), so that the unlesioned baseline is
+      a sweep condition.
+    g_sweep_index: 2
+    G: 1.142857
+    lesions: [hub]
+
+witnesses:
+  - id: PC_nominal
+    class: positive_control
+    generator: family_a
+    families: [A, C]
+    twin_families: [A, C]
+    knobs: {}
+    config: {}
+    target: null
+    mechanism_removed: none
+    intended_pattern: [1, 1, 1, 1, 1]
+    counterexample:
+      claim: >-
+        Positive control. Small white-box systems can satisfy every
+        conjunctive requirement, so passing all five conditions is not a
+        sufficiency claim.
+      formalised_as: >-
+        Nominal agent with all five mechanisms switched on at their nominal
+        doses.
+      references: [herzog2007consciousness, albantakis2025utility]
+    expected_verdict: MPC_CONSISTENT
+    recorded_inputs: [context_cue, slow_phase]
+    notes: Not claimed to be conscious; used to measure sensitivity.
+
+  - id: PC_half
+    class: positive_control
+    generator: family_a
+    families: [A, C]
+    twin_families: [A]
+    knobs: {eta: 0.15, K: 3, g_b: 0.5, c_int: 0.3, e: 0.5}
+    config: {}
+    target: null
+    mechanism_removed: none (every mechanism at half its nominal dose)
+    intended_pattern: [1, 1, 1, 1, 1]
+    counterexample:
+      claim: >-
+        Sensitivity below the nominal dose: an instrument that detects a
+        mechanism only at the dose its anchor was set on measures the anchor,
+        not the mechanism.
+      formalised_as: >-
+        Agent with all five switches at half the nominal dose (eta 0.15,
+        K 3, g_b 0.5, c_int 0.3, e 0.5); structure, schedule and noise
+        paired with PC_nominal of the same seed.
+      references: [borsboom2004concept]
+    expected_verdict: MPC_CONSISTENT
+    recorded_inputs: [context_cue, slow_phase]
+    notes: >-
+      Its oracle signatures lie between the switched-off and the nominal
+      medians (reported realisation check).
+
+  - id: W_RAM_no_plasticity
+    class: single_deficit
+    generator: family_a
+    families: [A, C]
+    knobs: {eta: 0.0}
+    config: {}
+    target: RAM
+    mechanism_removed: feedback-driven plasticity of the stimulus-response gain
+    intended_pattern: [0, 1, 1, 1, 1]
+    counterexample:
+      claim: >-
+        A system can be differentiated, integrated, broadcasting and
+        self-tagging while its stimulus-response mapping never changes with
+        feedback (a fixed lookup table or reflex arc).
+      formalised_as: >-
+        Agent with eta = 0: goal cues, stimuli and +-1 feedback are still
+        delivered and evoke responses, but the action gains are frozen, so
+        choices do not track reversals.
+      references: [pennartz2019indicators, butlin2023consciousness]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+
+  - id: W_PDI_single_attractor
+    class: single_deficit
+    generator: family_a
+    families: [A, C]
+    twin_families: [A]
+    knobs: {K: 1}
+    config: {}
+    target: PDI
+    mechanism_removed: repertoire of context attractor patterns (K = 1)
+    intended_pattern: [1, 0, 1, 1, 1]
+    counterexample:
+      claim: >-
+        Integration without differentiation: a system locked in one global
+        state (generalised seizure, deep anaesthesia) can be highly
+        integrated while having almost no repertoire.
+      formalised_as: >-
+        Agent with a single context pattern: the context drive is constant,
+        so the global state never switches between attractors.
+      references: [tononi1994measure, casali2013theoretically, marshall2016integrated]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+    notes: >-
+      Single content with ignition: the workspace keeps igniting at the
+      nominal dose, so the ignition episodes are a second access state, not
+      a content state (a hard case).
+
+  - id: W_PDI_no_multistability
+    class: single_deficit
+    generator: family_a
+    families: [A]
+    knobs: {K: 1}
+    config: {w_ign: 0.0, w_adapt: 0.0}
+    target: PDI
+    mechanism_removed: >-
+      repertoire (K = 1) and the ignition amplification of the hub (w_ign =
+      w_adapt = 0); receive-and-return edges kept
+    intended_pattern: [1, 0, 1, 1, 1]
+    counterexample:
+      claim: >-
+        Without contents and without global bistability a system has no
+        recurring distinguishable states at all; a state counted on it is an
+        estimator artefact.
+      formalised_as: >-
+        Agent with a single context pattern and no ignition (the hub's
+        all-or-none amplification and its adaptation removed); the
+        workspace still receives and returns.
+      references: [tononi1998consciousness, dehaene2011experimental]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+    notes: >-
+      Realisation check: ignition occupancy < 0.05, counted as the share of
+      samples with the hub's amplification on (zero here by construction);
+      the share of samples with the hub above the ignition threshold (the
+      oracle occupancy of the generator summary) is reported beside it. PDI
+      is declared not applicable on family C, so the witness is defined in
+      family A only.
+
+  - id: W_NAS_no_workspace
+    class: single_deficit
+    generator: family_a
+    families: [A, C]
+    twin_families: [A, C]
+    knobs: {g_b: 0.0}
+    config: {}
+    target: NAS
+    mechanism_removed: workspace receive-and-return broadcast and ignition (g_b = 0)
+    intended_pattern: [1, 1, 0, 1, 1]
+    counterexample:
+      claim: >-
+        Local recurrent processing without global availability: contents are
+        processed and integrated locally but never ignite or broadcast.
+      formalised_as: >-
+        Agent with the hub disconnected (no receive, return or ignition);
+        periphery loops, plasticity, repertoire and efference tagging intact.
+      references: [dehaene1998neuronal, dehaene2011experimental, mashour2020conscious]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+
+  - id: W_NAS_broadcast_only
+    class: single_deficit
+    generator: family_a
+    families: [A, C]
+    knobs: {ff_only: true}
+    config: {}
+    target: NAS
+    mechanism_removed: receive path of the workspace (one-way broadcast only)
+    intended_pattern: [1, 1, 0, 1, 1]
+    counterexample:
+      claim: >-
+        One-way fan-out is not a workspace: a hub that transmits to every
+        module but never receives from them makes nothing globally available.
+      formalised_as: >-
+        Agent with every periphery -> hub edge removed; the hub still ignites
+        spontaneously and broadcasts.
+      references: [kanai2026control, mashour2020conscious]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+    notes: Variant witness for NAS (receive-transform-return removed, broadcast kept).
+
+  - id: W_NAS_common_input_control
+    class: targeted_null
+    generator: family_a
+    families: [A, C]
+    knobs: {K: 1, g_b: 0.0}
+    config: {}
+    target: NAS
+    mechanism_removed: >-
+      workspace (g_b = 0) and the switching context drive (K = 1)
+    intended_pattern: [1, 0, 0, 1, 1]
+    counterexample:
+      claim: >-
+        Without a workspace and without a switching shared drive, the hub is
+        linked to the periphery by nothing but the task pathway: the clean
+        null of the workspace construct inside the agent.
+      formalised_as: >-
+        Agent with the hub disconnected and a single context pattern (the
+        factorial cell with both switches off), scored as a witness.
+      references: [dehaene2011experimental, geweke1984measures]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+    notes: >-
+      An easy null; reported, not counted as a new test.
+
+  - id: W_IIM_feedforward
+    class: single_deficit
+    generator: family_a
+    families: [A, C]
+    twin_families: [A, C]
+    knobs: {c_int: 0.0}
+    config: {}
+    target: IIM
+    mechanism_removed: recurrent (backward) inter-module loops
+    intended_pattern: [1, 1, 1, 0, 1]
+    counterexample:
+      claim: >-
+        A feedforward system can be functionally equivalent to a recurrent
+        one (unfolding argument); IIT assigns such architectures zero
+        integrated information.
+      formalised_as: >-
+        Agent whose module graph is acyclic: every backward edge is removed,
+        including hub -> upstream and downstream -> hub, so the hub is a relay
+        (upstream -> W -> downstream).
+      references: [doerig2019unfolding, oizumi2014phenomenology, tononi2016integrated]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+    notes: >-
+      IIT-conformant ground truth needs directional (unidirectional) cuts;
+      bidirectional cuts can score a feedforward chain above zero. Report the
+      witness as unrealised when the estimator's cut family cannot separate it.
+      Removing every backward edge makes the hub a relay: it still receives
+      (from upstream modules) and broadcasts (to downstream modules), but no
+      periphery module both sends to and receives from it, so the NAS
+      receive-and-return is only partly realised (a receive-and-return loop
+      is itself a recurrent loop, so NAS = 1 with IIM = 0 cannot hold exactly
+      on one grain). A NAS deficit measured on this witness is confounded,
+      not an estimator error. It is also the NAS relay (upstream -> W ->
+      downstream): NAS does not distinguish a loop from a feed-forward relay.
+
+  - id: W_SRPI_no_efference
+    class: single_deficit
+    generator: family_a
+    families: [A, C]
+    knobs: {e: 0.0}
+    config: {}
+    target: SRPI
+    mechanism_removed: efference-copy tag and attenuation of reafferent input
+    intended_pattern: [1, 1, 1, 1, 0]
+    counterexample:
+      claim: >-
+        A system that cannot tell self-caused from externally caused input
+        (no efference copy or corollary discharge) lacks a minimal self/world
+        distinction, however sophisticated its other processing.
+      formalised_as: >-
+        Agent with e = 0: self-caused and yoked other-caused events are
+        stimulus-identical, phase-matched and processed identically; the
+        actions preceding self-caused events remain.
+      references: [blakemore1998central, blakemore2000cant]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+
+  - id: N_modules_disconnected
+    class: targeted_null
+    generator: family_a
+    families: [A, C]
+    knobs: {g_b: 0.0, c_int: 0.0}
+    config: {w_ff: 0.0}
+    target: NAS
+    mechanism_removed: >-
+      every inter-module and hub edge (w_ff = c_int = g_b = 0); inputs as
+      nominal
+    intended_pattern: [1, 1, 0, 0, 1]
+    counterexample:
+      claim: >-
+        Shared inputs alone make modules that never exchange a signal
+        lagged-dependent; a dependence statistic that does not condition on
+        the inputs reads a workspace loop where no path exists.
+      formalised_as: >-
+        Agent whose modules keep their local recurrence and every input
+        (context drive to every module including the hub, slow rhythm, task
+        pulses) but have no edge between modules: no directed path between
+        the hub and any periphery module.
+      references: [eichler2012graphical, stokes2017study, runge2018causal]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+    notes: >-
+      Realisation check: no directed hub-periphery path in the coupling
+      matrix. The integration mechanism is off as well (no backward edge).
+
+  - id: N_uncoupled
+    class: "null"
+    generator: family_a
+    families: [C]
+    knobs: {eta: 0.0, K: 1, g_b: 0.0, c_int: 0.0, e: 0.0}
+    config: {w_ff: 0.0, c_loc: 0.0, loc_jitter: 0.0}
+    target: null
+    mechanism_removed: >-
+      every coupling between nodes and every switch; task inputs kept
+    intended_pattern: [0, 0, 0, 0, 0]
+    counterexample:
+      claim: >-
+        Task inputs delivered to uncoupled oscillators produce event-locked
+        co-activation without any interaction: the input-only null of the
+        oscillator family.
+      formalised_as: >-
+        Family-C oscillators with every coupling set to 0 (within and
+        between modules) and every switch off; goal cues, stimuli, feedback,
+        actions and replays still drive the nodes.
+      references: [stokes2017study, eichler2012graphical]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+    notes: >-
+      Replaces the family-A nulls in family C, whose family-C runs are the
+      family-A arrays shifted and rescaled per node (or, for
+      O_hypersynchronous, the same array).
+
+  - id: N_independent_noise
+    class: "null"
+    generator: null_independent_noise
+    families: [A]
+    knobs: {}
+    config: {}
+    target: null
+    mechanism_removed: all (independent white noise, template events)
+    intended_pattern: [0, 0, 0, 0, 0]
+    counterexample:
+      claim: >-
+        Estimators of integration and complexity can score independent noise
+        at or above structured systems (finite-sample bias).
+      formalised_as: >-
+        Independent Gaussian white noise per node, scaled to the nominal run
+        and paired with its events table.
+      references: [barrett2011practical, mediano2018measuring]
+    expected_verdict: EXCLUDED
+    notes: >-
+      Family A only: the family-C run is the family-A array with each node
+      shifted and rescaled to the family-C template's mean and SD (a
+      duplicate), so family C uses N_uncoupled.
+
+  - id: N_ar1
+    class: "null"
+    generator: null_ar1
+    families: [A]
+    knobs: {}
+    config: {}
+    target: null
+    mechanism_removed: all (independent AR(1), template events)
+    intended_pattern: [0, 0, 0, 0, 0]
+    counterexample:
+      claim: >-
+        Autocorrelated but uncoupled signals inflate complexity and
+        integration estimates.
+      formalised_as: >-
+        Independent AR(1) (coefficient 0.9) per node, scaled to the nominal
+        run and paired with its events table.
+      references: [barrett2011practical, schartner2015complexity]
+    expected_verdict: EXCLUDED
+    notes: >-
+      Family A only: the family-C run is the family-A array with each node
+      shifted and rescaled to the family-C template's mean and SD (a
+      duplicate), so family C uses N_uncoupled.
+
+  - id: O_hypersynchronous
+    class: over_excluded
+    generator: hypersynchronous
+    families: [A]
+    knobs: {}
+    config: {}
+    target: null
+    mechanism_removed: all (one common oscillation, template events)
+    intended_pattern: [0, 0, 0, 0, 0]
+    counterexample:
+      claim: >-
+        Hypersynchrony (seizure-like) is maximally synchronous, which
+        synchrony-based broadcast measures can mistake for global
+        availability, yet it is undifferentiated.
+      formalised_as: >-
+        Every node follows the same 3 Hz oscillation with a random gain plus
+        small independent noise; no task processing.
+      references: [tononi1994measure, casali2013theoretically]
+    expected_verdict: EXCLUDED
+    notes: >-
+      Family A only: the construction ignores the template's dynamics, so
+      the family-C run equals the family-A run byte for byte.
+
+  - id: O_inert
+    class: over_excluded
+    generator: family_a
+    families: [A, C]
+    knobs: {eta: 0.0, K: 1, g_b: 0.0, c_int: 0.0, e: 0.0}
+    config: {}
+    target: null
+    mechanism_removed: all five mechanisms (passive feedforward transducer)
+    intended_pattern: [0, 0, 0, 0, 0]
+    counterexample:
+      claim: >-
+        A passive transducer responds to its inputs but has none of the five
+        capacities.
+      formalised_as: >-
+        Agent with every switch off: stimuli still propagate feedforward
+        through the modules.
+      references: [oizumi2014phenomenology]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+
+  - id: PW_patchwork
+    class: patchwork
+    generator: patchwork
+    families: [A, C]
+    knobs: {}
+    config: {}
+    target: null
+    mechanism_removed: coupling between the modules that implement the principles
+    intended_pattern: [1, 1, 1, 1, 1]
+    intended_pattern_system_bearer: [1, 1, 1, 0, 1]
+    counterexample:
+      claim: >-
+        Aggregates: every capacity is realised somewhere, but in different,
+        causally disconnected parts (the quantifier shift from 'each
+        principle is realised' to 'one bearer realises every principle').
+      formalised_as: >-
+        Five mutually disconnected modules, each implementing one mechanism
+        (bearer = that module); no shared input.
+      references: [khadangi2026built, marshall2026intrinsic]
+    expected_verdict: UNDETERMINED
+    expected_verdict_system_bearer: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+    notes: >-
+      Measured per principle on its own module the bearers differ
+      (BEARER_MISMATCH, UNDETERMINED); measured on the whole system the
+      disconnected macro-node grain has no integration (EXCLUDED).
+
+adversaries:
+  - id: adversarial_common_driver
+    generator: adversarial_common_driver
+    families: [A]
+    designed_to_fool: NAS
+    intended_pattern: [0, 0, 0, 0, 0]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [driver]
+    mechanism: >-
+      hidden bursty driver reaching the declared hub with no delay and the
+      periphery with longer delays; no edges between nodes
+    claim: >-
+      A common driver produces ignition-like global co-activation and
+      hub-leads-periphery lagged dependence without any receive-transform-return
+      loop (pseudo-broadcast).
+    references: [dehaene2011experimental, deco2017hierarchy]
+    notes: >-
+      Its driver is declared (recorded) under R and hidden under H.
+
+  - id: adversarial_reflex_arc
+    generator: adversarial_reflex_arc
+    families: [A]
+    designed_to_fool: RAM
+    intended_pattern: [0, 0, 0, 0, 0]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+    mechanism: >-
+      family-A agent with every switch off and a fixed reflex gain from
+      stimulus a to action a (feedforward, non-plastic)
+    claim: >-
+      Responsiveness is not adaptation: a reflex arc answers every stimulus
+      reliably but never changes its mapping with feedback.
+    references: [oizumi2014phenomenology, casali2013theoretically]
+
+  - id: adversarial_random_label_self_other
+    generator: adversarial_random_label_self_other
+    families: [A]
+    designed_to_fool: SRPI
+    intended_pattern: [1, 1, 1, 1, 0]
+    expected_verdict: EXCLUDED
+    recorded_inputs: [context_cue, slow_phase]
+    mechanism: >-
+      nominal agent without efference copy (e = 0); within each yoked pair
+      the self_caused / other_caused labels are dealt by a fair coin
+      (stimulus identity and phase matching kept)
+    claim: >-
+      Self/other separability must come from the efference mechanism, not
+      from the order of events or the preceding action.
+    references: [blakemore1998central, blakemore2000cant]
+
+  - id: adversarial_scrambled_feedback
+    generator: adversarial_scrambled_feedback
+    families: [A]
+    designed_to_fool: RAM
+    intended_pattern: [1, 1, 1, 1, 1]
+    expected_verdict: MPC_CONSISTENT
+    role: construct_boundary
+    recorded_inputs: [context_cue, slow_phase]
+    mechanism: >-
+      nominal agent whose +-1 feedback has probability 1/2 whatever the
+      choice; the gains keep updating on uninformative feedback
+    claim: >-
+      Feedback-locked plasticity without action-outcome contingency is not
+      goal-directed adaptation.
+    references: [pennartz2019indicators, butlin2023consciousness]
+    notes: >-
+      Its plasticity is on and updates on uninformative feedback, so it is
+      RAM-PE-mechanism-on: RAM-PE does not distinguish contingent from
+      non-contingent feedback (a construct-boundary test). The generator's
+      oracle labels the construction RAM-off ([0, 1, 1, 1, 1]).
+
+  - id: ADV_NAS_staggered_driver
+    generator: staggered_driver
+    families: [A]
+    variants: [hierarchical, uniform, reversed]
+    designed_to_fool: NAS
+    intended_pattern: [0, null, 0, 0, 0]
+    expected_verdict: EXCLUDED
+    held_out: false
+    recorded_inputs: [context_cue]
+    mechanism: >-
+      no edge between any units; one hidden six-level switching driver
+      (dwell U(1, 3) s) with one random pattern per level and module,
+      low-pass filtered per module (hierarchical: upstream 0.05 s, hub 0.3
+      s, downstream 0.8 s; uniform: 0.3 s everywhere; reversed: upstream
+      0.8 s, hub 0.3 s, downstream 0.05 s), plus AR(1) unit noise
+    claim: >-
+      A shared input plus a hierarchy of intrinsic time constants makes the
+      hub lead or lag the periphery in both directions without any
+      receive-and-return edge; it attacks every lagged-dependence statistic,
+      block means and the minimum-z gate included.
+    references: [murray2014hierarchy, eichler2012graphical, stokes2017study]
+    notes: >-
+      PDI is not specified: the six driver levels produce recurring
+      exogenous drive states.
+
+  - id: ADV_NAS_staggered_tau10
+    generator: staggered_driver
+    families: [A]
+    variants: [tau10]
+    designed_to_fool: NAS
+    intended_pattern: [0, null, 0, 0, 0]
+    expected_verdict: EXCLUDED
+    held_out: true
+    recorded_inputs: [context_cue]
+    mechanism: >-
+      the hierarchical staggered driver with every time constant multiplied
+      by 10 (upstream 0.5 s, hub 3 s, downstream 8 s), mostly outside the
+      span of the declared input basis (10 tau_c = 1 s)
+    claim: >-
+      A declared driver whose effect outlasts the input basis leaves lagged
+      dependence that conditioning on the basis cannot remove.
+    references: [murray2014hierarchy, eichler2012graphical]
+
+  - id: ADV_NAS_staggered_sat
+    generator: staggered_driver
+    families: [A]
+    variants: [saturating]
+    designed_to_fool: NAS
+    intended_pattern: [0, null, 0, 0, 0]
+    expected_verdict: EXCLUDED
+    held_out: true
+    recorded_inputs: [context_cue]
+    mechanism: >-
+      the hierarchical staggered driver passed through tanh(2 x) per unit
+      after the low-pass (a saturating transform of the filtered drive)
+    claim: >-
+      A declared driver that reaches the units through a nonlinearity
+      leaves dependence that a linear input basis cannot remove.
+    references: [murray2014hierarchy, eichler2012graphical]

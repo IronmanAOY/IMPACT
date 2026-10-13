@@ -1,0 +1,368 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+
+PIPELINE_ENABLED_DATASET_IDS = frozenset({"ds003171", "ds005620"})
+
+
+@dataclass(frozen=True)
+class ReportDataset:
+    dataset_id: str
+    title: str
+    modality: str
+    report_role: str
+    target_metrics: tuple[str, ...]
+    source_url: str
+    mirror_git_url: str
+    snapshot: str
+    doi: str
+    license: str
+    local_root_candidates: tuple[str, ...]
+    fetch_strategy: str
+    pipeline_ready: bool
+    task_hints: tuple[str, ...] = ()
+    representative_payload_paths: tuple[str, ...] = ()
+    notes: str = ""
+    license_note: str = ""
+    report_priority: int = 0
+
+    def to_record(self) -> dict[str, object]:
+        return asdict(self)
+
+
+REPORT_DATASETS: dict[str, ReportDataset] = {
+    "ds006623": ReportDataset(
+        dataset_id="ds006623",
+        title="Michigan Human Anesthesia fMRI Dataset-1",
+        modality="fmri",
+        report_role="state_switch_anchor_fmri",
+        target_metrics=("PDI", "NAS", "IIM"),
+        source_url="https://openneuro.org/datasets/ds006623",
+        mirror_git_url="https://github.com/OpenNeuroDatasets/ds006623.git",
+        snapshot="1.0.0",
+        doi="10.18112/openneuro.ds006623.v1.0.0",
+        license="CC0",
+        local_root_candidates=("data/scratch/ds006623", "data/ds006623"),
+        fetch_strategy="git_mirror",
+        pipeline_ready=False,
+        task_hints=("imagery", "rest"),
+        representative_payload_paths=(
+            "derivatives/fmriprep_output/sub-02/func/"
+            "sub-02_task-imagery_run-1_space-MNI152NLin2009cAsym_res-04_desc-preproc_bold.nii.gz",
+        ),
+        notes=(
+            "Primary fMRI state-switch anchor from the report. Strong for awake-vs-sedated "
+            "PDI/NAS/IIM analyses, but not a full CI dataset on its own."
+        ),
+        report_priority=1,
+    ),
+    "ds005620": ReportDataset(
+        dataset_id="ds005620",
+        title="A repeated awakening study exploring the capacity of complexity measures to capture dreaming during propofol sedation",
+        modality="eeg",
+        report_role="state_switch_anchor_eeg",
+        target_metrics=("PDI", "NAS", "IIM"),
+        source_url="https://openneuro.org/datasets/ds005620",
+        mirror_git_url="https://github.com/OpenNeuroDatasets/ds005620.git",
+        snapshot="1.0.0",
+        doi="10.18112/openneuro.ds005620.v1.0.0",
+        license="CC0",
+        local_root_candidates=(
+            "data/scratch/ds005620_annex",
+            "data/scratch/ds005620",
+            "data/ds005620",
+        ),
+        fetch_strategy="full_local",
+        pipeline_ready=True,
+        task_hints=("awake", "sed", "sed2"),
+        representative_payload_paths=(
+            "sub-1010/eeg/sub-1010_task-awake_acq-EC_eeg.vhdr",
+            "sub-1010/eeg/sub-1010_task-awake_acq-EC_eeg.eeg",
+            "sub-1010/eeg/sub-1010_task-awake_acq-EC_eeg.vmrk",
+        ),
+        notes=(
+            "Primary EEG state-switch anchor from the report and one of the current pipeline-enabled datasets."
+        ),
+        license_note=(
+            "The report flagged a license inconsistency between README metadata and dataset_description; "
+            "treat citation conservatively and cite the dataset DOI plus original authors."
+        ),
+        report_priority=2,
+    ),
+    "ds004295": ReportDataset(
+        dataset_id="ds004295",
+        title="Reward gain and punishment avoidance reversal learning",
+        modality="eeg",
+        report_role="ram_feedback_module_eeg",
+        target_metrics=("RAM",),
+        source_url="https://openneuro.org/datasets/ds004295",
+        mirror_git_url="https://github.com/OpenNeuroDatasets/ds004295.git",
+        snapshot="1.0.0",
+        doi="10.18112/openneuro.ds004295.v1.0.0",
+        license="CC0",
+        local_root_candidates=("data/scratch/ds004295", "data/ds004295"),
+        fetch_strategy="git_mirror",
+        pipeline_ready=False,
+        task_hints=("task",),
+        representative_payload_paths=(
+            "sub-s1/eeg/sub-s1_task-task_eeg.set",
+            "sub-s1/eeg/sub-s1_task-task_eeg.fdt",
+        ),
+        notes=(
+            "Reward/feedback EEG module prioritized in the report for RAM-oriented estimation."
+        ),
+        report_priority=3,
+    ),
+    "ds002547": ReportDataset(
+        dataset_id="ds002547",
+        title="SharedStates",
+        modality="fmri",
+        report_role="srpi_self_other_module_fmri",
+        target_metrics=("SRPI",),
+        source_url="https://openneuro.org/datasets/ds002547",
+        mirror_git_url="https://github.com/OpenNeuroDatasets/ds002547.git",
+        snapshot="1.1.0",
+        doi="10.18112/openneuro.ds002547.v1.1.0",
+        license="CC0",
+        local_root_candidates=("data/scratch/ds002547", "data/ds002547"),
+        fetch_strategy="git_mirror",
+        pipeline_ready=False,
+        task_hints=("self", "other"),
+        representative_payload_paths=(
+            "derivatives/fmriprep/sub-01/ses-1/func/"
+            "sub-01_ses-1_task-other_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz",
+        ),
+        notes=(
+            "Explicit self-versus-other fMRI dataset used by the report as the cleanest SRPI module."
+        ),
+        report_priority=4,
+    ),
+    "ds002685": ReportDataset(
+        dataset_id="ds002685",
+        title="IBC",
+        modality="fmri",
+        report_role="awake_reference_multitask_fmri",
+        target_metrics=("RAM", "SRPI"),
+        source_url="https://openneuro.org/datasets/ds002685",
+        mirror_git_url="https://github.com/OpenNeuroDatasets/ds002685.git",
+        snapshot="1.3.1",
+        doi="10.18112/openneuro.ds002685.v1.3.1",
+        license="CC0",
+        local_root_candidates=("data/scratch/ds002685", "data/ds002685"),
+        fetch_strategy="git_mirror",
+        pipeline_ready=False,
+        task_hints=("Self", "HcpGambling", "Discount", "PreferenceFaces", "PreferenceFood"),
+        representative_payload_paths=(
+            "sub-01/ses-00/func/sub-01_ses-00_task-ArchiSocial_dir-ap_bold.nii.gz",
+        ),
+        notes=(
+            "Dense awake-only reference dataset with self and reward tasks. Useful for human normalization "
+            "and robustness checks, not for direct awake-vs-deep CI estimation."
+        ),
+        report_priority=5,
+    ),
+    "ds005479": ReportDataset(
+        dataset_id="ds005479",
+        title="Monetary Incentive Delay task - structural and functional images of 37 men; study of associations between circadian characteristics (eveningness, distinctness) and affective processing",
+        modality="fmri",
+        report_role="ram_reward_module_fmri",
+        target_metrics=("RAM",),
+        source_url="https://openneuro.org/datasets/ds005479",
+        mirror_git_url="https://github.com/OpenNeuroDatasets/ds005479.git",
+        snapshot="1.1.1",
+        doi="10.18112/openneuro.ds005479.v1.1.1",
+        license="CC0",
+        local_root_candidates=("data/scratch/ds005479", "data/ds005479"),
+        fetch_strategy="git_mirror",
+        pipeline_ready=False,
+        task_hints=("MID",),
+        representative_payload_paths=("sub-01/func/sub-01_task-MID_bold.nii.gz",),
+        notes=(
+            "Optional fMRI reward module from the report for RAM/reward analyses, with narrower population coverage."
+        ),
+        report_priority=6,
+    ),
+    "ds002336": ReportDataset(
+        dataset_id="ds002336",
+        title="A multi-modal human neuroimaging dataset for data integration: simultaneous EEG and fMRI acquisition during a motor imagery neurofeedback task: XP1",
+        modality="eeg_fmri",
+        report_role="multimodal_method_development",
+        target_metrics=("RAM", "NAS"),
+        source_url="https://openneuro.org/datasets/ds002336",
+        mirror_git_url="https://github.com/OpenNeuroDatasets/ds002336.git",
+        snapshot="2.0.2",
+        doi="10.18112/openneuro.ds002336.v2.0.2",
+        license="CC0",
+        local_root_candidates=("data/scratch/ds002336", "data/ds002336"),
+        fetch_strategy="git_mirror",
+        pipeline_ready=False,
+        task_hints=("motorloc", "eegNF", "fmriNF", "eegfmriNF"),
+        representative_payload_paths=(
+            "sub-xp101/eeg/sub-xp101_task-eegNF_eeg.vhdr",
+            "sub-xp101/eeg/sub-xp101_task-eegNF_eeg.eeg",
+            "sub-xp101/eeg/sub-xp101_task-eegNF_eeg.vmrk",
+        ),
+        notes=(
+            "Simultaneous EEG-fMRI neurofeedback dataset retained for multimodal method development rather than CI completion."
+        ),
+        report_priority=7,
+    ),
+    "ds003171": ReportDataset(
+        dataset_id="ds003171",
+        title="Modeling an auditory stimulated brain under altered states of consciousness using the generalized ising model",
+        modality="fmri",
+        report_role="legacy_state_switch_anchor_fmri",
+        target_metrics=("PDI", "NAS", "IIM"),
+        source_url="https://openneuro.org/datasets/ds003171",
+        mirror_git_url="https://github.com/OpenNeuroDatasets/ds003171.git",
+        snapshot="2.0.1",
+        doi="10.18112/openneuro.ds003171.v2.0.1",
+        license="CC0",
+        local_root_candidates=("data/scratch/ds003171", "data/ds003171"),
+        fetch_strategy="full_local",
+        pipeline_ready=True,
+        task_hints=(
+            "audioawake",
+            "audiolight",
+            "audiodeep",
+            "audiorecovery",
+            "restawake",
+            "restlight",
+            "restdeep",
+            "restrecovery",
+        ),
+        representative_payload_paths=(
+            "sub-2525JK/func/sub-2525JK_task-audioawake_run-01_bold.nii.gz",
+        ),
+        notes=(
+            "fMRI replication anchor in the repository. Valuable for PDI/NAS/IIM, "
+            "but RAM and SRPI remain undefined. sub-10JR's awake audio run is "
+            "labelled task-audio and is mapped explicitly to audioawake "
+            "(DATASET_TASK_ALIASES)."
+        ),
+        report_priority=8,
+    ),
+}
+
+
+# Explicit, dataset-specific corrections of BIDS task labels. Preprocessing and
+# run-spec building both resolve task labels through these tables so that a
+# run is either analysed under an explicit state or reported as skipped.
+DATASET_TASK_ALIASES: dict[str, dict[str, dict[str, str]]] = {
+    "ds003171": {
+        # sub-10JR's awake auditory run is labelled task-audio (TaskName "audio")
+        # instead of task-audioawake. Its AcquisitionTime (15:42:23) precedes
+        # restawake (15:48), audiolight (16:35), audiodeep (17:04) and
+        # audiorecovery (17:35), i.e. it is the audio run of the awake block.
+        "10JR": {"audio": "audioawake"},
+    },
+}
+
+# ds003171 task labels are <condition><state>, e.g. audioawake, restlight.
+# 'light' (light sedation) is a real state of the design; it is preprocessed
+# and written under <subject>/light/<condition> and is analysed only when
+# requested via --sessions.
+DATASET_STATE_TASK_GRAMMAR: dict[str, dict[str, tuple[str, ...]]] = {
+    "ds003171": {
+        "conditions": ("audio", "rest"),
+        "states": ("awake", "light", "deep", "recovery"),
+    },
+}
+
+
+def _normalize_subject_label(subject) -> str:
+    return str(subject or "").strip().replace("sub-", "", 1)
+
+
+def canonical_task_label(
+    dataset_id: str | None, subject, task: str | None
+) -> str | None:
+    """Apply the explicit per-subject task alias table (no inference)."""
+    if task is None:
+        return None
+    aliases = DATASET_TASK_ALIASES.get(str(dataset_id or "").strip(), {})
+    subj_aliases = aliases.get(_normalize_subject_label(subject), {})
+    return subj_aliases.get(str(task), str(task))
+
+
+def parse_state_task(
+    dataset_id: str | None, subject, task: str | None
+) -> tuple[str, str] | None:
+    """
+    Map a BIDS task label to ``(state, condition)`` for datasets that encode
+    the sedation state in the task label. Returns None when the label is not
+    part of the dataset grammar (callers must record such runs as skipped).
+    """
+    ds = str(dataset_id or "ds003171").strip()
+    grammar = DATASET_STATE_TASK_GRAMMAR.get(ds)
+    label = canonical_task_label(ds, subject, task)
+    if grammar is None or not label:
+        return None
+    for condition in grammar["conditions"]:
+        if label.startswith(condition):
+            state = label[len(condition) :]
+            if state in grammar["states"]:
+                return state, condition
+    return None
+
+
+def task_labels_for_state(
+    dataset_id: str | None, subject, state: str, condition: str
+) -> tuple[str, ...]:
+    """
+    BIDS task labels (as they appear on disk) that encode ``condition`` in
+    ``state`` for ``subject``, including explicit aliases (e.g. sub-10JR's
+    ``audio`` for ``audioawake``).
+    """
+    ds = str(dataset_id or "").strip()
+    canonical = f"{condition}{state}"
+    labels = [canonical]
+    subj_aliases = DATASET_TASK_ALIASES.get(ds, {}).get(
+        _normalize_subject_label(subject), {}
+    )
+    labels.extend(raw for raw, target in subj_aliases.items() if target == canonical)
+    return tuple(dict.fromkeys(labels))
+
+
+def get_report_dataset(dataset_id: str | None) -> ReportDataset | None:
+    ds = str(dataset_id or "").strip()
+    if not ds:
+        return None
+    return REPORT_DATASETS.get(ds)
+
+
+def iter_report_datasets() -> tuple[ReportDataset, ...]:
+    return tuple(
+        sorted(
+            REPORT_DATASETS.values(),
+            key=lambda item: (int(item.report_priority), str(item.dataset_id)),
+        )
+    )
+
+
+def dataset_root_candidates(dataset_id: str, repo_root: Path | str) -> tuple[Path, ...]:
+    entry = get_report_dataset(dataset_id)
+    if entry is None:
+        return tuple()
+    root = Path(repo_root).resolve()
+    return tuple(root / rel for rel in entry.local_root_candidates)
+
+
+def resolve_local_dataset_root(dataset_id: str, repo_root: Path | str) -> Path | None:
+    for candidate in dataset_root_candidates(dataset_id, repo_root):
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def resolve_representative_payload_paths(
+    dataset_id: str,
+    repo_root: Path | str,
+) -> tuple[Path, ...]:
+    entry = get_report_dataset(dataset_id)
+    local_root = resolve_local_dataset_root(dataset_id, repo_root)
+    if entry is None or local_root is None:
+        return tuple()
+    return tuple(local_root / rel for rel in entry.representative_payload_paths)

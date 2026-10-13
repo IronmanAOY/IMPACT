@@ -1,0 +1,547 @@
+{
+ "schema": "mpc-bench-hypotheses/1",
+ "version": "example-1",
+ "status": "example",
+ "notes": "A small example hypotheses file for the evaluator tests. Its hypotheses show the file format; they belong to no analysis.",
+ "conventions": {
+  "alpha": 0.05,
+  "false_present_bound": 0.07
+ },
+ "vocabulary": {
+  "design.witnesses": [
+   "A_witnesses",
+   "C_witnesses"
+  ],
+  "design.factorial": [
+   "A_factorial",
+   "C_factorial"
+  ],
+  "design.adversarial": "A_adversaries",
+  "design.twins": [
+   "A_twins",
+   "C_twins"
+  ],
+  "design.null_calibration": "null_calibration",
+  "family.A": "A",
+  "family.C": "C",
+  "form.primary": [
+   "primary",
+   "directional"
+  ],
+  "form.iim_bidirectional": [
+   "iim_bidirectional",
+   "bidirectional"
+  ],
+  "view.source": "source",
+  "protocol.A-R": "A-R",
+  "protocol.A-H": "A-H",
+  "protocol.C-R": "C-R",
+  "protocol.C-H": "C-H",
+  "systems.single_deficits": [
+   "W_RAM_no_plasticity",
+   "W_PDI_single_attractor",
+   "W_NAS_no_workspace",
+   "W_NAS_broadcast_only",
+   "W_IIM_feedforward",
+   "W_SRPI_no_efference"
+  ],
+  "systems.nulls_A": [
+   "N_independent_noise",
+   "N_ar1"
+  ]
+ },
+ "fields": {
+  "nas_z_receive": "details.estimator.directions.receive.z",
+  "nas_z_return": "details.estimator.directions.return.z",
+  "nas_rank1_z_receive": "details.estimator.descriptors.pooled_rank1.te_in_z",
+  "nas_rank1_z_return": "details.estimator.descriptors.pooled_rank1.te_out_z",
+  "nas_excess_receive": "details.estimator.directions.receive.excess",
+  "nas_excess_return": "details.estimator.directions.return.excess",
+  "iim_p_ind": "details.p_ind",
+  "pdi_k_full": "details.estimator.full_bearer.counts.0",
+  "pdi_k_content": "details.estimator.counts.0",
+  "pdi_ami_ignition": "details.estimator.ami_ignition_full_bearer",
+  "variant": "config.params.variant",
+  "sweep_knob": "config.tags.sweep_knob",
+  "sweep_level": "config.tags.sweep_level",
+  "cell_id": "system",
+  "null_kind": "config.tags.null_kind",
+  "n_time": "simulation.n_time",
+  "n_nodes": "simulation.n_nodes",
+  "b_network": "config.cell.system",
+  "b_coupling": "config.cell.params.coupling",
+  "b_noise": "config.cell.params.noise",
+  "b_T": "config.cell.n_time",
+  "b_condition": "config.cell.condition",
+  "b_label_q": "scoring_details.scoring.label_error_q",
+  "b_occupancy_cell": "config.cell.expected.occupancy",
+  "b_exact": "details.exact_target",
+  "b_null_order": "scoring_details.scoring.null_order",
+  "hopf_G": "config.forward.condition_spec.G",
+  "hopf_lesion": "config.forward.condition_spec.lesion",
+  "verdict_n_decl": "verdict.verdict_declared",
+  "nas_conditioning_delta": "details.estimator.descriptors.conditioning_delta.receive",
+  "nas_conditioning_delta_return": "details.estimator.descriptors.conditioning_delta.return",
+  "nas_c_receive": "c_R",
+  "nas_c_return": "c_B",
+  "nas_se_c_receive": "details.assessment.members.receive.se",
+  "nas_se_c_return": "details.assessment.members.return.se",
+  "nas_df_c_receive": "details.assessment.members.receive.df",
+  "nas_df_c_return": "details.assessment.members.return.df"
+ },
+ "derived": {
+  "nas_significant": {
+   "all": [
+    {
+     "@nas_z_receive": {
+      "gt": 1.645
+     }
+    },
+    {
+     "@nas_z_return": {
+      "gt": 1.645
+     }
+    }
+   ]
+  },
+  "nas_rank1_significant": {
+   "all": [
+    {
+     "@nas_rank1_z_receive": {
+      "gt": 1.645
+     }
+    },
+    {
+     "@nas_rank1_z_return": {
+      "gt": 1.645
+     }
+    }
+   ]
+  },
+  "concordant_absent": {
+   "all": [
+    {
+     "status": "ABSENT"
+    },
+    {
+     "flags": {
+      "contains": "ABSENT_BY_CONCORDANCE"
+     }
+    }
+   ]
+  },
+  "unlesioned": {
+   "any": [
+    {
+     "@hopf_lesion": {
+      "exists": false
+     }
+    },
+    {
+     "@hopf_lesion": "none"
+    }
+   ]
+  },
+  "no_sweep": {
+   "@sweep_knob": {
+    "exists": false
+   }
+  }
+ },
+ "seed_blocks": {
+  "twin_networks": {
+   "development": [
+    820,
+    824
+   ],
+   "confirmatory": [
+    20000,
+    20009
+   ]
+  },
+  "witnesses_20": {
+   "development": [
+    0,
+    999
+   ],
+   "confirmatory": [
+    20000,
+    20019
+   ]
+  }
+ },
+ "witness_targets": {
+  "W_RAM_no_plasticity": "RAM",
+  "W_PDI_single_attractor": "PDI",
+  "W_PDI_no_multistability": "PDI",
+  "W_NAS_no_workspace": "NAS",
+  "W_NAS_broadcast_only": "NAS",
+  "W_IIM_feedforward": "IIM",
+  "W_SRPI_no_efference": "SRPI"
+ },
+ "own_lesions": {
+  "RAM": "W_RAM_no_plasticity",
+  "PDI": "W_PDI_single_attractor",
+  "NAS": "W_NAS_no_workspace",
+  "IIM": "W_IIM_feedforward",
+  "SRPI": "W_SRPI_no_efference"
+ },
+ "declared_dependencies": {
+  "status": "final",
+  "pairs": [
+   [
+    "W_IIM_feedforward",
+    "NAS"
+   ],
+   [
+    "W_NAS_no_workspace",
+    "IIM"
+   ]
+  ]
+ },
+ "mechanism_on": {
+  "status": "final",
+  "entries": [
+   {
+    "family": "A",
+    "declaration": "R",
+    "principle": "IIM",
+    "where": {
+     "design": "A_witnesses",
+     "system": "PC_half"
+    },
+    "on": false
+   },
+   {
+    "where": {
+     "design": "A_witnesses",
+     "system": [
+      "PC_nominal",
+      "PC_half"
+     ]
+    },
+    "on": true
+   }
+  ],
+  "dose_only_entries": [
+   {
+    "family": "A",
+    "declaration": "R",
+    "principle": "IIM",
+    "where": {
+     "design": "A_witnesses",
+     "system": "PC_half"
+    },
+    "on": true
+   }
+  ]
+ },
+ "oracle_checks": {
+  "note": "a part with requires.oracle drops every row of a system whose switch or realisation check is not usable in the row's family",
+  "systems": {
+   "W_RAM_no_plasticity": [
+    "eta"
+   ],
+   "W_PDI_single_attractor": [
+    "K"
+   ],
+   "W_NAS_no_workspace": [
+    "g_b"
+   ],
+   "W_NAS_broadcast_only": [
+    "ff_only"
+   ],
+   "W_IIM_feedforward": [
+    "c_int"
+   ],
+   "W_SRPI_no_efference": [
+    "e"
+   ],
+   "N_modules_disconnected": [
+    "N_modules_disconnected/no_hub_periphery_path"
+   ],
+   "N_uncoupled": [
+    "N_uncoupled/no_coupling"
+   ],
+   "W_PDI_no_multistability": [
+    "W_PDI_no_multistability/no_ignition"
+   ],
+   "ADV_NAS_staggered_driver": [
+    "ADV_NAS_staggered_driver:{@variant}/driver_reaches_every_module",
+    "ADV_NAS_staggered_driver:{@variant}/stated_time_constants"
+   ],
+   "ADV_NAS_staggered_tau10": [
+    "ADV_NAS_staggered_tau10:tau10/driver_reaches_every_module",
+    "ADV_NAS_staggered_tau10:tau10/stated_time_constants"
+   ],
+   "ADV_NAS_staggered_sat": [
+    "ADV_NAS_staggered_sat:saturating/driver_reaches_every_module",
+    "ADV_NAS_staggered_sat:saturating/stated_time_constants"
+   ]
+  },
+  "conditions": [
+   {
+    "label": "slow-context BOLD arm: its records, anchor replications and registry entries need the realisation of the slow_context_bold preset",
+    "where": {
+     "any": [
+      {
+       "arm": "forward_a_bold"
+      },
+      {
+       "config.forward.arm": "forward_a_bold"
+      }
+     ]
+    },
+    "family": "@family.A",
+    "checks": [
+     "PC_nominal:slow_context_bold/slow_context_dwell"
+    ]
+   }
+  ]
+ },
+ "hypotheses": [
+  {
+   "id": "checks",
+   "title": "Manipulation and realisation checks",
+   "role": "prerequisite",
+   "statement": "A switch or system is usable in a family iff its check passes in >= 90 % of seeds.",
+   "parts": [
+    {
+     "id": "checks(a)",
+     "text": "switch checks usable",
+     "rule": "usable_share",
+     "params": {
+      "share": 0.9
+     },
+     "data": {
+      "source": "manipulation",
+      "where": {
+       "kind": "switch"
+      },
+      "event": {
+       "passed": true
+      },
+      "cells": [
+       "family",
+       "check_id"
+      ],
+      "cluster": [
+       "family",
+       "check_id",
+       "seed"
+      ]
+     }
+    },
+    {
+     "id": "checks(b)",
+     "text": "realisation checks usable",
+     "rule": "usable_share",
+     "params": {
+      "share": 0.9
+     },
+     "data": {
+      "source": "manipulation",
+      "where": {
+       "kind": "realisation"
+      },
+      "event": {
+       "passed": true
+      },
+      "cells": [
+       "family",
+       "check_id"
+      ],
+      "cluster": [
+       "family",
+       "check_id",
+       "seed"
+      ]
+     }
+    },
+    {
+     "id": "checks(c)",
+     "role": "reported",
+     "rule": "describe",
+     "text": "PC_half between the switched-off and nominal medians",
+     "params": {},
+     "data": {
+      "source": "manipulation",
+      "where": {
+       "kind": "reported",
+       "system_id": "PC_half",
+       "check": "between_off_and_nominal"
+      },
+      "event": {
+       "passed": true
+      },
+      "cells": [
+       "family",
+       "check_id"
+      ],
+      "cluster": [
+       "family",
+       "check_id"
+      ]
+     }
+    },
+    {
+     "id": "checks(d)",
+     "role": "reported",
+     "rule": "describe",
+     "text": "twin hashes",
+     "params": {},
+     "data": {
+      "source": "manipulation",
+      "where": {
+       "kind": "reported",
+       "check": "twin_hashes"
+      },
+      "event": {
+       "passed": true
+      },
+      "cells": [
+       "family",
+       "system_id"
+      ],
+      "cluster": [
+       "family",
+       "system_id",
+       "seed",
+       "replicate"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "null_present",
+   "title": "PRESENT is rare on null systems",
+   "statement": "In every (null cell, anchored principle) pair P(PRESENT) <= 0.07.",
+   "parts": [
+    {
+     "id": "null_present(a)",
+     "text": "H0 cell rule over the null-calibration generator and the null witnesses",
+     "rule": "h0_cell",
+     "params": {
+      "bound": 0.07,
+      "alpha": 0.05
+     },
+     "data": {
+      "union": [
+       {
+        "label": "null_calibration",
+        "where": {
+         "design": "@design.null_calibration"
+        },
+        "cell_label": "null_calibration:{@null_kind}:T{@n_time}:N{@n_nodes}|{principle}"
+       },
+       {
+        "label": "bench_nulls",
+        "where": {
+         "design": "@design.witnesses",
+         "family": "@family.A",
+         "system": "@systems.nulls_A"
+        },
+        "cell_label": "witness:{family}:{system}|{principle}"
+       }
+      ],
+      "where": {
+       "declaration_id": [
+        "R",
+        "H",
+        "none"
+       ],
+       "estimator_form": "@form.primary",
+       "any": [
+        {
+         "principle": {
+          "ne": "RAM"
+         }
+        },
+        {
+         "defined": true
+        }
+       ]
+      },
+      "principle_filter": "valid_anchor",
+      "event": {
+       "status": "PRESENT"
+      },
+      "pool_by": [
+       "principle"
+      ]
+     },
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "null_present(definedness)",
+     "role": "reported",
+     "text": "share of null-calibration rows undefined by a definedness reason",
+     "rule": "describe",
+     "params": {},
+     "data": {
+      "where": {
+       "design": "@design.null_calibration",
+       "estimator_form": "@form.primary"
+      },
+      "event": {
+       "defined": false
+      },
+      "cell_label": "null_calibration:{@null_kind}:T{@n_time}:N{@n_nodes}|{principle}"
+     }
+    }
+   ]
+  },
+  {
+   "id": "lesion_absent",
+   "title": "A lesioned principle is ABSENT on its own lesion",
+   "parts": [
+    {
+     "id": "lesion_absent(a)",
+     "text": "the target of a single deficit is ABSENT in >= 80 % of seeds",
+     "rule": "three_zone",
+     "params": {
+      "x": 0.8
+     },
+     "data": {
+      "where": {
+       "design": "@design.witnesses",
+       "system": "@systems.single_deficits",
+       "estimator_form": "@form.primary"
+      },
+      "target_filter": "valid_anchor",
+      "exclude": [
+       "non_target"
+      ],
+      "event": {
+       "status": "ABSENT"
+      },
+      "cells": [
+       "family",
+       "system"
+      ]
+     },
+     "requires": {
+      "oracle": true
+     }
+    },
+    {
+     "id": "lesion_absent(b)",
+     "status": "removed",
+     "removed": {
+      "reason": "replaced by lesion_absent(a)",
+      "development_outcome": "SUPPORTED"
+     }
+    }
+   ]
+  },
+  {
+   "id": "not_admitted",
+   "title": "A hypothesis listed but not run",
+   "admitted": false,
+   "parts": []
+  }
+ ]
+}
